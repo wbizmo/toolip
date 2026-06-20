@@ -5,6 +5,7 @@ import chalk from 'chalk';
 import { registerDoctorCommand } from './commands/doctor.js';
 import { registerProfileCommand } from './commands/profile.js';
 import { registerScanCommand } from './commands/scan.js';
+import { registerScoreCommand } from './commands/score.js';
 import { registerSelfTestCommand } from './commands/self-test.js';
 import { TOOLIP_AUTHOR, TOOLIP_VERSION } from './config/version.js';
 import { handleError } from './utils/error-handler.js';
@@ -20,6 +21,7 @@ registerSelfTestCommand(program);
 registerProfileCommand(program);
 registerScanCommand(program);
 registerDoctorCommand(program);
+registerScoreCommand(program);
 
 program.addHelpText(
   'after',
