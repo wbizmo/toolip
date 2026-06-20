@@ -1,13 +1,17 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
-import { calculateScore } from '../core/score.js';
+import { scanDependencies } from '../core/dependency-scan.js';
+import { calculateDependencyHealth, calculateScore } from '../core/score.js';
 
 export function registerScoreCommand(program: Command): void {
   program
     .command('score')
     .description('Calculate a Toolip security scorecard for the current project.')
-    .action(() => {
-      const score = calculateScore();
+    .option('-p, --path <path>', 'Project path to score.', process.cwd())
+    .action(async (options: { path: string }) => {
+      const dependencyScan = await scanDependencies(options.path);
+      const dependencyHealth = calculateDependencyHealth(dependencyScan.findings);
+      const score = calculateScore({ dependencyHealth });
 
       console.log(chalk.bold('Toolip Security Scorecard'));
       console.log('');
@@ -18,7 +22,5 @@ export function registerScoreCommand(program: Command): void {
       console.log('');
       console.log(`${chalk.dim('Overall Score ........')} ${score.overall}`);
       console.log(`${chalk.dim('Grade ................')} ${score.grade}`);
-      console.log('');
-      console.log(chalk.yellow('Real scoring signals will be connected across Sprints 2, 3, and 4.'));
     });
 }

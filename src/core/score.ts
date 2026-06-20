@@ -1,3 +1,5 @@
+import type { ToolipFinding } from './report.js';
+
 export type ScoreGrade = 'A' | 'B' | 'C' | 'D' | 'F';
 
 export type ToolipScore = {
@@ -27,6 +29,18 @@ export function calculateScore(input?: Partial<Omit<ToolipScore, 'overall' | 'gr
     overall,
     grade: gradeScore(overall)
   };
+}
+
+export function calculateDependencyHealth(findings: ToolipFinding[]): number {
+  const penalty = findings.reduce((total, finding) => {
+    if (finding.severity === 'critical') return total + 35;
+    if (finding.severity === 'high') return total + 25;
+    if (finding.severity === 'medium') return total + 12;
+    if (finding.severity === 'low') return total + 5;
+    return total + 0;
+  }, 0);
+
+  return clamp(100 - penalty);
 }
 
 function clamp(value: number): number {

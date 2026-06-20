@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { calculateScore, gradeScore } from '../src/core/score.js';
+import { calculateDependencyHealth, calculateScore, gradeScore } from '../src/core/score.js';
 
 describe('score', () => {
   it('calculates default perfect score', () => {
@@ -27,5 +27,28 @@ describe('score', () => {
     expect(gradeScore(75)).toBe('C');
     expect(gradeScore(65)).toBe('D');
     expect(gradeScore(30)).toBe('F');
+  });
+
+  it('calculates dependency health from findings', () => {
+    const health = calculateDependencyHealth([
+      {
+        id: 'A',
+        title: 'A',
+        severity: 'high',
+        category: 'supply-chain',
+        message: 'A',
+        recommendation: 'A'
+      },
+      {
+        id: 'B',
+        title: 'B',
+        severity: 'medium',
+        category: 'supply-chain',
+        message: 'B',
+        recommendation: 'B'
+      }
+    ]);
+
+    expect(health).toBe(63);
   });
 });
