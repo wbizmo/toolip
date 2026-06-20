@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { createScannerContext } from '../core/scanner-context.js';
 import { createReport } from '../core/report.js';
 import { writeReport } from '../core/report-writer.js';
+import { runSecurityDoctor } from '../core/security-doctor.js';
 import { TOOLIP_VERSION } from '../config/version.js';
 import { printReportSummary, printScannerContext } from '../utils/output.js';
 
@@ -19,21 +20,22 @@ export function registerDoctorCommand(program: Command): void {
       const context = await createScannerContext(options.path);
       printScannerContext(context);
 
+      const doctor = await runSecurityDoctor(context.root);
+
       const report = createReport({
         version: TOOLIP_VERSION,
         command: 'doctor',
         root: context.root,
-        findings: [
-          {
-            id: 'TOOLIP-DOCTOR-FOUNDATION',
-            title: 'Security doctor foundation active',
-            severity: 'info',
-            category: 'security-hygiene',
-            message: 'Toolip has prepared the project context for security hygiene analysis.',
-            recommendation: 'Run Sprint 3 commands after secret and dangerous-pattern scanners are added.'
-          }
-        ]
+        findings: doctor.findings
       });
+
+      console.log('');
+      console.log(chalk.bold('Security Hygiene'));
+      console.log(`${chalk.dim('Files Scanned:')} ${doctor.summary.filesScanned}`);
+      console.log(`${chalk.dim('Secrets:')} ${doctor.summary.secrets}`);
+      console.log(`${chalk.dim('Dangerous Code:')} ${doctor.summary.dangerousCode}`);
+      console.log(`${chalk.dim('Configuration:')} ${doctor.summary.configuration}`);
+      console.log(`${chalk.dim('Security Headers:')} ${doctor.summary.headers}`);
 
       console.log('');
       printReportSummary(report);
@@ -43,8 +45,5 @@ export function registerDoctorCommand(program: Command): void {
         console.log('');
         console.log(`${chalk.green('✓')} Report written to ${options.output}`);
       }
-
-      console.log('');
-      console.log(chalk.yellow('Security checks arrive in Sprint 3.'));
     });
 }
