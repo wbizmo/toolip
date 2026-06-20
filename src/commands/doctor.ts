@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { createScannerContext } from '../core/scanner-context.js';
 import { createReport } from '../core/report.js';
 import { writeReport } from '../core/report-writer.js';
+import { TOOLIP_VERSION } from '../config/version.js';
 import { printReportSummary, printScannerContext } from '../utils/output.js';
 
 export function registerDoctorCommand(program: Command): void {
@@ -19,7 +20,7 @@ export function registerDoctorCommand(program: Command): void {
       printScannerContext(context);
 
       const report = createReport({
-        version: '0.1.0',
+        version: TOOLIP_VERSION,
         command: 'doctor',
         root: context.root,
         findings: [

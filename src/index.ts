@@ -6,13 +6,15 @@ import { registerDoctorCommand } from './commands/doctor.js';
 import { registerProfileCommand } from './commands/profile.js';
 import { registerScanCommand } from './commands/scan.js';
 import { registerSelfTestCommand } from './commands/self-test.js';
+import { TOOLIP_AUTHOR, TOOLIP_VERSION } from './config/version.js';
+import { handleError } from './utils/error-handler.js';
 
 const program = new Command();
 
 program
   .name('toolip')
   .description('Developer-first supply chain security, security hygiene, and secrets management CLI.')
-  .version('0.1.0');
+  .version(TOOLIP_VERSION);
 
 registerSelfTestCommand(program);
 registerProfileCommand(program);
@@ -23,7 +25,13 @@ program.addHelpText(
   'after',
   `
 
-${chalk.dim('Built by Ashibuogwu Williams (wbizmo) — https://github.com/wbizmo')}`
+${chalk.dim(`Built by ${TOOLIP_AUTHOR.name} (${TOOLIP_AUTHOR.handle}) — ${TOOLIP_AUTHOR.github}`)}`
 );
 
-program.parse(process.argv);
+program.exitOverride();
+
+try {
+  await program.parseAsync(process.argv);
+} catch (error) {
+  handleError(error);
+}
