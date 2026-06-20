@@ -69,6 +69,9 @@ export async function runSecurityDoctor(root: string): Promise<SecurityDoctorRes
 }
 
 function shouldScan(relativePath: string, extension: string): boolean {
+  if (relativePath.endsWith('.d.ts')) return false;
+  if (relativePath.endsWith('.map')) return false;
+  if (relativePath.startsWith('dist/')) return false;
   if (relativePath.endsWith('.env')) return true;
   if (relativePath.includes('.env.')) return true;
   if (scanExtensions.has(extension)) return true;
@@ -110,6 +113,7 @@ function redactEvidence(value: string): string {
 
 function detectMissingSecurityHeaders(relativePaths: string[]): ToolipFinding[] {
   const possibleServerFiles = relativePaths.filter((file) =>
+    !file.startsWith('dist/') &&
     /server|app|main|index|middleware/i.test(file) &&
     /\.(js|ts|jsx|tsx)$/.test(file)
   );

@@ -6,8 +6,12 @@ import chalk from 'chalk';
 import { registerAlternativesCommand } from './commands/alternatives.js';
 import { registerCompareCommand } from './commands/compare.js';
 import { registerDoctorCommand } from './commands/doctor.js';
+import { registerGitAuditCommand } from './commands/git-audit.js';
+import { registerHookCommand } from './commands/hook.js';
 import { registerInspectCommand } from './commands/inspect.js';
+import { registerLearnCommand } from './commands/learn.js';
 import { registerLicensesCommand } from './commands/licenses.js';
+import { registerPreCommitCommand } from './commands/pre-commit.js';
 import { registerProfileCommand } from './commands/profile.js';
 import { registerScanCommand } from './commands/scan.js';
 import { registerScoreCommand } from './commands/score.js';
@@ -38,6 +42,10 @@ registerLicensesCommand(program);
 registerAlternativesCommand(program);
 registerTreeCommand(program);
 registerVaultCommand(program);
+registerGitAuditCommand(program);
+registerPreCommitCommand(program);
+registerHookCommand(program);
+registerLearnCommand(program);
 
 program.addHelpText(
   'after',

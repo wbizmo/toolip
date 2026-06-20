@@ -3,3 +3,13 @@ dist
 coverage
 build
 .git
+.config
+.cache
+.upm
+.local
+.replit
+replit.nix
+tests
+fixtures
+.toolip-vault.json
+*.tgz

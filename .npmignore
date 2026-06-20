@@ -1,7 +1,6 @@
 src
 tests
 fixtures
-docs
 coverage
 node_modules
 
@@ -20,6 +19,7 @@ replit.nix
 tsconfig.json
 vitest.config.ts
 *.log
+*.tgz
 toolip-*.json
 toolip-*.md
 sprint*-*.json
