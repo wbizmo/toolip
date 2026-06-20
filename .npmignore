@@ -1,14 +1,11 @@
-node_modules
-dist
+src
+tests
+fixtures
+docs
 coverage
-build
+node_modules
 
-.env
-.env.*
-!.env.example
-
-.DS_Store
-
+.github
 .replit
 replit.nix
 .config
@@ -16,7 +13,13 @@ replit.nix
 .upm
 .local
 
+.env
+.env.*
 .toolip-vault.json
+
+tsconfig.json
+vitest.config.ts
+*.log
 toolip-*.json
 toolip-*.md
 sprint*-*.json
