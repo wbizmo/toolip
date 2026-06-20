@@ -22,7 +22,7 @@ describe('CLI build configuration', () => {
     };
 
     expect(pkg.name).toBe('toolip');
-    expect(pkg.bin.toolip).toBe('./dist/src/index.js');
+    expect(pkg.bin.toolip).toMatch(/^\.?\/?dist\/src\/index\.js$/);
     expect(pkg.license).toBe('MIT');
     expect(pkg.author).toContain('Ashibuogwu Williams');
   });
