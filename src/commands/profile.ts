@@ -7,8 +7,15 @@ export function registerProfileCommand(program: Command): void {
     .command('profile')
     .description('Fingerprint the current project and detect frameworks, languages, and tooling.')
     .option('-p, --path <path>', 'Project path to inspect.', process.cwd())
-    .action(async (options: { path: string }) => {
+    .option('--json', 'Print profile as JSON.')
+    .action(async (options: { path: string; json?: boolean }) => {
       const profile = await profileProject(options.path);
+
+      if (options.json) {
+        console.log(JSON.stringify(profile, null, 2));
+        return;
+      }
+
       printProfile(profile);
     });
 }
