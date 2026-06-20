@@ -4,7 +4,7 @@ import { ToolipError } from '../src/errors/toolip-error.js';
 
 describe('version config', () => {
   it('exposes Toolip version and author metadata', () => {
-    expect(TOOLIP_VERSION).toBe('1.0.0');
+    expect(TOOLIP_VERSION).toBe('1.0.1');
     expect(TOOLIP_AUTHOR.name).toBe('Ashibuogwu Williams');
     expect(TOOLIP_AUTHOR.handle).toBe('wbizmo');
   });

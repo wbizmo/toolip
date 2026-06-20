@@ -1,10 +1,10 @@
 {
   "name": "toolip",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Developer-first supply chain security, security hygiene, and secrets management CLI.",
   "type": "module",
   "bin": {
-    "toolip": "./dist/src/index.js"
+    "toolip": "dist/src/index.js"
   },
   "main": "./dist/src/index.js",
   "files": [
@@ -46,7 +46,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/wbizmo/toolip.git"
+    "url": "git+https://github.com/wbizmo/toolip.git"
   },
   "bugs": {
     "url": "https://github.com/wbizmo/toolip/issues"
