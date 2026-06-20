@@ -1,6 +1,7 @@
 import chalk from 'chalk';
 import type { ProjectProfile } from '../core/profile-project.js';
 import type { ScannerContext } from '../core/scanner-context.js';
+import type { ToolipReport } from '../core/report.js';
 
 export function printProfile(profile: ProjectProfile): void {
   console.log(chalk.bold('Toolip Project Profile'));
@@ -56,4 +57,23 @@ export function printScannerContext(context: ScannerContext): void {
       console.log(`${chalk.green('✓')} ${extension}: ${count}`);
     }
   }
+}
+
+export function printReportSummary(report: ToolipReport): void {
+  console.log(chalk.bold('Report Summary'));
+  console.log('');
+  console.log(`${chalk.dim('Critical:')} ${severityColor('critical', report.summary.critical)}`);
+  console.log(`${chalk.dim('High:')} ${severityColor('high', report.summary.high)}`);
+  console.log(`${chalk.dim('Medium:')} ${severityColor('medium', report.summary.medium)}`);
+  console.log(`${chalk.dim('Low:')} ${severityColor('low', report.summary.low)}`);
+  console.log(`${chalk.dim('Info:')} ${severityColor('info', report.summary.info)}`);
+  console.log(`${chalk.dim('Total:')} ${report.summary.totalFindings}`);
+}
+
+function severityColor(severity: string, value: number): string {
+  if (severity === 'critical') return value > 0 ? chalk.red.bold(String(value)) : chalk.green(String(value));
+  if (severity === 'high') return value > 0 ? chalk.red(String(value)) : chalk.green(String(value));
+  if (severity === 'medium') return value > 0 ? chalk.yellow(String(value)) : chalk.green(String(value));
+  if (severity === 'low') return value > 0 ? chalk.blue(String(value)) : chalk.green(String(value));
+  return chalk.dim(String(value));
 }
