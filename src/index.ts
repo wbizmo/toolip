@@ -3,13 +3,16 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 
+import { registerAlternativesCommand } from './commands/alternatives.js';
 import { registerCompareCommand } from './commands/compare.js';
 import { registerDoctorCommand } from './commands/doctor.js';
 import { registerInspectCommand } from './commands/inspect.js';
+import { registerLicensesCommand } from './commands/licenses.js';
 import { registerProfileCommand } from './commands/profile.js';
 import { registerScanCommand } from './commands/scan.js';
 import { registerScoreCommand } from './commands/score.js';
 import { registerSelfTestCommand } from './commands/self-test.js';
+import { registerTreeCommand } from './commands/tree.js';
 
 import { TOOLIP_AUTHOR, TOOLIP_VERSION } from './config/version.js';
 import { handleError } from './utils/error-handler.js';
@@ -30,6 +33,9 @@ registerDoctorCommand(program);
 registerScoreCommand(program);
 registerInspectCommand(program);
 registerCompareCommand(program);
+registerLicensesCommand(program);
+registerAlternativesCommand(program);
+registerTreeCommand(program);
 
 program.addHelpText(
   'after',
