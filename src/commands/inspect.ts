@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
-import chalk from 'chalk';
 import { analyzePackage } from '../core/analyze-package.js';
+import { printPackageHealth } from '../utils/package-output.js';
 
 export function registerInspectCommand(program: Command): void {
   program
@@ -13,13 +13,6 @@ export function registerInspectCommand(program: Command): void {
         type: 'dependency'
       });
 
-      console.log(chalk.bold(`Package: ${result.name}`));
-      console.log('');
-
-      console.log(`Latest Version: ${result.latestVersion}`);
-      console.log(`Deprecated: ${result.deprecated}`);
-      console.log(`Maintainers: ${result.maintainers}`);
-      console.log(`Risk Score: ${result.riskScore}`);
-      console.log(`Published: ${result.publishedAt}`);
+      printPackageHealth(result);
     });
 }

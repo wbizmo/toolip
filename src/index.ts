@@ -3,6 +3,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 
+import { registerCompareCommand } from './commands/compare.js';
 import { registerDoctorCommand } from './commands/doctor.js';
 import { registerInspectCommand } from './commands/inspect.js';
 import { registerProfileCommand } from './commands/profile.js';
@@ -28,6 +29,7 @@ registerScanCommand(program);
 registerDoctorCommand(program);
 registerScoreCommand(program);
 registerInspectCommand(program);
+registerCompareCommand(program);
 
 program.addHelpText(
   'after',
