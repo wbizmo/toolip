@@ -13,6 +13,7 @@ import { registerScanCommand } from './commands/scan.js';
 import { registerScoreCommand } from './commands/score.js';
 import { registerSelfTestCommand } from './commands/self-test.js';
 import { registerTreeCommand } from './commands/tree.js';
+import { registerVaultCommand } from './commands/vault.js';
 
 import { TOOLIP_AUTHOR, TOOLIP_VERSION } from './config/version.js';
 import { handleError } from './utils/error-handler.js';
@@ -36,6 +37,7 @@ registerCompareCommand(program);
 registerLicensesCommand(program);
 registerAlternativesCommand(program);
 registerTreeCommand(program);
+registerVaultCommand(program);
 
 program.addHelpText(
   'after',
