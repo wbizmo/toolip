@@ -41,7 +41,14 @@ export async function setSecret(input: {
   vaultPath?: string;
 }): Promise<void> {
   const vaultPath = input.vaultPath ?? defaultVaultPath();
-  const data = await readEncryptedVault(input.masterPassword, vaultPath).catch(() => ({ secrets: [] }));
+
+  let data: VaultData;
+
+  try {
+    data = await readEncryptedVault(input.masterPassword, vaultPath);
+  } catch {
+    data = { secrets: [] };
+  }
 
   const env = input.env ?? 'development';
   const existing = data.secrets.find((secret) => secret.key === input.key && secret.env === env);
