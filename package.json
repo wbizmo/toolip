@@ -1,6 +1,6 @@
 {
   "name": "toolip",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Developer-first supply chain security, security hygiene, and secrets management CLI.",
   "type": "module",
   "bin": {
