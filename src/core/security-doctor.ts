@@ -34,12 +34,16 @@ const scanExtensions = new Set([
   'key'
 ]);
 
-export async function runSecurityDoctor(root: string): Promise<SecurityDoctorResult> {
+export async function runSecurityDoctor(
+  root: string
+): Promise<SecurityDoctorResult> {
   const context = await createScannerContext(root);
   const findings: ToolipFinding[] = [];
 
   for (const file of context.files) {
-    if (!shouldScan(file.relativePath, file.extension)) continue;
+    if (!shouldScan(file.relativePath, file.extension)) {
+      continue;
+    }
 
     let content = '';
 
@@ -49,21 +53,41 @@ export async function runSecurityDoctor(root: string): Promise<SecurityDoctorRes
       continue;
     }
 
-    findings.push(...scanContent(file.relativePath, content, secretPatterns));
-    findings.push(...scanContent(file.relativePath, content, dangerousCodePatterns));
-    findings.push(...scanContent(file.relativePath, content, configSecurityPatterns));
+    findings.push(
+      ...scanContent(file.relativePath, content, secretPatterns)
+    );
+
+    findings.push(
+      ...scanContent(file.relativePath, content, dangerousCodePatterns)
+    );
+
+    findings.push(
+      ...scanContent(file.relativePath, content, configSecurityPatterns)
+    );
   }
 
-  findings.push(...detectMissingSecurityHeaders(context.files.map((file) => file.relativePath)));
+  findings.push(
+    ...detectMissingSecurityHeaders(
+      context.files.map((file) => file.relativePath)
+    )
+  );
 
   return {
     findings,
     summary: {
       filesScanned: context.files.length,
-      secrets: findings.filter((finding) => finding.category === 'secrets').length,
-      dangerousCode: findings.filter((finding) => finding.category === 'dangerous-code').length,
-      configuration: findings.filter((finding) => finding.category === 'configuration').length,
-      headers: findings.filter((finding) => finding.category === 'security-headers').length
+      secrets: findings.filter(
+        (finding) => finding.category === 'secrets'
+      ).length,
+      dangerousCode: findings.filter(
+        (finding) => finding.category === 'dangerous-code'
+      ).length,
+      configuration: findings.filter(
+        (finding) => finding.category === 'configuration'
+      ).length,
+      headers: findings.filter(
+        (finding) => finding.category === 'security-headers'
+      ).length
     }
   };
 }
@@ -74,8 +98,8 @@ function shouldScan(relativePath: string, extension: string): boolean {
   if (relativePath.startsWith('dist/')) return false;
   if (relativePath.endsWith('.env')) return true;
   if (relativePath.includes('.env.')) return true;
-  if (scanExtensions.has(extension)) return true;
-  return false;
+
+  return scanExtensions.has(extension);
 }
 
 function scanContent(
@@ -89,14 +113,18 @@ function scanContent(
     pattern.regex.lastIndex = 0;
     const matches = content.match(pattern.regex);
 
-    if (!matches) continue;
+    if (!matches) {
+      continue;
+    }
 
     findings.push({
-      id: `${pattern.id}-${relativePath.toUpperCase().replaceAll(/[^A-Z0-9]/g, '-')}`,
-      title: pattern.title,
-      severity: pattern.severity,
+      id: `${pattern.id}-${relativePath
+        .toUpperCase()
+        .replaceAll(/[^A-Z0-9]/g, '-')}`,
+      title: formatTitle(pattern, relativePath),
+      severity: resolveSeverity(pattern, relativePath),
       category: pattern.category,
-      message: pattern.message,
+      message: formatMessage(pattern, relativePath),
       recommendation: pattern.recommendation,
       file: relativePath,
       evidence: redactEvidence(matches[0])
@@ -106,34 +134,79 @@ function scanContent(
   return findings;
 }
 
+function isTestFile(relativePath: string): boolean {
+  return (
+    relativePath.startsWith('tests/') ||
+    relativePath.includes('/tests/') ||
+    relativePath.includes('/__tests__/') ||
+    /\.(test|spec)\.[cm]?[jt]sx?$/.test(relativePath)
+  );
+}
+
+function resolveSeverity(
+  pattern: SecurityPattern,
+  relativePath: string
+): ToolipFinding['severity'] {
+  if (pattern.category === 'secrets' && isTestFile(relativePath)) {
+    return 'low';
+  }
+
+  return pattern.severity;
+}
+
+function formatTitle(
+  pattern: SecurityPattern,
+  relativePath: string
+): string {
+  if (pattern.category === 'secrets' && isTestFile(relativePath)) {
+    return `Potential test fixture: ${pattern.title}`;
+  }
+
+  return pattern.title;
+}
+
+function formatMessage(
+  pattern: SecurityPattern,
+  relativePath: string
+): string {
+  if (pattern.category === 'secrets' && isTestFile(relativePath)) {
+    return `${pattern.message} The match is inside a test file, so Toolip has reduced its severity. Confirm that it is synthetic fixture data.`;
+  }
+
+  return pattern.message;
+}
+
 function redactEvidence(value: string): string {
-  if (value.length <= 16) return value;
+  if (value.length <= 16) {
+    return value;
+  }
+
   return `${value.slice(0, 8)}...[redacted]...${value.slice(-4)}`;
 }
 
-function detectMissingSecurityHeaders(relativePaths: string[]): ToolipFinding[] {
-  const possibleServerFiles = relativePaths.filter((file) =>
-    !file.startsWith('dist/') &&
-    /server|app|main|index|middleware/i.test(file) &&
-    /\.(js|ts|jsx|tsx)$/.test(file)
+function detectMissingSecurityHeaders(
+  relativePaths: string[]
+): ToolipFinding[] {
+  const possibleServerFiles = relativePaths.filter(
+    (file) =>
+      !file.startsWith('dist/') &&
+      /server|app|main|index|middleware/i.test(file) &&
+      /\.(js|ts|jsx|tsx)$/.test(file)
   );
 
   if (possibleServerFiles.length === 0) {
     return [];
   }
 
-  const findings: ToolipFinding[] = [];
-
-  for (const header of securityHeaderNames) {
-    findings.push({
-      id: `TOOLIP-HEADER-VERIFY-${header.toUpperCase().replaceAll('-', '_')}`,
-      title: `Verify security header: ${header}`,
-      severity: 'info',
-      category: 'security-headers',
-      message: `Toolip found server-like files. Confirm that ${header} is configured in production responses.`,
-      recommendation: 'Use Helmet or equivalent framework middleware to set secure HTTP response headers.'
-    });
-  }
-
-  return findings;
+  return securityHeaderNames.map((header) => ({
+    id: `TOOLIP-HEADER-VERIFY-${header
+      .toUpperCase()
+      .replaceAll('-', '_')}`,
+    title: `Verify security header: ${header}`,
+    severity: 'info',
+    category: 'security-headers',
+    message: `Toolip found server-like files. Confirm that ${header} is configured in production responses.`,
+    recommendation:
+      'Use Helmet or equivalent framework middleware to set secure HTTP response headers.'
+  }));
 }
