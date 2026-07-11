@@ -9,9 +9,9 @@ type PackageManifest = {
 
 function resolvePackageVersion(): string {
   let directory = path.dirname(fileURLToPath(import.meta.url));
-  const filesystemRoot = path.parse(directory).root;
+  const root = path.parse(directory).root;
 
-  while (true) {
+  while (directory !== root) {
     const manifestPath = path.join(directory, 'package.json');
 
     try {
@@ -29,14 +29,12 @@ function resolvePackageVersion(): string {
       // Continue searching parent directories.
     }
 
-    if (directory === filesystemRoot) {
-      break;
-    }
-
     directory = path.dirname(directory);
   }
 
-  return '0.0.0';
+  throw new Error(
+    'Unable to resolve Toolip version from package.json.'
+  );
 }
 
 export const TOOLIP_VERSION = resolvePackageVersion();

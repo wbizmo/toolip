@@ -1,25 +1,28 @@
 {
   "name": "toolip",
-  "version": "1.0.6",
-  "description": "Developer-first supply chain security, security hygiene, and secrets management CLI.",
+  "version": "1.0.7",
+  "description": "A TypeScript-powered developer security companion CLI for supply chain security, dependency intelligence, secret detection, security auditing, encrypted local secrets management, Git security checks, and secure development education.",
   "type": "module",
   "bin": {
     "toolip": "dist/src/index.js"
   },
-  "main": "./dist/src/index.js",
+  "main": "dist/src/index.js",
   "files": [
     "dist/src",
-    "LICENSE",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
+    "clean": "rm -rf dist",
     "dev": "tsx src/index.ts",
     "build": "tsc",
     "start": "node dist/src/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "verify": "npm run typecheck && npm test && npm run build",
+    "verify:package": "node scripts/verify-package.mjs",
+    "verify": "npm run typecheck && npm test && npm run clean && npm run build && npm run verify:package",
+    "prepack": "npm run verify",
     "pack:check": "npm pack --dry-run"
   },
   "keywords": [

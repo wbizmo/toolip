@@ -17,9 +17,9 @@ export const secretPatterns: SecurityPattern[] = [
     category: 'secrets',
     severity: 'critical',
     regex: /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g,
-    message: 'A GitHub token-like secret was found in source files.',
+    message: 'A GitHub token-like secret was found.',
     recommendation:
-      'Revoke the token immediately, remove it from history, and move it into a secure secret store.'
+      'Revoke the token, remove it from Git history, and store its replacement securely.'
   },
   {
     id: 'TOOLIP-SECRET-AWS-ACCESS-KEY',
@@ -27,9 +27,9 @@ export const secretPatterns: SecurityPattern[] = [
     category: 'secrets',
     severity: 'critical',
     regex: /\bAKIA[0-9A-Z]{16}\b/g,
-    message: 'An AWS access key-like value was found in source files.',
+    message: 'An AWS access key-like value was found.',
     recommendation:
-      'Rotate the key immediately, audit its usage, and store credentials outside source control.'
+      'Rotate the credential immediately and audit its usage.'
   },
   {
     id: 'TOOLIP-SECRET-PRIVATE-KEY',
@@ -37,9 +37,9 @@ export const secretPatterns: SecurityPattern[] = [
     category: 'secrets',
     severity: 'critical',
     regex: /-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/g,
-    message: 'Private key material was found in the project.',
+    message: 'Private key material was found.',
     recommendation:
-      'Remove the private key from the repository and rotate affected credentials.'
+      'Remove the key from the repository and rotate affected credentials.'
   },
   {
     id: 'TOOLIP-SECRET-NPM-TOKEN',
@@ -47,9 +47,9 @@ export const secretPatterns: SecurityPattern[] = [
     category: 'secrets',
     severity: 'critical',
     regex: /\bnpm_[A-Za-z0-9]{20,}\b/g,
-    message: 'An npm token-like value was detected.',
+    message: 'An npm token-like value was found.',
     recommendation:
-      'Rotate the token and move it into a secure secret store.'
+      'Rotate the token and store its replacement securely.'
   },
   {
     id: 'TOOLIP-SECRET-HARDCODED-PASSWORD',
@@ -69,7 +69,7 @@ export const secretPatterns: SecurityPattern[] = [
     regex: /\b(jwtSecret|JWT_SECRET|jwt_secret)\s*[:=]\s*['"][^'"]{8,}['"]/g,
     message: 'A hardcoded JWT secret was found.',
     recommendation:
-      'Use a strong secret loaded from an environment variable or secret manager.'
+      'Load a strong random secret from a secure runtime source.'
   },
   {
     id: 'TOOLIP-SECRET-GENERIC-API-KEY',
@@ -79,7 +79,7 @@ export const secretPatterns: SecurityPattern[] = [
     regex: /\b(apiKey|API_KEY|api_key)\s*[:=]\s*['"][A-Za-z0-9_-]{16,}['"]/g,
     message: 'A hardcoded API key-like value was found.',
     recommendation:
-      'Move API keys out of source code and rotate exposed credentials.'
+      'Remove API keys from source code and rotate exposed credentials.'
   }
 ];
 
@@ -90,9 +90,10 @@ export const dangerousCodePatterns: SecurityPattern[] = [
     category: 'dangerous-code',
     severity: 'high',
     regex: /\beval\s*\(/g,
-    message: 'eval() can execute arbitrary code and introduce injection risk.',
+    message:
+      'eval() can execute arbitrary code and introduce injection risk.',
     recommendation:
-      'Replace eval() with explicit parsing, safe control flow, or a trusted interpreter.'
+      'Replace eval() with explicit parsing or safe control flow.'
   },
   {
     id: 'TOOLIP-DANGEROUS-NEW-FUNCTION',
@@ -101,29 +102,31 @@ export const dangerousCodePatterns: SecurityPattern[] = [
     severity: 'high',
     regex: /\bnew\s+Function\s*\(/g,
     message:
-      'The Function constructor executes dynamic code and can introduce injection risk.',
+      'The Function constructor executes dynamic code.',
     recommendation:
-      'Avoid dynamic code execution and use explicit functions instead.'
+      'Avoid runtime code generation and use explicit functions.'
   },
   {
     id: 'TOOLIP-DANGEROUS-CHILD-PROCESS-EXEC',
     title: 'Unsafe child_process exec usage',
     category: 'dangerous-code',
     severity: 'high',
-    regex: /(?:\bchild_process\s*\.\s*exec|(?<!\.)\bexec)\s*\(/g,
+    regex:
+      /(?:\bchild_process\s*\.\s*exec|(?<![\w.])exec)\s*\(/g,
     message:
-      'Shell command execution can become unsafe when untrusted input reaches the command.',
+      'Shell execution may become unsafe when untrusted input reaches the command.',
     recommendation:
-      'Prefer execFile() or spawn() with argument arrays and strict input validation.'
+      'Prefer execFile() or spawn() with argument arrays and strict validation.'
   },
   {
     id: 'TOOLIP-DANGEROUS-EXECSYNC',
     title: 'Unsafe execSync usage',
     category: 'dangerous-code',
     severity: 'high',
-    regex: /(?:\bchild_process\s*\.\s*execSync|(?<!\.)\bexecSync)\s*\(/g,
+    regex:
+      /(?:\bchild_process\s*\.\s*execSync|(?<![\w.])execSync)\s*\(/g,
     message:
-      'Synchronous shell execution can introduce command injection and blocking risks.',
+      'Synchronous shell execution can introduce injection and blocking risks.',
     recommendation:
       'Avoid shell execution or use safer process APIs with validated arguments.'
   }
@@ -138,7 +141,7 @@ export const configSecurityPatterns: SecurityPattern[] = [
     regex: /\borigin\s*:\s*['"]\*['"]/g,
     message: 'CORS origin is configured as "*".',
     recommendation:
-      'Restrict allowed origins to trusted domains for each environment.'
+      'Restrict allowed origins to trusted domains.'
   },
   {
     id: 'TOOLIP-CONFIG-WEAK-JWT-SECRET',
@@ -147,12 +150,12 @@ export const configSecurityPatterns: SecurityPattern[] = [
     severity: 'high',
     regex:
       /\b(jwtSecret|JWT_SECRET|jwt_secret)\s*[:=]\s*['"](secret|changeme|password|123456|devsecret)['"]/gi,
-    message: 'A weak JWT secret value was detected.',
+    message: 'A weak JWT secret was detected.',
     recommendation:
-      'Use a long, random, high-entropy JWT secret from a secure source.'
+      'Use a long, random, high-entropy secret.'
   },
   {
-    id: 'TOOLIP-CONFIG-LONG-JWT_EXPIRY',
+    id: 'TOOLIP-CONFIG-LONG-JWT-EXPIRY',
     title: 'Long-lived JWT expiry detected',
     category: 'configuration',
     severity: 'medium',
@@ -160,7 +163,7 @@ export const configSecurityPatterns: SecurityPattern[] = [
       /\b(expiresIn|JWT_EXPIRES_IN)\s*[:=]\s*['"](?:365d|999d|1000d|never|10y)['"]/gi,
     message: 'A long-lived JWT expiry was detected.',
     recommendation:
-      'Use short-lived access tokens and secure refresh-token rotation.'
+      'Use short-lived access tokens and refresh-token rotation.'
   }
 ];
 

@@ -20,11 +20,13 @@ export type SecurityDoctorResult = {
   };
 };
 
-const scanExtensions = new Set([
+const secretScanExtensions = new Set([
   'js',
   'jsx',
   'ts',
   'tsx',
+  'mjs',
+  'cjs',
   'json',
   'yml',
   'yaml',
@@ -34,6 +36,15 @@ const scanExtensions = new Set([
   'key'
 ]);
 
+const codeExtensions = new Set([
+  'js',
+  'jsx',
+  'ts',
+  'tsx',
+  'mjs',
+  'cjs'
+]);
+
 export async function runSecurityDoctor(
   root: string
 ): Promise<SecurityDoctorResult> {
@@ -41,7 +52,7 @@ export async function runSecurityDoctor(
   const findings: ToolipFinding[] = [];
 
   for (const file of context.files) {
-    if (!shouldScan(file.relativePath, file.extension)) {
+    if (!shouldScanSecrets(file.relativePath, file.extension)) {
       continue;
     }
 
@@ -57,13 +68,23 @@ export async function runSecurityDoctor(
       ...scanContent(file.relativePath, content, secretPatterns)
     );
 
-    findings.push(
-      ...scanContent(file.relativePath, content, dangerousCodePatterns)
-    );
+    if (codeExtensions.has(file.extension)) {
+      findings.push(
+        ...scanContent(
+          file.relativePath,
+          content,
+          dangerousCodePatterns
+        )
+      );
 
-    findings.push(
-      ...scanContent(file.relativePath, content, configSecurityPatterns)
-    );
+      findings.push(
+        ...scanContent(
+          file.relativePath,
+          content,
+          configSecurityPatterns
+        )
+      );
+    }
   }
 
   findings.push(
@@ -92,14 +113,17 @@ export async function runSecurityDoctor(
   };
 }
 
-function shouldScan(relativePath: string, extension: string): boolean {
+function shouldScanSecrets(
+  relativePath: string,
+  extension: string
+): boolean {
   if (relativePath.endsWith('.d.ts')) return false;
   if (relativePath.endsWith('.map')) return false;
   if (relativePath.startsWith('dist/')) return false;
   if (relativePath.endsWith('.env')) return true;
   if (relativePath.includes('.env.')) return true;
 
-  return scanExtensions.has(extension);
+  return secretScanExtensions.has(extension);
 }
 
 function scanContent(
@@ -111,9 +135,10 @@ function scanContent(
 
   for (const pattern of patterns) {
     pattern.regex.lastIndex = 0;
-    const matches = content.match(pattern.regex);
+    const match = pattern.regex.exec(content);
+    pattern.regex.lastIndex = 0;
 
-    if (!matches) {
+    if (!match) {
       continue;
     }
 
@@ -127,7 +152,7 @@ function scanContent(
       message: formatMessage(pattern, relativePath),
       recommendation: pattern.recommendation,
       file: relativePath,
-      evidence: redactEvidence(matches[0])
+      evidence: redactEvidence(match[0])
     });
   }
 
@@ -170,7 +195,7 @@ function formatMessage(
   relativePath: string
 ): string {
   if (pattern.category === 'secrets' && isTestFile(relativePath)) {
-    return `${pattern.message} The match is inside a test file, so Toolip has reduced its severity. Confirm that it is synthetic fixture data.`;
+    return `${pattern.message} This match is inside a test file, so Toolip reduced its severity. Confirm that it is synthetic fixture data.`;
   }
 
   return pattern.message;
@@ -191,7 +216,7 @@ function detectMissingSecurityHeaders(
     (file) =>
       !file.startsWith('dist/') &&
       /server|app|main|index|middleware/i.test(file) &&
-      /\.(js|ts|jsx|tsx)$/.test(file)
+      /\.(js|ts|jsx|tsx|mjs|cjs)$/.test(file)
   );
 
   if (possibleServerFiles.length === 0) {

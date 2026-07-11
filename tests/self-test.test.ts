@@ -8,18 +8,20 @@ import {
 import { ToolipError } from '../src/errors/toolip-error.js';
 
 describe('version config', () => {
-  it('uses package.json as the version source of truth', async () => {
+  it('uses package.json as its source of truth', async () => {
     const raw = await readFile(
       path.join(process.cwd(), 'package.json'),
       'utf8'
     );
 
-    const pkg = JSON.parse(raw) as {
+    const manifest = JSON.parse(raw) as {
       version: string;
     };
 
-    expect(TOOLIP_VERSION).toBe(pkg.version);
-    expect(TOOLIP_AUTHOR.name).toBe('Ashibuogwu Williams');
+    expect(TOOLIP_VERSION).toBe(manifest.version);
+    expect(TOOLIP_AUTHOR.name).toBe(
+      'Ashibuogwu Williams'
+    );
     expect(TOOLIP_AUTHOR.handle).toBe('wbizmo');
   });
 });
