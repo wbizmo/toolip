@@ -106,6 +106,7 @@ toolip learn dependencies
 | `toolip scan` | Analyze dependency and project risk |
 | `toolip vulnerabilities` | Match resolved npm dependencies against OSV.dev |
 | `toolip ast-scan` | Analyze JavaScript and TypeScript through the TypeScript Compiler API |
+| `toolip reachability` | Show package usage observed in source imports |
 | `toolip doctor` | Run security hygiene checks |
 | `toolip score` | Calculate a project security score |
 | `toolip inspect <package>` | Inspect npm package metadata and risk signals |
@@ -140,6 +141,12 @@ Toolip uses the TypeScript Compiler API for semantic dangerous-code checks. It r
 This prevents regular-expression calls such as `RegExp.exec()` from being reported as shell execution while retaining detection of resolved `child_process.exec()`, `execSync()`, `eval()`, and dynamic `Function` construction.
 
 See [docs/AST-SECURITY.md](docs/AST-SECURITY.md).
+
+### Reachability Analysis
+
+Toolip maps resolved npm packages to JavaScript and TypeScript imports. It reports observed, possibly reachable, and not-observed states without claiming that static absence proves safety.
+
+See [docs/REACHABILITY.md](docs/REACHABILITY.md).
 
 ### Security Auditing
 
