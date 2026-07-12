@@ -330,8 +330,6 @@ Release history and unreleased changes are maintained in [CHANGELOG.md](CHANGELO
 
 ## Author
 
-Toolip is built and maintained by Ashibuogwu Williams (`wbizmo`).
-
 GitHub: https://github.com/wbizmo
 
 ## License
