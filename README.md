@@ -109,6 +109,7 @@ toolip learn dependencies
 | `toolip reachability` | Show package usage observed in source imports |
 | `toolip install-scripts` | Inspect npm lifecycle scripts for suspicious behavior indicators |
 | `toolip sbom` | Generate CycloneDX 1.5 or SPDX 2.3 JSON |
+| `toolip history` | Inspect local security history and score trends |
 | `toolip doctor` | Run security hygiene checks |
 | `toolip score` | Calculate a project security score |
 | `toolip inspect <package>` | Inspect npm package metadata and risk signals |
