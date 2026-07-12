@@ -28,6 +28,7 @@ import { registerInstallScriptsCommand } from './commands/install-scripts.js';
 import { registerSbomCommand } from './commands/sbom.js';
 import { registerHistoryCommand } from './commands/history.js';
 import { registerConfigCommand } from './commands/config.js';
+import { registerPackageHealthCommand } from './commands/package-health.js';
 
 const program = new Command();
 
@@ -79,6 +80,8 @@ registerSbomCommand(program);
 registerHistoryCommand(program);
 
 registerConfigCommand(program);
+
+registerPackageHealthCommand(program);
 
 await program.parseAsync(process.argv);
 } catch (error) {
