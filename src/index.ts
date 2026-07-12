@@ -23,6 +23,7 @@ import { TOOLIP_AUTHOR, TOOLIP_VERSION } from './config/version.js';
 import { handleError } from './utils/error-handler.js';
 import { registerVulnerabilitiesCommand } from './commands/vulnerabilities.js';
 import { registerAstScanCommand } from './commands/ast-scan.js';
+import { registerReachabilityCommand } from './commands/reachability.js';
 
 const program = new Command();
 
@@ -64,6 +65,8 @@ try {
   registerVulnerabilitiesCommand(program);
 
 registerAstScanCommand(program);
+
+registerReachabilityCommand(program);
 
 await program.parseAsync(process.argv);
 } catch (error) {
