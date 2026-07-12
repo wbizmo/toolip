@@ -134,6 +134,7 @@ toolip learn dependencies
 | `toolip publish` | Generate a static HTML security report |
 | `toolip watch` | Continuously rerun security checks as files change |
 | `toolip announce` | Generate a deterministic security update summary |
+| `toolip mcp` | Start the read-only Toolip MCP server over stdio |
 
 Use command-specific help for current options:
 
