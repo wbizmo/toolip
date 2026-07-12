@@ -130,6 +130,7 @@ toolip learn dependencies
 | `toolip monorepo` | Discover npm and pnpm workspace packages |
 | `toolip audit-repo <url>` | Audit a public GitHub repository through `gh` |
 | `toolip upgrade-pr <package> <version>` | Create a tested dependency-upgrade PR |
+| `toolip diff <base> [head]` | Summarize security-relevant Git changes |
 
 Use command-specific help for current options:
 
