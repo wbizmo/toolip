@@ -39,6 +39,7 @@ import { registerDiffCommand } from './commands/diff.js';
 import { registerPublishCommand } from './commands/publish.js';
 import { registerWatchCommand } from './commands/watch.js';
 import { registerAnnounceCommand } from './commands/announce.js';
+import { registerMcpCommand } from './commands/mcp.js';
 
 const program = new Command();
 
@@ -112,6 +113,8 @@ registerPublishCommand(program);
 registerWatchCommand(program);
 
 registerAnnounceCommand(program);
+
+registerMcpCommand(program);
 
 await program.parseAsync(process.argv);
 } catch (error) {
