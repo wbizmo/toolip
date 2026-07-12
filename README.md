@@ -105,6 +105,7 @@ toolip learn dependencies
 | `toolip profile` | Detect project technologies and structure |
 | `toolip scan` | Analyze dependency and project risk |
 | `toolip vulnerabilities` | Match resolved npm dependencies against OSV.dev |
+| `toolip ast-scan` | Analyze JavaScript and TypeScript through the TypeScript Compiler API |
 | `toolip doctor` | Run security hygiene checks |
 | `toolip score` | Calculate a project security score |
 | `toolip inspect <package>` | Inspect npm package metadata and risk signals |
@@ -131,6 +132,14 @@ toolip vault --help
 ### Dependency Intelligence
 
 Toolip reads project manifests and lockfiles, identifies outdated or deprecated dependencies, inspects package metadata, compares alternatives, reports license distribution, and visualizes dependency relationships.
+
+### AST Security Analysis
+
+Toolip uses the TypeScript Compiler API for semantic dangerous-code checks. It resolves supported imports and call targets instead of treating every matching method name as the same operation.
+
+This prevents regular-expression calls such as `RegExp.exec()` from being reported as shell execution while retaining detection of resolved `child_process.exec()`, `execSync()`, `eval()`, and dynamic `Function` construction.
+
+See [docs/AST-SECURITY.md](docs/AST-SECURITY.md).
 
 ### Security Auditing
 
