@@ -36,6 +36,7 @@ import { registerMonorepoCommand } from './commands/monorepo.js';
 import { registerAuditRepoCommand } from './commands/audit-repo.js';
 import { registerUpgradePrCommand } from './commands/upgrade-pr.js';
 import { registerDiffCommand } from './commands/diff.js';
+import { registerPublishCommand } from './commands/publish.js';
 
 const program = new Command();
 
@@ -103,6 +104,8 @@ registerAuditRepoCommand(program);
 registerUpgradePrCommand(program);
 
 registerDiffCommand(program);
+
+registerPublishCommand(program);
 
 await program.parseAsync(process.argv);
 } catch (error) {
