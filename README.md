@@ -132,6 +132,7 @@ toolip learn dependencies
 | `toolip upgrade-pr <package> <version>` | Create a tested dependency-upgrade PR |
 | `toolip diff <base> [head]` | Summarize security-relevant Git changes |
 | `toolip publish` | Generate a static HTML security report |
+| `toolip watch` | Continuously rerun security checks as files change |
 
 Use command-specific help for current options:
 
