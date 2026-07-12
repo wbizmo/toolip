@@ -30,6 +30,7 @@ import { registerHistoryCommand } from './commands/history.js';
 import { registerConfigCommand } from './commands/config.js';
 import { registerPackageHealthCommand } from './commands/package-health.js';
 import { registerDependencyConfusionCommand } from './commands/dependency-confusion.js';
+import { registerGitHistoryCommand } from './commands/git-history.js';
 
 const program = new Command();
 
@@ -85,6 +86,8 @@ registerConfigCommand(program);
 registerPackageHealthCommand(program);
 
 registerDependencyConfusionCommand(program);
+
+registerGitHistoryCommand(program);
 
 await program.parseAsync(process.argv);
 } catch (error) {
