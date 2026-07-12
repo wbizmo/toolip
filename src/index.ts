@@ -32,6 +32,7 @@ import { registerPackageHealthCommand } from './commands/package-health.js';
 import { registerDependencyConfusionCommand } from './commands/dependency-confusion.js';
 import { registerGitHistoryCommand } from './commands/git-history.js';
 import { registerDockerScanCommand } from './commands/docker-scan.js';
+import { registerMonorepoCommand } from './commands/monorepo.js';
 
 const program = new Command();
 
@@ -91,6 +92,8 @@ registerDependencyConfusionCommand(program);
 registerGitHistoryCommand(program);
 
 registerDockerScanCommand(program);
+
+registerMonorepoCommand(program);
 
 await program.parseAsync(process.argv);
 } catch (error) {
