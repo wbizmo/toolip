@@ -126,6 +126,7 @@ toolip learn dependencies
 | `toolip pre-commit` | Run blocking security checks before commit |
 | `toolip hook install` | Install the Toolip pre-commit hook |
 | `toolip learn [topic]` | Read secure-development lessons |
+| `toolip docker-scan` | Scan Dockerfiles for risky container patterns |
 
 Use command-specific help for current options:
 
