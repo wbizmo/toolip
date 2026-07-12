@@ -107,6 +107,7 @@ toolip learn dependencies
 | `toolip vulnerabilities` | Match resolved npm dependencies against OSV.dev |
 | `toolip ast-scan` | Analyze JavaScript and TypeScript through the TypeScript Compiler API |
 | `toolip reachability` | Show package usage observed in source imports |
+| `toolip install-scripts` | Inspect npm lifecycle scripts for suspicious behavior indicators |
 | `toolip doctor` | Run security hygiene checks |
 | `toolip score` | Calculate a project security score |
 | `toolip inspect <package>` | Inspect npm package metadata and risk signals |
@@ -147,6 +148,12 @@ See [docs/AST-SECURITY.md](docs/AST-SECURITY.md).
 Toolip maps resolved npm packages to JavaScript and TypeScript imports. It reports observed, possibly reachable, and not-observed states without claiming that static absence proves safety.
 
 See [docs/REACHABILITY.md](docs/REACHABILITY.md).
+
+### Install-Script Analysis
+
+Toolip inspects npm lifecycle scripts without executing them. It reports network access, shell execution, filesystem changes, obfuscation, and environment-access indicators with explicit confidence.
+
+See [docs/INSTALL-SCRIPT-ANALYSIS.md](docs/INSTALL-SCRIPT-ANALYSIS.md).
 
 ### Security Auditing
 
