@@ -128,6 +128,7 @@ toolip learn dependencies
 | `toolip learn [topic]` | Read secure-development lessons |
 | `toolip docker-scan` | Scan Dockerfiles for risky container patterns |
 | `toolip monorepo` | Discover npm and pnpm workspace packages |
+| `toolip audit-repo <url>` | Audit a public GitHub repository through `gh` |
 
 Use command-specific help for current options:
 
