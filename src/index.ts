@@ -35,6 +35,7 @@ import { registerDockerScanCommand } from './commands/docker-scan.js';
 import { registerMonorepoCommand } from './commands/monorepo.js';
 import { registerAuditRepoCommand } from './commands/audit-repo.js';
 import { registerUpgradePrCommand } from './commands/upgrade-pr.js';
+import { registerDiffCommand } from './commands/diff.js';
 
 const program = new Command();
 
@@ -100,6 +101,8 @@ registerMonorepoCommand(program);
 registerAuditRepoCommand(program);
 
 registerUpgradePrCommand(program);
+
+registerDiffCommand(program);
 
 await program.parseAsync(process.argv);
 } catch (error) {
