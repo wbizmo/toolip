@@ -25,6 +25,7 @@ import { registerVulnerabilitiesCommand } from './commands/vulnerabilities.js';
 import { registerAstScanCommand } from './commands/ast-scan.js';
 import { registerReachabilityCommand } from './commands/reachability.js';
 import { registerInstallScriptsCommand } from './commands/install-scripts.js';
+import { registerSbomCommand } from './commands/sbom.js';
 
 const program = new Command();
 
@@ -70,6 +71,8 @@ registerAstScanCommand(program);
 registerReachabilityCommand(program);
 
 registerInstallScriptsCommand(program);
+
+registerSbomCommand(program);
 
 await program.parseAsync(process.argv);
 } catch (error) {
