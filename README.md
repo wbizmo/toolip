@@ -104,6 +104,7 @@ toolip learn dependencies
 | `toolip self-test` | Run internal diagnostics |
 | `toolip profile` | Detect project technologies and structure |
 | `toolip scan` | Analyze dependency and project risk |
+| `toolip vulnerabilities` | Match resolved npm dependencies against OSV.dev |
 | `toolip doctor` | Run security hygiene checks |
 | `toolip score` | Calculate a project security score |
 | `toolip inspect <package>` | Inspect npm package metadata and risk signals |
@@ -292,3 +293,7 @@ GitHub: https://github.com/wbizmo
 ## License
 
 Toolip is available under the MIT License.
+
+## Vulnerability Intelligence
+
+Toolip matches resolved npm dependencies against OSV.dev. See [docs/VULNERABILITY-INTELLIGENCE.md](docs/VULNERABILITY-INTELLIGENCE.md).
