@@ -65,9 +65,8 @@ exec(userInput);
       expect(
         result.findings.some(
           (finding) =>
-            finding.id.includes(
-              'TOOLIP-DANGEROUS-CHILD-PROCESS-EXEC'
-            )
+            finding.category === 'dangerous-code' &&
+            finding.title.includes('child_process.exec')
         )
       ).toBe(true);
     } finally {
