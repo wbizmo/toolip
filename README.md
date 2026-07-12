@@ -108,6 +108,7 @@ toolip learn dependencies
 | `toolip ast-scan` | Analyze JavaScript and TypeScript through the TypeScript Compiler API |
 | `toolip reachability` | Show package usage observed in source imports |
 | `toolip install-scripts` | Inspect npm lifecycle scripts for suspicious behavior indicators |
+| `toolip sbom` | Generate CycloneDX 1.5 or SPDX 2.3 JSON |
 | `toolip doctor` | Run security hygiene checks |
 | `toolip score` | Calculate a project security score |
 | `toolip inspect <package>` | Inspect npm package metadata and risk signals |
@@ -154,6 +155,12 @@ See [docs/REACHABILITY.md](docs/REACHABILITY.md).
 Toolip inspects npm lifecycle scripts without executing them. It reports network access, shell execution, filesystem changes, obfuscation, and environment-access indicators with explicit confidence.
 
 See [docs/INSTALL-SCRIPT-ANALYSIS.md](docs/INSTALL-SCRIPT-ANALYSIS.md).
+
+### Software Bill of Materials
+
+Toolip generates CycloneDX 1.5 and SPDX 2.3 JSON documents from resolved npm dependencies.
+
+See [docs/SBOM.md](docs/SBOM.md).
 
 ### Security Auditing
 
