@@ -21,6 +21,7 @@ import { registerVaultCommand } from './commands/vault.js';
 
 import { TOOLIP_AUTHOR, TOOLIP_VERSION } from './config/version.js';
 import { handleError } from './utils/error-handler.js';
+import { registerVulnerabilitiesCommand } from './commands/vulnerabilities.js';
 
 const program = new Command();
 
@@ -59,7 +60,9 @@ ${chalk.dim(
 program.exitOverride();
 
 try {
-  await program.parseAsync(process.argv);
+  registerVulnerabilitiesCommand(program);
+
+await program.parseAsync(process.argv);
 } catch (error) {
   handleError(error);
 }
