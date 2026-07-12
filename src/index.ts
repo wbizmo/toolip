@@ -24,6 +24,7 @@ import { handleError } from './utils/error-handler.js';
 import { registerVulnerabilitiesCommand } from './commands/vulnerabilities.js';
 import { registerAstScanCommand } from './commands/ast-scan.js';
 import { registerReachabilityCommand } from './commands/reachability.js';
+import { registerInstallScriptsCommand } from './commands/install-scripts.js';
 
 const program = new Command();
 
@@ -67,6 +68,8 @@ try {
 registerAstScanCommand(program);
 
 registerReachabilityCommand(program);
+
+registerInstallScriptsCommand(program);
 
 await program.parseAsync(process.argv);
 } catch (error) {
