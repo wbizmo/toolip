@@ -113,6 +113,7 @@ toolip learn dependencies
 | `toolip config` | Initialize and validate Toolip policy configuration |
 | `toolip package-health <package> <version>` | Inspect package metadata and provenance through deps.dev |
 | `toolip dependency-confusion` | Check internal-looking package names against public npm |
+| `toolip git-history` | Scan local Git history for deleted or historical secrets |
 | `toolip doctor` | Run security hygiene checks |
 | `toolip score` | Calculate a project security score |
 | `toolip inspect <package>` | Inspect npm package metadata and risk signals |

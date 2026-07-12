@@ -8,6 +8,11 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 
 ### Added
 
+- Local security history with score and finding trends.
+- Versioned `toolip.config.json` policy controls.
+- deps.dev package metadata, dependency graph, provenance, and attestation intelligence.
+- Dependency confusion detection for internal-looking npm dependencies.
+- Redacted full Git-history secret scanning.
 - TypeScript Compiler API security analysis for JavaScript and TypeScript source files.
 - `toolip ast-scan` with structured JSON output and configurable failure thresholds.
 - AST resolution for named, aliased, namespace, and CommonJS child-process imports.
