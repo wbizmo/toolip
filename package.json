@@ -23,7 +23,8 @@
     "verify:package": "node scripts/verify-package.mjs",
     "verify": "npm run typecheck && npm test && npm run clean && npm run build && npm run verify:package",
     "prepack": "npm run verify",
-    "pack:check": "npm pack --dry-run"
+    "pack:check": "npm pack --dry-run",
+    "release:check": "bash scripts/release-check.sh"
   },
   "keywords": [
     "typescript",
