@@ -8,6 +8,15 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 
 ### Added
 
+- Dockerfile and container build scanning.
+- npm and pnpm workspace discovery.
+- Remote public GitHub repository auditing through `gh`.
+- Tested dependency-upgrade pull requests.
+- Security-relevant Git diff summaries.
+- Static HTML security reports.
+- Real-time local watch mode.
+- Deterministic security announcement generation.
+- Read-only Toolip MCP server.
 - Local security history with score and finding trends.
 - Versioned `toolip.config.json` policy controls.
 - deps.dev package metadata, dependency graph, provenance, and attestation intelligence.
