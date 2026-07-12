@@ -29,6 +29,7 @@ import { registerSbomCommand } from './commands/sbom.js';
 import { registerHistoryCommand } from './commands/history.js';
 import { registerConfigCommand } from './commands/config.js';
 import { registerPackageHealthCommand } from './commands/package-health.js';
+import { registerDependencyConfusionCommand } from './commands/dependency-confusion.js';
 
 const program = new Command();
 
@@ -82,6 +83,8 @@ registerHistoryCommand(program);
 registerConfigCommand(program);
 
 registerPackageHealthCommand(program);
+
+registerDependencyConfusionCommand(program);
 
 await program.parseAsync(process.argv);
 } catch (error) {
