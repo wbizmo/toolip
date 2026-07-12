@@ -38,6 +38,7 @@ import { registerUpgradePrCommand } from './commands/upgrade-pr.js';
 import { registerDiffCommand } from './commands/diff.js';
 import { registerPublishCommand } from './commands/publish.js';
 import { registerWatchCommand } from './commands/watch.js';
+import { registerAnnounceCommand } from './commands/announce.js';
 
 const program = new Command();
 
@@ -109,6 +110,8 @@ registerDiffCommand(program);
 registerPublishCommand(program);
 
 registerWatchCommand(program);
+
+registerAnnounceCommand(program);
 
 await program.parseAsync(process.argv);
 } catch (error) {
