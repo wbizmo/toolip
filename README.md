@@ -127,6 +127,7 @@ toolip learn dependencies
 | `toolip hook install` | Install the Toolip pre-commit hook |
 | `toolip learn [topic]` | Read secure-development lessons |
 | `toolip docker-scan` | Scan Dockerfiles for risky container patterns |
+| `toolip monorepo` | Discover npm and pnpm workspace packages |
 
 Use command-specific help for current options:
 
