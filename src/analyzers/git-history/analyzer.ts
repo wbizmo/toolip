@@ -19,6 +19,11 @@ type CommitSection = {
   body: string;
 };
 
+type AddedLine = {
+  file?: string;
+  content: string;
+};
+
 function redact(value: string): string {
   if (value.length <= 12) {
     return '[redacted]';
@@ -35,6 +40,19 @@ function fingerprint(value: string): string {
   return createHash('sha256')
     .update(value)
     .digest('hex');
+}
+
+function isTestFile(file?: string): boolean {
+  if (!file) {
+    return false;
+  }
+
+  return (
+    file.startsWith('tests/') ||
+    file.includes('/tests/') ||
+    file.includes('/__tests__/') ||
+    /\.(test|spec)\.[cm]?[jt]sx?$/.test(file)
+  );
 }
 
 async function gitLog(
@@ -115,49 +133,68 @@ async function gitLog(
 }
 
 function sections(output: string): CommitSection[] {
-  const rawSections = output
+  return output
     .split('__TOOLIP_COMMIT__')
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((section) => {
+      const newline = section.indexOf('\n');
 
-  return rawSections.map((section) => {
-    const newline = section.indexOf('\n');
-    const header =
-      newline === -1
-        ? section
-        : section.slice(0, newline);
-    const body =
-      newline === -1
-        ? ''
-        : section.slice(newline + 1);
+      const header =
+        newline === -1
+          ? section
+          : section.slice(0, newline);
 
-    const [commit, author, date] =
-      header.split('\t');
+      const body =
+        newline === -1
+          ? ''
+          : section.slice(newline + 1);
 
-    return {
-      commit: commit ?? 'unknown',
-      author: author ?? 'unknown',
-      date: date ?? 'unknown',
-      body
-    };
-  });
+      const [commit, author, date] =
+        header.split('\t');
+
+      return {
+        commit: commit ?? 'unknown',
+        author: author ?? 'unknown',
+        date: date ?? 'unknown',
+        body
+      };
+    });
 }
 
-function addedLines(body: string): string[] {
-  return body
-    .split('\n')
-    .filter(
-      (line) =>
-        line.startsWith('+') &&
-        !line.startsWith('+++')
-    )
-    .map((line) => line.slice(1));
+function addedLines(body: string): AddedLine[] {
+  const output: AddedLine[] = [];
+  let currentFile: string | undefined;
+
+  for (const line of body.split('\n')) {
+    if (line.startsWith('+++ b/')) {
+      currentFile = line.slice('+++ b/'.length);
+      continue;
+    }
+
+    if (line.startsWith('+++ /dev/null')) {
+      currentFile = undefined;
+      continue;
+    }
+
+    if (
+      line.startsWith('+') &&
+      !line.startsWith('+++')
+    ) {
+      output.push({
+        file: currentFile,
+        content: line.slice(1)
+      });
+    }
+  }
+
+  return output;
 }
 
 export class GitHistorySecretAnalyzer
   implements Analyzer
 {
   readonly id = 'git-history-secrets';
-  readonly version = '1.0.0';
+  readonly version = '1.0.1';
 
   constructor(
     private readonly maxCommits = 1000
@@ -167,6 +204,7 @@ export class GitHistorySecretAnalyzer
     context: AnalyzerContext
   ): Promise<AnalyzerResult> {
     const startedAt = performance.now();
+
     const output = await gitLog(
       context.root,
       this.maxCommits,
@@ -178,61 +216,78 @@ export class GitHistorySecretAnalyzer
     const commitSections = sections(output);
 
     for (const section of commitSections) {
-      const content = addedLines(
-        section.body
-      ).join('\n');
-
-      for (
-        const pattern of historicalSecretPatterns
-      ) {
-        pattern.regex.lastIndex = 0;
-
+      for (const line of addedLines(section.body)) {
         for (
-          const match of content.matchAll(
-            pattern.regex
-          )
+          const pattern of historicalSecretPatterns
         ) {
-          const value = match[0];
-          const secretFingerprint =
-            fingerprint(value);
+          pattern.regex.lastIndex = 0;
 
-          const key =
-            `${pattern.id}:${section.commit}:` +
-            secretFingerprint;
+          for (
+            const match of line.content.matchAll(
+              pattern.regex
+            )
+          ) {
+            const value = match[0];
+            const secretFingerprint =
+              fingerprint(value);
 
-          if (seen.has(key)) {
-            continue;
-          }
+            const key =
+              `${pattern.id}:${section.commit}:` +
+              `${line.file ?? 'unknown'}:` +
+              secretFingerprint;
 
-          seen.add(key);
-
-          findings.push({
-            id: key,
-            ruleId: pattern.id,
-            title: pattern.title,
-            category: 'git-history-secret',
-            severity: pattern.severity,
-            confidence: 'high',
-            message:
-              `A secret-like value was introduced in commit ${section.commit}.`,
-            source: 'git-history',
-            evidence: [
-              {
-                summary: redact(value),
-                fingerprint:
-                  secretFingerprint
-              }
-            ],
-            remediation: {
-              summary:
-                'Revoke or rotate the credential immediately, then remove it from repository history using an approved history-rewrite process.'
-            },
-            metadata: {
-              commit: section.commit,
-              author: section.author,
-              date: section.date
+            if (seen.has(key)) {
+              continue;
             }
-          });
+
+            seen.add(key);
+
+            const testFixture =
+              isTestFile(line.file);
+
+            findings.push({
+              id: key,
+              ruleId: pattern.id,
+              title: testFixture
+                ? `Potential historical test fixture: ${pattern.title}`
+                : pattern.title,
+              category: 'git-history-secret',
+              severity: testFixture
+                ? 'low'
+                : pattern.severity,
+              confidence: testFixture
+                ? 'medium'
+                : 'high',
+              message: testFixture
+                ? `A secret-like value was introduced in test file ${line.file ?? 'unknown'} in commit ${section.commit}. Confirm that it is synthetic fixture data.`
+                : `A secret-like value was introduced in commit ${section.commit}.`,
+              source: 'git-history',
+              location: line.file
+                ? {
+                    file: line.file
+                  }
+                : undefined,
+              evidence: [
+                {
+                  summary: redact(value),
+                  fingerprint:
+                    secretFingerprint
+                }
+              ],
+              remediation: {
+                summary: testFixture
+                  ? 'Confirm that the value is synthetic test data. Replace realistic credential fixtures with clearly fake placeholders where possible.'
+                  : 'Revoke or rotate the credential immediately, then remove it from repository history using an approved history-rewrite process.'
+              },
+              metadata: {
+                commit: section.commit,
+                author: section.author,
+                date: section.date,
+                file: line.file,
+                testFixture
+              }
+            });
+          }
         }
       }
     }
@@ -247,6 +302,10 @@ export class GitHistorySecretAnalyzer
         commitsScanned:
           commitSections.length,
         findings: findings.length,
+        testFixtures: findings.filter(
+          (finding) =>
+            finding.metadata?.testFixture === true
+        ).length,
         maxCommits:
           this.maxCommits
       }
