@@ -21,10 +21,11 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "verify:package": "node scripts/verify-package.mjs",
-    "verify": "npm run typecheck && npm test && npm run clean && npm run build && npm run verify:package",
+    "verify": "npm run verify:changelog && npm run typecheck && npm test && npm run clean && npm run build && npm run verify:package",
     "prepack": "npm run verify",
     "pack:check": "npm pack --dry-run",
-    "release:check": "bash scripts/release-check.sh"
+    "release:check": "bash scripts/release-check.sh",
+    "verify:changelog": "node scripts/verify-changelog.mjs"
   },
   "keywords": [
     "typescript",
