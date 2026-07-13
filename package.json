@@ -1,6 +1,6 @@
 {
   "name": "toolip",
-  "version": "1.0.7",
+  "version": "2.0.0",
   "description": "A TypeScript-powered developer security companion CLI for supply chain security, dependency intelligence, secret detection, security auditing, encrypted local secrets management, Git security checks, and secure development education.",
   "type": "module",
   "bin": {

@@ -1,3 +1,4 @@
+import { TOOLIP_VERSION } from '../config/version.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -8,7 +9,7 @@ import { securityDiff } from '../core/diff/security-diff.js';
 export async function startMcpServer(): Promise<void> {
   const server = new McpServer({
     name: 'toolip',
-    version: '2.0.0-development'
+    version: TOOLIP_VERSION
   });
 
   server.registerTool(

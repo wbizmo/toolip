@@ -6,9 +6,9 @@ Toolip helps developers inspect what enters their applications, identify risky c
 
 ## Status
 
-The latest stable release is Toolip v1.0.7.
+The latest stable release is Toolip v2.0.0.
 
-Toolip v2.0.0 is under active development on the `v2-development` branch. The v2 work focuses on real vulnerability intelligence, AST-based analysis, stronger release engineering, historical tracking, Git security, hardened local secrets management, container analysis, SBOM generation, monorepo support, GitHub integrations, terminal workflows, and an MCP server.
+Toolip v2.0.0 is the current stable release. It combines local vulnerability intelligence, AST-based security analysis, supply-chain auditing, Git security, container checks, SBOM generation, configurable policy, shareable reports, GitHub workflows, and a read-only MCP server.
 
 ## Why Toolip Exists
 
@@ -206,32 +206,31 @@ This structure allows CLI commands, future watch mode, HTML reports, GitHub auto
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the architectural model and [docs/ENGINEERING.md](docs/ENGINEERING.md) for development standards.
 
-## Toolip v2 Scope
+## Toolip v2 Capabilities
 
-Toolip v2.0.0 is planned to add:
+Toolip v2.0.0 includes:
 
 - OSV-backed CVE and vulnerability matching
 - AST-based JavaScript and TypeScript security analysis
-- dependency reachability evidence
-- package lifecycle-script inspection
+- package reachability evidence
+- npm lifecycle-script inspection
 - CycloneDX and SPDX SBOM generation
 - historical security trends
 - project policy and severity configuration
-- deps.dev package health intelligence
-- dependency confusion detection
+- deps.dev package intelligence
+- dependency-confusion detection
 - full Git-history secret scanning
 - Dockerfile and container configuration analysis
-- monorepo-aware scanning
+- monorepo-aware discovery
 - remote public repository audits
-- safe dependency-upgrade pull requests
+- tested dependency-upgrade pull requests
 - security diffs between commits and branches
-- static HTML report publishing
+- static HTML report generation
 - real-time terminal watch mode
-- local release-summary generation
-- an MCP server for approved Toolip operations
-- hardened Toolip Vault key derivation and storage controls
+- deterministic release-summary generation
+- a read-only MCP server
 
-Remote repository audits, pull-request creation, and report publishing remain opt-in. They use the user's own GitHub authorization and are not required for local Toolip features.
+Remote repository audits and pull-request creation remain opt-in and use the user's own GitHub authorization.
 
 ## Configuration
 
