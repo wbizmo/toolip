@@ -1,0 +1,9 @@
+import { readFile } from 'node:fs/promises';
+import { describe, expect, it } from 'vitest';
+
+describe('upgrade-pr command', () => {
+  it('is registered', async () => {
+    const source = await readFile('src/index.ts', 'utf8');
+    expect(source).toContain('registerUpgradePrCommand(program);');
+  });
+});

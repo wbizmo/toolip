@@ -21,6 +21,25 @@ import { registerVaultCommand } from './commands/vault.js';
 
 import { TOOLIP_AUTHOR, TOOLIP_VERSION } from './config/version.js';
 import { handleError } from './utils/error-handler.js';
+import { registerVulnerabilitiesCommand } from './commands/vulnerabilities.js';
+import { registerAstScanCommand } from './commands/ast-scan.js';
+import { registerReachabilityCommand } from './commands/reachability.js';
+import { registerInstallScriptsCommand } from './commands/install-scripts.js';
+import { registerSbomCommand } from './commands/sbom.js';
+import { registerHistoryCommand } from './commands/history.js';
+import { registerConfigCommand } from './commands/config.js';
+import { registerPackageHealthCommand } from './commands/package-health.js';
+import { registerDependencyConfusionCommand } from './commands/dependency-confusion.js';
+import { registerGitHistoryCommand } from './commands/git-history.js';
+import { registerDockerScanCommand } from './commands/docker-scan.js';
+import { registerMonorepoCommand } from './commands/monorepo.js';
+import { registerAuditRepoCommand } from './commands/audit-repo.js';
+import { registerUpgradePrCommand } from './commands/upgrade-pr.js';
+import { registerDiffCommand } from './commands/diff.js';
+import { registerPublishCommand } from './commands/publish.js';
+import { registerWatchCommand } from './commands/watch.js';
+import { registerAnnounceCommand } from './commands/announce.js';
+import { registerMcpCommand } from './commands/mcp.js';
 
 const program = new Command();
 
@@ -59,7 +78,45 @@ ${chalk.dim(
 program.exitOverride();
 
 try {
-  await program.parseAsync(process.argv);
+  registerVulnerabilitiesCommand(program);
+
+registerAstScanCommand(program);
+
+registerReachabilityCommand(program);
+
+registerInstallScriptsCommand(program);
+
+registerSbomCommand(program);
+
+registerHistoryCommand(program);
+
+registerConfigCommand(program);
+
+registerPackageHealthCommand(program);
+
+registerDependencyConfusionCommand(program);
+
+registerGitHistoryCommand(program);
+
+registerDockerScanCommand(program);
+
+registerMonorepoCommand(program);
+
+registerAuditRepoCommand(program);
+
+registerUpgradePrCommand(program);
+
+registerDiffCommand(program);
+
+registerPublishCommand(program);
+
+registerWatchCommand(program);
+
+registerAnnounceCommand(program);
+
+registerMcpCommand(program);
+
+await program.parseAsync(process.argv);
 } catch (error) {
   handleError(error);
 }

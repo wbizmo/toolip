@@ -1,9 +1,9 @@
 import { readFile } from 'node:fs/promises';
+import { analyzeAstSource } from '../analyzers/ast/source-analysis.js';
 import { createScannerContext } from './scanner-context.js';
 import type { ToolipFinding } from './report.js';
 import {
   configSecurityPatterns,
-  dangerousCodePatterns,
   secretPatterns,
   securityHeaderNames,
   type SecurityPattern
@@ -52,29 +52,52 @@ export async function runSecurityDoctor(
   const findings: ToolipFinding[] = [];
 
   for (const file of context.files) {
-    if (!shouldScanSecrets(file.relativePath, file.extension)) {
+    if (
+      !shouldScanSecrets(
+        file.relativePath,
+        file.extension
+      )
+    ) {
       continue;
     }
 
     let content = '';
 
     try {
-      content = await readFile(file.absolutePath, 'utf8');
+      content = await readFile(
+        file.absolutePath,
+        'utf8'
+      );
     } catch {
       continue;
     }
 
     findings.push(
-      ...scanContent(file.relativePath, content, secretPatterns)
+      ...scanContent(
+        file.relativePath,
+        content,
+        secretPatterns
+      )
     );
 
     if (codeExtensions.has(file.extension)) {
       findings.push(
-        ...scanContent(
+        ...analyzeAstSource(
           file.relativePath,
-          content,
-          dangerousCodePatterns
-        )
+          content
+        ).map((finding) => ({
+          id: finding.id,
+          title: finding.title,
+          severity: finding.severity,
+          category: finding.category,
+          message: finding.message,
+          recommendation:
+            finding.remediation?.summary ??
+            'Review the resolved AST finding.',
+          file: finding.location?.file,
+          evidence:
+            finding.evidence?.[0]?.summary
+        }))
       );
 
       findings.push(
@@ -89,7 +112,9 @@ export async function runSecurityDoctor(
 
   findings.push(
     ...detectMissingSecurityHeaders(
-      context.files.map((file) => file.relativePath)
+      context.files.map(
+        (file) => file.relativePath
+      )
     )
   );
 
@@ -98,16 +123,20 @@ export async function runSecurityDoctor(
     summary: {
       filesScanned: context.files.length,
       secrets: findings.filter(
-        (finding) => finding.category === 'secrets'
+        (finding) =>
+          finding.category === 'secrets'
       ).length,
       dangerousCode: findings.filter(
-        (finding) => finding.category === 'dangerous-code'
+        (finding) =>
+          finding.category === 'dangerous-code'
       ).length,
       configuration: findings.filter(
-        (finding) => finding.category === 'configuration'
+        (finding) =>
+          finding.category === 'configuration'
       ).length,
       headers: findings.filter(
-        (finding) => finding.category === 'security-headers'
+        (finding) =>
+          finding.category === 'security-headers'
       ).length
     }
   };
@@ -147,9 +176,15 @@ function scanContent(
         .toUpperCase()
         .replaceAll(/[^A-Z0-9]/g, '-')}`,
       title: formatTitle(pattern, relativePath),
-      severity: resolveSeverity(pattern, relativePath),
+      severity: resolveSeverity(
+        pattern,
+        relativePath
+      ),
       category: pattern.category,
-      message: formatMessage(pattern, relativePath),
+      message: formatMessage(
+        pattern,
+        relativePath
+      ),
       recommendation: pattern.recommendation,
       file: relativePath,
       evidence: redactEvidence(match[0])
@@ -172,7 +207,10 @@ function resolveSeverity(
   pattern: SecurityPattern,
   relativePath: string
 ): ToolipFinding['severity'] {
-  if (pattern.category === 'secrets' && isTestFile(relativePath)) {
+  if (
+    pattern.category === 'secrets' &&
+    isTestFile(relativePath)
+  ) {
     return 'low';
   }
 
@@ -183,7 +221,10 @@ function formatTitle(
   pattern: SecurityPattern,
   relativePath: string
 ): string {
-  if (pattern.category === 'secrets' && isTestFile(relativePath)) {
+  if (
+    pattern.category === 'secrets' &&
+    isTestFile(relativePath)
+  ) {
     return `Potential test fixture: ${pattern.title}`;
   }
 
@@ -194,7 +235,10 @@ function formatMessage(
   pattern: SecurityPattern,
   relativePath: string
 ): string {
-  if (pattern.category === 'secrets' && isTestFile(relativePath)) {
+  if (
+    pattern.category === 'secrets' &&
+    isTestFile(relativePath)
+  ) {
     return `${pattern.message} This match is inside a test file, so Toolip reduced its severity. Confirm that it is synthetic fixture data.`;
   }
 

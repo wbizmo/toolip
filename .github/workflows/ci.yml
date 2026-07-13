@@ -4,37 +4,60 @@ on:
   push:
     branches:
       - main
+      - v2-development
   pull_request:
+    branches:
+      - main
+      - v2-development
+
+permissions:
+  contents: read
 
 jobs:
-  test:
-    name: Typecheck, Test, and Build
+  verify:
+    name: Node ${{ matrix.node }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+        node:
+          - 20
+          - 22
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify source and build
+        run: npm run verify
+
+  packed-artifact:
+    name: Verify packed npm artifact
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Use Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Test
-        run: npm test
-
-      - name: Build
-        run: npm run build
-
-      - name: Verify CLI
-        run: |
-          node dist/src/index.js --help
-          node dist/src/index.js self-test
-          node dist/src/index.js profile --json
+      - name: Verify release candidate
+        run: npm run release:check
