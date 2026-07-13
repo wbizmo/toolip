@@ -6,9 +6,9 @@ Toolip helps developers inspect what enters their applications, identify risky c
 
 ## Status
 
-The latest stable release is Toolip v2.0.0.
+The latest stable release is **Toolip v2.1.1**.
 
-Toolip v2.0.0 is the current stable release. It combines local vulnerability intelligence, AST-based security analysis, supply-chain auditing, Git security, container checks, SBOM generation, configurable policy, shareable reports, GitHub workflows, and a read-only MCP server.
+Toolip v2.1.1 combines local vulnerability intelligence, AST-based security analysis, supply-chain auditing, Git security, container checks, SBOM generation, configurable policy, shareable reports, GitHub workflows, unified dependency-health scoring, and a read-only MCP server.
 
 ## Why Toolip Exists
 
@@ -20,16 +20,17 @@ Toolip does not aim to replace enterprise security platforms. It focuses on usef
 
 ## Design Principles
 
-- Local-first and privacy-conscious
-- Free and useful without an account
-- Deterministic analysis where possible
-- Explicit confidence for heuristic findings
-- Stable, machine-readable output
-- Actionable remediation
-- Bounded resource usage
-- Opt-in remote integrations
-- Verified npm release artifacts
-- One shared analysis engine across every interface
+* Local-first and privacy-conscious
+* Free and useful without an account
+* Deterministic analysis where possible
+* Explicit confidence for heuristic findings
+* Stable, machine-readable output
+* Actionable remediation
+* Bounded resource usage
+* Opt-in remote integrations
+* Verified npm release artifacts
+* One shared analysis engine across every interface
+* One canonical dependency-health calculation across commands
 
 ## Installation
 
@@ -37,6 +38,12 @@ Install the latest stable release globally:
 
 ```bash
 npm install -g toolip
+```
+
+Install a specific version:
+
+```bash
+npm install -g toolip@2.1.1
 ```
 
 Verify the installation:
@@ -67,6 +74,7 @@ Audit Git safety:
 
 ```bash
 toolip git-audit
+toolip git-history
 toolip pre-commit
 ```
 
@@ -78,6 +86,13 @@ toolip compare axios got
 toolip licenses
 toolip tree
 toolip alternatives request
+```
+
+Generate software bills of materials:
+
+```bash
+toolip sbom --format cyclonedx
+toolip sbom --format spdx
 ```
 
 Use the local encrypted vault:
@@ -99,56 +114,85 @@ toolip learn dependencies
 
 ## Current Commands
 
-| Command | Purpose |
-| --- | --- |
-| `toolip self-test` | Run internal diagnostics |
-| `toolip profile` | Detect project technologies and structure |
-| `toolip scan` | Analyze dependency and project risk |
-| `toolip vulnerabilities` | Match resolved npm dependencies against OSV.dev |
-| `toolip ast-scan` | Analyze JavaScript and TypeScript through the TypeScript Compiler API |
-| `toolip reachability` | Show package usage observed in source imports |
-| `toolip install-scripts` | Inspect npm lifecycle scripts for suspicious behavior indicators |
-| `toolip sbom` | Generate CycloneDX 1.5 or SPDX 2.3 JSON |
-| `toolip history` | Inspect local security history and score trends |
-| `toolip config` | Initialize and validate Toolip policy configuration |
-| `toolip package-health <package> <version>` | Inspect package metadata and provenance through deps.dev |
-| `toolip dependency-confusion` | Check internal-looking package names against public npm |
-| `toolip git-history` | Scan local Git history for deleted or historical secrets |
-| `toolip doctor` | Run security hygiene checks |
-| `toolip score` | Calculate a project security score |
-| `toolip inspect <package>` | Inspect npm package metadata and risk signals |
-| `toolip compare <packages...>` | Compare package health and maintenance signals |
-| `toolip licenses` | Analyze dependency licenses |
-| `toolip alternatives <package>` | Suggest maintained package alternatives |
-| `toolip tree` | Display dependency relationships |
-| `toolip vault` | Manage encrypted local secrets |
-| `toolip git-audit` | Audit repository and ignore-file safety |
-| `toolip pre-commit` | Run blocking security checks before commit |
-| `toolip hook install` | Install the Toolip pre-commit hook |
-| `toolip learn [topic]` | Read secure-development lessons |
-| `toolip docker-scan` | Scan Dockerfiles for risky container patterns |
-| `toolip monorepo` | Discover npm and pnpm workspace packages |
-| `toolip audit-repo <url>` | Audit a public GitHub repository through `gh` |
-| `toolip upgrade-pr <package> <version>` | Create a tested dependency-upgrade PR |
-| `toolip diff <base> [head]` | Summarize security-relevant Git changes |
-| `toolip publish` | Generate a static HTML security report |
-| `toolip watch` | Continuously rerun security checks as files change |
-| `toolip announce` | Generate a deterministic security update summary |
-| `toolip mcp` | Start the read-only Toolip MCP server over stdio |
+| Command                                     | Purpose                                                               |
+| ------------------------------------------- | --------------------------------------------------------------------- |
+| `toolip self-test`                          | Run internal diagnostics                                              |
+| `toolip profile`                            | Detect project technologies and structure                             |
+| `toolip scan`                               | Analyze dependency and project risk                                   |
+| `toolip vulnerabilities`                    | Match resolved npm dependencies against OSV.dev                       |
+| `toolip ast-scan`                           | Analyze JavaScript and TypeScript through the TypeScript Compiler API |
+| `toolip reachability`                       | Show package usage observed in source imports                         |
+| `toolip install-scripts`                    | Inspect npm lifecycle scripts for suspicious behavior indicators      |
+| `toolip sbom`                               | Generate CycloneDX 1.5 or SPDX 2.3 JSON                               |
+| `toolip history`                            | Inspect local security history and score trends                       |
+| `toolip config`                             | Initialize and validate Toolip policy configuration                   |
+| `toolip package-health <package> <version>` | Inspect package metadata and provenance through deps.dev              |
+| `toolip dependency-confusion`               | Check internal-looking package names against public npm               |
+| `toolip git-history`                        | Scan local Git history for deleted or historical secrets              |
+| `toolip doctor`                             | Run security hygiene checks                                           |
+| `toolip score`                              | Calculate a project security score                                    |
+| `toolip inspect <package>`                  | Inspect npm package metadata and risk signals                         |
+| `toolip compare <packages...>`              | Compare package health and maintenance signals                        |
+| `toolip licenses`                           | Analyze dependency licenses                                           |
+| `toolip alternatives <package>`             | Suggest maintained package alternatives                               |
+| `toolip tree`                               | Display dependency relationships                                      |
+| `toolip vault`                              | Manage encrypted local secrets                                        |
+| `toolip git-audit`                          | Audit repository and ignore-file safety                               |
+| `toolip pre-commit`                         | Run blocking security checks before commit                            |
+| `toolip hook install`                       | Install the Toolip pre-commit hook                                    |
+| `toolip learn [topic]`                      | Read secure-development lessons                                       |
+| `toolip docker-scan`                        | Scan Dockerfiles for risky container patterns                         |
+| `toolip monorepo`                           | Discover npm and pnpm workspace packages                              |
+| `toolip audit-repo <url>`                   | Audit a public GitHub repository through `gh`                         |
+| `toolip upgrade-pr <package> <version>`     | Create a tested dependency-upgrade pull request                       |
+| `toolip diff <base> [head]`                 | Summarize security-relevant Git changes                               |
+| `toolip publish`                            | Generate a static HTML security report                                |
+| `toolip watch`                              | Continuously rerun security checks as files change                    |
+| `toolip announce`                           | Generate a deterministic security update summary                      |
+| `toolip mcp`                                | Start the read-only Toolip MCP server over stdio                      |
 
 Use command-specific help for current options:
 
 ```bash
 toolip doctor --help
 toolip scan --help
+toolip score --help
 toolip vault --help
 ```
 
 ## Core Capabilities
 
+### Vulnerability Intelligence
+
+Toolip matches resolved npm dependencies against OSV.dev and reports known disclosed vulnerabilities using exact package versions.
+
+It separates disclosed vulnerabilities from general package-maintenance signals so security risk and dependency freshness are not treated as the same thing.
+
+See [docs/VULNERABILITY-INTELLIGENCE.md](docs/VULNERABILITY-INTELLIGENCE.md).
+
 ### Dependency Intelligence
 
 Toolip reads project manifests and lockfiles, identifies outdated or deprecated dependencies, inspects package metadata, compares alternatives, reports license distribution, and visualizes dependency relationships.
+
+Toolip also integrates with deps.dev for package metadata, dependency graph information, license data, provenance, attestations, and advisory intelligence.
+
+### Risk-Aware Dependency Scoring
+
+Toolip v2.1 introduced a risk-aware dependency-health model.
+
+The scoring engine distinguishes between:
+
+* disclosed vulnerabilities
+* deprecated packages
+* missing maintainer signals
+* stale publishing activity
+* major version gaps
+* minor version gaps
+* patch version gaps
+
+Vulnerability penalties receive the greatest weight. Maintenance and freshness penalties are independently capped, preventing outdated packages alone from collapsing dependency health to zero.
+
+Toolip v2.1.1 also ensures that `toolip scan` and `toolip score` consume the same canonical dependency-health result.
 
 ### AST Security Analysis
 
@@ -182,7 +226,27 @@ Toolip checks source and configuration files for secret exposure, unsafe executi
 
 ### Git Safety
 
-Toolip audits sensitive file patterns, ignore rules, committed artifacts, and pre-commit risks. Git hooks can run Toolip checks before changes enter repository history.
+Toolip audits sensitive file patterns, ignore rules, committed artifacts, and pre-commit risks.
+
+Git-history scanning can detect credentials that were committed and later deleted. Historical test fixtures are classified separately from genuine application credentials, and evidence remains redacted.
+
+### Docker and Container Security
+
+Toolip scans Dockerfiles for risky patterns including:
+
+* root execution
+* secret-like `ARG` or `ENV` declarations
+* unpinned base images
+* remote `ADD` instructions
+* package-install cleanup issues
+
+See [docs/DOCKER-SCANNING.md](docs/DOCKER-SCANNING.md).
+
+### Monorepo Support
+
+Toolip discovers npm and pnpm workspaces and identifies package boundaries for per-workspace analysis and reporting.
+
+See [docs/MONOREPOS.md](docs/MONOREPOS.md).
 
 ### Local Secrets Management
 
@@ -192,66 +256,149 @@ Toolip Vault provides password-protected local encryption for development secret
 
 Learning mode explains security concepts, common mistakes, practical risks, secure alternatives, and recommended development practices.
 
-### Reports
+### Reports and Automation
 
-Commands can produce terminal output and machine-readable reports for automation. Toolip v2 introduces a versioned report schema shared across scanning, history, diffs, publishing, watch mode, and MCP tools.
+Toolip can generate:
+
+* terminal reports
+* structured JSON output
+* historical security records
+* CycloneDX and SPDX SBOMs
+* static HTML security reports
+* Git security diffs
+* deterministic release summaries
+
+These outputs can support CI, review workflows, historical comparison, and integration with other tools.
 
 ## Architecture
 
-Toolip v2 separates interfaces, application services, analyzers, providers, contracts, reporting, and storage.
+Toolip separates interfaces, application services, analyzers, providers, contracts, reporting, and storage.
 
 Commands handle input and presentation. Application services orchestrate work. Analyzers return normalized findings. Providers isolate Git, filesystem, package registry, vulnerability database, and GitHub access. Storage implementations manage cache, policy, history, and baselines.
 
-This structure allows CLI commands, future watch mode, HTML reports, GitHub automation, and the MCP server to reuse one security engine.
+CLI commands, watch mode, HTML reports, GitHub automation, and the MCP server reuse the same security engine and shared finding contracts.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the architectural model and [docs/ENGINEERING.md](docs/ENGINEERING.md) for development standards.
 
-## Toolip v2 Capabilities
+## Toolip v2.1 Capabilities
 
-Toolip v2.0.0 includes:
+Toolip v2.1.1 includes:
 
-- OSV-backed CVE and vulnerability matching
-- AST-based JavaScript and TypeScript security analysis
-- package reachability evidence
-- npm lifecycle-script inspection
-- CycloneDX and SPDX SBOM generation
-- historical security trends
-- project policy and severity configuration
-- deps.dev package intelligence
-- dependency-confusion detection
-- full Git-history secret scanning
-- Dockerfile and container configuration analysis
-- monorepo-aware discovery
-- remote public repository audits
-- tested dependency-upgrade pull requests
-- security diffs between commits and branches
-- static HTML report generation
-- real-time terminal watch mode
-- deterministic release-summary generation
-- a read-only MCP server
+* OSV-backed CVE and vulnerability matching
+* AST-based JavaScript and TypeScript security analysis
+* package reachability evidence
+* npm lifecycle-script inspection
+* CycloneDX and SPDX SBOM generation
+* historical security trends
+* project policy and severity configuration
+* deps.dev package intelligence
+* dependency-confusion detection
+* full Git-history secret scanning
+* Dockerfile and container configuration analysis
+* monorepo-aware discovery
+* remote public repository audits
+* tested dependency-upgrade pull requests
+* security diffs between commits and branches
+* static HTML report generation
+* real-time terminal watch mode
+* deterministic release-summary generation
+* a read-only MCP server
+* risk-aware dependency-health scoring
+* unified dependency-health results across `scan` and `score`
 
 Remote repository audits and pull-request creation remain opt-in and use the user's own GitHub authorization.
 
 ## Configuration
 
-Toolip currently supports `.toolipignore` for scan exclusions.
+Toolip supports `.toolipignore` for scan exclusions and `toolip.config.json` for project policy.
 
-Toolip v2 will introduce a versioned `toolip.config.json` schema supporting path policies, rule severity overrides, test-fixture treatment, suppressions with reasons and expiry dates, provider settings, cache controls, and monorepo behavior.
+Create a configuration file:
+
+```bash
+toolip config init
+```
+
+Validate it:
+
+```bash
+toolip config validate
+```
+
+Display the resolved configuration:
+
+```bash
+toolip config show
+```
+
+The configuration schema supports:
+
+* include and exclude paths
+* rule enablement
+* severity overrides
+* path-specific rule policy
+* suppressions with reasons
+* optional suppression expiry dates
+* history retention
+* provider settings
+* OSV and deps.dev timeouts
 
 ## Output and Automation
 
-Toolip commands use non-zero exit codes for blocking failures where appropriate. Machine-readable reports are intended for CI, review workflows, historical comparison, and integration with other tools.
+Toolip commands use non-zero exit codes for blocking failures where appropriate.
 
-Toolip v2 reports include:
+Machine-readable reports are intended for CI, review workflows, historical comparison, and integration with other tools.
 
-- report schema version
-- Toolip version
-- project identity
-- summary counts
-- normalized findings
-- analyzer metadata
-- provider status
-- generation timestamp
+Toolip reports can include:
+
+* report schema version
+* Toolip version
+* project identity
+* summary counts
+* normalized findings
+* analyzer metadata
+* provider status
+* generation timestamp
+* scoring breakdowns
+* confidence levels
+* evidence fingerprints
+* remediation guidance
+
+## GitHub Integration
+
+Remote repository audits and dependency-upgrade pull requests use the authenticated GitHub CLI.
+
+Authenticate before using GitHub-connected commands:
+
+```bash
+gh auth login
+```
+
+Audit a public repository:
+
+```bash
+toolip audit-repo https://github.com/owner/repository
+```
+
+Create a tested dependency-upgrade pull request:
+
+```bash
+toolip upgrade-pr express 5.1.0 --dry-run
+toolip upgrade-pr express 5.1.0
+```
+
+## MCP Server
+
+Toolip includes a read-only MCP server over stdio.
+
+Start it with:
+
+```bash
+toolip mcp
+```
+
+The MCP server exposes supported security analysis tools without exposing arbitrary shell execution or unrestricted write operations.
+
+See [docs/MCP.md](docs/MCP.md).
 
 ## Development
 
@@ -290,7 +437,9 @@ The release check performs type checking, tests, a clean production build, packa
 
 ## Release Safety
 
-Toolip v1.0.6 exposed an important release-engineering failure: the published npm package did not contain the compiled CLI. Toolip now verifies releases from the packed artifact rather than assuming a successful local build means the package is valid.
+Toolip v1.0.6 exposed an important release-engineering failure: the published npm package did not contain the compiled CLI.
+
+Toolip now verifies releases from the packed artifact rather than assuming a successful local build means the package is valid.
 
 A release is blocked unless the tarball contains:
 
@@ -309,6 +458,8 @@ toolip self-test
 toolip --help
 ```
 
+Release verification also checks version synchronization, the CLI executable shebang, changelog validity, required package contents, and isolated installation of the exact tarball that will be published.
+
 See [RELEASING.md](RELEASING.md) for the complete release policy.
 
 ## Security
@@ -319,7 +470,9 @@ Please report suspected Toolip vulnerabilities privately according to [SECURITY.
 
 ## Contributing
 
-Contributions should include tests, clear tradeoffs, and accurate security claims. Analyzer changes require regression coverage and must use the shared finding contracts.
+Contributions should include tests, clear tradeoffs, and accurate security claims.
+
+Analyzer changes require regression coverage and must use the shared finding contracts.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -334,7 +487,3 @@ GitHub: https://github.com/wbizmo
 ## License
 
 Toolip is available under the MIT License.
-
-## Vulnerability Intelligence
-
-Toolip matches resolved npm dependencies against OSV.dev. See [docs/VULNERABILITY-INTELLIGENCE.md](docs/VULNERABILITY-INTELLIGENCE.md).
