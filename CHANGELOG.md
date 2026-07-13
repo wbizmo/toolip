@@ -6,6 +6,25 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 
 ## Unreleased
 
+## 2.1.0 - 2026-07-13
+
+### Changed
+
+- Reworked dependency-health scoring to distinguish disclosed vulnerabilities from maintenance and freshness signals.
+- Added version-aware penalties for major, minor, and patch-level dependency updates.
+- Capped outdated-dependency penalties so maintenance lag alone cannot collapse dependency health to zero.
+- Reduced patch-update penalties to a minimal fractional weight.
+- Added a dependency-health score breakdown for vulnerability, deprecation, maintenance, and freshness penalties.
+- Added structured JSON output to `toolip score`.
+
+### Fixed
+
+- Prevented projects with zero known vulnerabilities from receiving a dependency-health score of zero solely because several packages were outdated.
+- Prevented each outdated dependency from being treated like an independent medium-severity security vulnerability.
+- Added regression coverage for the exact 11-outdated-dependency failure reproduced against Toolip itself.
+
+
+
 ## 2.0.1 - 2026-07-13
 
 ### Fixed
