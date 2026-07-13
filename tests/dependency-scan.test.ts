@@ -45,6 +45,9 @@ describe('scanDependencies', () => {
       expect(result.summary.totalDependencies).toBe(4);
       expect(result.summary.deprecated).toBe(1);
       expect(result.summary.outdated).toBe(1);
+      expect(result.dependencyHealth.score).toBeGreaterThanOrEqual(0);
+      expect(result.dependencyHealth.score).toBeLessThanOrEqual(100);
+      expect(result.dependencyHealth.outdated.major).toBe(1);
       expect(result.findings.some((finding) => finding.id.includes('DEPRECATED'))).toBe(true);
       expect(result.findings.some((finding) => finding.id.includes('OUTDATED'))).toBe(true);
       expect(result.findings.some((finding) => finding.id.includes('NO-MAINTAINERS'))).toBe(true);

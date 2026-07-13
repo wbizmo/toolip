@@ -2,10 +2,15 @@ import { readDependencies } from './read-dependencies.js';
 import { analyzePackage } from './analyze-package.js';
 import type { PackageHealth } from './dependency-types.js';
 import type { ToolipFinding } from './report.js';
+import {
+  calculateDependencyHealthFromPackages,
+  type DependencyHealthBreakdown
+} from './score.js';
 
 export type DependencyScanResult = {
   packages: PackageHealth[];
   findings: ToolipFinding[];
+  dependencyHealth: DependencyHealthBreakdown;
   summary: {
     totalDependencies: number;
     outdated: number;
@@ -25,9 +30,15 @@ export async function scanDependencies(root: string): Promise<DependencyScanResu
 
   const findings = packages.flatMap(packageToFindings);
 
+  const dependencyHealth =
+    calculateDependencyHealthFromPackages(
+      packages
+    );
+
   return {
     packages,
     findings,
+    dependencyHealth,
     summary: {
       totalDependencies: packages.length,
       outdated: packages.filter((pkg) => pkg.outdated).length,

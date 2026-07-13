@@ -6,6 +6,18 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 
 ## Unreleased
 
+## 2.1.1 - 2026-07-13
+
+### Fixed
+
+- Unified `toolip scan` and `toolip score` on the same canonical dependency-health calculation.
+- Removed the remaining finding-based scoring path from the `scan` command.
+- Ensured both commands report the same dependency-health score for the same project state.
+- Centralized dependency-health calculation inside `scanDependencies()`.
+- Added regression coverage preventing the two commands from drifting onto separate scoring paths again.
+
+
+
 ## 2.1.0 - 2026-07-13
 
 ### Changed

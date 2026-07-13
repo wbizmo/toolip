@@ -6,7 +6,6 @@ import {
   scanDependencies
 } from '../core/dependency-scan.js';
 import {
-  calculateDependencyHealthFromPackages,
   calculateScore
 } from '../core/score.js';
 
@@ -38,9 +37,7 @@ export function registerScoreCommand(
           await scanDependencies(options.path);
 
         const dependencyHealth =
-          calculateDependencyHealthFromPackages(
-            dependencyScan.packages
-          );
+          dependencyScan.dependencyHealth;
 
         const score = calculateScore({
           dependencyHealth:

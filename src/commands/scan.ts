@@ -4,7 +4,7 @@ import { createScannerContext } from '../core/scanner-context.js';
 import { createReport } from '../core/report.js';
 import { writeReport } from '../core/report-writer.js';
 import { scanDependencies } from '../core/dependency-scan.js';
-import { calculateDependencyHealth, calculateScore } from '../core/score.js';
+import { calculateScore } from '../core/score.js';
 import { TOOLIP_VERSION } from '../config/version.js';
 import { printReportSummary, printScannerContext } from '../utils/output.js';
 
@@ -22,8 +22,14 @@ export function registerScanCommand(program: Command): void {
       printScannerContext(context);
 
       const dependencyScan = await scanDependencies(context.root);
-      const dependencyHealth = calculateDependencyHealth(dependencyScan.findings);
-      const score = calculateScore({ dependencyHealth });
+
+      const dependencyHealth =
+        dependencyScan.dependencyHealth;
+
+      const score = calculateScore({
+        dependencyHealth:
+          dependencyHealth.score
+      });
 
       const report = createReport({
         version: TOOLIP_VERSION,
@@ -40,7 +46,7 @@ export function registerScanCommand(program: Command): void {
       console.log(`${chalk.dim('High Risk:')} ${dependencyScan.summary.highRisk}`);
       console.log(`${chalk.dim('Medium Risk:')} ${dependencyScan.summary.mediumRisk}`);
       console.log(`${chalk.dim('Average Risk:')} ${dependencyScan.summary.averageRiskScore}`);
-      console.log(`${chalk.dim('Dependency Health:')} ${dependencyHealth}`);
+      console.log(`${chalk.dim('Dependency Health:')} ${dependencyHealth.score}`);
       console.log(`${chalk.dim('Overall Grade:')} ${score.grade}`);
 
       console.log('');
