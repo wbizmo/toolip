@@ -30,6 +30,17 @@ export function defaultVaultPath(): string {
 }
 
 export async function initVault(masterPassword: string, vaultPath = defaultVaultPath()): Promise<void> {
+  try {
+    await readFile(vaultPath, 'utf8');
+    throw new ToolipError('Vault already exists. Refusing to overwrite it.', {
+      code: 'VAULT_ALREADY_EXISTS',
+      exitCode: 1
+    });
+  } catch (error) {
+    if (error instanceof ToolipError) throw error;
+    if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
+  }
+
   await writeEncryptedVault({ secrets: [] }, masterPassword, vaultPath);
 }
 
@@ -41,15 +52,7 @@ export async function setSecret(input: {
   vaultPath?: string;
 }): Promise<void> {
   const vaultPath = input.vaultPath ?? defaultVaultPath();
-
-  let data: VaultData;
-
-  try {
-    data = await readEncryptedVault(input.masterPassword, vaultPath);
-  } catch {
-    data = { secrets: [] };
-  }
-
+  const data = await readEncryptedVault(input.masterPassword, vaultPath);
   const env = input.env ?? 'development';
   const existing = data.secrets.find((secret) => secret.key === input.key && secret.env === env);
 
@@ -166,7 +169,7 @@ async function readEncryptedVault(masterPassword: string, vaultPath: string): Pr
 }
 
 async function writeEncryptedVault(data: VaultData, masterPassword: string, vaultPath: string): Promise<void> {
-  await mkdir(path.dirname(vaultPath), { recursive: true });
+  await mkdir(path.dirname(vaultPath), { recursive: true, mode: 0o700 });
 
   const salt = crypto.randomBytes(16);
   const iv = crypto.randomBytes(12);
@@ -186,7 +189,7 @@ async function writeEncryptedVault(data: VaultData, masterPassword: string, vaul
     data: encrypted.toString('base64')
   };
 
-  await writeFile(vaultPath, `${JSON.stringify(file, null, 2)}\n`, 'utf8');
+  await writeFile(vaultPath, `${JSON.stringify(file, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
 }
 
 function deriveKey(masterPassword: string, salt: Buffer): Buffer {
