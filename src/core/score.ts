@@ -5,20 +5,38 @@ import type {
 } from '../contracts/finding.js';
 import type { PackageHealth } from './dependency-types.js';
 
-export type ScoreGrade =
-  | 'A'
-  | 'B'
-  | 'C'
-  | 'D'
-  | 'F';
+export type ScoreGrade = 'A' | 'B' | 'C' | 'D' | 'F';
+
+export type MeasurementStatus =
+  | 'measured'
+  | 'failed'
+  | 'timed_out'
+  | 'cancelled'
+  | 'unavailable';
+
+export type ScoreDimension = {
+  score: number | null;
+  status: MeasurementStatus;
+  findings: number;
+  reason?: string;
+};
+
+export type ScoreDimensions = {
+  dependencyHealth: ScoreDimension;
+  secretHygiene: ScoreDimension;
+  configurationSecurity: ScoreDimension;
+  gitSafety: ScoreDimension;
+};
 
 export type ToolipScore = {
-  dependencyHealth: number;
-  secretHygiene: number;
-  configurationSecurity: number;
-  gitSafety: number;
-  overall: number;
-  grade: ScoreGrade;
+  dependencyHealth: number | null;
+  secretHygiene: number | null;
+  configurationSecurity: number | null;
+  gitSafety: number | null;
+  overall: number | null;
+  grade: ScoreGrade | null;
+  complete: boolean;
+  dimensions: ScoreDimensions;
 };
 
 export type DependencyHealthBreakdown = {
@@ -35,49 +53,74 @@ export type DependencyHealthBreakdown = {
   };
 };
 
+export function measuredDimension(
+  score: number,
+  findings = 0
+): ScoreDimension {
+  return {
+    score: clamp(score),
+    status: 'measured',
+    findings
+  };
+}
+
+export function unmeasuredDimension(
+  status: Exclude<MeasurementStatus, 'measured'>,
+  reason: string
+): ScoreDimension {
+  return {
+    score: null,
+    status,
+    findings: 0,
+    reason
+  };
+}
+
 export function calculateScore(
-  input?: Partial<
-    Omit<ToolipScore, 'overall' | 'grade'>
-  >
+  dimensions: ScoreDimensions
 ): ToolipScore {
-  const dependencyHealth = clamp(
-    input?.dependencyHealth ?? 100
+  const values = Object.values(dimensions);
+  const complete = values.every(
+    (dimension) =>
+      dimension.status === 'measured' &&
+      dimension.score !== null
   );
 
-  const secretHygiene = clamp(
-    input?.secretHygiene ?? 100
-  );
-
-  const configurationSecurity = clamp(
-    input?.configurationSecurity ?? 100
-  );
-
-  const gitSafety = clamp(
-    input?.gitSafety ?? 100
-  );
-
-  const overall = Math.round(
-    (
-      dependencyHealth +
-      secretHygiene +
-      configurationSecurity +
-      gitSafety
-    ) / 4
-  );
+  const overall = complete
+    ? Math.round(
+        values.reduce(
+          (total, dimension) => total + (dimension.score ?? 0),
+          0
+        ) / values.length
+      )
+    : null;
 
   return {
-    dependencyHealth,
-    secretHygiene,
-    configurationSecurity,
-    gitSafety,
+    dependencyHealth: dimensions.dependencyHealth.score,
+    secretHygiene: dimensions.secretHygiene.score,
+    configurationSecurity: dimensions.configurationSecurity.score,
+    gitSafety: dimensions.gitSafety.score,
     overall,
-    grade: gradeScore(overall)
+    grade: overall === null ? null : gradeScore(overall),
+    complete,
+    dimensions
   };
+}
+
+export function calculateFindingHealth(
+  findings: Finding[]
+): number {
+  const penalty = findings.reduce(
+    (total, finding) => total + severityPenalty(finding.severity),
+    0
+  );
+
+  return clamp(100 - Math.min(100, penalty));
 }
 
 export function calculateDependencyHealthFromPackages(
   packages: PackageHealth[],
-  vulnerabilityFindings: Finding[] = []
+  vulnerabilityFindings: Finding[]
 ): DependencyHealthBreakdown {
   let criticalVulnerabilities = 0;
   let highVulnerabilities = 0;
@@ -85,9 +128,7 @@ export function calculateDependencyHealthFromPackages(
   let lowVulnerabilities = 0;
 
   for (const finding of vulnerabilityFindings) {
-    if (finding.category !== 'vulnerability') {
-      continue;
-    }
+    if (finding.category !== 'vulnerability') continue;
 
     if (finding.severity === 'critical') {
       criticalVulnerabilities += 1;
@@ -108,18 +149,10 @@ export function calculateDependencyHealthFromPackages(
       lowVulnerabilities * 4
   );
 
-  const deprecated = packages.filter(
-    (pkg) => pkg.deprecated
-  ).length;
-
-  const noMaintainers = packages.filter(
-    (pkg) => pkg.maintainers === 0
-  ).length;
-
+  const deprecated = packages.filter((pkg) => pkg.deprecated).length;
+  const noMaintainers = packages.filter((pkg) => pkg.maintainers === 0).length;
   const stale = packages.filter(
-    (pkg) =>
-      pkg.ageInDays !== null &&
-      pkg.ageInDays > 730
+    (pkg) => pkg.ageInDays !== null && pkg.ageInDays > 730
   ).length;
 
   const outdated = {
@@ -130,9 +163,7 @@ export function calculateDependencyHealthFromPackages(
   };
 
   for (const pkg of packages) {
-    if (!pkg.outdated || !pkg.latestVersion) {
-      continue;
-    }
+    if (!pkg.outdated || !pkg.latestVersion) continue;
 
     const installed = semver.coerce(pkg.installedVersion);
     const latest = semver.coerce(pkg.latestVersion);
@@ -153,23 +184,15 @@ export function calculateDependencyHealthFromPackages(
     }
   }
 
-  const deprecationPenalty = Math.min(
-    40,
-    deprecated * 18
-  );
-
-  const maintenancePenalty = Math.min(
-    20,
-    noMaintainers * 4
-  );
-
+  const deprecationPenalty = Math.min(40, deprecated * 18);
+  const maintenancePenalty = Math.min(20, noMaintainers * 4);
   const freshnessPenalty = Math.min(
     15,
     outdated.major * 3 +
-      outdated.minor * 1 +
+      outdated.minor +
       outdated.patch * 0.25 +
-      outdated.unknown * 1 +
-      stale * 1
+      outdated.unknown +
+      stale
   );
 
   const score = clamp(
@@ -186,63 +209,9 @@ export function calculateDependencyHealthFromPackages(
     deprecationPenalty,
     maintenancePenalty,
     freshnessPenalty:
-      Math.round(freshnessPenalty * 100) /
-      100,
+      Math.round(freshnessPenalty * 100) / 100,
     outdated
   };
-}
-
-/**
- * Backward-compatible finding-based score.
- * Retained temporarily for the public API; internal callers use package-based scoring.
- */
-export function calculateDependencyHealth(
-  findings: Finding[]
-): number {
-  let vulnerabilityPenalty = 0;
-  let deprecationPenalty = 0;
-  let maintenancePenalty = 0;
-  let freshnessPenalty = 0;
-
-  for (const finding of findings) {
-    if (finding.category === 'vulnerability') {
-      vulnerabilityPenalty += severityPenalty(finding.severity);
-      continue;
-    }
-
-    if (finding.id.startsWith('TOOLIP-DEP-DEPRECATED-')) {
-      deprecationPenalty += 18;
-      continue;
-    }
-
-    if (finding.id.startsWith('TOOLIP-DEP-OUTDATED-')) {
-      freshnessPenalty += 1;
-      continue;
-    }
-
-    if (finding.id.startsWith('TOOLIP-DEP-NO-MAINTAINERS-')) {
-      maintenancePenalty += 4;
-      continue;
-    }
-
-    if (finding.id.startsWith('TOOLIP-DEP-STALE-')) {
-      freshnessPenalty += 1;
-      continue;
-    }
-
-    maintenancePenalty += Math.min(
-      10,
-      severityPenalty(finding.severity)
-    );
-  }
-
-  return clamp(
-    100 -
-      Math.min(100, vulnerabilityPenalty) -
-      Math.min(40, deprecationPenalty) -
-      Math.min(20, maintenancePenalty) -
-      Math.min(15, freshnessPenalty)
-  );
 }
 
 function severityPenalty(severity: FindingSeverity): number {
@@ -254,10 +223,7 @@ function severityPenalty(severity: FindingSeverity): number {
 }
 
 function clamp(value: number): number {
-  return Math.max(
-    0,
-    Math.min(100, Math.round(value))
-  );
+  return Math.max(0, Math.min(100, Math.round(value)));
 }
 
 export function gradeScore(score: number): ScoreGrade {
