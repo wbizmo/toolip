@@ -4,6 +4,7 @@ import path from 'node:path';
 export type WatchOptions = {
   debounceMs?: number;
   ignored?: RegExp[];
+  onError?: (error: unknown) => void;
 };
 
 export function watchProject(
@@ -22,8 +23,19 @@ export function watchProject(
   let timer: NodeJS.Timeout | undefined;
   let running = false;
   let queued = false;
+  let closed = false;
+
+  const reportError = (error: unknown): void => {
+    try {
+      options.onError?.(error);
+    } catch {
+      // Error reporting must never terminate the watcher.
+    }
+  };
 
   const run = async (): Promise<void> => {
+    if (closed) return;
+
     if (running) {
       queued = true;
       return;
@@ -33,10 +45,12 @@ export function watchProject(
 
     try {
       await onChange();
+    } catch (error) {
+      reportError(error);
     } finally {
       running = false;
 
-      if (queued) {
+      if (queued && !closed) {
         queued = false;
         await run();
       }
@@ -44,7 +58,7 @@ export function watchProject(
   };
 
   const watcher = watch(root, { recursive: true }, (_event, filename) => {
-    if (!filename) return;
+    if (closed || !filename) return;
     const normalized = filename.toString().replaceAll(path.sep, '/');
     if (ignored.some((pattern) => pattern.test(normalized))) return;
 
@@ -54,7 +68,11 @@ export function watchProject(
     }, debounceMs);
   });
 
+  watcher.on('error', reportError);
+
   return () => {
+    closed = true;
+    queued = false;
     if (timer) clearTimeout(timer);
     watcher.close();
   };

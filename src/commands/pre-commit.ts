@@ -7,12 +7,15 @@ export function registerPreCommitCommand(program: Command): void {
     .command('pre-commit')
     .description('Run blocking checks before a Git commit.')
     .option('-p, --path <path>', 'Project path to check.', process.cwd())
+    .option('--full', 'Run an explicit full-repository check instead of staged-only analysis.')
     .option('--show-findings', 'Print blocking findings.')
-    .action(async (options: { path: string; showFindings?: boolean }) => {
-      const result = await runPreCommit(options.path);
+    .action(async (options: { path: string; full?: boolean; showFindings?: boolean }) => {
+      const result = await runPreCommit(options.path, { full: options.full });
 
       console.log(chalk.bold('Toolip Pre-Commit'));
       console.log('');
+      console.log(`${chalk.dim('Scope:')} ${result.scope}`);
+      console.log(`${chalk.dim('Files considered:')} ${result.filesConsidered}`);
       console.log(`${chalk.dim('Critical:')} ${result.summary.critical}`);
       console.log(`${chalk.dim('High:')} ${result.summary.high}`);
       console.log(`${chalk.dim('Blocking Findings:')} ${result.summary.blocking}`);

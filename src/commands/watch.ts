@@ -28,13 +28,24 @@ export function registerWatchCommand(program: Command): void {
       console.log('');
       console.log('Watching for changes. Press Ctrl+C to stop.');
 
-      const close = watchProject(options.path, render);
-
-      process.once('SIGINT', () => {
-        close();
-        process.exit(0);
+      const close = watchProject(options.path, render, {
+        onError(error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`Toolip watch check failed: ${message}`);
+          console.error('Watching continues; fix the error or press Ctrl+C to stop.');
+        }
       });
 
-      await new Promise<void>(() => undefined);
+      await new Promise<void>((resolve) => {
+        const stop = (): void => {
+          close();
+          process.off('SIGINT', stop);
+          process.off('SIGTERM', stop);
+          resolve();
+        };
+
+        process.once('SIGINT', stop);
+        process.once('SIGTERM', stop);
+      });
     });
 }
