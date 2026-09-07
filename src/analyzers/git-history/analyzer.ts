@@ -1,6 +1,4 @@
-import {
-  spawn
-} from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import type {
   Analyzer,
@@ -8,15 +6,12 @@ import type {
   AnalyzerResult
 } from '../../contracts/analyzer.js';
 import type { Finding } from '../../contracts/finding.js';
-import {
-  historicalSecretPatterns
-} from './secret-patterns.js';
+import { historicalSecretPatterns } from './secret-patterns.js';
 
-type CommitSection = {
+type CommitMetadata = {
   commit: string;
   author: string;
   date: string;
-  body: string;
 };
 
 type AddedLine = {
@@ -25,27 +20,16 @@ type AddedLine = {
 };
 
 function redact(value: string): string {
-  if (value.length <= 12) {
-    return '[redacted]';
-  }
-
-  return (
-    `${value.slice(0, 6)}` +
-    '...[redacted]...' +
-    `${value.slice(-4)}`
-  );
+  if (value.length <= 12) return '[redacted]';
+  return `${value.slice(0, 6)}...[redacted]...${value.slice(-4)}`;
 }
 
 function fingerprint(value: string): string {
-  return createHash('sha256')
-    .update(value)
-    .digest('hex');
+  return createHash('sha256').update(value).digest('hex');
 }
 
 function isTestFile(file?: string): boolean {
-  if (!file) {
-    return false;
-  }
+  if (!file) return false;
 
   return (
     file.startsWith('tests/') ||
@@ -55,11 +39,12 @@ function isTestFile(file?: string): boolean {
   );
 }
 
-async function gitLog(
+async function streamGitLog(
   root: string,
   maxCommits: number,
-  signal?: AbortSignal
-): Promise<string> {
+  signal: AbortSignal | undefined,
+  onAddedLine: (commit: CommitMetadata, line: AddedLine) => void
+): Promise<number> {
   return new Promise((resolve, reject) => {
     const child = spawn(
       'git',
@@ -75,126 +60,101 @@ async function gitLog(
       ],
       {
         cwd: root,
-        stdio: [
-          'ignore',
-          'pipe',
-          'pipe'
-        ]
+        stdio: ['ignore', 'pipe', 'pipe']
       }
     );
 
-    let stdout = '';
+    let pending = '';
     let stderr = '';
+    let currentFile: string | undefined;
+    let currentCommit: CommitMetadata | undefined;
+    let commitsScanned = 0;
+    let cancelled = false;
+
+    const consume = (line: string): void => {
+      if (line.startsWith('__TOOLIP_COMMIT__')) {
+        const [commit, author, date] = line
+          .slice('__TOOLIP_COMMIT__'.length)
+          .split('\t');
+
+        currentCommit = {
+          commit: commit ?? 'unknown',
+          author: author ?? 'unknown',
+          date: date ?? 'unknown'
+        };
+        currentFile = undefined;
+        commitsScanned += 1;
+        return;
+      }
+
+      if (line.startsWith('+++ b/')) {
+        currentFile = line.slice('+++ b/'.length);
+        return;
+      }
+
+      if (line.startsWith('+++ /dev/null')) {
+        currentFile = undefined;
+        return;
+      }
+
+      if (
+        currentCommit &&
+        line.startsWith('+') &&
+        !line.startsWith('+++')
+      ) {
+        onAddedLine(currentCommit, {
+          file: currentFile,
+          content: line.slice(1)
+        });
+      }
+    };
 
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
 
     child.stdout.on('data', (chunk: string) => {
-      stdout += chunk;
+      pending += chunk;
+      const lines = pending.split('\n');
+      pending = lines.pop() ?? '';
+      for (const line of lines) consume(line);
     });
 
     child.stderr.on('data', (chunk: string) => {
-      stderr += chunk;
+      stderr = `${stderr}${chunk}`.slice(-64 * 1024);
     });
 
     const abort = (): void => {
+      cancelled = true;
       child.kill('SIGTERM');
     };
 
-    signal?.addEventListener(
-      'abort',
-      abort,
-      {
-        once: true
-      }
-    );
-
+    signal?.addEventListener('abort', abort, { once: true });
     child.on('error', reject);
 
     child.on('close', (code) => {
-      signal?.removeEventListener(
-        'abort',
-        abort
-      );
+      signal?.removeEventListener('abort', abort);
+      if (pending) consume(pending);
+
+      if (cancelled) {
+        reject(new Error('Git history analysis was cancelled.'));
+        return;
+      }
 
       if (code !== 0) {
         reject(
-          new Error(
-            stderr.trim() ||
-            `git log exited with ${code}.`
-          )
+          new Error(stderr.trim() || `git log exited with ${code}.`)
         );
         return;
       }
 
-      resolve(stdout);
+      resolve(commitsScanned);
     });
   });
 }
 
-function sections(output: string): CommitSection[] {
-  return output
-    .split('__TOOLIP_COMMIT__')
-    .filter(Boolean)
-    .map((section) => {
-      const newline = section.indexOf('\n');
-
-      const header =
-        newline === -1
-          ? section
-          : section.slice(0, newline);
-
-      const body =
-        newline === -1
-          ? ''
-          : section.slice(newline + 1);
-
-      const [commit, author, date] =
-        header.split('\t');
-
-      return {
-        commit: commit ?? 'unknown',
-        author: author ?? 'unknown',
-        date: date ?? 'unknown',
-        body
-      };
-    });
-}
-
-function addedLines(body: string): AddedLine[] {
-  const output: AddedLine[] = [];
-  let currentFile: string | undefined;
-
-  for (const line of body.split('\n')) {
-    if (line.startsWith('+++ b/')) {
-      currentFile = line.slice('+++ b/'.length);
-      continue;
-    }
-
-    if (line.startsWith('+++ /dev/null')) {
-      currentFile = undefined;
-      continue;
-    }
-
-    if (
-      line.startsWith('+') &&
-      !line.startsWith('+++')
-    ) {
-      output.push({
-        file: currentFile,
-        content: line.slice(1)
-      });
-    }
-  }
-
-  return output;
-}
-
-export class GitHistorySecretAnalyzer
-  implements Analyzer
-{
+export class GitHistorySecretAnalyzer implements Analyzer {
   readonly id = 'git-history-secrets';
-  readonly version = '1.0.1';
+  readonly version = '1.0.2';
 
   constructor(
     private readonly maxCommits = 1000
@@ -204,46 +164,28 @@ export class GitHistorySecretAnalyzer
     context: AnalyzerContext
   ): Promise<AnalyzerResult> {
     const startedAt = performance.now();
-
-    const output = await gitLog(
-      context.root,
-      this.maxCommits,
-      context.signal
-    );
-
     const findings: Finding[] = [];
     const seen = new Set<string>();
-    const commitSections = sections(output);
 
-    for (const section of commitSections) {
-      for (const line of addedLines(section.body)) {
-        for (
-          const pattern of historicalSecretPatterns
-        ) {
+    const commitsScanned = await streamGitLog(
+      context.root,
+      this.maxCommits,
+      context.signal,
+      (section, line) => {
+        for (const pattern of historicalSecretPatterns) {
           pattern.regex.lastIndex = 0;
 
-          for (
-            const match of line.content.matchAll(
-              pattern.regex
-            )
-          ) {
+          for (const match of line.content.matchAll(pattern.regex)) {
             const value = match[0];
-            const secretFingerprint =
-              fingerprint(value);
-
+            const secretFingerprint = fingerprint(value);
             const key =
               `${pattern.id}:${section.commit}:` +
-              `${line.file ?? 'unknown'}:` +
-              secretFingerprint;
+              `${line.file ?? 'unknown'}:${secretFingerprint}`;
 
-            if (seen.has(key)) {
-              continue;
-            }
-
+            if (seen.has(key)) continue;
             seen.add(key);
 
-            const testFixture =
-              isTestFile(line.file);
+            const testFixture = isTestFile(line.file);
 
             findings.push({
               id: key,
@@ -252,28 +194,17 @@ export class GitHistorySecretAnalyzer
                 ? `Potential historical test fixture: ${pattern.title}`
                 : pattern.title,
               category: 'git-history-secret',
-              severity: testFixture
-                ? 'low'
-                : pattern.severity,
-              confidence: testFixture
-                ? 'medium'
-                : 'high',
+              severity: testFixture ? 'low' : pattern.severity,
+              confidence: testFixture ? 'medium' : 'high',
               message: testFixture
                 ? `A secret-like value was introduced in test file ${line.file ?? 'unknown'} in commit ${section.commit}. Confirm that it is synthetic fixture data.`
                 : `A secret-like value was introduced in commit ${section.commit}.`,
               source: 'git-history',
-              location: line.file
-                ? {
-                    file: line.file
-                  }
-                : undefined,
-              evidence: [
-                {
-                  summary: redact(value),
-                  fingerprint:
-                    secretFingerprint
-                }
-              ],
+              location: line.file ? { file: line.file } : undefined,
+              evidence: [{
+                summary: redact(value),
+                fingerprint: secretFingerprint
+              }],
               remediation: {
                 summary: testFixture
                   ? 'Confirm that the value is synthetic test data. Replace realistic credential fixtures with clearly fake placeholders where possible.'
@@ -290,24 +221,19 @@ export class GitHistorySecretAnalyzer
           }
         }
       }
-    }
+    );
 
     return {
       analyzer: this.id,
-      durationMs: Math.round(
-        performance.now() - startedAt
-      ),
+      durationMs: Math.round(performance.now() - startedAt),
       findings,
       metadata: {
-        commitsScanned:
-          commitSections.length,
+        commitsScanned,
         findings: findings.length,
         testFixtures: findings.filter(
-          (finding) =>
-            finding.metadata?.testFixture === true
+          (finding) => finding.metadata?.testFixture === true
         ).length,
-        maxCommits:
-          this.maxCommits
+        maxCommits: this.maxCommits
       }
     };
   }
