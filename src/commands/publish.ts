@@ -1,8 +1,9 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Command } from 'commander';
-import { runSecurityDoctor } from '../core/security-doctor.js';
 import { renderHtmlReport } from '../core/publish/html.js';
+import { serializeFinding } from '../core/report.js';
+import { runSecurityDoctor } from '../core/security-doctor.js';
 
 export function registerPublishCommand(program: Command): void {
   program
@@ -18,7 +19,7 @@ export function registerPublishCommand(program: Command): void {
       const html = renderHtmlReport({
         project: path.basename(path.resolve(options.path)),
         generatedAt: new Date().toISOString(),
-        findings: report.findings
+        findings: report.findings.map(serializeFinding)
       });
 
       await writeFile(path.join(directory, 'index.html'), html, 'utf8');
