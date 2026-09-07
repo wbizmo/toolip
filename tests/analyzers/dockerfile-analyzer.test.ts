@@ -22,4 +22,24 @@ describe('DockerfileAnalyzer', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('reports the real location for repeated matching lines', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-'));
+
+    try {
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        'FROM node:latest\nENV API_KEY=example\nENV API_KEY=example\nUSER node\n'
+      );
+
+      const result = await new DockerfileAnalyzer().analyze({ root });
+      const secrets = result.findings.filter(
+        (finding) => finding.ruleId === 'TLP-DOCKER-002'
+      );
+
+      expect(secrets.map((finding) => finding.location?.line)).toEqual([2, 3]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
