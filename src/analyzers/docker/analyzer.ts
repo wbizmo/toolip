@@ -1,7 +1,7 @@
-import { readFile } from 'node:fs/promises';
 import type { Analyzer, AnalyzerContext, AnalyzerResult } from '../../contracts/analyzer.js';
 import type { Finding, FindingSeverity } from '../../contracts/finding.js';
 import { createScannerContext } from '../../core/scanner-context.js';
+import { TextFileReader } from '../../core/text-file-reader.js';
 
 type DockerRule = {
   id: string;
@@ -55,6 +55,36 @@ const rules: DockerRule[] = [
   }
 ];
 
+function finding(
+  rule: DockerRule,
+  relativePath: string,
+  lineNumber: number,
+  summary: string
+): Finding {
+  return {
+    id: `${rule.id}:${relativePath}:${lineNumber}`,
+    ruleId: rule.id,
+    title: rule.title,
+    category: 'container',
+    severity: rule.severity,
+    confidence: 'high',
+    message: rule.message,
+    source: 'dockerfile',
+    location: {
+      file: relativePath,
+      line: lineNumber,
+      column: 1
+    },
+    evidence: [{
+      summary: summary.trim().slice(0, 200) || 'No non-root USER instruction',
+      fingerprint: `${relativePath}:${lineNumber}:${rule.id}`
+    }],
+    remediation: {
+      summary: rule.remediation
+    }
+  };
+}
+
 export class DockerfileAnalyzer implements Analyzer {
   readonly id = 'dockerfile-security';
   readonly version = '1.0.0';
@@ -62,47 +92,38 @@ export class DockerfileAnalyzer implements Analyzer {
   async analyze(context: AnalyzerContext): Promise<AnalyzerResult> {
     const startedAt = performance.now();
     const scanner = await createScannerContext(context.root);
+    const reader = new TextFileReader();
     const findings: Finding[] = [];
+    const warnings: string[] = [];
     let dockerfiles = 0;
 
     for (const file of scanner.files) {
       if (!/(^|\/)Dockerfile(?:\.[^/]+)?$/i.test(file.relativePath)) continue;
 
+      const read = await reader.read(file.absolutePath, context.signal);
+      if (read.status !== 'ok') {
+        warnings.push(`${file.relativePath}: skipped (${read.status})`);
+        if (read.status === 'cancelled') break;
+        continue;
+      }
+
       dockerfiles += 1;
-      const content = await readFile(file.absolutePath, 'utf8');
-      const lines = content.split(/\r?\n/);
+      const lines = read.content.split(/\r?\n/);
+      const [rootRule, ...lineRules] = rules;
 
-      for (const rule of rules) {
-        const matches = rule.id === 'TLP-DOCKER-001'
-          ? [lines[0] ?? '']
-          : lines.filter((line) => rule.test(line, lines));
+      if (rootRule?.test('', lines)) {
+        findings.push(
+          finding(rootRule, file.relativePath, 1, 'No non-root USER instruction')
+        );
+      }
 
-        if (rule.id === 'TLP-DOCKER-001' && !rule.test('', lines)) continue;
-
-        for (const match of matches) {
-          const lineNumber = Math.max(1, lines.indexOf(match) + 1);
-          findings.push({
-            id: `${rule.id}:${file.relativePath}:${lineNumber}`,
-            ruleId: rule.id,
-            title: rule.title,
-            category: 'container',
-            severity: rule.severity,
-            confidence: 'high',
-            message: rule.message,
-            source: 'dockerfile',
-            location: {
-              file: file.relativePath,
-              line: lineNumber,
-              column: 1
-            },
-            evidence: [{
-              summary: match.trim().slice(0, 200) || 'No non-root USER instruction',
-              fingerprint: `${file.relativePath}:${lineNumber}:${rule.id}`
-            }],
-            remediation: {
-              summary: rule.remediation
-            }
-          });
+      for (const [index, line] of lines.entries()) {
+        for (const rule of lineRules) {
+          if (rule.test(line, lines)) {
+            findings.push(
+              finding(rule, file.relativePath, index + 1, line)
+            );
+          }
         }
       }
     }
@@ -111,8 +132,10 @@ export class DockerfileAnalyzer implements Analyzer {
       analyzer: this.id,
       durationMs: Math.round(performance.now() - startedAt),
       findings,
+      warnings: warnings.length > 0 ? warnings : undefined,
       metadata: {
         dockerfiles,
+        bytesAnalyzed: reader.usage.bytesRead,
         findings: findings.length
       }
     };
