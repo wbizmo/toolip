@@ -1,7 +1,6 @@
 import type { Command } from 'commander';
 import { AnalyzerRunner } from '../application/analyzer-runner.js';
 import { OsvVulnerabilityAnalyzer } from '../analyzers/vulnerability/osv-analyzer.js';
-import { MemoryCache } from '../storage/memory-cache.js';
 
 export function registerVulnerabilitiesCommand(program: Command): void {
   program
@@ -14,10 +13,14 @@ export function registerVulnerabilitiesCommand(program: Command): void {
     .action(async (options: { path: string; json?: boolean; includeDev?: boolean }) => {
       const [result] = await new AnalyzerRunner({ concurrency: 1, timeoutMs: 60000 }).run(
         [new OsvVulnerabilityAnalyzer()],
-        { root: options.path, cache: new MemoryCache() }
+        { root: options.path }
       );
 
       if (!result) throw new Error('OSV analyzer returned no result.');
+      if (result.status !== 'ok') {
+        throw new Error(result.error ?? `OSV analyzer ${result.status}.`);
+      }
+
       const findings = options.includeDev
         ? result.findings
         : result.findings.filter((finding) => finding.metadata?.development !== true);

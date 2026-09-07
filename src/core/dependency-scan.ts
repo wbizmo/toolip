@@ -1,3 +1,4 @@
+import { mapConcurrent } from '../application/concurrency.js';
 import { readDependencies } from './read-dependencies.js';
 import { analyzePackage } from './analyze-package.js';
 import type { PackageHealth } from './dependency-types.js';
@@ -24,8 +25,10 @@ export type DependencyScanResult = {
 
 export async function scanDependencies(root: string): Promise<DependencyScanResult> {
   const dependencies = await readDependencies(root);
-  const packages = await Promise.all(
-    dependencies.map((dependency) => analyzePackage(dependency))
+  const packages = await mapConcurrent(
+    dependencies,
+    8,
+    (dependency) => analyzePackage(dependency)
   );
 
   const findings = packages.flatMap(packageToFindings);
