@@ -19,7 +19,10 @@ describe('SBOM generation', () => {
       JSON.stringify({
         name: 'fixture',
         version: '1.0.0',
-        license: 'MIT'
+        license: 'MIT',
+        dependencies: {
+          express: '^5.0.0'
+        }
       })
     );
 
@@ -31,10 +34,19 @@ describe('SBOM generation', () => {
         packages: {
           '': {
             name: 'fixture',
-            version: '1.0.0'
+            version: '1.0.0',
+            dependencies: {
+              express: '^5.0.0'
+            }
           },
           'node_modules/express': {
-            version: '5.0.0'
+            version: '5.0.0',
+            dependencies: {
+              router: '^2.0.0'
+            }
+          },
+          'node_modules/router': {
+            version: '2.0.0'
           }
         }
       })
@@ -43,7 +55,7 @@ describe('SBOM generation', () => {
     return root;
   }
 
-  it('generates CycloneDX 1.5 JSON', async () => {
+  it('generates CycloneDX 1.5 JSON with resolved relationships', async () => {
     const root = await fixture();
 
     try {
@@ -58,7 +70,20 @@ describe('SBOM generation', () => {
       expect(document.specVersion).toBe('1.5');
       expect(
         (document.components as unknown[]).length
-      ).toBe(1);
+      ).toBe(2);
+
+      const relationships = document.dependencies as Array<{
+        ref: string;
+        dependsOn: string[];
+      }>;
+      const rootRelationship = relationships[0];
+      const expressRelationship = relationships.find(
+        (relationship) =>
+          relationship.ref === rootRelationship?.dependsOn[0]
+      );
+
+      expect(rootRelationship?.dependsOn).toHaveLength(1);
+      expect(expressRelationship?.dependsOn).toHaveLength(1);
     } finally {
       await rm(root, {
         recursive: true,
@@ -67,7 +92,7 @@ describe('SBOM generation', () => {
     }
   });
 
-  it('generates SPDX 2.3 JSON', async () => {
+  it('generates SPDX 2.3 JSON with graph relationships', async () => {
     const root = await fixture();
 
     try {
@@ -81,6 +106,9 @@ describe('SBOM generation', () => {
       );
       expect(
         (document.packages as unknown[]).length
+      ).toBe(3);
+      expect(
+        (document.relationships as unknown[]).length
       ).toBe(2);
     } finally {
       await rm(root, {
