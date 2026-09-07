@@ -41,4 +41,45 @@ describe('OsvVulnerabilityAnalyzer', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('queries each unique package version once and maps results to each instance', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-'));
+    let queryCount = 0;
+
+    try {
+      await writeFile(path.join(root, 'package-lock.json'), JSON.stringify({
+        lockfileVersion: 3,
+        packages: {
+          '': { name: 'fixture', version: '1.0.0' },
+          'node_modules/example-package': { version: '1.0.0' },
+          'node_modules/parent/node_modules/example-package': { version: '1.0.0' }
+        }
+      }));
+
+      const client = new OsvClient({
+        fetchImplementation: async (_input, init) => {
+          const body = JSON.parse(String(init?.body)) as { queries: unknown[] };
+          queryCount += body.queries.length;
+          return new Response(JSON.stringify({
+            results: body.queries.map(() => ({
+              vulns: [{
+                id: 'GHSA-test-0001',
+                summary: 'Test vulnerability',
+                database_specific: { severity: 'HIGH' }
+              }]
+            }))
+          }), { status: 200 });
+        }
+      });
+
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({ root });
+
+      expect(queryCount).toBe(1);
+      expect(result.findings).toHaveLength(2);
+      expect(new Set(result.findings.map((finding) => finding.id)).size).toBe(2);
+      expect(result.metadata?.uniqueVersionsQueried).toBe(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
