@@ -1,13 +1,13 @@
 import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import type { Finding } from '../contracts/finding.js';
 import {
   createScannerContext,
   type ScannerContext
 } from './scanner-context.js';
-import type { ToolipFinding } from './report.js';
 
 export type GitAuditResult = {
-  findings: ToolipFinding[];
+  findings: Finding[];
   summary: {
     filesChecked: number;
     dangerousFiles: number;
@@ -54,8 +54,7 @@ export async function runGitAudit(
   const gitignorePath = path.join(context.root, '.gitignore');
   const gitignorePresent = await exists(gitignorePath);
   const gitignoreContent = gitignorePresent ? await readFile(gitignorePath, 'utf8') : '';
-
-  const findings: ToolipFinding[] = [];
+  const findings: Finding[] = [];
 
   for (const file of relativePaths) {
     for (const pattern of dangerousFilePatterns) {
@@ -63,12 +62,15 @@ export async function runGitAudit(
 
       findings.push({
         id: `TOOLIP-GIT-${pattern.id}-${file.toUpperCase().replaceAll(/[^A-Z0-9]/g, '-')}`,
+        ruleId: `TOOLIP-GIT-${pattern.id}`,
         title: pattern.title,
         severity: pattern.severity,
+        confidence: 'high',
         category: 'git-security',
         message: pattern.message,
-        recommendation: pattern.recommendation,
-        file
+        source: 'git-audit',
+        location: { file },
+        remediation: { summary: pattern.recommendation }
       });
     }
   }
@@ -77,47 +79,64 @@ export async function runGitAudit(
   const pemIgnored = ignoresPattern(gitignoreContent, '*.pem') || ignoresPattern(gitignoreContent, '.pem');
 
   if (!gitignorePresent) {
-    findings.push({
-      id: 'TOOLIP-GIT-MISSING-GITIGNORE',
-      title: 'Missing .gitignore',
-      severity: 'medium',
-      category: 'git-security',
-      message: 'No .gitignore file was found.',
-      recommendation: 'Add a .gitignore file that excludes secrets, build output, dependencies, and local machine files.'
-    });
+    findings.push(gitFinding(
+      'TOOLIP-GIT-MISSING-GITIGNORE',
+      'Missing .gitignore',
+      'medium',
+      'No .gitignore file was found.',
+      'Add a .gitignore file that excludes secrets, build output, dependencies, and local machine files.'
+    ));
   }
 
   if (gitignorePresent && !envIgnored) {
-    findings.push({
-      id: 'TOOLIP-GIT-ENV-NOT-IGNORED',
-      title: '.env files may not be ignored',
-      severity: 'high',
-      category: 'git-security',
-      message: '.gitignore does not appear to ignore .env files.',
-      recommendation: 'Add .env and .env.* to .gitignore while allowing a safe .env.example.'
-    });
+    findings.push(gitFinding(
+      'TOOLIP-GIT-ENV-NOT-IGNORED',
+      '.env files may not be ignored',
+      'high',
+      '.gitignore does not appear to ignore .env files.',
+      'Add .env and .env.* to .gitignore while allowing a safe .env.example.'
+    ));
   }
 
   if (gitignorePresent && !pemIgnored) {
-    findings.push({
-      id: 'TOOLIP-GIT-PEM-NOT-IGNORED',
-      title: 'PEM files may not be ignored',
-      severity: 'medium',
-      category: 'git-security',
-      message: '.gitignore does not appear to ignore PEM files.',
-      recommendation: 'Add *.pem and other key material patterns to .gitignore.'
-    });
+    findings.push(gitFinding(
+      'TOOLIP-GIT-PEM-NOT-IGNORED',
+      'PEM files may not be ignored',
+      'medium',
+      '.gitignore does not appear to ignore PEM files.',
+      'Add *.pem and other key material patterns to .gitignore.'
+    ));
   }
 
   return {
     findings,
     summary: {
       filesChecked: context.files.length,
-      dangerousFiles: findings.filter((finding) => finding.file).length,
+      dangerousFiles: findings.filter((finding) => finding.location?.file).length,
       gitignorePresent,
       envIgnored,
       pemIgnored
     }
+  };
+}
+
+function gitFinding(
+  id: string,
+  title: string,
+  severity: Finding['severity'],
+  message: string,
+  recommendation: string
+): Finding {
+  return {
+    id,
+    ruleId: id,
+    title,
+    severity,
+    confidence: 'high',
+    category: 'git-security',
+    message,
+    source: 'git-audit',
+    remediation: { summary: recommendation }
   };
 }
 
