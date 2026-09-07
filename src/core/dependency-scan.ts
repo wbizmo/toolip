@@ -1,8 +1,8 @@
 import { mapConcurrent } from '../application/concurrency.js';
+import type { Finding } from '../contracts/finding.js';
 import { readDependencies } from './read-dependencies.js';
 import { analyzePackage } from './analyze-package.js';
 import type { PackageHealth } from './dependency-types.js';
-import type { ToolipFinding } from './report.js';
 import {
   calculateDependencyHealthFromPackages,
   type DependencyHealthBreakdown
@@ -10,7 +10,7 @@ import {
 
 export type DependencyScanResult = {
   packages: PackageHealth[];
-  findings: ToolipFinding[];
+  findings: Finding[];
   dependencyHealth: DependencyHealthBreakdown;
   summary: {
     totalDependencies: number;
@@ -30,13 +30,8 @@ export async function scanDependencies(root: string): Promise<DependencyScanResu
     8,
     (dependency) => analyzePackage(dependency)
   );
-
   const findings = packages.flatMap(packageToFindings);
-
-  const dependencyHealth =
-    calculateDependencyHealthFromPackages(
-      packages
-    );
+  const dependencyHealth = calculateDependencyHealthFromPackages(packages);
 
   return {
     packages,
@@ -56,55 +51,89 @@ export async function scanDependencies(root: string): Promise<DependencyScanResu
   };
 }
 
-export function packageToFindings(pkg: PackageHealth): ToolipFinding[] {
-  const findings: ToolipFinding[] = [];
+export function packageToFindings(pkg: PackageHealth): Finding[] {
+  const findings: Finding[] = [];
+  const suffix = pkg.name.toUpperCase().replaceAll(/[^A-Z0-9]/g, '-');
 
   if (pkg.deprecated) {
-    findings.push({
-      id: `TOOLIP-DEP-DEPRECATED-${pkg.name.toUpperCase().replaceAll(/[^A-Z0-9]/g, '-')}`,
+    findings.push(dependencyFinding({
+      id: `TOOLIP-DEP-DEPRECATED-${suffix}`,
       title: `Deprecated package: ${pkg.name}`,
       severity: 'high',
-      category: 'supply-chain',
       message: `${pkg.name} is marked as deprecated on the npm registry.`,
       recommendation: 'Replace deprecated packages with maintained alternatives and review migration notes.',
-      evidence: pkg.latestVersion ?? undefined
-    });
+      evidence: pkg.latestVersion ?? undefined,
+      pkg
+    }));
   }
 
   if (pkg.outdated) {
-    findings.push({
-      id: `TOOLIP-DEP-OUTDATED-${pkg.name.toUpperCase().replaceAll(/[^A-Z0-9]/g, '-')}`,
+    findings.push(dependencyFinding({
+      id: `TOOLIP-DEP-OUTDATED-${suffix}`,
       title: `Outdated package: ${pkg.name}`,
       severity: 'medium',
-      category: 'supply-chain',
       message: `${pkg.name} appears outdated. Installed: ${pkg.installedVersion}. Latest: ${pkg.latestVersion ?? 'unknown'}.`,
       recommendation: 'Upgrade the package after checking changelogs, breaking changes, and test coverage.',
-      evidence: `${pkg.installedVersion} -> ${pkg.latestVersion ?? 'unknown'}`
-    });
+      evidence: `${pkg.installedVersion} -> ${pkg.latestVersion ?? 'unknown'}`,
+      pkg
+    }));
   }
 
   if (pkg.maintainers === 0) {
-    findings.push({
-      id: `TOOLIP-DEP-NO-MAINTAINERS-${pkg.name.toUpperCase().replaceAll(/[^A-Z0-9]/g, '-')}`,
+    findings.push(dependencyFinding({
+      id: `TOOLIP-DEP-NO-MAINTAINERS-${suffix}`,
       title: `No visible maintainers: ${pkg.name}`,
       severity: 'medium',
-      category: 'supply-chain',
       message: `${pkg.name} has no visible maintainer metadata from the registry response.`,
-      recommendation: 'Review package ownership, repository activity, and whether a better-maintained alternative exists.'
-    });
+      recommendation: 'Review package ownership, repository activity, and whether a better-maintained alternative exists.',
+      pkg
+    }));
   }
 
   if (pkg.ageInDays !== null && pkg.ageInDays > 730) {
-    findings.push({
-      id: `TOOLIP-DEP-STALE-${pkg.name.toUpperCase().replaceAll(/[^A-Z0-9]/g, '-')}`,
+    findings.push(dependencyFinding({
+      id: `TOOLIP-DEP-STALE-${suffix}`,
       title: `Possibly stale package: ${pkg.name}`,
       severity: 'low',
-      category: 'supply-chain',
       message: `${pkg.name} has not had a detected latest publish in more than two years.`,
       recommendation: 'Confirm whether the package is intentionally stable or abandoned before relying on it.',
-      evidence: `${pkg.ageInDays} days`
-    });
+      evidence: `${pkg.ageInDays} days`,
+      pkg
+    }));
   }
 
   return findings;
+}
+
+function dependencyFinding(input: {
+  id: string;
+  title: string;
+  severity: Finding['severity'];
+  message: string;
+  recommendation: string;
+  evidence?: string;
+  pkg: PackageHealth;
+}): Finding {
+  return {
+    id: input.id,
+    ruleId: input.id.replace(/-[A-Z0-9-]+$/, ''),
+    title: input.title,
+    severity: input.severity,
+    confidence: 'high',
+    category: 'supply-chain',
+    message: input.message,
+    source: 'npm-registry',
+    evidence: input.evidence
+      ? [{
+          summary: input.evidence,
+          fingerprint: `${input.pkg.name}@${input.pkg.installedVersion}:${input.id}`
+        }]
+      : undefined,
+    remediation: { summary: input.recommendation },
+    metadata: {
+      package: input.pkg.name,
+      installedVersion: input.pkg.installedVersion,
+      latestVersion: input.pkg.latestVersion
+    }
+  };
 }
