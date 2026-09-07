@@ -12,6 +12,9 @@
     "README.md",
     "LICENSE"
   ],
+  "engines": {
+    "node": ">=22 <25"
+  },
   "scripts": {
     "clean": "rm -rf dist",
     "dev": "tsx src/index.ts",
@@ -19,9 +22,11 @@
     "start": "node dist/src/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:coverage": "node scripts/verify-security-coverage.mjs",
     "typecheck": "tsc --noEmit",
+    "quality": "tsc -p tsconfig.quality.json --noEmit",
     "verify:package": "node scripts/verify-package.mjs",
-    "verify": "npm run verify:changelog && npm run typecheck && npm test && npm run clean && npm run build && npm run verify:package",
+    "verify": "npm run verify:changelog && npm run quality && npm run test:coverage && npm run clean && npm run build && npm run verify:package",
     "prepack": "npm run verify",
     "pack:check": "npm pack --dry-run",
     "release:check": "bash scripts/release-check.sh",
