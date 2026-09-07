@@ -70,7 +70,6 @@ export async function setSecret(input: {
   masterPassword: string;
   vaultPath?: string;
 }): Promise<void> {
-  validateSecretKey(input.key);
   const vaultPath = input.vaultPath ?? defaultVaultPath();
 
   await withVaultLock(vaultPath, async () => {
@@ -181,8 +180,6 @@ export async function exportVault(input: {
 }): Promise<string> {
   const secrets = await listSecrets(input);
 
-  for (const secret of secrets) validateSecretKey(secret.key);
-
   if (input.format === 'json') {
     return JSON.stringify(
       Object.fromEntries(secrets.map((secret) => [secret.key, secret.value])),
@@ -190,6 +187,8 @@ export async function exportVault(input: {
       2
     );
   }
+
+  for (const secret of secrets) validateShellKey(secret.key);
 
   return secrets
     .map((secret) => `${secret.key}=${shellQuote(secret.value)}`)
@@ -212,6 +211,7 @@ async function readEncryptedVault(
 
   try {
     raw = await readFile(vaultPath, 'utf8');
+    await enforcePrivatePermissions(vaultPath);
   } catch (error) {
     if (errorCode(error) === 'ENOENT') {
       throw new ToolipError('Vault not initialized. Run toolip vault init first.', {
@@ -432,10 +432,10 @@ function deriveKey(masterPassword: string, salt: Buffer): Buffer {
   return crypto.scryptSync(masterPassword, salt, 32);
 }
 
-function validateSecretKey(key: string): void {
+function validateShellKey(key: string): void {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
     throw new ToolipError(
-      'Vault keys exported to the shell must be valid environment variable names.',
+      'Shell export requires vault keys to be valid environment variable names.',
       {
         code: 'VAULT_INVALID_KEY',
         exitCode: 1
