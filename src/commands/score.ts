@@ -1,142 +1,80 @@
-import type {
-  Command
-} from 'commander';
+import type { Command } from 'commander';
 import chalk from 'chalk';
-import {
-  scanDependencies
-} from '../core/dependency-scan.js';
-import {
-  calculateScore
-} from '../core/score.js';
+import { buildSecurityScorecard } from '../application/security-scorecard.js';
+import type { ScoreDimension } from '../core/score.js';
 
-export function registerScoreCommand(
-  program: Command
-): void {
+export function registerScoreCommand(program: Command): void {
   program
     .command('score')
     .description(
-      'Calculate a Toolip security scorecard for the current project.'
+      'Calculate a Toolip security scorecard from executed security checks.'
     )
     .option(
       '-p, --path <path>',
       'Project path to score.',
       process.cwd()
     )
-    .option(
-      '--json',
-      'Print structured JSON output.'
-    )
-    .action(
-      async (
-        options: {
-          path: string;
-          json?: boolean;
-        }
-      ) => {
-        const dependencyScan =
-          await scanDependencies(options.path);
+    .option('--json', 'Print structured JSON output.')
+    .action(async (options: { path: string; json?: boolean }) => {
+      const scorecard = await buildSecurityScorecard(options.path);
 
-        const dependencyHealth =
-          dependencyScan.dependencyHealth;
+      if (options.json) {
+        console.log(JSON.stringify(scorecard, null, 2));
+        return;
+      }
 
-        const score = calculateScore({
-          dependencyHealth:
-            dependencyHealth.score
-        });
+      console.log(chalk.bold('Toolip Security Scorecard'));
+      console.log('');
+      printDimension('Dependency Health ....', scorecard.score.dimensions.dependencyHealth);
+      printDimension('Secret Hygiene .......', scorecard.score.dimensions.secretHygiene);
+      printDimension('Configuration ........', scorecard.score.dimensions.configurationSecurity);
+      printDimension('Git Safety ...........', scorecard.score.dimensions.gitSafety);
+      console.log('');
+      console.log(
+        `${chalk.dim('Overall Score ........')} ${
+          scorecard.score.overall ?? 'N/A (incomplete)'
+        }`
+      );
+      console.log(
+        `${chalk.dim('Grade ................')} ${
+          scorecard.score.grade ?? 'N/A'
+        }`
+      );
 
-        if (options.json) {
-          console.log(
-            JSON.stringify(
-              {
-                score,
-                dependencyHealth,
-                dependencySummary:
-                  dependencyScan.summary
-              },
-              null,
-              2
-            )
-          );
-
-          return;
-        }
-
-        console.log(
-          chalk.bold(
-            'Toolip Security Scorecard'
-          )
-        );
-
+      if (scorecard.dependencyHealth) {
         console.log('');
-
+        console.log(chalk.dim('Dependency score breakdown'));
         console.log(
-          `${chalk.dim(
-            'Dependency Health ....'
-          )} ${score.dependencyHealth}`
+          `${chalk.dim('Vulnerability penalty')} ${scorecard.dependencyHealth.vulnerabilityPenalty}`
         );
-
         console.log(
-          `${chalk.dim(
-            'Secret Hygiene .......'
-          )} ${score.secretHygiene}`
+          `${chalk.dim('Deprecation penalty ..')} ${scorecard.dependencyHealth.deprecationPenalty}`
         );
-
         console.log(
-          `${chalk.dim(
-            'Configuration ........'
-          )} ${score.configurationSecurity}`
+          `${chalk.dim('Maintenance penalty ..')} ${scorecard.dependencyHealth.maintenancePenalty}`
         );
-
         console.log(
-          `${chalk.dim(
-            'Git Safety ...........'
-          )} ${score.gitSafety}`
-        );
-
-        console.log('');
-
-        console.log(
-          `${chalk.dim(
-            'Overall Score ........'
-          )} ${score.overall}`
-        );
-
-        console.log(
-          `${chalk.dim(
-            'Grade ................'
-          )} ${score.grade}`
-        );
-
-        console.log('');
-        console.log(
-          chalk.dim(
-            'Dependency score breakdown'
-          )
-        );
-
-        console.log(
-          `${chalk.dim(
-            'Vulnerability penalty'
-          )} ${dependencyHealth.vulnerabilityPenalty}`
-        );
-
-        console.log(
-          `${chalk.dim(
-            'Deprecation penalty ..'
-          )} ${dependencyHealth.deprecationPenalty}`
-        );
-
-        console.log(
-          `${chalk.dim(
-            'Maintenance penalty ..'
-          )} ${dependencyHealth.maintenancePenalty}`
-        );
-
-        console.log(
-          `${chalk.dim(
-            'Freshness penalty ....'
-          )} ${dependencyHealth.freshnessPenalty}`
+          `${chalk.dim('Freshness penalty ....')} ${scorecard.dependencyHealth.freshnessPenalty}`
         );
       }
-    );
+
+      if (scorecard.warnings.length > 0) {
+        console.log('');
+        console.log(chalk.yellow('Incomplete/partial analysis:'));
+        for (const warning of scorecard.warnings) {
+          console.log(`- ${warning}`);
+        }
+      }
+    });
+}
+
+function printDimension(label: string, dimension: ScoreDimension): void {
+  const value = dimension.score ?? 'N/A';
+  const status = dimension.status === 'measured'
+    ? ''
+    : ` (${dimension.status})`;
+  console.log(`${chalk.dim(label)} ${value}${status}`);
+  if (dimension.reason) {
+    console.log(`  ${chalk.dim(dimension.reason)}`);
+  }
 }
