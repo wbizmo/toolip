@@ -4,13 +4,17 @@ import {
   walkProjectFiles,
   type ProjectFile
 } from './file-walker.js';
+import {
+  detectPackageManager,
+  type PackageManager
+} from './package-manager.js';
 
 export type ProjectProfile = {
   root: string;
   name: string;
   version: string;
   description: string;
-  packageManager: 'npm' | 'pnpm' | 'yarn' | 'unknown';
+  packageManager: PackageManager;
   hasTypeScript: boolean;
   hasJavaScript: boolean;
   hasReact: boolean;
@@ -61,13 +65,6 @@ function dependencyNames(packageJson: Record<string, unknown>): string[] {
 function packageScripts(packageJson: Record<string, unknown>): string[] {
   const scripts = packageJson.scripts as Record<string, string> | undefined;
   return Object.keys(scripts ?? {});
-}
-
-async function detectPackageManager(root: string): Promise<ProjectProfile['packageManager']> {
-  if (await fileExists(path.join(root, 'pnpm-lock.yaml'))) return 'pnpm';
-  if (await fileExists(path.join(root, 'yarn.lock'))) return 'yarn';
-  if (await fileExists(path.join(root, 'package-lock.json'))) return 'npm';
-  return 'unknown';
 }
 
 function summarizeLanguages(files: readonly ProjectFile[]): Record<string, number> {
