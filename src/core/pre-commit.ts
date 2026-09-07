@@ -1,4 +1,5 @@
 import { runGitAudit } from './git-audit.js';
+import { createScannerContext } from './scanner-context.js';
 import { runSecurityDoctor } from './security-doctor.js';
 import type { ToolipFinding } from './report.js';
 
@@ -13,9 +14,10 @@ export type PreCommitResult = {
 };
 
 export async function runPreCommit(root: string): Promise<PreCommitResult> {
+  const context = await createScannerContext(root);
   const [doctor, gitAudit] = await Promise.all([
-    runSecurityDoctor(root),
-    runGitAudit(root)
+    runSecurityDoctor(context),
+    runGitAudit(context)
   ]);
 
   const findings = [...doctor.findings, ...gitAudit.findings];
