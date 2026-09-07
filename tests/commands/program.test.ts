@@ -49,7 +49,7 @@ describe('Toolip CLI composition', () => {
   });
 
   it.each([
-    ['vault', ['init', 'set', 'get', 'list', 'delete', 'export', 'destroy']],
+    ['vault', ['init', 'set', 'get', 'list', 'delete', 'export']],
     ['hook', ['install']]
   ] as const)('builds expected %s subcommands', (name, expected) => {
     const command = createProgram().commands.find((item) => item.name() === name);
