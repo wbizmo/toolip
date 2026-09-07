@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   access,
+  chmod,
   mkdtemp,
   readdir,
   rm,
@@ -155,18 +156,31 @@ describe('Toolip Vault', () => {
     }
   });
 
-  it('normalizes malformed vault files and rejects invalid shell keys', async () => {
+  it('limits shell-key validation to shell export and normalizes malformed vault files', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-vault-corrupt-'));
     const vaultPath = path.join(root, 'vault.json');
 
     try {
       await initVault('master-password', vaultPath);
+      await setSecret({
+        key: 'legacy.key',
+        value: 'value',
+        masterPassword: 'master-password',
+        vaultPath
+      });
+
+      const json = await exportVault({
+        masterPassword: 'master-password',
+        vaultPath,
+        format: 'json'
+      });
+      expect(JSON.parse(json)).toEqual({ 'legacy.key': 'value' });
+
       await expect(
-        setSecret({
-          key: 'BAD-KEY;touch',
-          value: 'value',
+        exportVault({
           masterPassword: 'master-password',
-          vaultPath
+          vaultPath,
+          format: 'shell'
         })
       ).rejects.toMatchObject({ code: 'VAULT_INVALID_KEY' });
 
@@ -182,13 +196,16 @@ describe('Toolip Vault', () => {
     }
   });
 
-  it('keeps vault file permissions private where POSIX modes apply', async () => {
+  it('creates and repairs private vault permissions where POSIX modes apply', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-vault-mode-'));
     const vaultPath = path.join(root, 'vault.json');
 
     try {
       await initVault('master-password', vaultPath);
       if (process.platform !== 'win32') {
+        expect((await stat(vaultPath)).mode & 0o777).toBe(0o600);
+        await chmod(vaultPath, 0o644);
+        await listSecrets({ masterPassword: 'master-password', vaultPath });
         expect((await stat(vaultPath)).mode & 0o777).toBe(0o600);
       }
     } finally {
