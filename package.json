@@ -22,7 +22,7 @@
     "start": "node dist/src/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "node scripts/verify-security-coverage.mjs",
+    "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",
     "quality": "tsc -p tsconfig.quality.json --noEmit",
     "audit:runtime": "npm audit --omit=dev --audit-level=high",
@@ -78,6 +78,7 @@
   "devDependencies": {
     "@types/node": "^22.13.10",
     "@types/semver": "^7.7.1",
+    "@vitest/coverage-v8": "3.2.7",
     "tsx": "^4.19.3",
     "vitest": "^3.2.6"
   }
