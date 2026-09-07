@@ -25,8 +25,12 @@ export function registerPreCommitCommand(program: Command): void {
           (item) => item.severity === 'critical' || item.severity === 'high'
         )) {
           console.log(`${chalk.red('✖')} ${finding.title}`);
-          if (finding.file) console.log(`  ${chalk.dim('File:')} ${finding.file}`);
-          if (finding.evidence) console.log(`  ${chalk.dim('Evidence:')} ${finding.evidence}`);
+          if (finding.location?.file) {
+            console.log(`  ${chalk.dim('File:')} ${finding.location.file}`);
+          }
+          if (finding.evidence?.[0]?.summary) {
+            console.log(`  ${chalk.dim('Evidence:')} ${finding.evidence[0].summary}`);
+          }
         }
       }
 
