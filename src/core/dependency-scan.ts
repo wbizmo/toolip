@@ -1,17 +1,12 @@
 import { mapConcurrent } from '../application/concurrency.js';
 import type { Finding } from '../contracts/finding.js';
-import { readDependencies } from './read-dependencies.js';
 import { analyzePackage } from './analyze-package.js';
 import type { PackageHealth } from './dependency-types.js';
-import {
-  calculateDependencyHealthFromPackages,
-  type DependencyHealthBreakdown
-} from './score.js';
+import { readDependencies } from './read-dependencies.js';
 
 export type DependencyScanResult = {
   packages: PackageHealth[];
   findings: Finding[];
-  dependencyHealth: DependencyHealthBreakdown;
   summary: {
     totalDependencies: number;
     outdated: number;
@@ -31,12 +26,10 @@ export async function scanDependencies(root: string): Promise<DependencyScanResu
     (dependency) => analyzePackage(dependency)
   );
   const findings = packages.flatMap(packageToFindings);
-  const dependencyHealth = calculateDependencyHealthFromPackages(packages);
 
   return {
     packages,
     findings,
-    dependencyHealth,
     summary: {
       totalDependencies: packages.length,
       outdated: packages.filter((pkg) => pkg.outdated).length,
@@ -57,6 +50,7 @@ export function packageToFindings(pkg: PackageHealth): Finding[] {
 
   if (pkg.deprecated) {
     findings.push(dependencyFinding({
+      ruleId: 'TOOLIP-DEP-DEPRECATED',
       id: `TOOLIP-DEP-DEPRECATED-${suffix}`,
       title: `Deprecated package: ${pkg.name}`,
       severity: 'high',
@@ -69,6 +63,7 @@ export function packageToFindings(pkg: PackageHealth): Finding[] {
 
   if (pkg.outdated) {
     findings.push(dependencyFinding({
+      ruleId: 'TOOLIP-DEP-OUTDATED',
       id: `TOOLIP-DEP-OUTDATED-${suffix}`,
       title: `Outdated package: ${pkg.name}`,
       severity: 'medium',
@@ -81,6 +76,7 @@ export function packageToFindings(pkg: PackageHealth): Finding[] {
 
   if (pkg.maintainers === 0) {
     findings.push(dependencyFinding({
+      ruleId: 'TOOLIP-DEP-NO-MAINTAINERS',
       id: `TOOLIP-DEP-NO-MAINTAINERS-${suffix}`,
       title: `No visible maintainers: ${pkg.name}`,
       severity: 'medium',
@@ -92,6 +88,7 @@ export function packageToFindings(pkg: PackageHealth): Finding[] {
 
   if (pkg.ageInDays !== null && pkg.ageInDays > 730) {
     findings.push(dependencyFinding({
+      ruleId: 'TOOLIP-DEP-STALE',
       id: `TOOLIP-DEP-STALE-${suffix}`,
       title: `Possibly stale package: ${pkg.name}`,
       severity: 'low',
@@ -106,6 +103,7 @@ export function packageToFindings(pkg: PackageHealth): Finding[] {
 }
 
 function dependencyFinding(input: {
+  ruleId: string;
   id: string;
   title: string;
   severity: Finding['severity'];
@@ -116,7 +114,7 @@ function dependencyFinding(input: {
 }): Finding {
   return {
     id: input.id,
-    ruleId: input.id.replace(/-[A-Z0-9-]+$/, ''),
+    ruleId: input.ruleId,
     title: input.title,
     severity: input.severity,
     confidence: 'high',
@@ -126,7 +124,7 @@ function dependencyFinding(input: {
     evidence: input.evidence
       ? [{
           summary: input.evidence,
-          fingerprint: `${input.pkg.name}@${input.pkg.installedVersion}:${input.id}`
+          fingerprint: `${input.pkg.name}@${input.pkg.installedVersion}:${input.ruleId}`
         }]
       : undefined,
     remediation: { summary: input.recommendation },

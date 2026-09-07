@@ -1,53 +1,38 @@
+import { describe, expect, it } from 'vitest';
 import {
-  readFile
-} from 'node:fs/promises';
-import {
-  describe,
-  expect,
-  it
-} from 'vitest';
+  calculateScore,
+  measuredDimension,
+  unmeasuredDimension
+} from '../../src/core/score.js';
 
 describe('scan and score consistency', () => {
-  it('uses the canonical dependency-health result in both commands', async () => {
-    const scanSource = await readFile(
-      'src/commands/scan.ts',
-      'utf8'
-    );
+  it('uses one measurement-aware score contract for complete results', () => {
+    const score = calculateScore({
+      dependencyHealth: measuredDimension(80),
+      secretHygiene: measuredDimension(90),
+      configurationSecurity: measuredDimension(100),
+      gitSafety: measuredDimension(70)
+    });
 
-    const scoreSource = await readFile(
-      'src/commands/score.ts',
-      'utf8'
-    );
-
-    expect(scanSource).toContain(
-      'dependencyScan.dependencyHealth'
-    );
-
-    expect(scoreSource).toContain(
-      'dependencyScan.dependencyHealth'
-    );
-
-    expect(scanSource).not.toContain(
-      'calculateDependencyHealth('
-    );
-
-    expect(scoreSource).not.toContain(
-      'calculateDependencyHealthFromPackages('
-    );
+    expect(score.complete).toBe(true);
+    expect(score.overall).toBe(85);
+    expect(score.grade).toBe('B');
   });
 
-  it('calculates dependency health once in the dependency scanner', async () => {
-    const source = await readFile(
-      'src/core/dependency-scan.ts',
-      'utf8'
-    );
+  it('cannot create an optimistic aggregate from partial analysis', () => {
+    const score = calculateScore({
+      dependencyHealth: measuredDimension(100),
+      secretHygiene: measuredDimension(100),
+      configurationSecurity: unmeasuredDimension(
+        'failed',
+        'configuration analyzer failed'
+      ),
+      gitSafety: measuredDimension(100)
+    });
 
-    expect(source).toContain(
-      'calculateDependencyHealthFromPackages'
-    );
-
-    expect(source).toContain(
-      'dependencyHealth,'
-    );
+    expect(score.configurationSecurity).toBeNull();
+    expect(score.overall).toBeNull();
+    expect(score.grade).toBeNull();
+    expect(score.complete).toBe(false);
   });
 });
