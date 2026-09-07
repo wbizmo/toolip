@@ -2,12 +2,14 @@ import type { Command } from 'commander';
 import chalk from 'chalk';
 import {
   deleteSecret,
-  exportEnv,
+  exportVault,
   getSecret,
   initVault,
   listSecrets,
-  setSecret
+  setSecret,
+  type VaultExportFormat
 } from '../core/vault.js';
+import { ToolipError } from '../errors/toolip-error.js';
 import { readSecretInputs } from '../utils/secret-input.js';
 
 export function registerVaultCommand(program: Command): void {
@@ -36,7 +38,6 @@ export function registerVaultCommand(program: Command): void {
         env: options.env,
         masterPassword: password
       });
-
       console.log(`${chalk.green('✓')} Stored ${key} for ${options.env}.`);
     });
 
@@ -51,7 +52,6 @@ export function registerVaultCommand(program: Command): void {
         env: options.env,
         masterPassword: password
       });
-
       console.log(secret.value);
     });
 
@@ -87,21 +87,35 @@ export function registerVaultCommand(program: Command): void {
         env: options.env,
         masterPassword: password
       });
-
-      console.log(deleted ? `${chalk.green('✓')} Deleted ${key}.` : chalk.yellow(`No secret found for ${key}.`));
+      console.log(
+        deleted
+          ? `${chalk.green('✓')} Deleted ${key}.`
+          : chalk.yellow(`No secret found for ${key}.`)
+      );
     });
 
   vault
     .command('export')
-    .description('Export secrets as shell-compatible environment lines.')
+    .description('Export secrets in an explicit shell or JSON format.')
     .option('--env <env>', 'Filter by environment.')
-    .action(async (options: { env?: string }) => {
+    .option('--format <format>', 'Export format: shell or json.', 'shell')
+    .action(async (options: { env?: string; format: string }) => {
+      const format = parseExportFormat(options.format);
       const [password] = await readSecretInputs(['Master password']);
-      const output = await exportEnv({
+      const output = await exportVault({
         env: options.env,
-        masterPassword: password
+        masterPassword: password,
+        format
       });
-
       console.log(output);
     });
+}
+
+function parseExportFormat(value: string): VaultExportFormat {
+  if (value === 'shell' || value === 'json') return value;
+
+  throw new ToolipError('Vault export format must be "shell" or "json".', {
+    code: 'VAULT_EXPORT_FORMAT_INVALID',
+    exitCode: 1
+  });
 }
