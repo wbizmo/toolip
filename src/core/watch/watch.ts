@@ -1,5 +1,6 @@
 import {
   readdirSync,
+  realpathSync,
   statSync,
   watch,
   type FSWatcher
@@ -17,7 +18,7 @@ export function watchProject(
   onChange: () => Promise<void>,
   options: WatchOptions = {}
 ): () => void {
-  const absoluteRoot = path.resolve(root);
+  const absoluteRoot = canonicalWatchPath(root);
   const debounceMs = options.debounceMs ?? 500;
   const ignored = options.ignored ?? [
     /(^|\/)node_modules(\/|$)/,
@@ -112,10 +113,13 @@ function watchDirectoryTree(
   const addDirectory = (directory: string): void => {
     if (closed) return;
 
-    const key = canonicalDirectoryKey(directory);
+    const canonicalDirectory = canonicalWatchPath(directory);
+    const key = canonicalDirectoryKey(canonicalDirectory);
     if (watchers.has(key)) return;
 
-    const relativeDirectory = normalizeRelativePath(path.relative(root, directory));
+    const relativeDirectory = normalizeRelativePath(
+      path.relative(root, canonicalDirectory)
+    );
     if (
       relativeDirectory &&
       ignored.some((pattern) => pattern.test(relativeDirectory))
@@ -125,17 +129,21 @@ function watchDirectoryTree(
 
     let watcher: FSWatcher;
     try {
-      watcher = watch(directory, { recursive: false }, (event, filename) => {
-        if (closed || !filename) return;
+      watcher = watch(
+        canonicalDirectory,
+        { recursive: false },
+        (event, filename) => {
+          if (closed || !filename) return;
 
-        const absolutePath = path.join(directory, filename.toString());
-        const relativePath = path.relative(root, absolutePath);
-        onChange(relativePath);
+          const absolutePath = path.join(canonicalDirectory, filename.toString());
+          const relativePath = path.relative(root, absolutePath);
+          onChange(relativePath);
 
-        if (event === 'rename') {
-          tryAddNewDirectory(absolutePath);
+          if (event === 'rename') {
+            tryAddNewDirectory(absolutePath);
+          }
         }
-      });
+      );
     } catch (error) {
       onError(error);
       return;
@@ -149,9 +157,9 @@ function watchDirectoryTree(
     });
 
     try {
-      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      for (const entry of readdirSync(canonicalDirectory, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
-        addDirectory(path.join(directory, entry.name));
+        addDirectory(path.join(canonicalDirectory, entry.name));
       }
     } catch (error) {
       onError(error);
@@ -179,9 +187,18 @@ function watchDirectoryTree(
   };
 }
 
-function canonicalDirectoryKey(directory: string): string {
+function canonicalWatchPath(directory: string): string {
   const resolved = path.resolve(directory);
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+
+  try {
+    return realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function canonicalDirectoryKey(directory: string): string {
+  return process.platform === 'win32' ? directory.toLowerCase() : directory;
 }
 
 function normalizeRelativePath(value: string): string {
