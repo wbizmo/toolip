@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
-  readNpmDependencyInventory,
+  readNpmDependencyGraph,
   type DependencyIdentity
 } from '../dependencies/inventory.js';
 
@@ -27,10 +27,17 @@ function purl(
   );
 }
 
+function stableRef(value: string): string {
+  return createHash('sha256')
+    .update(value)
+    .digest('hex')
+    .slice(0, 24);
+}
+
 function bomRef(
   dependency: DependencyIdentity
 ): string {
-  return purl(dependency);
+  return `urn:toolip:npm:${stableRef(dependency.id)}`;
 }
 
 function spdxId(value: string): string {
@@ -65,13 +72,34 @@ export async function generateSbom(
     )
   ) as RootManifest;
 
-  const dependencies =
-    await readNpmDependencyInventory(root);
+  const graph = await readNpmDependencyGraph(root);
+  const dependencies = graph.packages;
+  const byId = new Map(
+    dependencies.map((dependency) => [dependency.id, dependency])
+  );
 
   const rootName = manifest.name ?? 'unknown-project';
   const rootVersion = manifest.version ?? '0.0.0';
+  const rootRef = `urn:toolip:root:${stableRef(`${rootName}@${rootVersion}`)}`;
 
   if (format === 'cyclonedx') {
+    const dependsOn = new Map<string, string[]>();
+
+    for (const edge of graph.edges) {
+      const from = edge.from === 'root'
+        ? rootRef
+        : byId.get(edge.from)
+          ? bomRef(byId.get(edge.from)!)
+          : undefined;
+      const target = byId.get(edge.to);
+      if (!from || !target) continue;
+
+      const current = dependsOn.get(from) ?? [];
+      const targetRef = bomRef(target);
+      if (!current.includes(targetRef)) current.push(targetRef);
+      dependsOn.set(from, current);
+    }
+
     return {
       bomFormat: 'CycloneDX',
       specVersion: '1.5',
@@ -87,6 +115,7 @@ export async function generateSbom(
         ],
         component: {
           type: 'application',
+          'bom-ref': rootRef,
           name: rootName,
           version: rootVersion,
           description: manifest.description
@@ -109,19 +138,38 @@ export async function generateSbom(
           {
             name: 'toolip:development',
             value: String(dependency.development)
+          },
+          {
+            name: 'toolip:installPath',
+            value: dependency.installPath
           }
         ]
       })),
-      dependencies: dependencies.map((dependency) => ({
-        ref: bomRef(dependency),
-        dependsOn: []
-      }))
+      dependencies: [
+        {
+          ref: rootRef,
+          dependsOn: dependsOn.get(rootRef) ?? []
+        },
+        ...dependencies.map((dependency) => {
+          const ref = bomRef(dependency);
+          return {
+            ref,
+            dependsOn: dependsOn.get(ref) ?? []
+          };
+        })
+      ]
     };
   }
 
   const documentId = 'SPDXRef-DOCUMENT';
   const rootId = spdxId(
     `${rootName}-${rootVersion}`
+  );
+  const packageSpdxIds = new Map(
+    dependencies.map((dependency) => [
+      dependency.id,
+      spdxId(`${dependency.name}-${dependency.version}-${dependency.installPath}`)
+    ])
   );
 
   return {
@@ -151,9 +199,7 @@ export async function generateSbom(
       },
       ...dependencies.map((dependency) => ({
         name: dependency.name,
-        SPDXID: spdxId(
-          `${dependency.name}-${dependency.version}`
-        ),
+        SPDXID: packageSpdxIds.get(dependency.id),
         versionInfo: dependency.version,
         downloadLocation: 'NOASSERTION',
         filesAnalyzed: false,
@@ -168,13 +214,20 @@ export async function generateSbom(
         ]
       }))
     ],
-    relationships: dependencies.map((dependency) => ({
-      spdxElementId: rootId,
-      relationshipType: 'DEPENDS_ON',
-      relatedSpdxElement:
-        spdxId(
-          `${dependency.name}-${dependency.version}`
-        )
-    }))
+    relationships: graph.edges.flatMap((edge) => {
+      const relatedSpdxElement = packageSpdxIds.get(edge.to);
+      if (!relatedSpdxElement) return [];
+
+      const spdxElementId = edge.from === 'root'
+        ? rootId
+        : packageSpdxIds.get(edge.from);
+      if (!spdxElementId) return [];
+
+      return [{
+        spdxElementId,
+        relationshipType: 'DEPENDS_ON',
+        relatedSpdxElement
+      }];
+    })
   };
 }
