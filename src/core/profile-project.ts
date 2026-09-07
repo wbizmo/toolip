@@ -1,6 +1,9 @@
 import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { walkProjectFiles } from './file-walker.js';
+import {
+  walkProjectFiles,
+  type ProjectFile
+} from './file-walker.js';
 
 export type ProjectProfile = {
   root: string;
@@ -67,7 +70,7 @@ async function detectPackageManager(root: string): Promise<ProjectProfile['packa
   return 'unknown';
 }
 
-function summarizeLanguages(files: Awaited<ReturnType<typeof walkProjectFiles>>): Record<string, number> {
+function summarizeLanguages(files: readonly ProjectFile[]): Record<string, number> {
   const languageMap: Record<string, string> = {
     ts: 'TypeScript',
     tsx: 'TypeScript React',
@@ -92,13 +95,15 @@ function summarizeLanguages(files: Awaited<ReturnType<typeof walkProjectFiles>>)
   }, {});
 }
 
-export async function profileProject(root: string): Promise<ProjectProfile> {
+export async function profileProject(
+  root: string,
+  discoveredFiles?: readonly ProjectFile[]
+): Promise<ProjectProfile> {
   const absoluteRoot = path.resolve(root);
   const packageJson = await readPackageJson(absoluteRoot);
   const deps = dependencyNames(packageJson);
   const scripts = packageScripts(packageJson);
-  const files = await walkProjectFiles(absoluteRoot);
-
+  const files = discoveredFiles ?? await walkProjectFiles(absoluteRoot);
   const packageManager = await detectPackageManager(absoluteRoot);
 
   const profile: ProjectProfile = {
