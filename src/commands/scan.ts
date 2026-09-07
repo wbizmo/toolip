@@ -1,11 +1,10 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
-import { createScannerContext } from '../core/scanner-context.js';
+import { buildSecurityScorecard } from '../application/security-scorecard.js';
+import { TOOLIP_VERSION } from '../config/version.js';
 import { createReport } from '../core/report.js';
 import { writeReport } from '../core/report-writer.js';
-import { scanDependencies } from '../core/dependency-scan.js';
-import { calculateScore } from '../core/score.js';
-import { TOOLIP_VERSION } from '../config/version.js';
+import { createScannerContext } from '../core/scanner-context.js';
 import { printReportSummary, printScannerContext } from '../utils/output.js';
 
 export function registerScanCommand(program: Command): void {
@@ -21,36 +20,43 @@ export function registerScanCommand(program: Command): void {
       const context = await createScannerContext(options.path);
       printScannerContext(context);
 
-      const dependencyScan = await scanDependencies(context.root);
-
-      const dependencyHealth =
-        dependencyScan.dependencyHealth;
-
-      const score = calculateScore({
-        dependencyHealth:
-          dependencyHealth.score
-      });
-
+      const scorecard = await buildSecurityScorecard(context.root);
       const report = createReport({
         version: TOOLIP_VERSION,
         command: 'scan',
         root: context.root,
-        findings: dependencyScan.findings
+        findings: scorecard.findings
       });
 
-      console.log('');
-      console.log(chalk.bold('Dependency Intelligence'));
-      console.log(`${chalk.dim('Total Dependencies:')} ${dependencyScan.summary.totalDependencies}`);
-      console.log(`${chalk.dim('Outdated:')} ${dependencyScan.summary.outdated}`);
-      console.log(`${chalk.dim('Deprecated:')} ${dependencyScan.summary.deprecated}`);
-      console.log(`${chalk.dim('High Risk:')} ${dependencyScan.summary.highRisk}`);
-      console.log(`${chalk.dim('Medium Risk:')} ${dependencyScan.summary.mediumRisk}`);
-      console.log(`${chalk.dim('Average Risk:')} ${dependencyScan.summary.averageRiskScore}`);
-      console.log(`${chalk.dim('Dependency Health:')} ${dependencyHealth.score}`);
-      console.log(`${chalk.dim('Overall Grade:')} ${score.grade}`);
+      if (scorecard.dependencySummary) {
+        const summary = scorecard.dependencySummary;
+        console.log('');
+        console.log(chalk.bold('Dependency Intelligence'));
+        console.log(`${chalk.dim('Total Dependencies:')} ${summary.totalDependencies}`);
+        console.log(`${chalk.dim('Outdated:')} ${summary.outdated}`);
+        console.log(`${chalk.dim('Deprecated:')} ${summary.deprecated}`);
+        console.log(`${chalk.dim('High Risk:')} ${summary.highRisk}`);
+        console.log(`${chalk.dim('Medium Risk:')} ${summary.mediumRisk}`);
+        console.log(`${chalk.dim('Average Risk:')} ${summary.averageRiskScore}`);
+      }
+
+      console.log(
+        `${chalk.dim('Dependency Health:')} ${scorecard.score.dependencyHealth ?? 'N/A'}`
+      );
+      console.log(
+        `${chalk.dim('Overall Grade:')} ${scorecard.score.grade ?? 'N/A (incomplete)'}`
+      );
 
       console.log('');
       printReportSummary(report);
+
+      if (scorecard.warnings.length > 0) {
+        console.log('');
+        console.log(chalk.yellow('Partial analysis warnings:'));
+        for (const warning of scorecard.warnings) {
+          console.log(`- ${warning}`);
+        }
+      }
 
       if (options.output) {
         await writeReport(options.output, report);
