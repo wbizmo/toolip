@@ -1,11 +1,11 @@
+import type { Finding } from '../contracts/finding.js';
 import { runGitAudit } from './git-audit.js';
 import { createScannerContext } from './scanner-context.js';
 import { runSecurityDoctor } from './security-doctor.js';
-import type { ToolipFinding } from './report.js';
 
 export type PreCommitResult = {
   passed: boolean;
-  findings: ToolipFinding[];
+  findings: Finding[];
   summary: {
     critical: number;
     high: number;

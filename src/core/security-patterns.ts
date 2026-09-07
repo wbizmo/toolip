@@ -1,10 +1,10 @@
-import type { ToolipFinding } from './report.js';
+import type { FindingSeverity } from '../contracts/finding.js';
 
 export type SecurityPattern = {
   id: string;
   title: string;
   category: string;
-  severity: ToolipFinding['severity'];
+  severity: FindingSeverity;
   regex: RegExp;
   message: string;
   recommendation: string;
@@ -80,55 +80,6 @@ export const secretPatterns: SecurityPattern[] = [
     message: 'A hardcoded API key-like value was found.',
     recommendation:
       'Remove API keys from source code and rotate exposed credentials.'
-  }
-];
-
-export const dangerousCodePatterns: SecurityPattern[] = [
-  {
-    id: 'TOOLIP-DANGEROUS-EVAL',
-    title: 'Dangerous eval usage',
-    category: 'dangerous-code',
-    severity: 'high',
-    regex: /\beval\s*\(/g,
-    message:
-      'eval() can execute arbitrary code and introduce injection risk.',
-    recommendation:
-      'Replace eval() with explicit parsing or safe control flow.'
-  },
-  {
-    id: 'TOOLIP-DANGEROUS-NEW-FUNCTION',
-    title: 'Dangerous Function constructor usage',
-    category: 'dangerous-code',
-    severity: 'high',
-    regex: /\bnew\s+Function\s*\(/g,
-    message:
-      'The Function constructor executes dynamic code.',
-    recommendation:
-      'Avoid runtime code generation and use explicit functions.'
-  },
-  {
-    id: 'TOOLIP-DANGEROUS-CHILD-PROCESS-EXEC',
-    title: 'Unsafe child_process exec usage',
-    category: 'dangerous-code',
-    severity: 'high',
-    regex:
-      /(?:\bchild_process\s*\.\s*exec|(?<![\w.])exec)\s*\(/g,
-    message:
-      'Shell execution may become unsafe when untrusted input reaches the command.',
-    recommendation:
-      'Prefer execFile() or spawn() with argument arrays and strict validation.'
-  },
-  {
-    id: 'TOOLIP-DANGEROUS-EXECSYNC',
-    title: 'Unsafe execSync usage',
-    category: 'dangerous-code',
-    severity: 'high',
-    regex:
-      /(?:\bchild_process\s*\.\s*execSync|(?<![\w.])execSync)\s*\(/g,
-    message:
-      'Synchronous shell execution can introduce injection and blocking risks.',
-    recommendation:
-      'Avoid shell execution or use safer process APIs with validated arguments.'
   }
 ];
 

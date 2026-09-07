@@ -1,10 +1,9 @@
 import semver from 'semver';
 import type {
-  PackageHealth
-} from './dependency-types.js';
-import type {
-  ToolipFinding
-} from './report.js';
+  Finding,
+  FindingSeverity
+} from '../contracts/finding.js';
+import type { PackageHealth } from './dependency-types.js';
 
 export type ScoreGrade =
   | 'A'
@@ -78,7 +77,7 @@ export function calculateScore(
 
 export function calculateDependencyHealthFromPackages(
   packages: PackageHealth[],
-  vulnerabilityFindings: ToolipFinding[] = []
+  vulnerabilityFindings: Finding[] = []
 ): DependencyHealthBreakdown {
   let criticalVulnerabilities = 0;
   let highVulnerabilities = 0;
@@ -86,9 +85,7 @@ export function calculateDependencyHealthFromPackages(
   let lowVulnerabilities = 0;
 
   for (const finding of vulnerabilityFindings) {
-    if (
-      finding.category !== 'vulnerability'
-    ) {
+    if (finding.category !== 'vulnerability') {
       continue;
     }
 
@@ -133,20 +130,12 @@ export function calculateDependencyHealthFromPackages(
   };
 
   for (const pkg of packages) {
-    if (
-      !pkg.outdated ||
-      !pkg.latestVersion
-    ) {
+    if (!pkg.outdated || !pkg.latestVersion) {
       continue;
     }
 
-    const installed = semver.coerce(
-      pkg.installedVersion
-    );
-
-    const latest = semver.coerce(
-      pkg.latestVersion
-    );
+    const installed = semver.coerce(pkg.installedVersion);
+    const latest = semver.coerce(pkg.latestVersion);
 
     if (!installed || !latest) {
       outdated.unknown += 1;
@@ -155,13 +144,9 @@ export function calculateDependencyHealthFromPackages(
 
     if (latest.major > installed.major) {
       outdated.major += 1;
-    } else if (
-      latest.minor > installed.minor
-    ) {
+    } else if (latest.minor > installed.minor) {
       outdated.minor += 1;
-    } else if (
-      latest.patch > installed.patch
-    ) {
+    } else if (latest.patch > installed.patch) {
       outdated.patch += 1;
     } else {
       outdated.unknown += 1;
@@ -209,13 +194,10 @@ export function calculateDependencyHealthFromPackages(
 
 /**
  * Backward-compatible finding-based score.
- *
- * Outdated-package findings are treated as maintenance
- * signals and capped so they cannot independently collapse
- * dependency health to zero.
+ * Retained temporarily for the public API; internal callers use package-based scoring.
  */
 export function calculateDependencyHealth(
-  findings: ToolipFinding[]
+  findings: Finding[]
 ): number {
   let vulnerabilityPenalty = 0;
   let deprecationPenalty = 0;
@@ -223,47 +205,27 @@ export function calculateDependencyHealth(
   let freshnessPenalty = 0;
 
   for (const finding of findings) {
-    if (
-      finding.category === 'vulnerability'
-    ) {
-      vulnerabilityPenalty +=
-        severityPenalty(finding.severity);
-
+    if (finding.category === 'vulnerability') {
+      vulnerabilityPenalty += severityPenalty(finding.severity);
       continue;
     }
 
-    if (
-      finding.id.startsWith(
-        'TOOLIP-DEP-DEPRECATED-'
-      )
-    ) {
+    if (finding.id.startsWith('TOOLIP-DEP-DEPRECATED-')) {
       deprecationPenalty += 18;
       continue;
     }
 
-    if (
-      finding.id.startsWith(
-        'TOOLIP-DEP-OUTDATED-'
-      )
-    ) {
+    if (finding.id.startsWith('TOOLIP-DEP-OUTDATED-')) {
       freshnessPenalty += 1;
       continue;
     }
 
-    if (
-      finding.id.startsWith(
-        'TOOLIP-DEP-NO-MAINTAINERS-'
-      )
-    ) {
+    if (finding.id.startsWith('TOOLIP-DEP-NO-MAINTAINERS-')) {
       maintenancePenalty += 4;
       continue;
     }
 
-    if (
-      finding.id.startsWith(
-        'TOOLIP-DEP-STALE-'
-      )
-    ) {
+    if (finding.id.startsWith('TOOLIP-DEP-STALE-')) {
       freshnessPenalty += 1;
       continue;
     }
@@ -283,9 +245,7 @@ export function calculateDependencyHealth(
   );
 }
 
-function severityPenalty(
-  severity: ToolipFinding['severity']
-): number {
+function severityPenalty(severity: FindingSeverity): number {
   if (severity === 'critical') return 40;
   if (severity === 'high') return 25;
   if (severity === 'medium') return 12;
@@ -300,9 +260,7 @@ function clamp(value: number): number {
   );
 }
 
-export function gradeScore(
-  score: number
-): ScoreGrade {
+export function gradeScore(score: number): ScoreGrade {
   if (score >= 90) return 'A';
   if (score >= 80) return 'B';
   if (score >= 70) return 'C';

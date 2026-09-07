@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { ToolipFinding } from './report.js';
+import type { Finding } from '../contracts/finding.js';
 
 export type LicenseEntry = {
   name: string;
@@ -11,7 +11,7 @@ export type LicenseEntry = {
 
 export type LicenseAnalysisResult = {
   licenses: LicenseEntry[];
-  findings: ToolipFinding[];
+  findings: Finding[];
   summary: {
     total: number;
     unknown: number;
@@ -97,34 +97,57 @@ function inferLicense(packageName: string): string {
   return known[packageName] ?? 'UNKNOWN';
 }
 
-function licenseToFindings(entry: LicenseEntry): ToolipFinding[] {
+function licenseToFindings(entry: LicenseEntry): Finding[] {
   if (entry.license === 'UNKNOWN') {
-    return [
-      {
-        id: `TOOLIP-LICENSE-UNKNOWN-${entry.name.toUpperCase().replaceAll(/[^A-Z0-9]/g, '-')}`,
-        title: `Unknown license: ${entry.name}`,
-        severity: 'medium',
-        category: 'license',
-        message: `${entry.name} does not have a known license in Toolip's local license intelligence map.`,
-        recommendation: 'Manually verify the package license before using it in commercial or distributed software.',
-        evidence: entry.version
-      }
-    ];
+    return [licenseFinding(
+      entry,
+      'TOOLIP-LICENSE-UNKNOWN',
+      `Unknown license: ${entry.name}`,
+      'medium',
+      `${entry.name} does not have a known license in Toolip's local license intelligence map.`,
+      'Manually verify the package license before using it in commercial or distributed software.',
+      entry.version
+    )];
   }
 
   if (restrictiveLicenses.has(entry.license)) {
-    return [
-      {
-        id: `TOOLIP-LICENSE-RESTRICTIVE-${entry.name.toUpperCase().replaceAll(/[^A-Z0-9]/g, '-')}`,
-        title: `Restrictive license detected: ${entry.name}`,
-        severity: 'high',
-        category: 'license',
-        message: `${entry.name} appears to use ${entry.license}, which may introduce redistribution obligations.`,
-        recommendation: 'Review the license terms with care before using this package in proprietary software.',
-        evidence: entry.license
-      }
-    ];
+    return [licenseFinding(
+      entry,
+      'TOOLIP-LICENSE-RESTRICTIVE',
+      `Restrictive license detected: ${entry.name}`,
+      'high',
+      `${entry.name} appears to use ${entry.license}, which may introduce redistribution obligations.`,
+      'Review the license terms with care before using this package in proprietary software.',
+      entry.license
+    )];
   }
 
   return [];
+}
+
+function licenseFinding(
+  entry: LicenseEntry,
+  ruleId: string,
+  title: string,
+  severity: Finding['severity'],
+  message: string,
+  recommendation: string,
+  evidence: string
+): Finding {
+  return {
+    id: `${ruleId}-${entry.name.toUpperCase().replaceAll(/[^A-Z0-9]/g, '-')}`,
+    ruleId,
+    title,
+    severity,
+    confidence: 'medium',
+    category: 'license',
+    message,
+    source: 'license-analysis',
+    evidence: [{
+      summary: evidence,
+      fingerprint: `${entry.name}:${entry.version}:${entry.license}`
+    }],
+    remediation: { summary: recommendation },
+    metadata: { ...entry }
+  };
 }
