@@ -60,7 +60,7 @@ jobs:
           echo "notes=$NOTES" >> "$GITHUB_OUTPUT"
           echo "title=$TITLE" >> "$GITHUB_OUTPUT"
 
-      - name: Reject conflicting existing tag or release
+      - name: Reject conflicting existing tag
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
@@ -69,7 +69,7 @@ jobs:
           set -euo pipefail
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "GitHub release $TAG already exists; nothing to create."
+            echo "GitHub release $TAG already exists; workflow is idempotent."
             exit 0
           fi
 
@@ -102,7 +102,6 @@ jobs:
           gh release create "$TAG" \
             --target "$GITHUB_SHA" \
             --title "$TITLE" \
-            --notes-file "$NOTES" \
-            --verify-tag=false
+            --notes-file "$NOTES"
 
           echo "Created $TAG from verified commit $GITHUB_SHA."
