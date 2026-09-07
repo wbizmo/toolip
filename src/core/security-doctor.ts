@@ -1,6 +1,12 @@
-import { readFile } from 'node:fs/promises';
 import { analyzeAstSource } from '../analyzers/ast/source-analysis.js';
-import { createScannerContext } from './scanner-context.js';
+import {
+  createScannerContext,
+  type ScannerContext
+} from './scanner-context.js';
+import {
+  TextFileReader,
+  type TextFileBudget
+} from './text-file-reader.js';
 import type { ToolipFinding } from './report.js';
 import {
   configSecurityPatterns,
@@ -11,13 +17,24 @@ import {
 
 export type SecurityDoctorResult = {
   findings: ToolipFinding[];
+  warnings?: string[];
   summary: {
+    filesDiscovered: number;
+    filesEligible: number;
     filesScanned: number;
+    filesSkipped: number;
+    readFailures: number;
+    bytesScanned: number;
     secrets: number;
     dangerousCode: number;
     configuration: number;
     headers: number;
   };
+};
+
+export type SecurityDoctorOptions = {
+  budget?: TextFileBudget;
+  signal?: AbortSignal;
 };
 
 const secretScanExtensions = new Set([
@@ -46,10 +63,19 @@ const codeExtensions = new Set([
 ]);
 
 export async function runSecurityDoctor(
-  root: string
+  rootOrContext: string | ScannerContext,
+  options: SecurityDoctorOptions = {}
 ): Promise<SecurityDoctorResult> {
-  const context = await createScannerContext(root);
+  const context = typeof rootOrContext === 'string'
+    ? await createScannerContext(rootOrContext)
+    : rootOrContext;
+  const reader = new TextFileReader(options.budget);
   const findings: ToolipFinding[] = [];
+  const warnings: string[] = [];
+  let filesEligible = 0;
+  let filesScanned = 0;
+  let filesSkipped = 0;
+  let readFailures = 0;
 
   for (const file of context.files) {
     if (
@@ -61,16 +87,27 @@ export async function runSecurityDoctor(
       continue;
     }
 
-    let content = '';
+    filesEligible += 1;
+    const read = await reader.read(
+      file.absolutePath,
+      options.signal
+    );
 
-    try {
-      content = await readFile(
-        file.absolutePath,
-        'utf8'
-      );
-    } catch {
+    if (read.status !== 'ok') {
+      filesSkipped += 1;
+      if (read.status === 'failed') {
+        readFailures += 1;
+        warnings.push(`${file.relativePath}: ${read.error}`);
+      } else {
+        warnings.push(`${file.relativePath}: skipped (${read.status})`);
+      }
+
+      if (read.status === 'cancelled') break;
       continue;
     }
+
+    filesScanned += 1;
+    const content = read.content;
 
     findings.push(
       ...scanContent(
@@ -120,8 +157,14 @@ export async function runSecurityDoctor(
 
   return {
     findings,
+    warnings: warnings.length > 0 ? warnings : undefined,
     summary: {
-      filesScanned: context.files.length,
+      filesDiscovered: context.files.length,
+      filesEligible,
+      filesScanned,
+      filesSkipped,
+      readFailures,
+      bytesScanned: reader.usage.bytesRead,
       secrets: findings.filter(
         (finding) =>
           finding.category === 'secrets'
