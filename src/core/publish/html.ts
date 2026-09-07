@@ -1,4 +1,4 @@
-import type { ToolipFinding } from '../report.js';
+import type { SerializedFinding } from '../report.js';
 
 function escapeHtml(value: string): string {
   return value
@@ -12,7 +12,7 @@ function escapeHtml(value: string): string {
 export function renderHtmlReport(input: {
   project: string;
   generatedAt: string;
-  findings: ToolipFinding[];
+  findings: SerializedFinding[];
 }): string {
   const rows = input.findings.map((finding) => `
     <tr>
