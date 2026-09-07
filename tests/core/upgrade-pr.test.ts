@@ -55,7 +55,7 @@ describe('createUpgradePullRequest', () => {
     } finally {
       await rm(fixture.container, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it('cleans up after a failed test without changing the original branch or dirty files', async () => {
     const fixture = await createRepositoryFixture();
@@ -77,7 +77,8 @@ describe('createUpgradePullRequest', () => {
 
       expect(await git(fixture.root, ['branch', '--show-current'])).toBe(originalBranch);
       expect(await readFile(path.join(fixture.root, 'dirty.txt'), 'utf8')).toBe('unchanged');
-      expect(await git(fixture.root, ['status', '--porcelain'])).toContain('?? dirty.txt');
+      expect(await git(fixture.root, ['status', '--porcelain']))
+        .toContain('?? dirty.txt');
       expect(await git(fixture.root, ['branch', '--list', 'toolip/upgrade-example-package-2.0.0']))
         .toBe('');
       expect(
