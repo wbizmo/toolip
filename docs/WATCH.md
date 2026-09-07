@@ -29,10 +29,15 @@ Project-specific scan exclusions continue to be handled by Toolip's normal analy
 
 ## Windows and Node.js 24
 
-Node.js 24 on Windows Server 2025 exposed a native libuv assertion when Toolip used recursive `fs.watch` directly.
+Node.js 24 on Windows Server 2025 exposed a native libuv assertion in `fs.watch` when the watched directory is represented by an 8.3 short path but Windows filesystem notifications use the canonical long path.
 
-Toolip v2.2.0 avoids that unstable path on Windows. It maintains a tree of non-recursive directory watchers instead, adding newly created directories as needed while preserving the same debounce, queue, ignore, error-recovery, and close semantics.
+Toolip v2.2.0 avoids that failure in two ways:
 
-macOS/Linux continue to use the platform-supported recursive watcher path where appropriate.
+1. Every watch root/directory is canonicalized with `realpathSync.native()` before it is passed to `fs.watch`, so libuv receives the same long-form path representation used by Windows notifications.
+2. Windows uses a managed tree of non-recursive directory watchers instead of relying on recursive `fs.watch` for the whole repository. Newly created directories are added as needed.
 
-The watcher implementation is covered by cross-platform CI on supported Node.js releases.
+Debounce, queue, ignore, error-recovery, and close semantics remain unchanged.
+
+macOS/Linux continue to use the platform-supported recursive watcher path after canonical path resolution.
+
+The watcher implementation is covered by cross-platform CI on every supported Node.js release.
