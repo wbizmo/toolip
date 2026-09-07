@@ -1,6 +1,9 @@
-export type FindingSeverity = 'info' | 'low' | 'medium' | 'high' | 'critical';
+import type {
+  Finding,
+  FindingSeverity
+} from '../contracts/finding.js';
 
-export type ToolipFinding = {
+export type SerializedFinding = {
   id: string;
   title: string;
   severity: FindingSeverity;
@@ -10,6 +13,9 @@ export type ToolipFinding = {
   file?: string;
   evidence?: string;
 };
+
+/** @deprecated Use Finding internally. This alias exists only for report-shape compatibility. */
+export type ToolipFinding = SerializedFinding;
 
 export type ToolipReport = {
   tool: 'toolip';
@@ -25,14 +31,31 @@ export type ToolipReport = {
     low: number;
     info: number;
   };
-  findings: ToolipFinding[];
+  findings: SerializedFinding[];
 };
+
+export function serializeFinding(
+  finding: Finding
+): SerializedFinding {
+  return {
+    id: finding.id,
+    title: finding.title,
+    severity: finding.severity,
+    category: finding.category,
+    message: finding.message,
+    recommendation:
+      finding.remediation?.summary ??
+      'Review this finding and apply an appropriate mitigation.',
+    file: finding.location?.file,
+    evidence: finding.evidence?.[0]?.summary
+  };
+}
 
 export function createReport(input: {
   version: string;
   command: string;
   root: string;
-  findings: ToolipFinding[];
+  findings: Finding[];
 }): ToolipReport {
   return {
     tool: 'toolip',
@@ -41,11 +64,13 @@ export function createReport(input: {
     generatedAt: new Date().toISOString(),
     root: input.root,
     summary: summarizeFindings(input.findings),
-    findings: input.findings
+    findings: input.findings.map(serializeFinding)
   };
 }
 
-export function summarizeFindings(findings: ToolipFinding[]): ToolipReport['summary'] {
+export function summarizeFindings(
+  findings: Pick<Finding, 'severity'>[]
+): ToolipReport['summary'] {
   return findings.reduce<ToolipReport['summary']>(
     (summary, finding) => {
       summary.totalFindings += 1;
