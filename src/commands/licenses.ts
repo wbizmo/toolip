@@ -1,6 +1,5 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
-import { runSecurityDoctor } from '../core/security-doctor.js';
 import { analyzeLicenses } from '../core/license-analysis.js';
 import { createReport } from '../core/report.js';
 import { writeReport } from '../core/report-writer.js';
