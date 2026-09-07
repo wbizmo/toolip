@@ -1,0 +1,66 @@
+name: Publish Toolip 2.2.0 to npm
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/publish-v2.2.0-token.yml
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact release tag
+        uses: actions/checkout@v7
+        with:
+          ref: v2.2.0
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Verify exact release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          test "$version" = "2.2.0" || {
+            echo "Expected Toolip 2.2.0, found $version" >&2
+            exit 1
+          }
+          test "$(git rev-parse HEAD)" = "4fc20136a8aa74ab93ad55d8d8b0e0f61a1f5195" || {
+            echo "v2.2.0 does not point at the verified release commit" >&2
+            exit 1
+          }
+
+      - name: Install exact dependencies
+        run: npm ci
+
+      - name: Verify packed release candidate
+        run: npm run release:check
+
+      - name: Refuse duplicate publication
+        shell: bash
+        run: |
+          if npm view toolip@2.2.0 version --silent >/dev/null 2>&1; then
+            echo "toolip@2.2.0 already exists on npm; refusing to overwrite an immutable version." >&2
+            exit 1
+          fi
+
+      - name: Verify npm authentication
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm whoami --registry=https://registry.npmjs.org
+
+      - name: Publish Toolip 2.2.0 with provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --provenance
