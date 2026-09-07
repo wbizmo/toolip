@@ -1,0 +1,73 @@
+name: Publish npm package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact package version to publish, without a leading v
+        required: true
+        type: string
+      confirmation:
+        description: Type "publish toolip" to authorize the release
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: npm-release
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Verify manual authorization
+        shell: bash
+        run: |
+          if [ "${{ inputs.confirmation }}" != "publish toolip" ]; then
+            echo "Release authorization text did not match."
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Use Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Use an npm CLI with trusted-publishing support
+        run: npm install --global "npm@^11.5.1"
+
+      - name: Verify requested version
+        shell: bash
+        run: |
+          actual="$(node -p "require('./package.json').version")"
+          if [ "$actual" != "${{ inputs.version }}" ]; then
+            echo "Requested version ${{ inputs.version }} does not match package.json version $actual."
+            exit 1
+          fi
+
+      - name: Install exact dependencies
+        run: npm ci
+
+      - name: Verify packed release candidate
+        run: npm run release:check
+
+      - name: Ensure version is not already published
+        shell: bash
+        run: |
+          if npm view "toolip@${{ inputs.version }}" version --silent >/dev/null 2>&1; then
+            echo "toolip@${{ inputs.version }} already exists on npm."
+            exit 1
+          fi
+
+      - name: Publish with npm trusted publishing
+        run: npm publish --access public
