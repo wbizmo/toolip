@@ -12,7 +12,9 @@ export type ScannerContext = {
   };
 };
 
-function summarizeExtensions(files: ProjectFile[]): Record<string, number> {
+export type ProjectContext = ScannerContext;
+
+function summarizeExtensions(files: readonly ProjectFile[]): Record<string, number> {
   return files.reduce<Record<string, number>>((summary, file) => {
     const key = file.extension || 'none';
     summary[key] = (summary[key] ?? 0) + 1;
@@ -22,10 +24,8 @@ function summarizeExtensions(files: ProjectFile[]): Record<string, number> {
 
 export async function createScannerContext(root: string): Promise<ScannerContext> {
   const absoluteRoot = path.resolve(root);
-  const [profile, files] = await Promise.all([
-    profileProject(absoluteRoot),
-    walkProjectFiles(absoluteRoot)
-  ]);
+  const files = await walkProjectFiles(absoluteRoot);
+  const profile = await profileProject(absoluteRoot, files);
 
   return {
     root: absoluteRoot,
@@ -37,3 +37,5 @@ export async function createScannerContext(root: string): Promise<ScannerContext
     }
   };
 }
+
+export const createProjectContext = createScannerContext;
