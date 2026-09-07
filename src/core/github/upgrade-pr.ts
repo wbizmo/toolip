@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import {
   mkdtemp,
   readFile,
+  realpath,
   rm,
   writeFile
 } from 'node:fs/promises';
@@ -69,7 +70,7 @@ export async function createUpgradePullRequest(
   changed: boolean;
   packageManager: Exclude<PackageManager, 'unknown'>;
 }> {
-  const absoluteRoot = path.resolve(root);
+  const absoluteRoot = await realpath(path.resolve(root));
   const normalizedVersion = semver.valid(targetVersion);
 
   if (!normalizedVersion) {
@@ -230,7 +231,7 @@ async function resolveRepositoryRoot(
       ['rev-parse', '--show-toplevel'],
       root
     );
-    return path.resolve(result.stdout.trim());
+    return await realpath(path.resolve(result.stdout.trim()));
   } catch {
     throw new ToolipError('Upgrade PR creation requires a Git working tree.', {
       code: 'UPGRADE_GIT_REQUIRED',
