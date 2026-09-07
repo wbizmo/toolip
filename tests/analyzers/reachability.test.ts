@@ -23,7 +23,11 @@ describe('ReachabilityAnalyzer', () => {
           packages: {
             '': {
               name: 'fixture',
-              version: '1.0.0'
+              version: '1.0.0',
+              dependencies: {
+                express: '^5.0.0',
+                'unused-package': '^1.0.0'
+              }
             },
             'node_modules/express': {
               version: '5.0.0'

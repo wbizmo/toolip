@@ -104,7 +104,7 @@ async function exists(filePath: string): Promise<boolean> {
 
 export class InstallScriptAnalyzer implements Analyzer {
   readonly id = 'install-script-behavior';
-  readonly version = '1.0.0';
+  readonly version = '1.0.1';
 
   async analyze(
     context: AnalyzerContext
@@ -126,8 +126,7 @@ export class InstallScriptAnalyzer implements Analyzer {
 
       const manifestPath = path.join(
         context.root,
-        'node_modules',
-        ...dependency.name.split('/'),
+        ...dependency.installPath.split('/'),
         'package.json'
       );
 
@@ -138,6 +137,13 @@ export class InstallScriptAnalyzer implements Analyzer {
       const manifest = JSON.parse(
         await readFile(manifestPath, 'utf8')
       ) as PackageManifest;
+
+      if (
+        manifest.version &&
+        manifest.version !== dependency.version
+      ) {
+        continue;
+      }
 
       packagesInspected += 1;
 
@@ -159,7 +165,7 @@ export class InstallScriptAnalyzer implements Analyzer {
 
           findings.push({
             id:
-              `${signal.id}:${dependency.name}:` +
+              `${signal.id}:${dependency.installPath}:` +
               `${dependency.version}:${lifecycleName}`,
             ruleId: signal.id,
             title: signal.title,
@@ -175,7 +181,7 @@ export class InstallScriptAnalyzer implements Analyzer {
                 summary:
                   `${lifecycleName}: ${command.slice(0, 240)}`,
                 fingerprint:
-                  `${dependency.name}@${dependency.version}:` +
+                  `${dependency.installPath}:${dependency.version}:` +
                   `${lifecycleName}:${signal.id}`
               }
             ],
@@ -185,6 +191,7 @@ export class InstallScriptAnalyzer implements Analyzer {
             metadata: {
               package: dependency.name,
               version: dependency.version,
+              installPath: dependency.installPath,
               direct: dependency.direct,
               development: dependency.development,
               lifecycle: lifecycleName,
