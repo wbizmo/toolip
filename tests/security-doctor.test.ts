@@ -44,6 +44,7 @@ exec(userInput);
           id.includes('TOOLIP-SECRET-GITHUB-TOKEN')
         )
       ).toBe(true);
+      expect(result.findings.every((finding) => Boolean(finding.ruleId))).toBe(true);
     } finally {
       await rm(root, {
         recursive: true,
@@ -72,7 +73,7 @@ exec(userInput);
 
       expect(
         result.findings.some(
-          (finding) => finding.file === 'ignored.ts'
+          (finding) => finding.location?.file === 'ignored.ts'
         )
       ).toBe(false);
     } finally {
