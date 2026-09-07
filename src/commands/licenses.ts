@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
+import { runSecurityDoctor } from '../core/security-doctor.js';
 import { analyzeLicenses } from '../core/license-analysis.js';
 import { createReport } from '../core/report.js';
 import { writeReport } from '../core/report-writer.js';
@@ -25,6 +26,14 @@ export function registerLicensesCommand(program: Command): void {
       console.log(chalk.bold('License Distribution'));
       for (const [license, count] of Object.entries(result.summary.distribution)) {
         console.log(`${chalk.green('✓')} ${license}: ${count}`);
+      }
+
+      if (result.warnings.length > 0) {
+        console.log('');
+        console.log(chalk.bold('Metadata Warnings'));
+        for (const warning of result.warnings) {
+          console.log(`${chalk.yellow('!')} ${warning}`);
+        }
       }
 
       const report = createReport({
