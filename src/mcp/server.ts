@@ -5,8 +5,24 @@ import { z } from 'zod';
 import { runSecurityDoctor } from '../core/security-doctor.js';
 import { generateSbom } from '../core/sbom/generate.js';
 import { securityDiff } from '../core/diff/security-diff.js';
+import { createWorkspaceBoundary } from './workspace-boundary.js';
 
-export async function startMcpServer(): Promise<void> {
+export type McpServerOptions = {
+  allowedRoots?: readonly string[];
+};
+
+export async function startMcpServer(
+  options: McpServerOptions = {}
+): Promise<void> {
+  const boundary = await createWorkspaceBoundary(
+    options.allowedRoots ?? [process.cwd()]
+  );
+  const defaultRoot = boundary.allowedRoots[0];
+
+  if (!defaultRoot) {
+    throw new Error('MCP workspace boundary has no approved root.');
+  }
+
   const server = new McpServer({
     name: 'toolip',
     version: TOOLIP_VERSION
@@ -16,13 +32,14 @@ export async function startMcpServer(): Promise<void> {
     'toolip_doctor',
     {
       title: 'Toolip Security Doctor',
-      description: 'Run local Toolip security checks inside the approved workspace.',
+      description: 'Run local Toolip security checks inside an approved workspace.',
       inputSchema: {
-        root: z.string().default(process.cwd())
+        root: z.string().default(defaultRoot)
       }
     },
     async ({ root }) => {
-      const report = await runSecurityDoctor(root);
+      const approvedRoot = await boundary.resolve(root);
+      const report = await runSecurityDoctor(approvedRoot);
       return {
         content: [{
           type: 'text',
@@ -36,14 +53,15 @@ export async function startMcpServer(): Promise<void> {
     'toolip_sbom',
     {
       title: 'Generate SBOM',
-      description: 'Generate a local CycloneDX or SPDX SBOM.',
+      description: 'Generate a local CycloneDX or SPDX SBOM inside an approved workspace.',
       inputSchema: {
-        root: z.string().default(process.cwd()),
+        root: z.string().default(defaultRoot),
         format: z.enum(['cyclonedx', 'spdx']).default('cyclonedx')
       }
     },
     async ({ root, format }) => {
-      const report = await generateSbom(root, format);
+      const approvedRoot = await boundary.resolve(root);
+      const report = await generateSbom(approvedRoot, format);
       return {
         content: [{
           type: 'text',
@@ -57,15 +75,16 @@ export async function startMcpServer(): Promise<void> {
     'toolip_diff',
     {
       title: 'Security Diff',
-      description: 'Summarize security-relevant Git changes.',
+      description: 'Summarize security-relevant Git changes inside an approved workspace.',
       inputSchema: {
-        root: z.string().default(process.cwd()),
+        root: z.string().default(defaultRoot),
         base: z.string(),
         head: z.string().default('HEAD')
       }
     },
     async ({ root, base, head }) => {
-      const result = await securityDiff(root, base, head);
+      const approvedRoot = await boundary.resolve(root);
+      const result = await securityDiff(approvedRoot, base, head);
       return {
         content: [{
           type: 'text',
