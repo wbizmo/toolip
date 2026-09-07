@@ -8,7 +8,6 @@ import {
   measuredDimension,
   unmeasuredDimension,
   type DependencyHealthBreakdown,
-  type MeasurementStatus,
   type ScoreDimension,
   type ToolipScore
 } from '../core/score.js';
@@ -83,7 +82,7 @@ export async function buildSecurityScorecard(
       );
     } else if (vulnerabilityExecution.status !== 'ok') {
       dependencyDimension = unmeasuredDimension(
-        executionStatus(vulnerabilityExecution.status),
+        vulnerabilityExecution.status,
         vulnerabilityExecution.error ??
           'Vulnerability analysis did not complete successfully.'
       );
@@ -173,12 +172,6 @@ export async function buildSecurityScorecard(
     findings,
     warnings
   };
-}
-
-function executionStatus(
-  status: 'failed' | 'timed_out' | 'cancelled'
-): MeasurementStatus {
-  return status;
 }
 
 function failedDimension(
