@@ -1,11 +1,15 @@
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import type {
   Analyzer,
   AnalyzerContext,
   AnalyzerResult
 } from '../../contracts/analyzer.js';
 import type { Finding } from '../../contracts/finding.js';
+import {
+  isTestFile,
+  SECRET_FIXTURE_MARKER,
+  secretEvidence
+} from '../../core/secret-utils.js';
 import { historicalSecretPatterns } from './secret-patterns.js';
 
 type CommitMetadata = {
@@ -18,26 +22,6 @@ type AddedLine = {
   file?: string;
   content: string;
 };
-
-function redact(value: string): string {
-  if (value.length <= 12) return '[redacted]';
-  return `${value.slice(0, 6)}...[redacted]...${value.slice(-4)}`;
-}
-
-function fingerprint(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
-}
-
-function isTestFile(file?: string): boolean {
-  if (!file) return false;
-
-  return (
-    file.startsWith('tests/') ||
-    file.includes('/tests/') ||
-    file.includes('/__tests__/') ||
-    /\.(test|spec)\.[cm]?[jt]sx?$/.test(file)
-  );
-}
 
 async function streamGitLog(
   root: string,
@@ -76,7 +60,6 @@ async function streamGitLog(
         const [commit, author, date] = line
           .slice('__TOOLIP_COMMIT__'.length)
           .split('\t');
-
         currentCommit = {
           commit: commit ?? 'unknown',
           author: author ?? 'unknown',
@@ -141,9 +124,7 @@ async function streamGitLog(
       }
 
       if (code !== 0) {
-        reject(
-          new Error(stderr.trim() || `git log exited with ${code}.`)
-        );
+        reject(new Error(stderr.trim() || `git log exited with ${code}.`));
         return;
       }
 
@@ -154,15 +135,11 @@ async function streamGitLog(
 
 export class GitHistorySecretAnalyzer implements Analyzer {
   readonly id = 'git-history-secrets';
-  readonly version = '1.0.2';
+  readonly version = '1.1.0';
 
-  constructor(
-    private readonly maxCommits = 1000
-  ) {}
+  constructor(private readonly maxCommits = 1000) {}
 
-  async analyze(
-    context: AnalyzerContext
-  ): Promise<AnalyzerResult> {
+  async analyze(context: AnalyzerContext): Promise<AnalyzerResult> {
     const startedAt = performance.now();
     const findings: Finding[] = [];
     const seen = new Set<string>();
@@ -172,42 +149,44 @@ export class GitHistorySecretAnalyzer implements Analyzer {
       this.maxCommits,
       context.signal,
       (section, line) => {
+        if (line.content.includes(SECRET_FIXTURE_MARKER)) return;
+
         for (const pattern of historicalSecretPatterns) {
           pattern.regex.lastIndex = 0;
 
           for (const match of line.content.matchAll(pattern.regex)) {
-            const value = match[0];
-            const secretFingerprint = fingerprint(value);
+            const evidence = secretEvidence(match[0]);
+            const column = (match.index ?? 0) + 1;
             const key =
               `${pattern.id}:${section.commit}:` +
-              `${line.file ?? 'unknown'}:${secretFingerprint}`;
+              `${line.file ?? 'unknown'}:${column}:` +
+              evidence.fingerprint.slice(0, 16);
 
             if (seen.has(key)) continue;
             seen.add(key);
 
-            const testFixture = isTestFile(line.file);
+            const testFixtureCandidate = isTestFile(line.file);
 
             findings.push({
               id: key,
               ruleId: pattern.id,
-              title: testFixture
+              title: testFixtureCandidate
                 ? `Potential historical test fixture: ${pattern.title}`
                 : pattern.title,
               category: 'git-history-secret',
-              severity: testFixture ? 'low' : pattern.severity,
-              confidence: testFixture ? 'medium' : 'high',
-              message: testFixture
-                ? `A secret-like value was introduced in test file ${line.file ?? 'unknown'} in commit ${section.commit}. Confirm that it is synthetic fixture data.`
+              severity: pattern.severity,
+              confidence: testFixtureCandidate ? 'medium' : 'high',
+              message: testFixtureCandidate
+                ? `A secret-like value was introduced in test file ${line.file ?? 'unknown'} in commit ${section.commit}. Severity is preserved until the value is explicitly identified as synthetic fixture data.`
                 : `A secret-like value was introduced in commit ${section.commit}.`,
               source: 'git-history',
-              location: line.file ? { file: line.file } : undefined,
-              evidence: [{
-                summary: redact(value),
-                fingerprint: secretFingerprint
-              }],
+              location: line.file
+                ? { file: line.file, column }
+                : undefined,
+              evidence: [evidence],
               remediation: {
-                summary: testFixture
-                  ? 'Confirm that the value is synthetic test data. Replace realistic credential fixtures with clearly fake placeholders where possible.'
+                summary: testFixtureCandidate
+                  ? 'Confirm that the value is synthetic test data. Use the explicit Toolip fixture marker only for intentionally fake credentials.'
                   : 'Revoke or rotate the credential immediately, then remove it from repository history using an approved history-rewrite process.'
               },
               metadata: {
@@ -215,7 +194,7 @@ export class GitHistorySecretAnalyzer implements Analyzer {
                 author: section.author,
                 date: section.date,
                 file: line.file,
-                testFixture
+                testFixtureCandidate
               }
             });
           }
@@ -230,8 +209,8 @@ export class GitHistorySecretAnalyzer implements Analyzer {
       metadata: {
         commitsScanned,
         findings: findings.length,
-        testFixtures: findings.filter(
-          (finding) => finding.metadata?.testFixture === true
+        testFixtureCandidates: findings.filter(
+          (finding) => finding.metadata?.testFixtureCandidate === true
         ).length,
         maxCommits: this.maxCommits
       }

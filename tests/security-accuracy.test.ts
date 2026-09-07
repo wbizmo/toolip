@@ -17,7 +17,6 @@ describe('security detection accuracy', () => {
 
     try {
       await writeFile(path.join(root, 'package.json'), '{}');
-
       await writeFile(
         path.join(root, 'auth.service.ts'),
         `
@@ -28,18 +27,13 @@ export function parseDuration(value: string) {
       );
 
       const result = await runSecurityDoctor(root);
-
       expect(
         result.findings.some(
-          (finding) =>
-            finding.category === 'dangerous-code'
+          (finding) => finding.category === 'dangerous-code'
         )
       ).toBe(false);
     } finally {
-      await rm(root, {
-        recursive: true,
-        force: true
-      });
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -50,7 +44,6 @@ export function parseDuration(value: string) {
 
     try {
       await writeFile(path.join(root, 'package.json'), '{}');
-
       await writeFile(
         path.join(root, 'runner.ts'),
         `
@@ -61,7 +54,6 @@ exec(userInput);
       );
 
       const result = await runSecurityDoctor(root);
-
       expect(
         result.findings.some(
           (finding) =>
@@ -70,10 +62,7 @@ exec(userInput);
         )
       ).toBe(true);
     } finally {
-      await rm(root, {
-        recursive: true,
-        force: true
-      });
+      await rm(root, { recursive: true, force: true });
     }
   });
 
@@ -84,7 +73,6 @@ exec(userInput);
 
     try {
       await writeFile(path.join(root, 'package.json'), '{}');
-
       await writeFile(
         path.join(root, 'doctor-report.json'),
         JSON.stringify({
@@ -94,33 +82,24 @@ exec(userInput);
       );
 
       const result = await runSecurityDoctor(root);
-
       expect(
         result.findings.some(
-          (finding) =>
-            finding.category === 'dangerous-code'
+          (finding) => finding.category === 'dangerous-code'
         )
       ).toBe(false);
     } finally {
-      await rm(root, {
-        recursive: true,
-        force: true
-      });
+      await rm(root, { recursive: true, force: true });
     }
   });
 
-  it('downgrades password fixtures in tests', async () => {
+  it('preserves password severity in tests while lowering confidence', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-test-fixture-')
     );
 
     try {
-      await mkdir(path.join(root, 'tests'), {
-        recursive: true
-      });
-
+      await mkdir(path.join(root, 'tests'), { recursive: true });
       await writeFile(path.join(root, 'package.json'), '{}');
-
       await writeFile(
         path.join(root, 'tests', 'validation.test.ts'),
         `
@@ -131,24 +110,18 @@ const user = {
       );
 
       const result = await runSecurityDoctor(root);
-
       const finding = result.findings.find(
         (item) =>
-          item.id.includes(
-            'TOOLIP-SECRET-HARDCODED-PASSWORD'
-          )
+          item.id.includes('TOOLIP-SECRET-HARDCODED-PASSWORD')
       );
 
       expect(finding).toBeDefined();
-      expect(finding?.severity).toBe('low');
-      expect(finding?.title).toContain(
-        'Potential test fixture'
-      );
+      expect(finding?.severity).toBe('high');
+      expect(finding?.confidence).toBe('medium');
+      expect(finding?.title).toContain('Potential test fixture');
+      expect(finding?.metadata?.testFixtureCandidate).toBe(true);
     } finally {
-      await rm(root, {
-        recursive: true,
-        force: true
-      });
+      await rm(root, { recursive: true, force: true });
     }
   });
 });
