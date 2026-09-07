@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import type {
   Analyzer,
   AnalyzerContext,
@@ -6,6 +5,7 @@ import type {
 } from '../../contracts/analyzer.js';
 import type { Finding } from '../../contracts/finding.js';
 import { createScannerContext } from '../../core/scanner-context.js';
+import { TextFileReader } from '../../core/text-file-reader.js';
 import { readNpmDependencyInventory } from '../../core/dependencies/inventory.js';
 import {
   extractPackageImports,
@@ -48,6 +48,8 @@ export class ReachabilityAnalyzer implements Analyzer {
       await readNpmDependencyInventory(context.root);
     const scannerContext =
       await createScannerContext(context.root);
+    const reader = new TextFileReader();
+    const warnings: string[] = [];
 
     const references = new Map<
       string,
@@ -63,20 +65,22 @@ export class ReachabilityAnalyzer implements Analyzer {
         continue;
       }
 
-      if (context.signal?.aborted) {
-        throw new Error(
-          'Reachability analysis was cancelled.'
-        );
-      }
-
-      const content = await readFile(
+      const read = await reader.read(
         file.absolutePath,
-        'utf8'
+        context.signal
       );
+
+      if (read.status !== 'ok') {
+        warnings.push(
+          `${file.relativePath}: skipped (${read.status})`
+        );
+        if (read.status === 'cancelled') break;
+        continue;
+      }
 
       for (const reference of extractPackageImports(
         file.relativePath,
-        content
+        read.content
       )) {
         const current =
           references.get(reference.packageName) ?? [];
@@ -149,8 +153,10 @@ export class ReachabilityAnalyzer implements Analyzer {
         performance.now() - startedAt
       ),
       findings,
+      warnings: warnings.length > 0 ? warnings : undefined,
       metadata: {
         dependencies: packageStates.length,
+        bytesAnalyzed: reader.usage.bytesRead,
         reachable: packageStates.filter(
           (item) => item.state === 'reachable'
         ).length,

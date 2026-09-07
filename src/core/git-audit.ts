@@ -1,6 +1,9 @@
 import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { walkProjectFiles } from './file-walker.js';
+import {
+  createScannerContext,
+  type ScannerContext
+} from './scanner-context.js';
 import type { ToolipFinding } from './report.js';
 
 export type GitAuditResult = {
@@ -41,10 +44,14 @@ const dangerousFilePatterns = [
   }
 ];
 
-export async function runGitAudit(root: string): Promise<GitAuditResult> {
-  const files = await walkProjectFiles(root);
-  const relativePaths = files.map((file) => file.relativePath);
-  const gitignorePath = path.join(root, '.gitignore');
+export async function runGitAudit(
+  rootOrContext: string | ScannerContext
+): Promise<GitAuditResult> {
+  const context = typeof rootOrContext === 'string'
+    ? await createScannerContext(rootOrContext)
+    : rootOrContext;
+  const relativePaths = context.files.map((file) => file.relativePath);
+  const gitignorePath = path.join(context.root, '.gitignore');
   const gitignorePresent = await exists(gitignorePath);
   const gitignoreContent = gitignorePresent ? await readFile(gitignorePath, 'utf8') : '';
 
@@ -105,7 +112,7 @@ export async function runGitAudit(root: string): Promise<GitAuditResult> {
   return {
     findings,
     summary: {
-      filesChecked: files.length,
+      filesChecked: context.files.length,
       dangerousFiles: findings.filter((finding) => finding.file).length,
       gitignorePresent,
       envIgnored,

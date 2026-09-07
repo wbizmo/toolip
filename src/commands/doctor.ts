@@ -20,7 +20,7 @@ export function registerDoctorCommand(program: Command): void {
       const context = await createScannerContext(options.path);
       printScannerContext(context);
 
-      const doctor = await runSecurityDoctor(context.root);
+      const doctor = await runSecurityDoctor(context);
 
       const report = createReport({
         version: TOOLIP_VERSION,
@@ -31,7 +31,10 @@ export function registerDoctorCommand(program: Command): void {
 
       console.log('');
       console.log(chalk.bold('Security Hygiene'));
+      console.log(`${chalk.dim('Files Discovered:')} ${doctor.summary.filesDiscovered}`);
       console.log(`${chalk.dim('Files Scanned:')} ${doctor.summary.filesScanned}`);
+      console.log(`${chalk.dim('Files Skipped:')} ${doctor.summary.filesSkipped}`);
+      console.log(`${chalk.dim('Read Failures:')} ${doctor.summary.readFailures}`);
       console.log(`${chalk.dim('Secrets:')} ${doctor.summary.secrets}`);
       console.log(`${chalk.dim('Dangerous Code:')} ${doctor.summary.dangerousCode}`);
       console.log(`${chalk.dim('Configuration:')} ${doctor.summary.configuration}`);
