@@ -1,8 +1,5 @@
 import { analyzeAstSource } from '../analyzers/ast/source-analysis.js';
-import type {
-  Finding,
-  FindingSeverity
-} from '../contracts/finding.js';
+import type { Finding } from '../contracts/finding.js';
 import {
   createScannerContext,
   type ScannerContext
@@ -17,6 +14,12 @@ import {
   securityHeaderNames,
   type SecurityPattern
 } from './security-patterns.js';
+import {
+  findSecretMatches,
+  isTestFile,
+  secretEvidence,
+  secretFingerprint
+} from './secret-utils.js';
 
 export type SecurityDoctorResult = {
   findings: Finding[];
@@ -41,28 +44,12 @@ export type SecurityDoctorOptions = {
 };
 
 const secretScanExtensions = new Set([
-  'js',
-  'jsx',
-  'ts',
-  'tsx',
-  'mjs',
-  'cjs',
-  'json',
-  'yml',
-  'yaml',
-  'env',
-  'txt',
-  'pem',
-  'key'
+  'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs',
+  'json', 'yml', 'yaml', 'env', 'txt', 'pem', 'key'
 ]);
 
 const codeExtensions = new Set([
-  'js',
-  'jsx',
-  'ts',
-  'tsx',
-  'mjs',
-  'cjs'
+  'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs'
 ]);
 
 export async function runSecurityDoctor(
@@ -81,9 +68,7 @@ export async function runSecurityDoctor(
   let readFailures = 0;
 
   for (const file of context.files) {
-    if (!shouldScanSecrets(file.relativePath, file.extension)) {
-      continue;
-    }
+    if (!shouldScanSecrets(file.relativePath, file.extension)) continue;
 
     filesEligible += 1;
     const read = await reader.read(file.absolutePath, options.signal);
@@ -102,20 +87,14 @@ export async function runSecurityDoctor(
     }
 
     filesScanned += 1;
-    const content = read.content;
-
     findings.push(
-      ...scanContent(file.relativePath, content, secretPatterns)
+      ...scanSecretContent(file.relativePath, read.content)
     );
 
     if (codeExtensions.has(file.extension)) {
       findings.push(
-        ...analyzeAstSource(file.relativePath, content),
-        ...scanContent(
-          file.relativePath,
-          content,
-          configSecurityPatterns
-        )
+        ...analyzeAstSource(file.relativePath, read.content),
+        ...scanConfigurationContent(file.relativePath, read.content)
       );
     }
   }
@@ -148,115 +127,120 @@ function countCategory(findings: Finding[], category: string): number {
   return findings.filter((finding) => finding.category === category).length;
 }
 
-function shouldScanSecrets(
-  relativePath: string,
-  extension: string
-): boolean {
+function shouldScanSecrets(relativePath: string, extension: string): boolean {
   if (relativePath.endsWith('.d.ts')) return false;
   if (relativePath.endsWith('.map')) return false;
   if (relativePath.startsWith('dist/')) return false;
   if (relativePath.endsWith('.env')) return true;
   if (relativePath.includes('.env.')) return true;
-
   return secretScanExtensions.has(extension);
 }
 
-function scanContent(
+function scanSecretContent(
   relativePath: string,
-  content: string,
-  patterns: SecurityPattern[]
+  content: string
 ): Finding[] {
   const findings: Finding[] = [];
+  const testFile = isTestFile(relativePath);
 
-  for (const pattern of patterns) {
-    pattern.regex.lastIndex = 0;
-    const match = pattern.regex.exec(content);
-    pattern.regex.lastIndex = 0;
+  for (const pattern of secretPatterns) {
+    for (const match of findSecretMatches(content, pattern.regex)) {
+      if (match.fixtureAllowed) continue;
 
-    if (!match) continue;
+      const evidence = secretEvidence(match.value);
+      const instance = match.fingerprint.slice(0, 16);
 
-    findings.push({
-      id: `${pattern.id}-${relativePath
-        .toUpperCase()
-        .replaceAll(/[^A-Z0-9]/g, '-')}`,
-      ruleId: pattern.id,
-      title: formatTitle(pattern, relativePath),
-      severity: resolveSeverity(pattern, relativePath),
-      confidence: 'medium',
-      category: pattern.category,
-      message: formatMessage(pattern, relativePath),
-      source: 'security-doctor',
-      remediation: {
-        summary: pattern.recommendation
-      },
-      location: {
-        file: relativePath
-      },
-      evidence: [
-        {
-          summary: redactEvidence(match[0])
+      findings.push({
+        id: `${pattern.id}:${relativePath}:${match.line}:${match.column}:${instance}`,
+        ruleId: pattern.id,
+        title: testFile
+          ? `Potential test fixture: ${pattern.title}`
+          : pattern.title,
+        severity: pattern.severity,
+        confidence: testFile ? 'medium' : 'high',
+        category: pattern.category,
+        message: testFile
+          ? `${pattern.message} The value is in a test file, but severity is preserved until it is explicitly identified as synthetic fixture data.`
+          : pattern.message,
+        source: 'security-doctor',
+        remediation: { summary: pattern.recommendation },
+        location: {
+          file: relativePath,
+          line: match.line,
+          column: match.column
+        },
+        evidence: [evidence],
+        metadata: {
+          testFixtureCandidate: testFile,
+          occurrenceFingerprint: match.fingerprint
         }
-      ]
-    });
+      });
+    }
   }
 
   return findings;
 }
 
-function isTestFile(relativePath: string): boolean {
-  return (
-    relativePath.startsWith('tests/') ||
-    relativePath.includes('/tests/') ||
-    relativePath.includes('/__tests__/') ||
-    /\.(test|spec)\.[cm]?[jt]sx?$/.test(relativePath)
+function scanConfigurationContent(
+  relativePath: string,
+  content: string
+): Finding[] {
+  const findings: Finding[] = [];
+
+  for (const pattern of configSecurityPatterns) {
+    const regex = globalRegex(pattern.regex);
+    for (const match of content.matchAll(regex)) {
+      const index = match.index ?? 0;
+      const before = content.slice(0, index);
+      const line = before.split('\n').length;
+      const column = index - before.lastIndexOf('\n');
+      const fingerprint = secretFingerprint(
+        `${pattern.id}:${relativePath}:${line}:${column}`
+      );
+
+      findings.push(patternFinding(
+        pattern,
+        relativePath,
+        line,
+        column,
+        fingerprint
+      ));
+    }
+  }
+
+  return findings;
+}
+
+function patternFinding(
+  pattern: SecurityPattern,
+  relativePath: string,
+  line: number,
+  column: number,
+  fingerprint: string
+): Finding {
+  return {
+    id: `${pattern.id}:${relativePath}:${line}:${column}`,
+    ruleId: pattern.id,
+    title: pattern.title,
+    severity: pattern.severity,
+    confidence: 'medium',
+    category: pattern.category,
+    message: pattern.message,
+    source: 'security-doctor',
+    remediation: { summary: pattern.recommendation },
+    location: { file: relativePath, line, column },
+    evidence: [{
+      summary: '[configuration pattern matched]',
+      fingerprint
+    }]
+  };
+}
+
+function globalRegex(pattern: RegExp): RegExp {
+  return new RegExp(
+    pattern.source,
+    pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`
   );
-}
-
-function resolveSeverity(
-  pattern: SecurityPattern,
-  relativePath: string
-): FindingSeverity {
-  if (
-    pattern.category === 'secrets' &&
-    isTestFile(relativePath)
-  ) {
-    return 'low';
-  }
-
-  return pattern.severity;
-}
-
-function formatTitle(
-  pattern: SecurityPattern,
-  relativePath: string
-): string {
-  if (
-    pattern.category === 'secrets' &&
-    isTestFile(relativePath)
-  ) {
-    return `Potential test fixture: ${pattern.title}`;
-  }
-
-  return pattern.title;
-}
-
-function formatMessage(
-  pattern: SecurityPattern,
-  relativePath: string
-): string {
-  if (
-    pattern.category === 'secrets' &&
-    isTestFile(relativePath)
-  ) {
-    return `${pattern.message} This match is inside a test file, so Toolip reduced its severity. Confirm that it is synthetic fixture data.`;
-  }
-
-  return pattern.message;
-}
-
-function redactEvidence(value: string): string {
-  if (value.length <= 16) return value;
-  return `${value.slice(0, 8)}...[redacted]...${value.slice(-4)}`;
 }
 
 function detectMissingSecurityHeaders(relativePaths: string[]): Finding[] {
