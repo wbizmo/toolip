@@ -30,6 +30,7 @@ A release must not be published unless that command exits successfully.
 The guard verifies:
 
 - compiler-backed static quality checks
+- no high/critical npm advisories in the shipped runtime dependency graph
 - the full test suite
 - security-critical execution coverage thresholds
 - a clean production build
