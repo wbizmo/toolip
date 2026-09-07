@@ -81,7 +81,6 @@ function treeNode(
 }
 
 function graphSummary(
-  graph: NpmDependencyGraph,
   children: Map<string, string[]>
 ): DependencyTree['summary'] {
   const direct = new Set(children.get('root') ?? []);
@@ -119,6 +118,6 @@ export async function buildDependencyTree(root: string): Promise<DependencyTree>
   return {
     root,
     dependencies,
-    summary: graphSummary(graph, children)
+    summary: graphSummary(children)
   };
 }

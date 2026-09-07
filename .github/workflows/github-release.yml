@@ -1,0 +1,107 @@
+name: Create GitHub release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - package.json
+      - CHANGELOG.md
+      - 'RELEASE_NOTES_v*.md'
+      - .github/workflows/github-release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout verified main commit
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Resolve release metadata
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="v${VERSION}"
+          NOTES="RELEASE_NOTES_v${VERSION}.md"
+
+          test -f "$NOTES" || {
+            echo "Missing $NOTES" >&2
+            exit 1
+          }
+
+          CHANGELOG_HEADER="## ${VERSION} -"
+          grep -Fq "$CHANGELOG_HEADER" CHANGELOG.md || {
+            echo "CHANGELOG.md does not contain $CHANGELOG_HEADER" >&2
+            exit 1
+          }
+
+          TITLE="$(head -n 1 "$NOTES" | sed 's/^# //')"
+          test -n "$TITLE" || {
+            echo "Release notes must begin with a Markdown H1 title." >&2
+            exit 1
+          }
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "notes=$NOTES" >> "$GITHUB_OUTPUT"
+          echo "title=$TITLE" >> "$GITHUB_OUTPUT"
+
+      - name: Reject conflicting existing tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "GitHub release $TAG already exists; workflow is idempotent."
+            exit 0
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG exists without a matching GitHub release; refusing to overwrite it." >&2
+            exit 1
+          fi
+
+      - name: Install exact dependencies
+        run: npm ci
+
+      - name: Verify release candidate
+        run: npm run release:check
+
+      - name: Create tag and GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          NOTES: ${{ steps.release.outputs.notes }}
+          TITLE: ${{ steps.release.outputs.title }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "GitHub release $TAG already exists; skipping creation."
+            exit 0
+          fi
+
+          gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
+            --title "$TITLE" \
+            --notes-file "$NOTES"
+
+          echo "Created $TAG from verified commit $GITHUB_SHA."

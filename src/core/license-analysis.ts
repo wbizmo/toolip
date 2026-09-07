@@ -1,17 +1,20 @@
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
 import type { Finding } from '../contracts/finding.js';
+import { DepsDevClient } from '../providers/depsdev/client.js';
+import { readNpmDependencyInventory } from './dependencies/inventory.js';
 
 export type LicenseEntry = {
   name: string;
   version: string;
   license: string;
   type: 'dependency' | 'devDependency';
+  metadataSource: 'deps.dev' | 'unavailable';
+  metadataError?: string;
 };
 
 export type LicenseAnalysisResult = {
   licenses: LicenseEntry[];
   findings: Finding[];
+  warnings: string[];
   summary: {
     total: number;
     unknown: number;
@@ -20,42 +23,57 @@ export type LicenseAnalysisResult = {
   };
 };
 
-const restrictiveLicenses = new Set([
-  'GPL',
-  'GPL-2.0',
-  'GPL-3.0',
-  'AGPL',
-  'AGPL-3.0',
-  'LGPL',
-  'LGPL-2.1',
-  'LGPL-3.0'
-]);
+export type LicenseMetadataProvider = Pick<DepsDevClient, 'getVersion'>;
 
-export async function analyzeLicenses(root: string): Promise<LicenseAnalysisResult> {
-  const packageJsonPath = path.join(root, 'package.json');
-  const raw = await readFile(packageJsonPath, 'utf8');
+export async function analyzeLicenses(
+  root: string,
+  provider: LicenseMetadataProvider = new DepsDevClient(),
+  signal?: AbortSignal
+): Promise<LicenseAnalysisResult> {
+  const inventory = await readNpmDependencyInventory(root);
+  const directDependencies = inventory.filter((dependency) => dependency.direct);
 
-  const pkg = JSON.parse(raw) as {
-    dependencies?: Record<string, string>;
-    devDependencies?: Record<string, string>;
-  };
+  const entries = await Promise.all(
+    directDependencies.map(async (dependency): Promise<LicenseEntry> => {
+      try {
+        const metadata = await provider.getVersion(
+          dependency.name,
+          dependency.version,
+          signal
+        );
+        const licenses = (metadata.licenses ?? [])
+          .map((license) => license.trim())
+          .filter(Boolean);
 
-  const entries: LicenseEntry[] = [
-    ...Object.entries(pkg.dependencies ?? {}).map(([name, version]) => ({
-      name,
-      version,
-      license: inferLicense(name),
-      type: 'dependency' as const
-    })),
-    ...Object.entries(pkg.devDependencies ?? {}).map(([name, version]) => ({
-      name,
-      version,
-      license: inferLicense(name),
-      type: 'devDependency' as const
-    }))
-  ].sort((a, b) => a.name.localeCompare(b.name));
+        return {
+          name: dependency.name,
+          version: dependency.version,
+          license: licenses.length > 0 ? licenses.join(' OR ') : 'UNKNOWN',
+          type: dependency.development ? 'devDependency' : 'dependency',
+          metadataSource: 'deps.dev'
+        };
+      } catch (error) {
+        return {
+          name: dependency.name,
+          version: dependency.version,
+          license: 'UNKNOWN',
+          type: dependency.development ? 'devDependency' : 'dependency',
+          metadataSource: 'unavailable',
+          metadataError: errorMessage(error)
+        };
+      }
+    })
+  );
+
+  entries.sort((a, b) => a.name.localeCompare(b.name));
 
   const findings = entries.flatMap(licenseToFindings);
+  const warnings = entries
+    .filter((entry) => entry.metadataSource === 'unavailable')
+    .map(
+      (entry) =>
+        `License metadata unavailable for ${entry.name}@${entry.version}: ${entry.metadataError ?? 'provider error'}`
+    );
   const distribution = entries.reduce<Record<string, number>>((summary, entry) => {
     summary[entry.license] = (summary[entry.license] ?? 0) + 1;
     return summary;
@@ -64,62 +82,59 @@ export async function analyzeLicenses(root: string): Promise<LicenseAnalysisResu
   return {
     licenses: entries,
     findings,
+    warnings,
     summary: {
       total: entries.length,
       unknown: entries.filter((entry) => entry.license === 'UNKNOWN').length,
-      restrictive: entries.filter((entry) => restrictiveLicenses.has(entry.license)).length,
+      restrictive: entries.filter((entry) => isRestrictiveLicense(entry.license)).length,
       distribution
     }
   };
 }
 
-function inferLicense(packageName: string): string {
-  const known: Record<string, string> = {
-    '@types/node': 'MIT',
-    '@types/semver': 'MIT',
-    axios: 'MIT',
-    chalk: 'MIT',
-    commander: 'MIT',
-    express: 'MIT',
-    'fast-glob': 'MIT',
-    ignore: 'MIT',
-    ora: 'MIT',
-    pacote: 'ISC',
-    react: 'MIT',
-    request: 'Apache-2.0',
-    semver: 'ISC',
-    tsx: 'MIT',
-    typescript: 'Apache-2.0',
-    vitest: 'MIT',
-    zod: 'MIT'
-  };
-
-  return known[packageName] ?? 'UNKNOWN';
+function isRestrictiveLicense(license: string): boolean {
+  return /\b(?:AGPL|GPL|LGPL)(?:-\d+(?:\.\d+)?)?(?:-ONLY|-OR-LATER)?\b/i.test(
+    license
+  );
 }
 
 function licenseToFindings(entry: LicenseEntry): Finding[] {
   if (entry.license === 'UNKNOWN') {
-    return [licenseFinding(
-      entry,
-      'TOOLIP-LICENSE-UNKNOWN',
-      `Unknown license: ${entry.name}`,
-      'medium',
-      `${entry.name} does not have a known license in Toolip's local license intelligence map.`,
-      'Manually verify the package license before using it in commercial or distributed software.',
-      entry.version
-    )];
+    const providerUnavailable = entry.metadataSource === 'unavailable';
+
+    return [
+      licenseFinding(
+        entry,
+        providerUnavailable
+          ? 'TOOLIP-LICENSE-METADATA-UNAVAILABLE'
+          : 'TOOLIP-LICENSE-UNKNOWN',
+        providerUnavailable
+          ? `License metadata unavailable: ${entry.name}`
+          : `Unknown license: ${entry.name}`,
+        'medium',
+        providerUnavailable
+          ? `Toolip could not retrieve authoritative license metadata for ${entry.name}@${entry.version} from deps.dev.`
+          : `deps.dev did not report a license for ${entry.name}@${entry.version}.`,
+        providerUnavailable
+          ? 'Retry when dependency metadata is available or verify the package license directly from its registry/repository before distribution.'
+          : 'Verify the package license directly from its registry/repository before distribution.',
+        providerUnavailable ? 'deps.dev metadata unavailable' : 'No license reported'
+      )
+    ];
   }
 
-  if (restrictiveLicenses.has(entry.license)) {
-    return [licenseFinding(
-      entry,
-      'TOOLIP-LICENSE-RESTRICTIVE',
-      `Restrictive license detected: ${entry.name}`,
-      'high',
-      `${entry.name} appears to use ${entry.license}, which may introduce redistribution obligations.`,
-      'Review the license terms with care before using this package in proprietary software.',
-      entry.license
-    )];
+  if (isRestrictiveLicense(entry.license)) {
+    return [
+      licenseFinding(
+        entry,
+        'TOOLIP-LICENSE-RESTRICTIVE',
+        `Restrictive license detected: ${entry.name}`,
+        'high',
+        `${entry.name}@${entry.version} reports ${entry.license} via deps.dev, which may introduce redistribution obligations.`,
+        'Review the applicable license terms before using this package in proprietary or distributed software.',
+        entry.license
+      )
+    ];
   }
 
   return [];
@@ -139,15 +154,21 @@ function licenseFinding(
     ruleId,
     title,
     severity,
-    confidence: 'medium',
+    confidence: entry.metadataSource === 'deps.dev' ? 'high' : 'medium',
     category: 'license',
     message,
     source: 'license-analysis',
-    evidence: [{
-      summary: evidence,
-      fingerprint: `${entry.name}:${entry.version}:${entry.license}`
-    }],
+    evidence: [
+      {
+        summary: evidence,
+        fingerprint: `${entry.name}:${entry.version}:${entry.license}:${entry.metadataSource}`
+      }
+    ],
     remediation: { summary: recommendation },
     metadata: { ...entry }
   };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

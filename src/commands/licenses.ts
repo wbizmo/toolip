@@ -27,6 +27,14 @@ export function registerLicensesCommand(program: Command): void {
         console.log(`${chalk.green('✓')} ${license}: ${count}`);
       }
 
+      if (result.warnings.length > 0) {
+        console.log('');
+        console.log(chalk.bold('Metadata Warnings'));
+        for (const warning of result.warnings) {
+          console.log(`${chalk.yellow('!')} ${warning}`);
+        }
+      }
+
       const report = createReport({
         version: TOOLIP_VERSION,
         command: 'licenses',

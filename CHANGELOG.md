@@ -6,6 +6,80 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 
 ## Unreleased
 
+## 2.2.0 - 2026-09-07
+
+### Added
+
+- Measurement-aware security scoring states so unavailable, failed, timed-out, or cancelled analysis is never represented as a perfect score.
+- Canonical MCP workspace authorization using resolved real paths and symlink-safe containment.
+- Shared project context and scan budgets for bounded repository analysis.
+- Hard analyzer deadlines, explicit execution status, failure isolation, deterministic ordering, and bounded provider concurrency.
+- Stable per-occurrence secret finding identity and fingerprint-based redaction.
+- Explicit synthetic-secret fixture markers instead of blanket test-file severity downgrades.
+- Vault shell/JSON export formats with safe POSIX shell quoting.
+- Vault mutation locking, schema validation, permission repair, and atomic same-directory replacement.
+- Staged-file pre-commit analysis with explicit full-scan mode.
+- Package-manager-aware dependency-upgrade pull requests using isolated Git worktrees.
+- Compiler-backed static quality checks and production dependency audit gating.
+- Official Vitest V8 coverage gates for security-critical modules.
+- Node.js 22 and 24 CI coverage across Ubuntu, macOS, and Windows.
+- Least-privilege GitHub Actions release/publish automation.
+
+### Changed
+
+- Consolidated internal security analysis onto one canonical `Finding` contract; legacy report compatibility now lives at serialization boundaries.
+- Replaced hoisting-based direct-dependency classification with one resolved lockfile dependency inventory/graph.
+- `toolip tree`, install-script analysis, SBOM relationships, reachability, and dependency intelligence now reuse the same package graph.
+- Project discovery is reused instead of repeatedly walking the repository within one command.
+- Source analyzers use bounded reads and explicit skipped/failed accounting.
+- Git-history analysis now streams patch output instead of buffering the full history in memory.
+- Dockerfile matching now uses one indexed pass and preserves correct line numbers for repeated lines.
+- OSV work is deduplicated by exact package/version and correlated through indexed lookups.
+- Removed the misleading process-local six-hour vulnerability cache from one-shot CLI execution.
+- Pre-commit defaults to staged changes instead of rescanning unrelated historical findings.
+- Git hook installation preserves existing hook logic instead of overwriting `.git/hooks/pre-commit`.
+- `upgrade-pr` no longer mutates or switches the caller's current worktree.
+- Watch mode reports callback failures and continues monitoring.
+- Windows watch mode now uses a managed non-recursive directory-watcher tree instead of the Node 24/libuv recursive watcher path.
+- License facts now come from deps.dev for exact resolved direct-dependency versions instead of a hard-coded package map.
+- CLI composition moved into reusable `createProgram()`; `src/index.ts` is now a minimal executable entrypoint.
+- Replaced source-string command-registration tests with behavioral Commander command-tree coverage.
+- Declared supported Node engines as `>=22 <25`.
+- Upgraded GitHub Actions runtime majors and refreshed compatible transitive dependency versions.
+
+### Fixed
+
+- Prevented security score dimensions that were never measured from defaulting to `100/100`.
+- Prevented the dependency score from assuming a zero vulnerability penalty when vulnerability analysis was not executed.
+- Corrected npm-hoisted transitive packages being reported as root direct dependencies.
+- Corrected nested duplicate package versions being skipped or inspected through the wrong `node_modules` path.
+- Replaced placeholder dependency-tree children with real resolved edges.
+- Removed repeated full repository traversals from Doctor, pre-commit, and analyzer paths.
+- Corrected `filesScanned` so unreadable/skipped files are not counted as successfully analyzed.
+- Prevented one analyzer failure or ignored cancellation signal from aborting/locking the entire analyzer run.
+- Prevented same-pattern multiple secrets in one file from collapsing into one finding.
+- Prevented raw/short secret evidence and token fragments from appearing in reports by default.
+- Prevented real credentials in test files from being automatically downgraded solely because of path naming.
+- Prevented vault shell exports from allowing `$`, command substitution, backticks, or quoting rules to alter secret values when sourced.
+- Prevented concurrent vault read-modify-write operations from losing updates.
+- Prevented interrupted vault writes from replacing the primary vault with partial content.
+- Prevented MCP `..` traversal and symlink escapes outside approved workspace roots.
+- Prevented hook installation from clobbering Husky/custom pre-commit logic.
+- Prevented failed dependency-upgrade PR creation from leaving users on a new branch with modified files.
+- Prevented watch callback failures from surfacing as unhandled rejections.
+- Prevented Node 24 on Windows from hitting the native recursive `fs.watch` assertion in Toolip watch mode.
+- Removed fixable production dependency advisories; runtime npm audit is clean in the v2.2.0 release candidate.
+
+### Security
+
+- Strengthened workspace authorization at the MCP trust boundary.
+- Strengthened secret redaction and fixture handling in current-tree and Git-history analysis.
+- Hardened local vault persistence and shell export semantics.
+- Added a production dependency audit gate to `npm run verify` and release checks.
+- Added minimum security-critical coverage floors of 75% statements/lines, 65% branches, and 85% functions.
+- Kept npm publishing separate from ordinary CI and prepared trusted-publishing/OIDC release authorization.
+- Continued release verification against the exact npm tarball that users install.
+
 ## 2.1.1 - 2026-07-13
 
 ### Fixed
@@ -15,8 +89,6 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 - Ensured both commands report the same dependency-health score for the same project state.
 - Centralized dependency-health calculation inside `scanDependencies()`.
 - Added regression coverage preventing the two commands from drifting onto separate scoring paths again.
-
-
 
 ## 2.1.0 - 2026-07-13
 
@@ -34,8 +106,6 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 - Prevented projects with zero known vulnerabilities from receiving a dependency-health score of zero solely because several packages were outdated.
 - Prevented each outdated dependency from being treated like an independent medium-severity security vulnerability.
 - Added regression coverage for the exact 11-outdated-dependency failure reproduced against Toolip itself.
-
-
 
 ## 2.0.1 - 2026-07-13
 
