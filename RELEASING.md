@@ -7,30 +7,15 @@ Toolip releases are verified from the npm tarball that users will install. A suc
 Before beginning:
 
 - The working tree must be clean.
-- CI must pass on Linux, macOS, and Windows.
+- CI must pass on Linux, macOS, and Windows for every supported Node.js version.
 - The package version must not already exist on npm.
 - `package.json` must be the only version source.
 - Release notes and the changelog must describe only verified changes.
+- The GitHub Actions trusted publisher must be configured on npm before the automated publish path is used.
 
-## Required Sequence
+## Supported Runtime
 
-1. Install dependencies with `npm ci`.
-2. Update the version in `package.json`.
-3. Update `CHANGELOG.md`.
-4. Run `npm run release:check`.
-5. Inspect the generated tarball.
-6. Confirm the packed CLI reports the expected version.
-7. Confirm packed `self-test` and `--help` succeed.
-8. Authenticate with npm.
-9. Publish the verified package.
-10. Query npm and confirm the published version.
-11. Download the published tarball.
-12. Verify the published tarball again.
-13. Install the published package in a clean prefix.
-14. Run version, self-test, and help checks.
-15. Commit and push release metadata.
-16. Create and push the Git tag.
-17. Create the GitHub release with accurate notes.
+`package.json#engines.node` is authoritative. CI must test every supported major release represented by that range.
 
 ## Mandatory Guard
 
@@ -44,8 +29,9 @@ A release must not be published unless that command exits successfully.
 
 The guard verifies:
 
-- type checking
+- compiler-backed static quality checks
 - the full test suite
+- security-critical execution coverage thresholds
 - a clean production build
 - the CLI shebang
 - version synchronization
@@ -57,17 +43,36 @@ The guard verifies:
 - packed `toolip self-test`
 - packed `toolip --help`
 
-## npm Authentication
+## Preferred Publish Path: GitHub OIDC
 
-```bash
-npm login --auth-type=legacy --registry=https://registry.npmjs.org/
-npm whoami --registry=https://registry.npmjs.org/
-```
+Toolip uses `.github/workflows/publish.yml` for manually authorized npm releases. The workflow has no long-lived npm token. Its publish job receives only `contents: read` and `id-token: write`, allowing npm to exchange GitHub's OIDC identity for short-lived publish authorization.
 
-## Publishing
+Configure the npm package once with this trusted publisher:
 
-Publishing is intentionally not automated by `release:check`. A human must review the verified artifact before running:
+- provider: GitHub Actions
+- GitHub owner: `wbizmo`
+- repository: `toolip`
+- workflow filename: `publish.yml`
+- environment: `npm-release`
+- allowed action: direct `npm publish`
 
-```bash
-npm publish --access public --registry=https://registry.npmjs.org/
-```
+For stronger human review, configure the GitHub `npm-release` environment with required reviewers. The workflow is already restricted to manual dispatch from `main` and requires both the exact package version and the confirmation text `publish toolip`.
+
+The release job uses Node.js 24 and npm 11.5.1 or newer because npm trusted publishing requires a sufficiently recent npm CLI. Trusted publishing automatically produces npm provenance for this public package/repository.
+
+## Automated Release Sequence
+
+1. Update the version in `package.json`.
+2. Update `CHANGELOG.md` and release notes.
+3. Merge only after the normal CI matrix is green.
+4. Open **Actions → Publish npm package → Run workflow** on `main`.
+5. Enter the exact package version without a leading `v`.
+6. Enter `publish toolip` as the authorization text.
+7. Approve the `npm-release` environment deployment if reviewer protection is configured.
+8. The workflow installs exact dependencies, runs `npm run release:check`, rejects an already-published version, and publishes through npm trusted publishing.
+9. Query npm and verify the published version and provenance.
+10. Create and push the matching Git tag and GitHub release with accurate notes.
+
+## Manual Emergency Fallback
+
+The preferred path is OIDC. If GitHub Actions or npm trusted publishing is unavailable and a manual release is genuinely required, run the same `npm run release:check` guard, authenticate interactively with npm using a short-lived or appropriately scoped credential, publish, and revoke/expire that credential afterward. Do not add a long-lived publish token to ordinary CI jobs.
