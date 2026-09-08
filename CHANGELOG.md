@@ -238,7 +238,7 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 * Git safety auditing.
 * Pre-commit security checks and Git hook installation.
 * Secure development learning commands.
-* Structured terminal and JSON output.
+* Structured reports and JSON output.
 
 ### Known Issues
 
