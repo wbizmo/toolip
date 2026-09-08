@@ -1,8 +1,11 @@
 import { mapConcurrent } from '../application/concurrency.js';
 import type { Finding } from '../contracts/finding.js';
 import { analyzePackage } from './analyze-package.js';
-import type { PackageHealth } from './dependency-types.js';
-import { readDependencies } from './read-dependencies.js';
+import {
+  readNpmDependencyInventory,
+  type DependencyIdentity
+} from './dependencies/inventory.js';
+import type { DependencyInfo, PackageHealth } from './dependency-types.js';
 
 export type DependencyScanResult = {
   packages: PackageHealth[];
@@ -18,14 +21,48 @@ export type DependencyScanResult = {
   };
 };
 
+function dependencyKey(dependency: Pick<DependencyIdentity, 'name' | 'version'>): string {
+  return `${dependency.name}@${dependency.version}`;
+}
+
+function dependencyInfo(dependency: DependencyIdentity): DependencyInfo {
+  return {
+    name: dependency.name,
+    version: dependency.version,
+    type: dependency.development ? 'devDependency' : 'dependency'
+  };
+}
+
 export async function scanDependencies(root: string): Promise<DependencyScanResult> {
-  const dependencies = await readDependencies(root);
-  const packages = await mapConcurrent(
-    dependencies,
+  const inventory = await readNpmDependencyInventory(root);
+  const uniqueDependencies = new Map<string, DependencyInfo>();
+
+  for (const dependency of inventory) {
+    const key = dependencyKey(dependency);
+    if (!uniqueDependencies.has(key)) {
+      uniqueDependencies.set(key, dependencyInfo(dependency));
+    }
+  }
+
+  const analyzedPackages = await mapConcurrent(
+    [...uniqueDependencies.values()],
     8,
     (dependency) => analyzePackage(dependency)
   );
-  const findings = packages.flatMap(packageToFindings);
+  const healthByKey = new Map(
+    analyzedPackages.map((pkg) => [`${pkg.name}@${pkg.installedVersion}`, pkg])
+  );
+
+  // Preserve every resolved installed node in the scan result while avoiding
+  // duplicate registry lookups for the same exact package/version pair.
+  const packages = inventory.flatMap((dependency) => {
+    const health = healthByKey.get(dependencyKey(dependency));
+    return health ? [health] : [];
+  });
+
+  // Findings describe package/version facts, not install-path facts. Emit them
+  // once per exact resolved version even when npm installs it more than once.
+  const findings = analyzedPackages.flatMap(packageToFindings);
 
   return {
     packages,
@@ -46,7 +83,9 @@ export async function scanDependencies(root: string): Promise<DependencyScanResu
 
 export function packageToFindings(pkg: PackageHealth): Finding[] {
   const findings: Finding[] = [];
-  const suffix = pkg.name.toUpperCase().replaceAll(/[^A-Z0-9]/g, '-');
+  const suffix = `${pkg.name}@${pkg.installedVersion}`
+    .toUpperCase()
+    .replaceAll(/[^A-Z0-9]/g, '-');
 
   if (pkg.deprecated) {
     findings.push(dependencyFinding({
