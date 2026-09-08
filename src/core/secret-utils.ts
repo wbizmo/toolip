@@ -22,6 +22,14 @@ export function isTestFile(relativePath?: string): boolean {
   );
 }
 
+/**
+ * Stable occurrence identity for correlating/redacting findings only.
+ *
+ * This SHA-256 value is deliberately not treated as a password hash,
+ * authentication primitive, secret commitment, or other security boundary.
+ * Low-entropy values may be guessable from a fingerprint, so callers must
+ * continue to treat the fingerprint as sensitive report metadata.
+ */
 export function secretFingerprint(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
