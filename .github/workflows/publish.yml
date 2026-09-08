@@ -52,7 +52,7 @@ jobs:
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
-      - name: Use an npm CLI with trusted-publishing support
+      - name: Use current npm CLI
         run: npm install --global "npm@^11.5.1"
 
       - name: Resolve release version
@@ -92,6 +92,13 @@ jobs:
         if: steps.availability.outputs.should_publish == 'true'
         run: npm run release:check
 
-      - name: Publish with npm trusted publishing
+      - name: Publish to npm
         if: steps.availability.outputs.should_publish == 'true'
-        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "NPM_TOKEN is not available to the npm-release environment."
+            exit 1
+          fi
+          npm publish --access public
