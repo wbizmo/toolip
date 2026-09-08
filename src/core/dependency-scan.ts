@@ -1,7 +1,11 @@
 import { mapConcurrent } from '../application/concurrency.js';
 import type { Finding } from '../contracts/finding.js';
 import { analyzePackage } from './analyze-package.js';
-import type { PackageHealth } from './dependency-types.js';
+import {
+  readNpmDependencyInventory,
+  type DependencyIdentity
+} from './dependencies/inventory.js';
+import type { DependencyInfo, PackageHealth } from './dependency-types.js';
 import { readDependencies } from './read-dependencies.js';
 
 export type DependencyScanResult = {
@@ -18,10 +22,64 @@ export type DependencyScanResult = {
   };
 };
 
+type DependencyScanInputs = {
+  dependencies: DependencyInfo[];
+  totalDependencies: number;
+};
+
+function dependencyKey(dependency: Pick<DependencyIdentity, 'name' | 'version'>): string {
+  return `${dependency.name}@${dependency.version}`;
+}
+
+function dependencyInfo(dependency: DependencyIdentity): DependencyInfo {
+  return {
+    name: dependency.name,
+    version: dependency.version,
+    type: dependency.development ? 'devDependency' : 'dependency'
+  };
+}
+
+async function readDependencyScanInputs(root: string): Promise<DependencyScanInputs> {
+  try {
+    const inventory = await readNpmDependencyInventory(root);
+    const uniqueDependencies = new Map<string, DependencyInfo>();
+
+    for (const dependency of inventory) {
+      const key = dependencyKey(dependency);
+      if (!uniqueDependencies.has(key)) {
+        uniqueDependencies.set(key, dependencyInfo(dependency));
+      }
+    }
+
+    return {
+      dependencies: [...uniqueDependencies.values()],
+      totalDependencies: inventory.length
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
+
+    // Preserve Toolip's previous manifest-only behavior for projects that do
+    // not have an npm package-lock. npm projects with a package-lock always use
+    // the canonical exact resolved inventory above.
+    const dependencies = await readDependencies(root);
+    return {
+      dependencies,
+      totalDependencies: dependencies.length
+    };
+  }
+}
+
 export async function scanDependencies(root: string): Promise<DependencyScanResult> {
-  const dependencies = await readDependencies(root);
+  const inputs = await readDependencyScanInputs(root);
+
+  // Dependency-health facts and score penalties are package/version facts, so
+  // npm lockfile projects analyze each exact resolved version once even if npm
+  // installs it at more than one path. totalDependencies still reports the
+  // complete resolved graph size.
   const packages = await mapConcurrent(
-    dependencies,
+    inputs.dependencies,
     8,
     (dependency) => analyzePackage(dependency)
   );
@@ -31,7 +89,7 @@ export async function scanDependencies(root: string): Promise<DependencyScanResu
     packages,
     findings,
     summary: {
-      totalDependencies: packages.length,
+      totalDependencies: inputs.totalDependencies,
       outdated: packages.filter((pkg) => pkg.outdated).length,
       deprecated: packages.filter((pkg) => pkg.deprecated).length,
       highRisk: packages.filter((pkg) => pkg.riskScore >= 70).length,
@@ -46,7 +104,9 @@ export async function scanDependencies(root: string): Promise<DependencyScanResu
 
 export function packageToFindings(pkg: PackageHealth): Finding[] {
   const findings: Finding[] = [];
-  const suffix = pkg.name.toUpperCase().replaceAll(/[^A-Z0-9]/g, '-');
+  const suffix = `${pkg.name}@${pkg.installedVersion}`
+    .toUpperCase()
+    .replaceAll(/[^A-Z0-9]/g, '-');
 
   if (pkg.deprecated) {
     findings.push(dependencyFinding({

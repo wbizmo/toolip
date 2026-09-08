@@ -30,6 +30,8 @@ type PackageLockEntry = {
   name?: string;
   version?: string;
   dev?: boolean;
+  link?: boolean;
+  resolved?: string;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   optionalDependencies?: Record<string, string>;
@@ -66,6 +68,29 @@ function parentPackagePath(lockPath: string): string {
   return '';
 }
 
+function normalizeResolvedLockPath(resolved: string): string {
+  return resolved.replace(/^\.\//, '').replaceAll('\\', '/');
+}
+
+function resolveCandidatePath(
+  packages: Record<string, PackageLockEntry>,
+  candidate: string
+): string | undefined {
+  const entry = packages[candidate];
+  if (entry?.version) {
+    return candidate;
+  }
+
+  if (entry?.link && entry.resolved) {
+    const linkedPath = normalizeResolvedLockPath(entry.resolved);
+    if (packages[linkedPath]?.version) {
+      return linkedPath;
+    }
+  }
+
+  return undefined;
+}
+
 function resolveInstalledPath(
   packages: Record<string, PackageLockEntry>,
   fromPath: string,
@@ -77,9 +102,10 @@ function resolveInstalledPath(
     const candidate = cursor
       ? `${cursor}/node_modules/${dependencyName}`
       : `node_modules/${dependencyName}`;
+    const resolved = resolveCandidatePath(packages, candidate);
 
-    if (packages[candidate]?.version) {
-      return candidate;
+    if (resolved) {
+      return resolved;
     }
 
     if (!cursor) return undefined;

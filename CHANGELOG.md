@@ -6,6 +6,31 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 
 ## Unreleased
 
+## 2.2.1 - 2026-09-08
+
+### Changed
+
+- Dependency-health analysis now consumes the canonical resolved npm lockfile inventory used by OSV, dependency trees, SBOM generation, install-script analysis, and reachability.
+- Package-health registry work and score penalties are deduplicated by exact `name@version` while `totalDependencies` continues to represent the complete installed dependency graph.
+- Dependency finding IDs now include the resolved package version so different installed versions of one package cannot collide.
+- npm workspace link entries are followed to their resolved workspace package identity and exact version.
+- npm trusted publishing can run from verified `main` release commits as well as an explicitly authorized manual dispatch, and remains idempotent when the version already exists.
+
+### Fixed
+
+- Fixed `toolip scan`, `toolip doctor`, and `toolip score` analyzing only direct `package.json` declarations for deprecated, outdated, no-maintainer, stale, and risk signals while vulnerability analysis used the full resolved transitive graph.
+- Fixed manifest ranges and non-version specifiers such as caret ranges, `workspace:*`, npm aliases, tags such as `latest`, and Git specifiers being treated as installed versions during dependency-health analysis.
+- Fixed transitive deprecated, outdated, stale, and no-maintainer packages being invisible to dependency-health findings and scoring.
+- Fixed `totalDependencies` reporting only direct manifest dependencies instead of the full resolved installed dependency graph.
+- Fixed multiple resolved versions of the same package producing colliding dependency finding IDs.
+- Fixed npm workspace link records being skipped by the canonical dependency graph when the linked `node_modules` entry carried no version of its own.
+- Added an explicit warning when multiple supported package-manager lockfiles coexist instead of silently applying `pnpm > yarn > npm` precedence.
+
+### Security
+
+- Clarified that raw SHA-256 secret fingerprints are stable correlation/redaction metadata, not a password hash, commitment, authentication primitive, or security boundary; low-entropy values may be guessable and fingerprints should remain sensitive report metadata.
+- Added regression coverage for deep transitive dependency health, exact resolved versions, duplicate installed versions, npm workspace links, and package-manager lockfile conflicts.
+
 ## 2.2.0 - 2026-09-07
 
 ### Added

@@ -6,15 +6,21 @@ Toolip is a TypeScript-powered CLI for supply-chain security, dependency intelli
 
 It is designed to run close to the developer: from a terminal, pre-commit hook, CI job, watch process, static report, or read-only MCP integration. Toolip keeps project analysis local by default and makes remote operations explicit.
 
-## Toolip v2.2.0
+## Toolip v2.2.1
 
-Toolip **v2.2.0** is a hardening and engineering release focused on correctness, trust boundaries, deterministic execution, repository-scale efficiency, and release safety.
+Toolip **v2.2.1** is a dependency-correctness release that closes the last split between Toolip's resolved vulnerability graph and the dependency-health path used by `scan`, `doctor`, and `score`.
 
 Highlights include:
 
+- one canonical resolved npm dependency inventory shared by vulnerability analysis, dependency health, tree, SBOM, install-script analysis, and reachability
+- dependency-health analysis across direct and transitive packages instead of only direct `package.json` declarations
+- exact lockfile versions for health analysis instead of coercing manifest ranges, tags, aliases, Git specifiers, or `workspace:*` into pretend installed versions
+- package-health analysis deduplicated by exact `name@version`, with full installed-node counts retained in dependency summaries
+- version-qualified dependency finding IDs so multiple installed versions of one package cannot collide
+- npm workspace link resolution to exact workspace package identities and versions
+- explicit warnings when multiple supported package-manager lockfiles coexist rather than silent precedence selection
 - truthful security scoring that never treats an unmeasured dimension as a perfect score
 - one canonical `Finding` contract across security analysis paths
-- one resolved dependency inventory/graph shared by tree, SBOM, install-script, reachability, and dependency analysis
 - exact lockfile package-instance handling, including nested/duplicated installations
 - one shared project context instead of repeated full repository discovery
 - bounded source-file reads, binary/oversize protection, scan budgets, and truthful scanned/skipped/failed accounting
@@ -44,7 +50,7 @@ npm install -g toolip
 Install this release explicitly:
 
 ```bash
-npm install -g toolip@2.2.0
+npm install -g toolip@2.2.1
 ```
 
 Verify the installation:
@@ -169,15 +175,17 @@ Toolip queries **OSV.dev** using exact resolved package versions. Requests are d
 
 ### Dependency graph and package identity
 
-Toolip builds one resolved dependency inventory from the project manifest and lockfile. Directness comes from root dependency declarations rather than physical npm hoisting, and each installed package instance retains its resolved path.
+Toolip builds one resolved dependency inventory from `package-lock.json`. Directness comes from root dependency declarations rather than physical npm hoisting, and each installed package instance retains its resolved path. npm workspace links are followed to the exact workspace package identity and version recorded by the lockfile.
 
-The same graph powers dependency-tree output, SBOM relationships, install-script inspection, reachability correlation, and package analysis. This prevents different commands from inventing conflicting dependency identities.
+The same graph now powers vulnerability analysis, dependency-tree output, SBOM relationships, install-script inspection, reachability correlation, and the dependency-health analysis used by `toolip scan`, `toolip doctor`, and `toolip score`. Health lookups and score penalties are deduplicated by exact `name@version`, while summary dependency counts still represent the full installed graph.
+
+This means manifest declarations such as `^3.24.2`, `workspace:*`, `latest`, `npm:alias@version`, and Git specifiers are requirements only; they are never treated as installed versions when Toolip evaluates dependency health.
 
 ### Security scoring
 
 Toolip security scoring is **measurement-aware**. A security dimension is not assigned `100/100` merely because a corresponding analyzer was not executed or a provider failed.
 
-The score model distinguishes dependency health, secrets, configuration, Git safety, execution status, and provider availability. Unavailable/failed dimensions remain explicit in structured output.
+Dependency health uses the complete resolved transitive inventory for deprecation, maintenance, staleness, and freshness signals, alongside OSV vulnerability findings from the same dependency universe. The score model distinguishes dependency health, secrets, configuration, Git safety, execution status, and provider availability. Unavailable/failed dimensions remain explicit in structured output.
 
 ### AST security analysis
 
@@ -186,6 +194,8 @@ Toolip uses the TypeScript Compiler API for supported dangerous-code analysis. I
 ### Secret detection
 
 Toolip detects every occurrence of supported secret patterns rather than only the first match per rule/file. Finding identities include stable occurrence information, and secret evidence is masked/fingerprinted rather than exposing token fragments.
+
+Secret fingerprints are stable correlation and redaction identifiers, not password hashes, authentication primitives, secret commitments, or another security boundary. A fingerprint derived from a low-entropy value may be guessable and should be treated as sensitive report metadata.
 
 Test files are not automatically treated as safe. Known synthetic fixtures can be marked explicitly; genuine credentials retain their security severity regardless of file location.
 
@@ -199,7 +209,7 @@ Historical scanning processes Git output incrementally instead of materializing 
 
 ## Repository-Scale Execution
 
-Toolip v2.2.0 removes several repeated full-tree traversals from the analysis path.
+Toolip v2.2.x removes several repeated full-tree traversals from the analysis path.
 
 A shared project context now owns project discovery and file inventory. Source analyzers use bounded text reads with file-size and binary safeguards. Commands report how many files were discovered, actually scanned, skipped, or failed to read.
 
@@ -228,7 +238,7 @@ Pre-commit mode scans the **staged change set by default** instead of rescanning
 
 `toolip upgrade-pr` performs mutations inside a temporary Git worktree. The caller's current branch and dirty files are left untouched, including when install/tests/push/PR creation fail.
 
-Package-manager behavior is selected from the project instead of hard-coding npm. Current handling covers npm, pnpm, and Yarn-compatible upgrade flows.
+Package-manager behavior is selected from the project instead of hard-coding npm. Current handling covers npm, pnpm, and Yarn-compatible upgrade flows. If multiple supported lockfiles coexist, Toolip emits an explicit warning before using its deterministic `pnpm > yarn > npm` precedence so stale migration lockfiles are not silently ignored.
 
 ### Watch mode
 
@@ -252,7 +262,7 @@ See [docs/MCP.md](docs/MCP.md).
 
 Toolip Vault stores local development secrets using **AES-256-GCM** with keys derived through `scrypt` and per-vault random salt/IV material.
 
-v2.2.0 adds:
+v2.2.x includes:
 
 - schema/version validation with fail-closed malformed-vault handling
 - serialized mutations using a vault-local lock
@@ -299,7 +309,7 @@ Reports use normalized findings with stable rule IDs, confidence, remediation, s
 
 ## Architecture
 
-Toolip v2.2.0 is centered on three practical primitives:
+Toolip v2.2.x is centered on three practical primitives:
 
 1. **Project context** — discover project/files/dependencies once and reuse them.
 2. **Analyzer contract** — security capabilities return one canonical normalized `Finding` model.
@@ -344,7 +354,7 @@ npm run release:check
 
 packs Toolip, installs that exact tarball in isolation, and verifies the packaged CLI rather than trusting the source-tree build.
 
-GitHub/npm publishing is intentionally separated from ordinary CI. The preferred npm path uses GitHub OIDC/trusted publishing with least-privilege permissions and an optional protected `npm-release` environment.
+GitHub release creation and npm publication remain isolated from ordinary CI. npm publication uses the dedicated trusted-publishing/OIDC workflow with least-privilege permissions; verified release commits on `main` can publish automatically, and the manual path still requires explicit authorization. Publication is idempotent when an exact version is already present on npm.
 
 See [RELEASING.md](RELEASING.md).
 
