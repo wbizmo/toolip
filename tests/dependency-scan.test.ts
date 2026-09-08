@@ -164,4 +164,36 @@ describe('scanDependencies', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('preserves manifest-only dependency scanning when package-lock.json is absent', async () => {
+    analyzePackageMock.mockClear();
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-deps-manifest-'));
+
+    try {
+      await writeFile(
+        path.join(root, 'package.json'),
+        JSON.stringify({
+          dependencies: {
+            request: '^2.0.0'
+          },
+          devDependencies: {
+            'old-lib': '~1.4.0'
+          }
+        })
+      );
+
+      const { scanDependencies } = await import('../src/core/dependency-scan.js');
+      const result = await scanDependencies(root);
+      const analyzed = analyzePackageMock.mock.calls.map(([dependency]) => dependency);
+
+      expect(result.summary.totalDependencies).toBe(2);
+      expect(result.packages).toHaveLength(2);
+      expect(analyzed).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'request', version: '^2.0.0' }),
+        expect.objectContaining({ name: 'old-lib', version: '~1.4.0' })
+      ]));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
