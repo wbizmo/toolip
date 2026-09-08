@@ -44,31 +44,21 @@ export async function scanDependencies(root: string): Promise<DependencyScanResu
     }
   }
 
-  const analyzedPackages = await mapConcurrent(
+  // Dependency-health facts and score penalties are package/version facts, so
+  // analyze each exact resolved version once even if npm installs it at more
+  // than one path. totalDependencies below still reports the full graph size.
+  const packages = await mapConcurrent(
     [...uniqueDependencies.values()],
     8,
     (dependency) => analyzePackage(dependency)
   );
-  const healthByKey = new Map(
-    analyzedPackages.map((pkg) => [`${pkg.name}@${pkg.installedVersion}`, pkg])
-  );
-
-  // Preserve every resolved installed node in the scan result while avoiding
-  // duplicate registry lookups for the same exact package/version pair.
-  const packages = inventory.flatMap((dependency) => {
-    const health = healthByKey.get(dependencyKey(dependency));
-    return health ? [health] : [];
-  });
-
-  // Findings describe package/version facts, not install-path facts. Emit them
-  // once per exact resolved version even when npm installs it more than once.
-  const findings = analyzedPackages.flatMap(packageToFindings);
+  const findings = packages.flatMap(packageToFindings);
 
   return {
     packages,
     findings,
     summary: {
-      totalDependencies: packages.length,
+      totalDependencies: inventory.length,
       outdated: packages.filter((pkg) => pkg.outdated).length,
       deprecated: packages.filter((pkg) => pkg.deprecated).length,
       highRisk: packages.filter((pkg) => pkg.riskScore >= 70).length,
