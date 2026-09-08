@@ -80,4 +80,64 @@ describe('npm dependency inventory', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('resolves npm workspace link entries to the exact workspace package identity', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-inventory-workspace-'));
+    try {
+      await writeFile(path.join(root, 'package-lock.json'), JSON.stringify({
+        lockfileVersion: 3,
+        packages: {
+          '': {
+            name: 'fixture',
+            version: '1.0.0',
+            dependencies: {
+              '@fixture/workspace-package': 'workspace:*'
+            }
+          },
+          'node_modules/@fixture/workspace-package': {
+            resolved: 'packages/workspace-package',
+            link: true
+          },
+          'packages/workspace-package': {
+            name: '@fixture/workspace-package',
+            version: '1.5.0',
+            dependencies: {
+              'transitive-package': '^3.0.0'
+            }
+          },
+          'node_modules/transitive-package': {
+            version: '3.0.0'
+          }
+        }
+      }));
+
+      const graph = await readNpmDependencyGraph(root);
+      const workspace = graph.packages.find(
+        (item) => item.name === '@fixture/workspace-package'
+      );
+      const transitive = graph.packages.find(
+        (item) => item.name === 'transitive-package'
+      );
+
+      expect(workspace).toMatchObject({
+        version: '1.5.0',
+        direct: true,
+        installPath: 'packages/workspace-package'
+      });
+      expect(graph.rootDependencies).toContain(workspace?.id);
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'root',
+        to: workspace?.id,
+        name: '@fixture/workspace-package',
+        requirement: 'workspace:*'
+      }));
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: workspace?.id,
+        to: transitive?.id,
+        name: 'transitive-package'
+      }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
