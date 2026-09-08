@@ -232,7 +232,8 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 * Project profiling and dependency scanning.
 * Security doctor and scorecard commands.
 * npm package inspection and comparison.
-* License inventory and package-alternative analysis.
+* License analysis.
+* Package alternative suggestions.
 * Dependency tree summaries.
 * Encrypted local Toolip Vault.
 * Git safety auditing.
@@ -243,7 +244,7 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 ### Known Issues
 
 * CLI version output still reported v1.0.3 because version metadata was duplicated.
-* Dangerous-code detection could mistake `RegExp.exec()` as `child_process.exec()`.
+* Dangerous-code detection could mistake `RegExp.exec()` for shell execution.
 * Test fixture passwords could be reported too aggressively.
 
 ## 1.0.4
@@ -295,7 +296,8 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 * Security doctor audits.
 * Security scorecards.
 * npm package inspection and comparison.
-* License inventory and package-alternative analysis.
+* License analysis.
+* Package alternative suggestions.
 * Dependency tree inspection.
 * Encrypted local secrets management using Toolip Vault.
 * Git safety auditing.
