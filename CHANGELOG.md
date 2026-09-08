@@ -232,14 +232,13 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 * Project profiling and dependency scanning.
 * Security doctor and scorecard commands.
 * npm package inspection and comparison.
-* License analysis.
-* Package alternative suggestions.
+* License inventory and package-alternative analysis.
 * Dependency tree summaries.
 * Encrypted local Toolip Vault.
 * Git safety auditing.
 * Pre-commit security checks and Git hook installation.
 * Secure development learning commands.
-* Structured reports and JSON output.
+* Structured terminal and JSON output.
 
 ### Known Issues
 
