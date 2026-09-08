@@ -33,4 +33,25 @@ describe('package manager detection', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('warns when multiple package-manager lockfiles coexist and keeps explicit precedence', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-manager-conflict-'));
+    const warnings: string[] = [];
+
+    try {
+      await Promise.all([
+        writeFile(path.join(root, 'pnpm-lock.yaml'), '', 'utf8'),
+        writeFile(path.join(root, 'yarn.lock'), '', 'utf8'),
+        writeFile(path.join(root, 'package-lock.json'), '', 'utf8')
+      ]);
+
+      expect(await detectPackageManager(root, (message) => warnings.push(message))).toBe('pnpm');
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('multiple package-manager lockfiles');
+      expect(warnings[0]).toContain('pnpm-lock.yaml, yarn.lock, package-lock.json');
+      expect(warnings[0]).toContain('pnpm > yarn > npm');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
