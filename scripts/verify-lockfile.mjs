@@ -14,7 +14,46 @@ import { readFile } from 'node:fs/promises';
 import semver from 'semver';
 
 const REGISTRY = 'https://registry.npmjs.org/';
-const STRONG = /^sha(?:512|384)-/u;
+// Complete, well-formed digests only: SHA-512 is 64 bytes (88 base64 chars with
+// padding) and SHA-384 is 48 bytes (64 base64 chars, no padding). A prefix check
+// alone would accept `sha512-not-a-digest`.
+const STRONG_TOKEN =
+  /^(?:sha512-[A-Za-z0-9+/]{86}==|sha384-[A-Za-z0-9+/]{64})$/u;
+const isStrongIntegrity = (value) =>
+  typeof value === 'string' &&
+  value.trim().length > 0 &&
+  value
+    .trim()
+    .split(/\s+/u)
+    .every((token) => STRONG_TOKEN.test(token));
+
+/**
+ * Every name an entry could install as: the lockfile location, the `name` field
+ * (npm aliases store the real package name there) and the name embedded in the
+ * registry tarball URL. Policy is checked against all of them, so no single
+ * attacker-controlled field can hide a vulnerable package. O(1) per entry.
+ */
+function candidateNames(location, entry) {
+  const names = new Set();
+  const marker = 'node_modules/';
+  names.add(location.slice(location.lastIndexOf(marker) + marker.length));
+  if (typeof entry.name === 'string') names.add(entry.name);
+  if (
+    typeof entry.resolved === 'string' &&
+    entry.resolved.startsWith(REGISTRY)
+  ) {
+    const rest = entry.resolved.slice(REGISTRY.length);
+    const end = rest.indexOf('/-/');
+    if (end > 0) {
+      try {
+        names.add(decodeURIComponent(rest.slice(0, end)));
+      } catch {
+        // Malformed escapes are reported by the resolved-URL checks.
+      }
+    }
+  }
+  return names;
+}
 // Packages whose install scripts have been reviewed. Extend only via review.
 const INSTALL_SCRIPT_ALLOWLIST = new Set([
   'node_modules/esbuild',
@@ -24,6 +63,13 @@ const INSTALL_SCRIPT_ALLOWLIST = new Set([
 const lock = JSON.parse(await readFile('package-lock.json', 'utf8'));
 const manifest = JSON.parse(await readFile('package.json', 'utf8'));
 const problems = [];
+
+const isPlainObject = (value) =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+if (!isPlainObject(lock.packages)) {
+  problems.push('lockfile "packages" must be an object');
+}
+const lockPackages = isPlainObject(lock.packages) ? lock.packages : {};
 
 if (lock.lockfileVersion < 3) {
   problems.push(`lockfileVersion ${lock.lockfileVersion} is below 3`);
@@ -49,13 +95,18 @@ if (
 // vulnerable range (issues #50, #51). Index by package name: O(P + R) total.
 const advisoryFile =
   process.env.ADVISORY_FLOORS ?? 'security/advisory-floors.json';
-const advisories = JSON.parse(await readFile(advisoryFile, 'utf8')).packages;
+const rawAdvisories = JSON.parse(await readFile(advisoryFile, 'utf8')).packages;
+// An array (or null/string) would make name lookups silently miss every policy.
+if (!isPlainObject(rawAdvisories)) {
+  problems.push('advisory policy "packages" must be a non-array object');
+}
+const advisories = isPlainObject(rawAdvisories) ? rawAdvisories : {};
 
 // A mistyped range makes semver.satisfies() return false, which would let a
 // vulnerable package pass silently. Validate every entry up front, including
 // ones for packages that are not installed today, so a typo cannot lie in wait.
 const invalidPolicies = new Set();
-for (const [pkg, policy] of Object.entries(advisories ?? {})) {
+for (const [pkg, policy] of Object.entries(advisories)) {
   if (
     typeof policy?.vulnerable !== 'string' ||
     semver.validRange(policy.vulnerable) === null
@@ -74,7 +125,7 @@ for (const [pkg, policy] of Object.entries(advisories ?? {})) {
   }
 }
 
-for (const [location, entry] of Object.entries(lock.packages ?? {})) {
+for (const [location, entry] of Object.entries(lockPackages)) {
   if (location === '' || entry.link) continue;
   if (
     typeof entry.resolved !== 'string' ||
@@ -84,28 +135,25 @@ for (const [location, entry] of Object.entries(lock.packages ?? {})) {
       `${location}: resolved outside ${REGISTRY} (${entry.resolved})`
     );
   }
-  if (typeof entry.integrity !== 'string' || !STRONG.test(entry.integrity)) {
+  if (!isStrongIntegrity(entry.integrity)) {
     problems.push(`${location}: missing or weak integrity hash`);
   }
-  const name =
-    entry.name ??
-    location.slice(
-      location.lastIndexOf('node_modules/') + 'node_modules/'.length
-    );
-  const policy =
-    Object.hasOwn(advisories, name) && !invalidPolicies.has(name)
-      ? advisories[name]
-      : undefined;
-  if (
-    policy &&
-    typeof entry.version === 'string' &&
-    semver.satisfies(entry.version, policy.vulnerable, {
-      includePrerelease: true
-    })
-  ) {
-    problems.push(
-      `${location}: ${name}@${entry.version} is in vulnerable range "${policy.vulnerable}" (${policy.advisories.join(', ')})`
-    );
+  for (const name of candidateNames(location, entry)) {
+    const policy =
+      Object.hasOwn(advisories, name) && !invalidPolicies.has(name)
+        ? advisories[name]
+        : undefined;
+    if (
+      policy &&
+      typeof entry.version === 'string' &&
+      semver.satisfies(entry.version, policy.vulnerable, {
+        includePrerelease: true
+      })
+    ) {
+      problems.push(
+        `${location}: ${name}@${entry.version} is in vulnerable range "${policy.vulnerable}" (${policy.advisories.join(', ')})`
+      );
+    }
   }
   if (entry.hasInstallScript && !INSTALL_SCRIPT_ALLOWLIST.has(location)) {
     problems.push(`${location}: unreviewed install script`);
@@ -117,5 +165,5 @@ if (problems.length > 0) {
   process.exit(1);
 }
 console.log(
-  `Lockfile integrity verified for ${Object.keys(lock.packages).length - 1} packages.`
+  `Lockfile integrity verified for ${Object.keys(lockPackages).length - 1} packages.`
 );

@@ -164,6 +164,85 @@ describe('lockfile integrity and version sync (issues #50, #51, #52)', () => {
     });
   });
 
+  describe('policy cannot be dodged through lockfile fields (CodeRabbit round 3)', () => {
+    const vulnerable = (location: string, extra: Partial<Entry> = {}) =>
+      lockWith((lock) => {
+        lock.packages[location] = {
+          version: '6.28.1',
+          resolved: 'https://registry.npmjs.org/undici/-/undici-6.28.1.tgz',
+          integrity: INTEGRITY,
+          ...extra
+        };
+      });
+
+    it('is not fooled by a misleading name field on a vulnerable location', () => {
+      const r = vulnerable('node_modules/undici', { name: 'safe-package' });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('undici@6.28.1');
+    });
+
+    it('catches an npm alias whose real package name is in the name field', () => {
+      const r = vulnerable('node_modules/totally-innocent', { name: 'undici' });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('undici@6.28.1');
+    });
+
+    it('catches a vulnerable package identified only by its registry tarball URL', () => {
+      const r = vulnerable('node_modules/renamed', { name: 'renamed' });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('undici@6.28.1');
+    });
+
+    it('fails when the advisory policy packages value is an array or missing', () => {
+      for (const packages of [[], null, 'nope', undefined]) {
+        const dir = mkdtempSync(path.join(os.tmpdir(), 'toolip-adv-'));
+        dirs.push(dir);
+        const file = path.join(dir, 'advisories.json');
+        writeFileSync(file, JSON.stringify({ packages }));
+        const r = lockWith((lock) => {
+          lock.packages['node_modules/undici'].version = '6.28.1';
+        }, file);
+        expect(r.status).toBe(1);
+        expect(r.stderr).toContain('non-array object');
+      }
+    });
+
+    it('fails when the lockfile packages value is not an object', () => {
+      const r = lockWith((lock) => {
+        (lock as { packages: unknown }).packages = [];
+      });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('"packages" must be an object');
+    });
+  });
+
+  describe('integrity digests must be complete, not just prefixed', () => {
+    const withIntegrity = (integrity: string | undefined) =>
+      lockWith((lock) => {
+        lock.packages['node_modules/undici'].integrity = integrity;
+      });
+
+    it.each([
+      ['sha512-not-a-digest'],
+      ['sha512-'],
+      [`sha512-${'A'.repeat(85)}==`],
+      [`sha512-${'A'.repeat(86)}=`],
+      [`sha384-${'A'.repeat(63)}`],
+      [`sha1-${'A'.repeat(27)}=`],
+      [`${INTEGRITY} sha512-garbage`],
+      ['']
+    ])('rejects %s', (integrity) => {
+      const r = withIntegrity(integrity);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('missing or weak integrity hash');
+    });
+
+    it('accepts complete sha512 and sha384 digests', () => {
+      expect(withIntegrity(INTEGRITY).status).toBe(0);
+      expect(withIntegrity(`sha384-${'B'.repeat(64)}`).status).toBe(0);
+    });
+  });
+
   it('rejects non-registry sources and weak integrity hashes', () => {
     const r = lockWith((lock) => {
       lock.packages['node_modules/evil'] = {
