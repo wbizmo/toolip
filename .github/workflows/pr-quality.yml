@@ -14,6 +14,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  complexity-evidence:
+    name: Require algorithmic complexity evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify PR time/space analysis is documented
+        shell: bash
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          for required in             "## Algorithmic analysis"             "Previous worst-case time"             "New worst-case time"             "Previous peak space"             "New peak space"; do
+            if ! grep -Fqi "$required" <<< "$PR_BODY"; then
+              echo "Missing PR complexity disclosure: $required"
+              exit 1
+            fi
+          done
+          if ! grep -Eq 'O\([^)]*\)|N/A' <<< "$PR_BODY"; then
+            echo "Provide explicit Big-O time/space estimates, or justify N/A for a no-code PR."
+            exit 1
+          fi
+          echo "Complexity disclosure present; reviewer must validate correctness."
+
   typecheck-build-test:
     name: Typecheck, build, tests and dependency audit
     runs-on: ubuntu-latest
