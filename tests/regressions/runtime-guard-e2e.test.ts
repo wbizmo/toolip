@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const dirs: string[] = [];
@@ -15,7 +16,8 @@ function cli(nodeVersion: string | undefined, ...args: string[]) {
     process.execPath,
     [
       '--import',
-      path.resolve('tests/fixtures/fake-node-version.mjs'),
+      // Windows requires a file:// URL for absolute --import specifiers.
+      pathToFileURL(path.resolve('tests/fixtures/fake-node-version.mjs')).href,
       '--import',
       'tsx',
       'src/index.ts',
