@@ -13,6 +13,7 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 ### Changed
 
 - Minimum supported Node.js is now 22.23.4 or 24.22.1 (October 2026 security releases; 24.22.2+ recommended). The CLI refuses to scan on unpatched or unsupported runtimes unless `TOOLIP_ALLOW_UNPATCHED_NODE=1` is set, `self-test` reports the runtime, and CI/`verify-node` enforce the floor in `security/runtime-floors.json`. See `docs/RUNTIME-AND-DEPENDENCY-SECURITY.md`.
+- New `audit.yml` runs the full dependency audit and registry signature check on pushes to `main` and weekly.
 - Lockfile gate now also checks the lockfile root version/name and fails if any package listed in `security/advisory-floors.json` is installed in a vulnerable range; an MCP stdio smoke test covers the SDK 1.32.2 upgrade.
 - CI now enforces Biome lint, Prettier formatting, workflow and lockfile policy, full dependency audit, Gitleaks, CodeQL and a Node 22/24 × Linux/macOS/Windows matrix; `publish.yml` and `github-release.yml` are manual-only and npm publishing uses OIDC trusted publishing instead of a stored token.
 
