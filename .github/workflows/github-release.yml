@@ -1,23 +1,35 @@
 name: Create GitHub release
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - package.json
-      - CHANGELOG.md
-      - 'RELEASE_NOTES_v*.md'
-      - .github/workflows/github-release.yml
   workflow_dispatch:
+    inputs:
+      version:
+        description: Exact version to release, without a leading v
+        required: true
+        type: string
+      confirmation:
+        description: Type "release toolip" to authorize this GitHub release
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 jobs:
   release:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
+      - name: Require explicit release authorization
+        shell: bash
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          test "$CONFIRMATION" = "release toolip" || {
+            echo "Exact release authorization text required." >&2
+            exit 1
+          }
+
       - name: Checkout verified main commit
         uses: actions/checkout@v7
         with:
@@ -31,10 +43,16 @@ jobs:
 
       - name: Resolve release metadata
         id: release
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         shell: bash
         run: |
           set -euo pipefail
           VERSION="$(node -p "require('./package.json').version")"
+          test "$VERSION" = "$REQUESTED_VERSION" || {
+            echo "Requested version does not match package.json." >&2
+            exit 1
+          }
           TAG="v${VERSION}"
           NOTES="RELEASE_NOTES_v${VERSION}.md"
 
