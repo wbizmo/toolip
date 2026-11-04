@@ -77,10 +77,12 @@ jobs:
             exit 1
           }
 
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "notes=$NOTES" >> "$GITHUB_OUTPUT"
-          echo "title=$TITLE" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$VERSION"
+            echo "tag=$TAG"
+            echo "notes=$NOTES"
+            echo "title=$TITLE"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Reject conflicting existing tag
         env:
