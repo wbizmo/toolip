@@ -56,3 +56,11 @@ Commands that interact with GitHub or other remote services are opt-in and use t
 Toolip's release verification includes a production dependency audit, security-critical execution coverage, cross-platform CI, clean build verification, npm tarball inspection, isolated installation, and packaged CLI smoke tests.
 
 The preferred npm publishing path uses GitHub Actions trusted publishing/OIDC with least-privilege permissions and a separately protected release environment.
+
+## Batched PR security and release isolation
+
+For v3.2.1, each PR is validated with typechecks, build/tests, runtime dependency advisory audit, Gitleaks secrets scanning and CodeQL analysis. Security fixes require hostile-input and regression tests and must report partial/failed/unknown scan states honestly. See [the implementation plan](docs/V3.2.1-IMPLEMENTATION.md).
+
+PR workflows never receive npm publish credentials. `publish.yml` and `github-release.yml` are manual-only, not automatically triggered by merges to `main`. Repository administrators must separately configure required PR checks, code scanning rules and protected `npm-release` environment reviewers; adding workflow YAML alone does not enforce these settings.
+
+Trusted npm OIDC publishing, new analyzer security capabilities and signed reports are release targets, not shipped guarantees until their issues are completed and verified.
