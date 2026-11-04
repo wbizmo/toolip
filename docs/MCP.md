@@ -10,6 +10,10 @@ The server provides supported Toolip security operations such as security doctor
 
 Toolip starts only the stdio transport; the SDK's HTTP/session/OAuth features are not used. `package.json` declares the SDK at `^1.32.2`; the lockfile advisory gate rejects any installed version below `1.32.0` (the advisory boundary); see [Runtime and Dependency Security](RUNTIME-AND-DEPENDENCY-SECURITY.md).
 
+## Git revisions
+
+`toolip_diff` validates `base` and `head`, resolves them to commit IDs and never passes caller text to Git as an option. Ranges and revision expressions are rejected; failures return an `isError` result containing `{"error":{"code","message"}}` with `GIT_REVISION_INVALID` or `GIT_REVISION_NOT_FOUND` and no filesystem paths. See [Git Security Behavior](GIT-SECURITY.md).
+
 ## Workspace boundary
 
 Filesystem-backed MCP requests are constrained to approved workspace roots.

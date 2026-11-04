@@ -1,18 +1,21 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
-import { installPreCommitHook } from '../core/hooks.js';
+import { installPreCommitHookDetailed } from '../core/hooks.js';
 
 export function registerHookCommand(program: Command): void {
-  const hook = program
-    .command('hook')
-    .description('Install Toolip Git hooks.');
+  const hook = program.command('hook').description('Install Toolip Git hooks.');
 
   hook
     .command('install')
     .description('Install Toolip pre-commit hook.')
     .option('-p, --path <path>', 'Project path.', process.cwd())
     .action(async (options: { path: string }) => {
-      const hookPath = await installPreCommitHook(options.path);
-      console.log(`${chalk.green('✓')} Installed pre-commit hook at ${hookPath}`);
+      const result = await installPreCommitHookDetailed(options.path);
+      console.log(
+        `${chalk.green('✓')} Installed pre-commit hook at ${result.hookPath}`
+      );
+      for (const warning of result.warnings) {
+        console.log(`${chalk.yellow('!')} ${warning}`);
+      }
     });
 }

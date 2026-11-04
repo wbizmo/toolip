@@ -1,4 +1,5 @@
 import { TOOLIP_VERSION } from '../config/version.js';
+import { ToolipError } from '../errors/toolip-error.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -32,7 +33,8 @@ export async function startMcpServer(
     'toolip_doctor',
     {
       title: 'Toolip Security Doctor',
-      description: 'Run local Toolip security checks inside an approved workspace.',
+      description:
+        'Run local Toolip security checks inside an approved workspace.',
       inputSchema: {
         root: z.string().default(defaultRoot)
       }
@@ -41,10 +43,12 @@ export async function startMcpServer(
       const approvedRoot = await boundary.resolve(root);
       const report = await runSecurityDoctor(approvedRoot);
       return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify(report, null, 2)
-        }]
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(report, null, 2)
+          }
+        ]
       };
     }
   );
@@ -53,7 +57,8 @@ export async function startMcpServer(
     'toolip_sbom',
     {
       title: 'Generate SBOM',
-      description: 'Generate a local CycloneDX or SPDX SBOM inside an approved workspace.',
+      description:
+        'Generate a local CycloneDX or SPDX SBOM inside an approved workspace.',
       inputSchema: {
         root: z.string().default(defaultRoot),
         format: z.enum(['cyclonedx', 'spdx']).default('cyclonedx')
@@ -63,10 +68,12 @@ export async function startMcpServer(
       const approvedRoot = await boundary.resolve(root);
       const report = await generateSbom(approvedRoot, format);
       return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify(report, null, 2)
-        }]
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(report, null, 2)
+          }
+        ]
       };
     }
   );
@@ -75,7 +82,8 @@ export async function startMcpServer(
     'toolip_diff',
     {
       title: 'Security Diff',
-      description: 'Summarize security-relevant Git changes inside an approved workspace.',
+      description:
+        'Summarize security-relevant Git changes inside an approved workspace.',
       inputSchema: {
         root: z.string().default(defaultRoot),
         base: z.string(),
@@ -84,13 +92,33 @@ export async function startMcpServer(
     },
     async ({ root, base, head }) => {
       const approvedRoot = await boundary.resolve(root);
-      const result = await securityDiff(approvedRoot, base, head);
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify(result, null, 2)
-        }]
-      };
+      try {
+        const result = await securityDiff(approvedRoot, base, head);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(result, null, 2)
+            }
+          ]
+        };
+      } catch (error) {
+        // Typed, path-free errors for rejected or unresolvable revisions.
+        if (error instanceof ToolipError && error.code.startsWith('GIT_')) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  error: { code: error.code, message: error.message }
+                })
+              }
+            ]
+          };
+        }
+        throw error;
+      }
     }
   );
 

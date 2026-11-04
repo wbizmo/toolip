@@ -10,6 +10,13 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 
 - Dependency advisories resolved for `@modelcontextprotocol/sdk` (1.32.2), `zod` (4.6.7), `pacote` (22.0.1), `vitest`/`@vitest/coverage-v8` (5.1.0) and transitive `proxy-addr`, `undici`, `qs`, `hono`, `ip-address`, `fast-uri`, `vite`, `source-map-js`, `body-parser`, `brace-expansion`, `glob` (14.0.3) and `minimatch` (11.0.4). `npm audit` reports 0 vulnerabilities.
 
+### Fixed
+
+- `toolip diff` and the MCP `toolip_diff` tool no longer pass `${base}..${head}` to Git as one argument; a value such as `--output=/path` could create a file. Revisions are validated, resolved to commit IDs and rejected with typed errors when unsafe (#45). Ranges and expressions like `HEAD~1` are no longer accepted; use a commit ID.
+- `toolip pre-commit` now scans the staged blobs from the Git object database instead of working-tree files, so a clean worktree can no longer hide a staged secret and an unstaged secret no longer blocks a safe commit; Git read failures and unmerged entries fail closed (#26).
+- `toolip hook install` installs into Git's effective hooks directory (`core.hooksPath`, linked worktrees), places the block ahead of user logic, refuses non-shell hooks and never downloads packages (#41).
+- `toolip git-audit` asks Git whether files are ignored and reports tracked sensitive files separately; outside a Git work tree the status is reported as unknown (#42).
+
 ### Changed
 
 - Minimum supported Node.js is now 22.23.4 or 24.22.1 (October 2026 security releases; 24.22.2+ recommended). The CLI refuses to scan on unpatched or unsupported runtimes unless `TOOLIP_ALLOW_UNPATCHED_NODE=1` is set, `self-test` reports the runtime, and CI/`verify-node` enforce the floor in `security/runtime-floors.json`. See `docs/RUNTIME-AND-DEPENDENCY-SECURITY.md`.

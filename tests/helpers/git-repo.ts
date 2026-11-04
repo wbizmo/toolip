@@ -1,0 +1,69 @@
+import { execFileSync } from 'node:child_process';
+import {
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  mkdirSync,
+  realpathSync
+} from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const cleanups: string[] = [];
+
+/** Environment for Git subprocesses that is isolated from the developer's config. */
+export function gitEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...extra };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('GIT_') && key !== 'GIT_TERMINAL_PROMPT')
+      delete env[key];
+  }
+  return {
+    ...env,
+    ...extra,
+    GIT_CONFIG_GLOBAL: os.devNull,
+    GIT_CONFIG_SYSTEM: os.devNull,
+    GIT_AUTHOR_NAME: 'Toolip Test',
+    GIT_AUTHOR_EMAIL: 'toolip@example.test',
+    GIT_COMMITTER_NAME: 'Toolip Test',
+    GIT_COMMITTER_EMAIL: 'toolip@example.test'
+  };
+}
+
+export function git(cwd: string, ...args: string[]): string {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', env: gitEnv() });
+}
+
+export function tempDir(prefix = 'toolip-git-'): string {
+  const dir = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), prefix)));
+  cleanups.push(dir);
+  return dir;
+}
+
+/** Creates an initialized repository with one commit (main). */
+export function makeRepo(): string {
+  const root = tempDir();
+  git(root, 'init', '-q', '-b', 'main');
+  git(root, 'config', 'commit.gpgsign', 'false');
+  git(root, 'config', 'core.autocrlf', 'false');
+  write(root, 'README.md', '# fixture\n');
+  git(root, 'add', '.');
+  git(root, 'commit', '-q', '-m', 'initial');
+  return root;
+}
+
+export function write(root: string, file: string, content: string): void {
+  const target = path.join(root, file);
+  mkdirSync(path.dirname(target), { recursive: true });
+  writeFileSync(target, content);
+}
+
+export function cleanupRepos(): void {
+  for (const dir of cleanups.splice(0))
+    rmSync(dir, { recursive: true, force: true });
+}
+
+/** A synthetic credential-shaped line assembled at runtime so no literal secret sits in the repo. */
+export function fakeSecretLine(label: string): string {
+  return `const password = "${label}-supersecretpassword";\n`;
+}

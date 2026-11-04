@@ -9,19 +9,38 @@ import { printReportSummary } from '../utils/output.js';
 export function registerGitAuditCommand(program: Command): void {
   program
     .command('git-audit')
-    .description('Audit Git safety, ignored files, and dangerous committed-file patterns.')
+    .description(
+      'Audit Git safety, ignored files, and dangerous committed-file patterns.'
+    )
     .option('-p, --path <path>', 'Project path to audit.', process.cwd())
-    .option('-o, --output <file>', 'Write Git audit report to JSON or Markdown.')
+    .option(
+      '-o, --output <file>',
+      'Write Git audit report to JSON or Markdown.'
+    )
     .action(async (options: { path: string; output?: string }) => {
       const result = await runGitAudit(options.path);
 
       console.log(chalk.bold('Toolip Git Audit'));
       console.log('');
-      console.log(`${chalk.dim('Files Checked:')} ${result.summary.filesChecked}`);
-      console.log(`${chalk.dim('Dangerous Files:')} ${result.summary.dangerousFiles}`);
-      console.log(`${chalk.dim('.gitignore Present:')} ${result.summary.gitignorePresent ? 'yes' : 'no'}`);
-      console.log(`${chalk.dim('.env Ignored:')} ${result.summary.envIgnored ? 'yes' : 'no'}`);
-      console.log(`${chalk.dim('PEM Ignored:')} ${result.summary.pemIgnored ? 'yes' : 'no'}`);
+      console.log(
+        `${chalk.dim('Files Checked:')} ${result.summary.filesChecked}`
+      );
+      console.log(
+        `${chalk.dim('Dangerous Files:')} ${result.summary.dangerousFiles}`
+      );
+      console.log(
+        `${chalk.dim('.gitignore Present:')} ${result.summary.gitignorePresent ? 'yes' : 'no'}`
+      );
+      const unknown = result.summary.ignoreStatus === 'unknown';
+      console.log(
+        `${chalk.dim('.env Ignored (observed):')} ${unknown ? 'unknown (not a Git work tree)' : result.summary.envIgnored ? 'yes' : 'no'}`
+      );
+      console.log(
+        `${chalk.dim('PEM Ignored (observed):')} ${unknown ? 'unknown (not a Git work tree)' : result.summary.pemIgnored ? 'yes' : 'no'}`
+      );
+      console.log(
+        `${chalk.dim('Tracked sensitive files:')} ${unknown ? 'unknown' : result.summary.trackedSensitiveFiles}`
+      );
 
       const report = createReport({
         version: TOOLIP_VERSION,

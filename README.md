@@ -238,7 +238,7 @@ Pre-commit mode scans the **staged change set by default** instead of rescanning
 
 ### Hook installation
 
-`toolip hook install` preserves existing hooks instead of blindly replacing `.git/hooks/pre-commit`. Toolip manages its own marked hook block and avoids silently deleting Husky/custom logic.
+`toolip hook install` (see [Git Security Behavior](docs/GIT-SECURITY.md)) preserves existing hooks instead of blindly replacing `.git/hooks/pre-commit`. Toolip manages its own marked hook block and avoids silently deleting Husky/custom logic. The staged-blob scanning, effective-hooks-path, Git-ignore and revision-safety hardening described in that guide applies to the unreleased v3.2.1; published v2.2.1 does not include it.
 
 ### Upgrade PRs
 
