@@ -95,3 +95,22 @@ Toolip remains local-first. Reports redact secrets by default. Remote publishing
 A release is not complete when source tests pass. The generated npm tarball must be installed in isolation and the packaged CLI must run successfully.
 
 Ordinary CI does not receive npm publish credentials. Release/publish authorization is isolated behind dedicated workflows and least-privilege permissions.
+
+## Required algorithmic complexity evidence for every v3.2.1 PR
+
+Document the input dimensions and **worst-case time and peak additional space Big-O before and after** each changed hot path. Distinguish file count `F`, bytes `B`, dependency nodes `V`, edges `E`, symbols `S`, rules `R`, and concurrent tasks `C`. Include map/index construction, queues, recursion depth, cache lifetime and peak buffered data. Big-O is not a benchmark.
+
+| Concern | Target technique | Avoid unless justified |
+| --- | --- | --- |
+| Source scanning | Bounded single-pass or streaming traversal, ideally `O(F + B)` | Repeated full directory walks or unbounded buffering |
+| Dependency graphs | Adjacency indexes and `O(V + E)` traversal | Redundant `O(V²)` graph passes |
+| Correlation and deduplication | Hash-indexed expected `O(n)` joins | Nested `find`/`includes` scans |
+| Ordered output | One necessary `O(n log n)` sort | Re-sorting within inner loops |
+| Dataflow/AST | Bounded worklists, memoized resolution | Unbounded path explosion or recursive exploration |
+| Provider requests | Deadline-limited and concurrency-bounded `C` | Unlimited fan-out or indefinite retries |
+
+The PR template's complexity table is mandatory; PR reviewers must reject unexplained asymptotic or peak-memory regressions. Validate claimed improvements with representative and pathological fixtures and time/CPU/peak RSS benchmarks, including 1k/10k/50k-file repositories as relevant. Set actual budgets from measured baselines, not invented numbers. Correctness, security coverage, deterministic results and truthful failure handling outrank micro-optimizations.
+
+## Batch and release discipline
+
+Follow [the 20-batch roadmap](V3.2.1-IMPLEMENTATION.md). One batch yields one PR with separate typecheck/build/test/style/security checks and the existing Node/OS CI matrix. Completed issues close on merge to `main`. Normal PRs/merges must not publish npm or create a GitHub release. Those operations require explicit, manual authorization after the entire v3.2.1 scope is complete.
