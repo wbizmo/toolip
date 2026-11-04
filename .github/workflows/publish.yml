@@ -26,10 +26,11 @@ jobs:
 
     steps:
       - name: Verify manual authorization
-        if: github.event_name == 'workflow_dispatch'
         shell: bash
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
         run: |
-          if [ "${{ inputs.confirmation }}" != "publish toolip" ]; then
+          if [ "$CONFIRMATION" != "publish toolip" ]; then
             echo "Release authorization text did not match."
             exit 1
           fi
@@ -51,13 +52,15 @@ jobs:
 
       - name: Resolve release version
         id: release
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         shell: bash
         run: |
           set -euo pipefail
           actual="$(node -p "require('./package.json').version")"
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "$actual" != "${{ inputs.version }}" ]; then
-            echo "Requested version ${{ inputs.version }} does not match package.json version $actual."
+          if [ "$actual" != "$REQUESTED_VERSION" ]; then
+            echo "Requested version does not match package.json version $actual."
             exit 1
           fi
 
