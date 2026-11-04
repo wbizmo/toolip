@@ -61,3 +61,15 @@ All CI jobs must pass before merge, including supported Node majors across Linux
 If a change affects commands, security claims, Node support, package behavior, release automation, or user-facing semantics, update the relevant README/docs/changelog in the same release cycle.
 
 `package.json` remains the only package-version source of truth.
+
+## v3.2.1 sequential batch PRs
+
+Follow the [20-batch roadmap](docs/V3.2.1-IMPLEMENTATION.md) and [AGENTS.md](AGENTS.md). Each completed batch is pushed on its own branch as one PR. Use `Closes #N` only for fully resolved issues; these close **when merged to main**, not when opened. For partially addressed issues use `Refs #N`.
+
+Every PR runs the existing cross-platform CI and `.github/workflows/pr-quality.yml`: typechecking, compiler-backed quality, build, tests, production dependency audit, changed-source Biome lint/format, YAML Prettier, Gitleaks and CodeQL. The PR jobs have no npm publication credentials.
+
+### Mandatory Big-O performance review
+
+Each PR must report inputs and old/new worst-case **time and peak space complexity** for changed hot paths, including indexing cost and memory. Prefer `O(V + E)` graph traversal, `O(n)` indexed joins, and streaming bounded file reads over avoidable `O(n²)` correlations. Benchmark and profile meaningful performance changes, including 1k/10k/50k-file scales when appropriate. Security or correctness must never be weakened to improve theoretical or measured cost.
+
+The PR template contains the required complexity table. No intermediate PR may publish npm, create a GitHub release or advance published version metadata. Only the final authorized v3.2.1 release does so.
