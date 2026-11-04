@@ -6,29 +6,18 @@ export const toolipConfigSchema = z.object({
   exclude: z.array(z.string()).default([]),
   rules: z
     .record(
+      z.string(),
       z.object({
         enabled: z.boolean().optional(),
         severity: z
-          .enum([
-            'critical',
-            'high',
-            'medium',
-            'low',
-            'info'
-          ])
+          .enum(['critical', 'high', 'medium', 'low', 'info'])
           .optional(),
         paths: z
           .array(
             z.object({
               pattern: z.string(),
               severity: z
-                .enum([
-                  'critical',
-                  'high',
-                  'medium',
-                  'low',
-                  'info'
-                ])
+                .enum(['critical', 'high', 'medium', 'low', 'info'])
                 .optional(),
               enabled: z.boolean().optional()
             })
@@ -89,6 +78,4 @@ export const toolipConfigSchema = z.object({
     })
 });
 
-export type ToolipConfig = z.infer<
-  typeof toolipConfigSchema
->;
+export type ToolipConfig = z.infer<typeof toolipConfigSchema>;

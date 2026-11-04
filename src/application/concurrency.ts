@@ -13,13 +13,11 @@ export async function mapConcurrent<T, R>(
     while (true) {
       const index = cursor++;
       if (index >= items.length) return;
-      results[index] = await mapper(items[index]!, index);
+      results[index] = await mapper(items[index] as T, index);
     }
   };
 
-  await Promise.all(
-    Array.from({ length: limit }, () => worker())
-  );
+  await Promise.all(Array.from({ length: limit }, () => worker()));
 
   return results;
 }

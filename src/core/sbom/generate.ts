@@ -6,9 +6,7 @@ import {
   type DependencyIdentity
 } from '../dependencies/inventory.js';
 
-export type SbomFormat =
-  | 'cyclonedx'
-  | 'spdx';
+export type SbomFormat = 'cyclonedx' | 'spdx';
 
 type RootManifest = {
   name?: string;
@@ -17,40 +15,25 @@ type RootManifest = {
   license?: string;
 };
 
-function purl(
-  dependency: DependencyIdentity
-): string {
-  return (
-    `pkg:npm/${encodeURIComponent(
-      dependency.name
-    )}@${encodeURIComponent(dependency.version)}`
-  );
+function purl(dependency: DependencyIdentity): string {
+  return `pkg:npm/${encodeURIComponent(
+    dependency.name
+  )}@${encodeURIComponent(dependency.version)}`;
 }
 
 function stableRef(value: string): string {
-  return createHash('sha256')
-    .update(value)
-    .digest('hex')
-    .slice(0, 24);
+  return createHash('sha256').update(value).digest('hex').slice(0, 24);
 }
 
-function bomRef(
-  dependency: DependencyIdentity
-): string {
+function bomRef(dependency: DependencyIdentity): string {
   return `urn:toolip:npm:${stableRef(dependency.id)}`;
 }
 
 function spdxId(value: string): string {
-  return (
-    'SPDXRef-' +
-    value.replaceAll(/[^A-Za-z0-9.-]/g, '-')
-  );
+  return 'SPDXRef-' + value.replaceAll(/[^A-Za-z0-9.-]/g, '-');
 }
 
-function namespace(
-  name: string,
-  version: string
-): string {
+function namespace(name: string, version: string): string {
   const digest = createHash('sha256')
     .update(`${name}@${version}:${Date.now()}`)
     .digest('hex')
@@ -66,10 +49,7 @@ export async function generateSbom(
   format: SbomFormat
 ): Promise<Record<string, unknown>> {
   const manifest = JSON.parse(
-    await readFile(
-      path.join(root, 'package.json'),
-      'utf8'
-    )
+    await readFile(path.join(root, 'package.json'), 'utf8')
   ) as RootManifest;
 
   const graph = await readNpmDependencyGraph(root);
@@ -86,11 +66,13 @@ export async function generateSbom(
     const dependsOn = new Map<string, string[]>();
 
     for (const edge of graph.edges) {
-      const from = edge.from === 'root'
-        ? rootRef
-        : byId.get(edge.from)
-          ? bomRef(byId.get(edge.from)!)
-          : undefined;
+      const fromNode = edge.from === 'root' ? undefined : byId.get(edge.from);
+      const from =
+        edge.from === 'root'
+          ? rootRef
+          : fromNode
+            ? bomRef(fromNode)
+            : undefined;
       const target = byId.get(edge.to);
       if (!from || !target) continue;
 
@@ -126,9 +108,7 @@ export async function generateSbom(
         'bom-ref': bomRef(dependency),
         name: dependency.name,
         version: dependency.version,
-        scope: dependency.development
-          ? 'optional'
-          : 'required',
+        scope: dependency.development ? 'optional' : 'required',
         purl: purl(dependency),
         properties: [
           {
@@ -162,13 +142,13 @@ export async function generateSbom(
   }
 
   const documentId = 'SPDXRef-DOCUMENT';
-  const rootId = spdxId(
-    `${rootName}-${rootVersion}`
-  );
+  const rootId = spdxId(`${rootName}-${rootVersion}`);
   const packageSpdxIds = new Map(
     dependencies.map((dependency) => [
       dependency.id,
-      spdxId(`${dependency.name}-${dependency.version}-${dependency.installPath}`)
+      spdxId(
+        `${dependency.name}-${dependency.version}-${dependency.installPath}`
+      )
     ])
   );
 
@@ -177,10 +157,7 @@ export async function generateSbom(
     dataLicense: 'CC0-1.0',
     SPDXID: documentId,
     name: `${rootName}-${rootVersion}`,
-    documentNamespace: namespace(
-      rootName,
-      rootVersion
-    ),
+    documentNamespace: namespace(rootName, rootVersion),
     creationInfo: {
       created: new Date().toISOString(),
       creators: ['Tool: Toolip']
@@ -192,10 +169,8 @@ export async function generateSbom(
         versionInfo: rootVersion,
         downloadLocation: 'NOASSERTION',
         filesAnalyzed: false,
-        licenseConcluded:
-          manifest.license ?? 'NOASSERTION',
-        licenseDeclared:
-          manifest.license ?? 'NOASSERTION'
+        licenseConcluded: manifest.license ?? 'NOASSERTION',
+        licenseDeclared: manifest.license ?? 'NOASSERTION'
       },
       ...dependencies.map((dependency) => ({
         name: dependency.name,
@@ -218,16 +193,17 @@ export async function generateSbom(
       const relatedSpdxElement = packageSpdxIds.get(edge.to);
       if (!relatedSpdxElement) return [];
 
-      const spdxElementId = edge.from === 'root'
-        ? rootId
-        : packageSpdxIds.get(edge.from);
+      const spdxElementId =
+        edge.from === 'root' ? rootId : packageSpdxIds.get(edge.from);
       if (!spdxElementId) return [];
 
-      return [{
-        spdxElementId,
-        relationshipType: 'DEPENDS_ON',
-        relatedSpdxElement
-      }];
+      return [
+        {
+          spdxElementId,
+          relationshipType: 'DEPENDS_ON',
+          relatedSpdxElement
+        }
+      ];
     })
   };
 }

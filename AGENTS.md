@@ -22,8 +22,20 @@ Applies to all changes in this repository. Read `CONTRIBUTING.md`, `docs/ENGINEE
 - Every security change adds behavioral and negative/adversarial fixtures; tests and reports must remain deterministic under bounded concurrency.
 - Keep code understandable; optimization must never weaken threat boundaries, security coverage or failure reporting.
 
+## Engineering standards (required)
+
+- Choose efficient algorithms and data structures; state explicit worst-case time **and** space complexity for every changed hot path. Avoid unnecessary O(n²) processing.
+- Bound memory, filesystem operations and network concurrency. Every long operation accepts cancellation and a deadline, and cleans up on both.
+- Protect against races and TOCTOU: operate on opened handles or canonical resolved paths, not check-then-use; write state atomically.
+- Behavior must be deterministic and testable; no wall-clock, ordering or environment dependence without injection.
+- Secure defaults and least-privilege permissions everywhere, including GitHub Actions (`contents: read` by default, write scopes only at job level, third-party actions pinned to full commit SHAs).
+- Never place raw secrets in logs, reports, test snapshots or CI artifacts.
+- Every bug fix ships a regression test that fails without the fix.
+- Report coverage and failures accurately: never lower thresholds, skip tests or mark checks non-blocking to get green; never describe an unrun check as passed.
+- Dependency advisories are fixed by upgrading (or a documented `overrides` entry); never suppress, ignore or downgrade findings. Do not run `npm audit fix --force` blindly; evaluate each breaking change.
+
 ## PR quality
 
-PRs must pass locked dependency install, TypeScript typechecking, compiler-backed checks, build, tests, security audit, secret scanning, CodeQL, changed-file lint/format and the existing OS/Node CI matrix. Review any scanner finding instead of assuming either a false positive or an automatically exploitable vulnerability.
+PRs must pass locked dependency install, TypeScript typechecking, compiler-backed checks, Biome lint, Prettier formatting, workflow/lockfile policy, build, tests, coverage thresholds, production and development dependency audit with signature verification, secret scanning, CodeQL and the Linux/macOS/Windows × Node 22/24 CI matrix. Run `npm run verify` locally first. Review any scanner finding instead of assuming either a false positive or an automatically exploitable vulnerability.
 
 Do not auto-merge; report CI failures and fix before merging. The owner authorizes the final release separately.

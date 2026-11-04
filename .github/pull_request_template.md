@@ -12,8 +12,8 @@ Closes #
 ## Algorithmic analysis (required)
 
 | Hot path / operation | Input dimensions | Previous worst-case time | New worst-case time | Previous peak space | New peak space |
-| --- | --- | --- | --- | --- | --- |
-|  |  |  |  |  |  |
+| -------------------- | ---------------- | ------------------------ | ------------------- | ------------------- | -------------- |
+|                      |                  |                          |                     |                     |                |
 
 - Data structures and indexing build costs:
 - Worst-case and pathological input:

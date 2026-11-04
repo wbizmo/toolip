@@ -6,6 +6,15 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 
 ## Unreleased
 
+### Security
+
+- Dependency advisories resolved for `@modelcontextprotocol/sdk` (1.32.2), `zod` (4.6.7), `pacote` (22.0.1), `vitest`/`@vitest/coverage-v8` (5.1.0) and transitive `proxy-addr`, `undici`, `qs`, `hono`, `ip-address`, `fast-uri`, `vite`, `source-map-js`, `body-parser`, `brace-expansion`, `glob` (14.0.3) and `minimatch` (11.0.4). `npm audit` reports 0 vulnerabilities.
+
+### Changed
+
+- Minimum supported Node.js is now 22.22.2 or 24.15.0 (required by the patched `pacote` tree).
+- CI now enforces Biome lint, Prettier formatting, workflow and lockfile policy, full dependency audit, Gitleaks, CodeQL and a Node 22/24 × Linux/macOS/Windows matrix; `publish.yml` and `github-release.yml` are manual-only and npm publishing uses OIDC trusted publishing instead of a stored token.
+
 ## 2.2.1 - 2026-09-08
 
 ### Changed

@@ -19,10 +19,10 @@ Before beginning:
 `package.json#engines.node` is authoritative. Toolip v2.2.x currently declares:
 
 ```text
->=22 <25
+^22.22.2 || ^24.15.0
 ```
 
-CI executes Node.js 22 and 24 on Ubuntu, macOS, and Windows.
+The floor is the first patched release line required by the current `pacote` dependency tree. CI executes the newest Node.js 22 and 24 releases (`check-latest`) on Ubuntu, macOS, and Windows and runs `scripts/verify-node.mjs` so an unsupported or unpatched runtime fails the job.
 
 ## Mandatory verification
 
@@ -71,7 +71,7 @@ The release guard verifies the exact npm tarball, including:
 
 The [Toolip v3.2.1 implementation schedule](docs/V3.2.1-IMPLEMENTATION.md) has 20 separately reviewed PR batches. A branch push or PR merge to `main` must **never** invoke npm publishing or GitHub release creation. Fully resolved GitHub issues close on merge, not when a PR is opened.
 
-Normal CI (`.github/workflows/ci.yml`) and the independent `pr-quality.yml` check typechecking, compiler-backed quality, build, tests, dependency audit, changed-file lint/format, Gitleaks and CodeQL without npm credentials. The package version and current-release docs remain truthful for v2.2.1 until final release preparation.
+Normal CI (`.github/workflows/ci.yml`, cross-platform build/test/coverage and packed-artifact verification) and the independent `pr-quality.yml` (typecheck, compiler-backed quality, Biome lint, Prettier formatting, workflow and lockfile policy, actionlint, build/tests/coverage, production and full dependency audit with registry signature verification, Gitleaks and CodeQL) run without npm credentials. `scripts/verify-workflows.mjs` fails CI if any workflow other than the two manual release workflows can publish, tag or read release secrets, if any action is not pinned to a full commit SHA, or if write permissions are declared at workflow level. The package version and current-release docs remain truthful for v2.2.1 until final release preparation.
 
 ## Manual GitHub release
 
@@ -81,7 +81,7 @@ Normal CI (`.github/workflows/ci.yml`) and the independent `pr-quality.yml` chec
 
 `.github/workflows/publish.yml` also has **only** `workflow_dispatch`; it is not triggered by PRs or merges. It requires an exact version, `publish toolip` confirmation, `main`, an existing verified GitHub release with tag matching the exact HEAD commit, an unpublished npm version, and the packed package verification guard. The `npm-release` environment should have required reviewers configured by a repository administrator.
 
-The current npm workflow still uses an environment-scoped `NPM_TOKEN`. Issue [#55](https://github.com/wbizmo/toolip/issues/55) must replace/harden it with least-privilege npm trusted publishing/OIDC and provenance before final v3.2.1 publication. Do not falsely describe the current token path as OIDC-only. A named GitHub environment has **no mandatory review** unless the environment's protection rules are actually configured.
+`publish.yml` no longer reads `NPM_TOKEN`. It publishes with npm trusted publishing: the job requests a GitHub OIDC identity (`id-token: write`, granted only to that job), npm exchanges it for a short-lived publish credential and attaches provenance. **Prerequisite (owner action, not verifiable from the repository):** register `wbizmo/toolip` + `publish.yml` + environment `npm-release` as a trusted publisher in the npm package settings, and remove any stored `NPM_TOKEN` secret. Until that is configured the workflow fails closed rather than falling back to a token. Issue [#55](https://github.com/wbizmo/toolip/issues/55) stays open until a real trusted publish has been verified. A named GitHub environment has **no mandatory review** unless the environment's protection rules are actually configured.
 
 ## Final release sequence
 

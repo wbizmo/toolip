@@ -1,4 +1,4 @@
-import { open } from 'node:fs/promises';
+import { type FileHandle, open } from 'node:fs/promises';
 
 export type TextFileBudget = {
   maxFiles: number;
@@ -8,7 +8,10 @@ export type TextFileBudget = {
 
 export type TextFileReadResult =
   | { status: 'ok'; content: string; bytes: number }
-  | { status: 'oversized' | 'binary' | 'budget-exceeded' | 'cancelled'; bytes: number }
+  | {
+      status: 'oversized' | 'binary' | 'budget-exceeded' | 'cancelled';
+      bytes: number;
+    }
   | { status: 'failed'; bytes: 0; error: string };
 
 export const defaultTextFileBudget: TextFileBudget = {
@@ -44,7 +47,7 @@ export class TextFileReader {
       return { status: 'budget-exceeded', bytes: 0 };
     }
 
-    let handle;
+    let handle: FileHandle | undefined;
 
     try {
       handle = await open(filePath, 'r');

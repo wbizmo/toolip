@@ -4,7 +4,7 @@ Toolip welcomes focused bug fixes, security-rule improvements, provider integrat
 
 ## Development setup
 
-Toolip v2.2 supports Node.js 22 and 24.
+Toolip supports patched Node.js 22 (>=22.22.2) and 24 (>=24.15.0).
 
 ```bash
 npm ci
@@ -54,7 +54,7 @@ A pull request should explain:
 - user-visible behavior
 - release/documentation implications
 
-All CI jobs must pass before merge, including supported Node majors across Linux, macOS, and Windows plus packed npm artifact verification.
+Run `npm run verify` (changelog, lint, formatting, workflow policy, lockfile integrity, dependency audit, typecheck, quality, tests, coverage, build, package smoke test) before pushing; it must pass locally. Source and tests are format-checked on changed files only (`npm run format:changed`) so style cleanup never forces repo-wide rewrites; do not reformat untouched files. All CI jobs must pass before merge, including supported Node majors across Linux, macOS, and Windows plus packed npm artifact verification.
 
 ## Release-affecting changes
 
