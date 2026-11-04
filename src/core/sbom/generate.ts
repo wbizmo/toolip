@@ -30,7 +30,7 @@ function bomRef(dependency: DependencyIdentity): string {
 }
 
 function spdxId(value: string): string {
-  return 'SPDXRef-' + value.replaceAll(/[^A-Za-z0-9.-]/g, '-');
+  return `SPDXRef-${value.replaceAll(/[^A-Za-z0-9.-]/g, '-')}`;
 }
 
 function namespace(name: string, version: string): string {

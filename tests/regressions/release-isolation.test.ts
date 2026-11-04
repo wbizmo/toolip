@@ -1,8 +1,9 @@
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 
 const script = path.resolve('scripts/verify-workflows.mjs');
 const dirs: string[] = [];
@@ -78,5 +79,34 @@ describe('release isolation policy (regression for Batch 00)', () => {
     });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('top-level write permission');
+  });
+
+  it('rejects npm ci without --ignore-scripts', () => {
+    const result = run({
+      'ci.yml': safe('{ pull_request: {} }', '      - run: npm ci\n')
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('--ignore-scripts');
+    expect(
+      run({
+        'ci.yml': safe(
+          '{ pull_request: {} }',
+          '      - run: npm ci --ignore-scripts\n'
+        )
+      }).status
+    ).toBe(0);
+  });
+
+  it('runs CodeQL from one workflow for PRs, main and the schedule', () => {
+    const doc = parse(readFileSync('.github/workflows/codeql.yml', 'utf8'));
+    expect(Object.keys(doc.on).sort()).toEqual([
+      'pull_request',
+      'push',
+      'schedule'
+    ]);
+    expect(Object.keys(doc.jobs)).toEqual(['analyze']);
+    expect(
+      readFileSync('.github/workflows/pr-quality.yml', 'utf8')
+    ).not.toMatch(/codeql-action/);
   });
 });

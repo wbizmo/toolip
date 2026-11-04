@@ -1,0 +1,42 @@
+name: Dependency advisory audit
+
+# Recurring check (issue #51): new advisories are published against code that
+# has not changed, so audit main on every push and on a weekly schedule. The
+# PR-time audit lives in pr-quality.yml. No credentials beyond a read-only token.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '41 5 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: npm audit (production and development) and signatures
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          check-latest: true
+          cache: npm
+      - name: Enforce supported, patched Node.js
+        run: node scripts/verify-node.mjs
+      - name: Install exact locked dependencies
+        run: npm ci --ignore-scripts
+      - name: Lockfile integrity and advisory floors
+        run: npm run verify:lockfile
+      - name: Production dependency audit
+        run: npm run audit:runtime
+      - name: Production and development dependency audit
+        run: npm run audit:all
+      - name: Registry signatures and provenance attestations
+        run: npm run audit:signatures

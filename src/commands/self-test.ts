@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { TOOLIP_VERSION } from '../config/version.js';
+import { assessNodeRuntime } from '../core/runtime-check.js';
 
 async function canAccess(filePath: string): Promise<boolean> {
   try {
@@ -18,7 +19,12 @@ export function registerSelfTestCommand(program: Command): void {
     .command('self-test')
     .description('Run Toolip internal diagnostics.')
     .action(async () => {
+      const runtime = assessNodeRuntime(process.versions.node);
       const checks = [
+        {
+          label: `Supported patched Node.js (${process.versions.node})`,
+          passed: runtime.status === 'ok'
+        },
         {
           label: 'CLI Loaded',
           passed: true
@@ -59,7 +65,9 @@ export function registerSelfTestCommand(program: Command): void {
       console.log('');
 
       if (failed > 0) {
-        console.log(chalk.red(`Toolip found ${failed} failed diagnostic check(s).`));
+        console.log(
+          chalk.red(`Toolip found ${failed} failed diagnostic check(s).`)
+        );
         process.exitCode = 1;
         return;
       }

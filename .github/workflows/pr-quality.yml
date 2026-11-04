@@ -60,7 +60,7 @@ jobs:
       - name: Enforce supported, patched Node.js
         run: node scripts/verify-node.mjs
       - name: Install exact locked dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Typecheck
         run: npm run typecheck
       - name: Compiler-backed quality checks
@@ -113,7 +113,7 @@ jobs:
           check-latest: true
           cache: npm
       - name: Install exact locked dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Clean production build
         run: npm run clean && npm run build
       - name: Unit, integration and regression tests
@@ -139,7 +139,7 @@ jobs:
           check-latest: true
           cache: npm
       - name: Install exact locked dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Production dependency audit
         run: npm run audit:runtime
       - name: Production and development dependency audit
@@ -163,24 +163,3 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITLEAKS_ENABLE_COMMENTS: 'false'
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
-
-  codeql:
-    name: CodeQL JavaScript/TypeScript security analysis
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    permissions:
-      contents: read
-      security-events: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
-        with:
-          languages: javascript-typescript
-          build-mode: none
-          queries: security-extended
-      - name: Analyze
-        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3

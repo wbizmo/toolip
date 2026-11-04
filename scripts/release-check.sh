@@ -8,7 +8,7 @@ TARBALL="${PACKAGE_NAME}-${VERSION}.tgz"
 
 rm -f "${PACKAGE_NAME}"-*.tgz
 
-npm ci
+npm ci --ignore-scripts
 npm run verify
 npm pack --ignore-scripts
 

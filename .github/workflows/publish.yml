@@ -102,7 +102,7 @@ jobs:
 
       - name: Install exact dependencies
         if: steps.availability.outputs.should_publish == 'true'
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Verify packed release candidate
         if: steps.availability.outputs.should_publish == 'true'
