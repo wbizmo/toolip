@@ -19,10 +19,10 @@ Before beginning:
 `package.json#engines.node` is authoritative. Toolip v2.2.x currently declares:
 
 ```text
-^22.22.2 || ^24.15.0
+^22.23.4 || >=24.22.1 <25
 ```
 
-The floor is the first patched release line required by the current `pacote` dependency tree. CI executes the newest Node.js 22 and 24 releases (`check-latest`) on Ubuntu, macOS, and Windows and runs `scripts/verify-node.mjs` so an unsupported or unpatched runtime fails the job.
+The floors are the Node.js releases that contain the October 2026 security fixes (22.23.4, 24.22.1; 24.22.2+ recommended) and are tracked in `security/runtime-floors.json`. `engines` alone does not block installs, so the CLI also refuses to run on unpatched runtimes (see `docs/RUNTIME-AND-DEPENDENCY-SECURITY.md`). CI executes the newest Node.js 22 and 24 releases (`check-latest`) on Ubuntu, macOS, and Windows and runs `scripts/verify-node.mjs` so an unsupported or unpatched runtime fails the job.
 
 ## Mandatory verification
 

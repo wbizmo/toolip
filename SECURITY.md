@@ -65,6 +65,10 @@ PR workflows never receive npm publish credentials. `publish.yml` and `github-re
 
 `publish.yml` is configured for npm trusted publishing (OIDC, provenance, no stored token), but this remains a release target until the npm-side trusted publisher is registered and a real publish is verified. New analyzer security capabilities and signed reports are likewise release targets, not shipped guarantees until their issues are completed and verified.
 
+## Pre-execution protection (planned — not implemented)
+
+Issues [#95](https://github.com/wbizmo/toolip/issues/95) (malicious-payload detection) and [#96](https://github.com/wbizmo/toolip/issues/96) (trusted pre-execution gate) are separately required v3.2.1 work in Batches 11 and 16. **Neither exists today.** The target design is two-stage: **Stage A** is a trusted, separately verified, inert inspection of the exact PR content that never executes repository scripts; **Stage B** (dependency installation, builds, tests) runs only after Stage A passes. Until Stage A exists, the `npm ci`, build and test steps in this repository's PR workflow execute pull-request-controlled code (including dependency lifecycle scripts) with read-only tokens and no publish credentials; that is a reduction of blast radius, not protection against a malicious PR. Do not rely on any scanner that runs after `npm ci` to stop malicious install scripts.
+
 ## Secret scanning
 
 Gitleaks scans pull requests and, run locally, full history. `.gitleaks.toml` extends the default rules and allowlists only synthetic sequential-digit tokens (`ghp_1234567890…`, `npm_1234567890…`) in three reviewed secret-detection test fixtures; both the file and the pattern must match. Any other finding fails the scan. Do not widen the allowlist to directories, and never commit real credentials, even revoked ones.

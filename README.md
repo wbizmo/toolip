@@ -47,7 +47,7 @@ Highlights include:
 
 ## Install
 
-Toolip requires **Node.js 22.22.2+ or 24.15.0+** (patched releases of the supported 22 and 24 lines).
+Toolip requires a **patched Node.js: 22.23.4+ or 24.22.1+** (24.22.2+ recommended). Older releases lack the October 2026 Node.js security fixes; Toolip refuses to run scans on them (see [Runtime and Dependency Security](docs/RUNTIME-AND-DEPENDENCY-SECURITY.md)). This applies to the upcoming v3.2.1; the published v2.2.1 declares `>=22 <25`.
 
 ```bash
 npm install -g toolip

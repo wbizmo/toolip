@@ -4,7 +4,7 @@ Toolip welcomes focused bug fixes, security-rule improvements, provider integrat
 
 ## Development setup
 
-Toolip supports patched Node.js 22 (>=22.22.2) and 24 (>=24.15.0).
+Toolip supports patched Node.js 22 (>=22.23.4) and 24 (>=24.22.1, 24.22.2+ recommended); the floors live in `security/runtime-floors.json`.
 
 ```bash
 npm ci

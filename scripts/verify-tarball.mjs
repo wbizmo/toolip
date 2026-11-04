@@ -81,6 +81,33 @@ try {
     stdio: 'pipe'
   });
 
+  // MCP stdio smoke test against the installed tarball (issue #50). The
+  // .cmd shim on Windows needs a shell, so it is covered by the source-tree
+  // stdio test there instead.
+  if (process.platform !== 'win32') {
+    const { Client } =
+      await import('@modelcontextprotocol/sdk/client/index.js');
+    const { StdioClientTransport } =
+      await import('@modelcontextprotocol/sdk/client/stdio.js');
+    const client = new Client({ name: 'toolip-pack-smoke', version: '0.0.0' });
+    try {
+      await client.connect(
+        new StdioClientTransport({
+          command: binary,
+          args: ['mcp', '--allow-root', prefix],
+          stderr: 'pipe'
+        })
+      );
+      const { tools } = await client.listTools();
+      const names = tools.map((tool) => tool.name).sort();
+      if (names.join(',') !== 'toolip_diff,toolip_doctor,toolip_sbom') {
+        throw new Error(`Unexpected packed MCP tools: ${names.join(', ')}`);
+      }
+    } finally {
+      await client.close();
+    }
+  }
+
   console.log(
     `Packed artifact verification passed for toolip@${manifest.version}.`
   );

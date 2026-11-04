@@ -1,0 +1,111 @@
+{
+  "$comment": "Offline regression gate (issues #50, #51): any installed copy matching a vulnerable range fails scripts/verify-lockfile.mjs. Derived from npm audit on 2026-11-04; a live `npm audit` still runs in CI for newer advisories. Never delete an entry to make a build pass; remove only when the range can no longer be installed by any supported dependency range.",
+  "generatedOn": "2026-11-04",
+  "packages": {
+    "@hono/node-server": {
+      "vulnerable": ">=1.19.10 <2.1.3",
+      "advisories": ["GHSA-rmxm-3fg6-px4f"]
+    },
+    "@modelcontextprotocol/sdk": {
+      "vulnerable": ">=1.12.0 <1.31.0 || >=1.24.0 <1.32.0 || >=1.3.0 <1.32.0 || >=1.6.0 <1.32.0 || >=1.10.0 <1.30.1 || <1.32.0",
+      "advisories": [
+        "GHSA-22jm-h49p-29qw",
+        "GHSA-46jr-4wx8-v453",
+        "GHSA-6prh-2h8m-c8cw",
+        "GHSA-6qxp-vccf-f47h",
+        "GHSA-f897-62hf-6gxq",
+        "GHSA-rvq5-wwqv-78pq"
+      ]
+    },
+    "@vitest/mocker": {
+      "vulnerable": ">=2.1.0 <4.1.11 || >=2.1.0-beta.7 <4.1.12",
+      "advisories": ["GHSA-82fw-gwwq-j7x9", "GHSA-qxg6-89mg-rqv8"]
+    },
+    "body-parser": {
+      "vulnerable": ">=2.0.0 <2.4.0",
+      "advisories": ["GHSA-27r3-jxmh-p828"]
+    },
+    "brace-expansion": {
+      "vulnerable": ">=2.0.0 <2.1.7 || >=4.0.0 <5.0.12 || >=2.0.0 <2.1.6 || >=4.0.0 <5.0.11 || >=2.0.0 <2.1.5 || >=4.0.0 <5.0.10",
+      "advisories": [
+        "GHSA-6j4f-fj2g-mc7p",
+        "GHSA-q2hr-2g5m-vwhr",
+        "GHSA-qhr7-859c-m2p7"
+      ]
+    },
+    "fast-uri": {
+      "vulnerable": ">=3.0.0 <3.1.8 || >=3.0.0 <3.1.9 || >=3.1.3 <3.1.9",
+      "advisories": [
+        "GHSA-333x-w4r6-6crp",
+        "GHSA-hrr3-gc8f-f4qj",
+        "GHSA-w74x-v6f9-j3xg",
+        "GHSA-wjr9-j795-jxcr",
+        "GHSA-xhq7-xmqj-769h"
+      ]
+    },
+    "glob": {
+      "vulnerable": ">=9.0.0 <=14.0.1",
+      "advisories": ["GHSA-3g3m-2fjr-6pw4"]
+    },
+    "hono": {
+      "vulnerable": ">=4.12.4 <4.13.11",
+      "advisories": ["GHSA-5r4p-p66f-jhc7"]
+    },
+    "ip-address": {
+      "vulnerable": "<=10.7.0 || <=10.7.3",
+      "advisories": [
+        "GHSA-h3mg-xc3c-68pw",
+        "GHSA-j6r3-76f7-8jcv",
+        "GHSA-rxp7-6hxx-x8q5"
+      ]
+    },
+    "minimatch": {
+      "vulnerable": ">=7.0.0 <11.0.1",
+      "advisories": ["GHSA-g3hv-75wg-m249"]
+    },
+    "proxy-addr": {
+      "vulnerable": ">=1.1.0 <2.0.8",
+      "advisories": ["GHSA-jqcg-44mw-7w3h"]
+    },
+    "qs": {
+      "vulnerable": ">=6.7.0 <=6.16.0",
+      "advisories": ["GHSA-6pq8-jhm2-2vcw"]
+    },
+    "source-map-js": {
+      "vulnerable": ">=1.0.0 <1.2.2",
+      "advisories": ["GHSA-68fv-2mgg-jv7q"]
+    },
+    "tinypool": {
+      "vulnerable": "<=2.1.0 || <2.1.2",
+      "advisories": ["GHSA-5gmw-xhrv-c9v3", "GHSA-85c8-ppgw-ccpr"]
+    },
+    "undici": {
+      "vulnerable": ">=6.5.0 <6.29.1 || >=6.23.0 <6.29.1 || >=4.0.0 <6.29.1 || >=4.2.1 <6.29.1 || >=5.15.0 <6.29.1",
+      "advisories": [
+        "GHSA-2m5v-pch6-74hx",
+        "GHSA-4qv8-2p9j-2685",
+        "GHSA-9fm3-97px-rjf6",
+        "GHSA-qrxm-fqhp-jwvm",
+        "GHSA-xjj6-f33q-929c"
+      ]
+    },
+    "vite": {
+      "vulnerable": ">=7.0.0 <=7.3.6",
+      "advisories": [
+        "GHSA-587h-7wmj-h5pm",
+        "GHSA-698v-4r3x-3vcv",
+        "GHSA-9jrq-w75r-8gcw",
+        "GHSA-r825-w8mm-5pxw",
+        "GHSA-rq7h-c2jc-7f22"
+      ]
+    },
+    "vitest": {
+      "vulnerable": ">=2.1.0 <4.1.11",
+      "advisories": ["GHSA-82fw-gwwq-j7x9"]
+    },
+    "zod": {
+      "vulnerable": "<4.6.6",
+      "advisories": ["GHSA-mrhx-c7xc-m3w5"]
+    }
+  }
+}

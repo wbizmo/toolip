@@ -7,10 +7,11 @@
  * algorithm. Also rejects git/file/http specifiers and install scripts that are
  * not already on the reviewed allowlist.
  *
- * Complexity: single pass over P locked packages. Time O(P), space O(P) for the
+ * Complexity: single pass over P locked packages with R advisory ranges indexed by name. Time O(P + R), space O(P + R) for the
  * parsed lockfile; the findings list is bounded by P.
  */
 import { readFile } from 'node:fs/promises';
+import semver from 'semver';
 
 const REGISTRY = 'https://registry.npmjs.org/';
 const STRONG = /^sha(?:512|384)-/u;
@@ -32,6 +33,23 @@ if (lock.version !== manifest.version) {
     `lockfile version ${lock.version} != package.json ${manifest.version}`
   );
 }
+if (lock.packages?.['']?.version !== manifest.version) {
+  problems.push(
+    `lockfile root package version ${lock.packages?.['']?.version} != package.json ${manifest.version}`
+  );
+}
+if (
+  lock.name !== manifest.name ||
+  lock.packages?.['']?.name !== manifest.name
+) {
+  problems.push('lockfile package name does not match package.json');
+}
+
+// Offline advisory regression gate: no installed copy may fall in a known
+// vulnerable range (issues #50, #51). Index by package name: O(P + R) total.
+const advisoryFile =
+  process.env.ADVISORY_FLOORS ?? 'security/advisory-floors.json';
+const advisories = JSON.parse(await readFile(advisoryFile, 'utf8')).packages;
 
 for (const [location, entry] of Object.entries(lock.packages ?? {})) {
   if (location === '' || entry.link) continue;
@@ -45,6 +63,23 @@ for (const [location, entry] of Object.entries(lock.packages ?? {})) {
   }
   if (typeof entry.integrity !== 'string' || !STRONG.test(entry.integrity)) {
     problems.push(`${location}: missing or weak integrity hash`);
+  }
+  const name =
+    entry.name ??
+    location.slice(
+      location.lastIndexOf('node_modules/') + 'node_modules/'.length
+    );
+  const policy = Object.hasOwn(advisories, name) ? advisories[name] : undefined;
+  if (
+    policy &&
+    typeof entry.version === 'string' &&
+    semver.satisfies(entry.version, policy.vulnerable, {
+      includePrerelease: true
+    })
+  ) {
+    problems.push(
+      `${location}: ${name}@${entry.version} is in vulnerable range "${policy.vulnerable}" (${policy.advisories.join(', ')})`
+    );
   }
   if (entry.hasInstallScript && !INSTALL_SCRIPT_ALLOWLIST.has(location)) {
     problems.push(`${location}: unreviewed install script`);
