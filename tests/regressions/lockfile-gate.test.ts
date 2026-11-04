@@ -216,6 +216,51 @@ describe('lockfile integrity and version sync (issues #50, #51, #52)', () => {
     });
   });
 
+  describe('advisory-listed packages must have an evaluable version', () => {
+    const withVersion = (version: unknown) =>
+      lockWith((lock) => {
+        (
+          lock.packages['node_modules/undici'] as { version?: unknown }
+        ).version = version;
+      });
+
+    it.each([
+      [undefined],
+      [''],
+      ['not-a-version'],
+      ['6.28'],
+      [628],
+      ['latest']
+    ])('fails closed for version %s', (version) => {
+      const r = withVersion(version);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('missing or invalid version');
+    });
+
+    it('does not demand a version for packages without an advisory policy', () => {
+      const r = lockWith((lock) => {
+        lock.packages['node_modules/unrelated'] = {
+          resolved:
+            'https://registry.npmjs.org/unrelated/-/unrelated-1.0.0.tgz',
+          integrity: INTEGRITY
+        };
+      });
+      expect(r.status).toBe(0);
+    });
+  });
+
+  it.each([[undefined], [2], ['3'], [null]])(
+    'fails when lockfileVersion is %s',
+    (lockfileVersion) => {
+      const r = lockWith((lock) => {
+        (lock as { lockfileVersion: unknown }).lockfileVersion =
+          lockfileVersion;
+      });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('lockfileVersion');
+    }
+  );
+
   describe('integrity digests must be complete, not just prefixed', () => {
     const withIntegrity = (integrity: string | undefined) =>
       lockWith((lock) => {

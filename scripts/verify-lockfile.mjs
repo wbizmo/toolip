@@ -71,8 +71,11 @@ if (!isPlainObject(lock.packages)) {
 }
 const lockPackages = isPlainObject(lock.packages) ? lock.packages : {};
 
-if (lock.lockfileVersion < 3) {
-  problems.push(`lockfileVersion ${lock.lockfileVersion} is below 3`);
+// `undefined < 3` is false, so a missing version must be rejected explicitly.
+if (!Number.isInteger(lock.lockfileVersion) || lock.lockfileVersion < 3) {
+  problems.push(
+    `lockfileVersion ${lock.lockfileVersion} is missing or below 3`
+  );
 }
 if (lock.version !== manifest.version) {
   problems.push(
@@ -138,7 +141,18 @@ for (const [location, entry] of Object.entries(lockPackages)) {
   if (!isStrongIntegrity(entry.integrity)) {
     problems.push(`${location}: missing or weak integrity hash`);
   }
-  for (const name of candidateNames(location, entry)) {
+  // semver.satisfies() is false for a missing or non-semver version, so an
+  // advisory-listed package we cannot evaluate must fail closed, not pass.
+  const names = candidateNames(location, entry);
+  const advised = [...names].filter(
+    (name) => Object.hasOwn(advisories, name) && !invalidPolicies.has(name)
+  );
+  if (advised.length > 0 && semver.valid(entry.version) === null) {
+    problems.push(
+      `${location}: advisory-listed package ${advised.join(', ')} has a missing or invalid version ${JSON.stringify(entry.version)}`
+    );
+  }
+  for (const name of names) {
     const policy =
       Object.hasOwn(advisories, name) && !invalidPolicies.has(name)
         ? advisories[name]
