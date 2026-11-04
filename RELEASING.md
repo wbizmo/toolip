@@ -16,13 +16,13 @@ Before beginning:
 
 ## Supported runtime
 
-`package.json#engines.node` is authoritative. Toolip v2.2.0 supports:
+`package.json#engines.node` is authoritative. Toolip v2.2.x currently declares:
 
 ```text
->=22 <25
+^22.22.2 || ^24.15.0
 ```
 
-CI executes Node.js 22 and 24 on Ubuntu, macOS, and Windows.
+The floor is the first patched release line required by the current `pacote` dependency tree. CI executes the newest Node.js 22 and 24 releases (`check-latest`) on Ubuntu, macOS, and Windows and runs `scripts/verify-node.mjs` so an unsupported or unpatched runtime fails the job.
 
 ## Mandatory verification
 
@@ -67,66 +67,31 @@ The release guard verifies the exact npm tarball, including:
 - packed `toolip self-test`
 - packed `toolip --help`
 
-## GitHub release and tag
+## PR batches are not releases
 
-`.github/workflows/github-release.yml` owns GitHub release creation.
+The [Toolip v3.2.1 implementation schedule](docs/V3.2.1-IMPLEMENTATION.md) has 20 separately reviewed PR batches. A branch push or PR merge to `main` must **never** invoke npm publishing or GitHub release creation. Fully resolved GitHub issues close on merge, not when a PR is opened.
 
-When a version/release-notes change is merged to `main`, the workflow:
+Normal CI (`.github/workflows/ci.yml`, cross-platform build/test/coverage and packed-artifact verification) and the independent `pr-quality.yml` (typecheck, compiler-backed quality, Biome lint, Prettier formatting, workflow and lockfile policy, actionlint, build/tests/coverage, production and full dependency audit with registry signature verification, Gitleaks and CodeQL) run without npm credentials. `scripts/verify-workflows.mjs` fails CI if any workflow other than the two manual release workflows can publish, tag or read release secrets, if any action is not pinned to a full commit SHA, or if write permissions are declared at workflow level. The package version and current-release docs remain truthful for v2.2.1 until final release preparation.
 
-1. reads the exact version from `package.json`
-2. requires `RELEASE_NOTES_v<version>.md` to exist
-3. validates that the matching tag/release does not already conflict
-4. runs `npm ci` and `npm run release:check`
-5. creates `v<version>` pointing at the verified `main` commit
-6. creates the GitHub release using the checked-in release notes and the title declared by the workflow
+## Manual GitHub release
 
-The GitHub tag therefore points at a commit that contains the version, README, changelog, release notes, release workflow, and all code included in that release.
+`.github/workflows/github-release.yml` has **only** the `workflow_dispatch` trigger and accepts an exact version plus the confirmation `release toolip`. It must run on `main`, verify matching `package.json`, changelog and release notes, and pass `npm run release:check` before creating the tag and GitHub release. Do not dispatch before every v3.2.1 batch is approved and merged.
 
-GitHub release creation does **not** publish the npm package.
+## Manual npm publication
 
-## Preferred npm publish path: GitHub OIDC
+`.github/workflows/publish.yml` also has **only** `workflow_dispatch`; it is not triggered by PRs or merges. It requires an exact version, `publish toolip` confirmation, `main`, an existing verified GitHub release with tag matching the exact HEAD commit, an unpublished npm version, and the packed package verification guard. The `npm-release` environment should have required reviewers configured by a repository administrator.
 
-`.github/workflows/publish.yml` owns npm publication and is separate from normal CI/GitHub release creation.
+`publish.yml` no longer reads `NPM_TOKEN`. It publishes with npm trusted publishing: the job requests a GitHub OIDC identity (`id-token: write`, granted only to that job), npm exchanges it for a short-lived publish credential and attaches provenance. **Prerequisite (owner action, not verifiable from the repository):** register `wbizmo/toolip` + `publish.yml` + environment `npm-release` as a trusted publisher in the npm package settings, and remove any stored `NPM_TOKEN` secret. Until that is configured the workflow fails closed rather than falling back to a token. Issue [#55](https://github.com/wbizmo/toolip/issues/55) stays open until a real trusted publish has been verified. A named GitHub environment has **no mandatory review** unless the environment's protection rules are actually configured.
 
-The publish job receives only the permissions required for npm trusted publishing:
+## Final release sequence
 
-- `contents: read`
-- `id-token: write`
+1. Complete, review and merge all 20 PR batches with clean quality/security and Node/OS verification. Update master epic #88, and confirm every original implementation issue is closed.
+2. In the final release PR, set version to `3.2.1` in `package.json`, synchronize `package-lock.json`, update README and living docs, create the changelog entry and `RELEASE_NOTES_v3.2.1.md`.
+3. Validate advisories, the benchmark/fuzzing budgets, packed tarball installation, CLI smoke tests, signatures/provenance, cross-platform CI and `npm run release:check`.
+4. Obtain explicit owner approval for public release.
+5. Manually dispatch `github-release.yml` on `main` with version `3.2.1` and confirmation `release toolip`. Verify tag `v3.2.1` points to the intended exact commit.
+6. Separately manually dispatch `publish.yml` on `main` with version `3.2.1` and `publish toolip`. Verify installed package, registry version and provenance after publishing.
 
-It does not expose npm authorization to ordinary pull-request/CI jobs.
+## Emergency exceptions
 
-Configure the npm package once with this trusted publisher:
-
-- provider: GitHub Actions
-- GitHub owner: `wbizmo`
-- repository: `toolip`
-- workflow filename: `publish.yml`
-- environment: `npm-release`
-
-For stronger human review, configure the GitHub `npm-release` environment with required reviewers.
-
-The npm workflow is manually dispatched from `main`, requires the exact version plus explicit authorization text, reruns the full release guard, rejects an already-published npm version, and publishes using npm trusted publishing/OIDC with provenance.
-
-## Release sequence
-
-1. Complete/fix the release scope on a branch.
-2. Set the new version in `package.json` and synchronize `package-lock.json`.
-3. Update `README.md`, `CHANGELOG.md`, relevant docs, and `RELEASE_NOTES_vX.Y.Z.md`.
-4. Ensure the PR's complete CI matrix and packed-artifact verification are green.
-5. Merge to `main`.
-6. Allow `github-release.yml` to verify `main`, create tag `vX.Y.Z`, and publish the GitHub release from the checked-in notes.
-7. Verify the GitHub tag/release points to the intended verified commit.
-8. Only when npm publication is explicitly authorized, manually dispatch `publish.yml` on `main` with the exact version and confirmation text.
-9. Verify the npm package/version/provenance after publication.
-
-## Emergency npm fallback
-
-The preferred npm path is OIDC. If GitHub Actions or npm trusted publishing is unavailable and an emergency manual release is genuinely required:
-
-1. run the same `npm run release:check` guard
-2. authenticate interactively with npm using a short-lived or appropriately scoped credential
-3. publish the exact verified package
-4. verify the published artifact
-5. revoke/expire the emergency credential
-
-Do not place a long-lived npm publish token in ordinary CI jobs.
+If an urgent compatible v2.2.x security hotfix is needed before v3.2.1, it needs separate explicit release approval, the same guards and a deliberate version/tag. A routine merge does not authorize an emergency publication.

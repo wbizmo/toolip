@@ -13,10 +13,10 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=22 <25"
+    "node": "^22.22.2 || ^24.15.0"
   },
   "scripts": {
-    "clean": "rm -rf dist",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "dev": "tsx src/index.ts",
     "build": "tsc",
     "start": "node dist/src/index.js",
@@ -25,13 +25,21 @@
     "test:coverage": "vitest run --coverage --exclude tests/core/watch.test.ts",
     "typecheck": "tsc --noEmit",
     "quality": "tsc -p tsconfig.quality.json --noEmit",
-    "audit:runtime": "npm audit --omit=dev --audit-level=high",
+    "audit:runtime": "npm audit --omit=dev --audit-level=low",
     "verify:package": "node scripts/verify-package.mjs",
-    "verify": "npm run verify:changelog && npm run quality && npm run audit:runtime && npm test && npm run test:coverage && npm run clean && npm run build && npm run verify:package",
+    "verify": "npm run verify:changelog && npm run lint && npm run format:check && npm run verify:workflows && npm run verify:lockfile && npm run audit:all && npm run verify:platform",
     "prepack": "npm run verify",
     "pack:check": "npm pack --dry-run",
     "release:check": "bash scripts/release-check.sh",
-    "verify:changelog": "node scripts/verify-changelog.mjs"
+    "verify:changelog": "node scripts/verify-changelog.mjs",
+    "lint": "biome lint --error-on-warnings .",
+    "format:check": "prettier --check . \"!src/**\" \"!tests/**\"",
+    "format:changed": "node scripts/check-changed.mjs",
+    "audit:all": "npm audit --audit-level=low",
+    "audit:signatures": "npm audit signatures",
+    "verify:lockfile": "node scripts/verify-lockfile.mjs",
+    "verify:workflows": "node scripts/verify-workflows.mjs",
+    "verify:platform": "npm run typecheck && npm run quality && npm test && npm run test:coverage && npm run clean && npm run build && npm run verify:package"
   },
   "keywords": [
     "typescript",
@@ -64,22 +72,29 @@
   },
   "homepage": "https://github.com/wbizmo/toolip#readme",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "chalk": "^5.4.1",
     "commander": "^13.1.0",
     "fast-glob": "^3.3.3",
     "ignore": "^7.0.3",
     "ora": "^8.2.0",
-    "pacote": "^21.0.4",
+    "pacote": "^22.0.1",
     "semver": "^7.7.3",
     "typescript": "^5.8.2",
-    "zod": "^3.24.2"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.6.5",
     "@types/node": "^22.13.10",
     "@types/semver": "^7.7.1",
-    "@vitest/coverage-v8": "3.2.7",
+    "@vitest/coverage-v8": "^5.1.0",
+    "prettier": "3.9.10",
     "tsx": "^4.19.3",
-    "vitest": "^3.2.6"
+    "vitest": "^5.1.0",
+    "yaml": "2.9.1"
+  },
+  "overrides": {
+    "glob": "^14.0.3",
+    "minimatch": "^11.0.4"
   }
 }

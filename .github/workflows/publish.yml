@@ -1,14 +1,6 @@
 name: Publish npm package
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - package.json
-      - CHANGELOG.md
-      - 'RELEASE_NOTES_v*.md'
-      - .github/workflows/publish.yml
   workflow_dispatch:
     inputs:
       version:
@@ -25,8 +17,9 @@ permissions:
 
 jobs:
   publish:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     environment: npm-release
     permissions:
       contents: read
@@ -34,22 +27,25 @@ jobs:
 
     steps:
       - name: Verify manual authorization
-        if: github.event_name == 'workflow_dispatch'
         shell: bash
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
         run: |
-          if [ "${{ inputs.confirmation }}" != "publish toolip" ]; then
+          if [ "$CONFIRMATION" != "publish toolip" ]; then
             echo "Release authorization text did not match."
             exit 1
           fi
 
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Use Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
       - name: Use current npm CLI
@@ -57,17 +53,37 @@ jobs:
 
       - name: Resolve release version
         id: release
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
         shell: bash
         run: |
           set -euo pipefail
           actual="$(node -p "require('./package.json').version")"
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "$actual" != "${{ inputs.version }}" ]; then
-            echo "Requested version ${{ inputs.version }} does not match package.json version $actual."
+          if [ "$actual" != "$REQUESTED_VERSION" ]; then
+            echo "Requested version does not match package.json version $actual."
             exit 1
           fi
 
           echo "version=$actual" >> "$GITHUB_OUTPUT"
+
+      - name: Require matching verified GitHub release tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          git fetch --tags --force
+          test "$(git rev-list -n 1 "refs/tags/$TAG")" = "$GITHUB_SHA" || {
+            echo "The release tag must reference this exact main commit." >&2
+            exit 1
+          }
+          gh release view "$TAG" >/dev/null || {
+            echo "A verified GitHub release must exist before npm publishing." >&2
+            exit 1
+          }
 
       - name: Check npm version availability
         id: availability
@@ -92,13 +108,11 @@ jobs:
         if: steps.availability.outputs.should_publish == 'true'
         run: npm run release:check
 
-      - name: Publish to npm
+      - name: Publish to npm with trusted publishing (OIDC)
         if: steps.availability.outputs.should_publish == 'true'
+        # No NPM_TOKEN: npm >= 11.5.1 exchanges the job's OIDC identity for a
+        # short-lived publish credential and attaches provenance. The
+        # npm-release environment (required reviewers) gates this job.
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "NPM_TOKEN is not available to the npm-release environment."
-            exit 1
-          fi
-          npm publish --access public
+          NPM_CONFIG_PROVENANCE: 'true'
+        run: npm publish --access public

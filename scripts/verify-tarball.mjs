@@ -1,8 +1,4 @@
-import {
-  mkdtemp,
-  readFile,
-  rm
-} from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,9 +6,7 @@ import path from 'node:path';
 const tarball = process.argv[2];
 
 if (!tarball) {
-  throw new Error(
-    'Usage: node scripts/verify-tarball.mjs <tarball>'
-  );
+  throw new Error('Usage: node scripts/verify-tarball.mjs <tarball>');
 }
 
 const root = process.cwd();
@@ -20,14 +14,10 @@ const manifest = JSON.parse(
   await readFile(path.join(root, 'package.json'), 'utf8')
 );
 
-const listing = execFileSync(
-  'tar',
-  ['-tf', tarball],
-  {
-    cwd: root,
-    encoding: 'utf8'
-  }
-)
+const listing = execFileSync('tar', ['-tf', tarball], {
+  cwd: root,
+  encoding: 'utf8'
+})
   .split('\n')
   .filter(Boolean);
 
@@ -46,9 +36,7 @@ for (const requiredFile of requiredFiles) {
   }
 }
 
-const prefix = await mkdtemp(
-  path.join(os.tmpdir(), 'toolip-packed-install-')
-);
+const prefix = await mkdtemp(path.join(os.tmpdir(), 'toolip-packed-install-'));
 
 try {
   execFileSync(
@@ -72,14 +60,10 @@ try {
       ? path.join(prefix, 'toolip.cmd')
       : path.join(prefix, 'bin', 'toolip');
 
-  const version = execFileSync(
-    binary,
-    ['--version'],
-    {
-      cwd: root,
-      encoding: 'utf8'
-    }
-  ).trim();
+  const version = execFileSync(binary, ['--version'], {
+    cwd: root,
+    encoding: 'utf8'
+  }).trim();
 
   if (version !== manifest.version) {
     throw new Error(
@@ -87,23 +71,15 @@ try {
     );
   }
 
-  execFileSync(
-    binary,
-    ['self-test'],
-    {
-      cwd: root,
-      stdio: 'pipe'
-    }
-  );
+  execFileSync(binary, ['self-test'], {
+    cwd: root,
+    stdio: 'pipe'
+  });
 
-  execFileSync(
-    binary,
-    ['--help'],
-    {
-      cwd: root,
-      stdio: 'pipe'
-    }
-  );
+  execFileSync(binary, ['--help'], {
+    cwd: root,
+    stdio: 'pipe'
+  });
 
   console.log(
     `Packed artifact verification passed for toolip@${manifest.version}.`

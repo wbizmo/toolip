@@ -108,3 +108,9 @@ Vault persistence is a special security-sensitive store: updates are serialized,
 - Supported Node majors must run on Linux, macOS, and Windows CI.
 - Every release is verified from the exact packed npm artifact.
 - `package.json` is the only package-version source of truth.
+
+## Proposed v3.2.1 evolution (not yet shipped)
+
+The above describes current v2.2.x behavior. Planned work under [the v3.2.1 roadmap](V3.2.1-IMPLEMENTATION.md) adds immutable ProjectSnapshot execution, incremental scheduler, versioned policy, precise multi-language dependency graphs, signed reports, constrained plugins and advanced static analysis. These are not current product guarantees.
+
+Every architecture PR must justify data structures, worst-case time/peak-space Big-O, bounded concurrency and memory, cache invalidation, trust boundaries, cancellation, deterministic results and cross-platform regression evidence. See [engineering standards](ENGINEERING.md). The release remains manual-only after all batches integrate.

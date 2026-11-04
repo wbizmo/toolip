@@ -1,0 +1,20 @@
+title = "Toolip Gitleaks configuration"
+
+[extend]
+useDefault = true
+
+# Toolip is a secret scanner; its tests need syntactically valid but fake tokens.
+# This allowlist is intentionally narrow: it requires BOTH a reviewed test file
+# AND the obviously synthetic sequential pattern (1234567890...). Any other
+# finding, anywhere, still fails the scan. Never widen it to a whole directory.
+[[allowlists]]
+description = "Synthetic sequential-digit tokens in secret-detection test fixtures"
+condition = "AND"
+paths = [
+  '''^tests/analyzers/git-history\.test\.ts$''',
+  '''^tests/security-doctor\.test\.ts$''',
+  '''^tests/security-doctor-fixtures\.test\.ts$'''
+]
+regexes = [
+  '''(?:ghp|npm)_1234567890'''
+]

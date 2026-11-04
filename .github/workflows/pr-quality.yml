@@ -1,0 +1,186 @@
+name: PR Quality and Security
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-quality-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  complexity-evidence:
+    name: Require algorithmic complexity evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify PR time/space analysis is documented
+        shell: bash
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          for required in \
+            "## Algorithmic analysis" \
+            "Previous worst-case time" \
+            "New worst-case time" \
+            "Previous peak space" \
+            "New peak space"; do
+            if ! grep -Fqi "$required" <<< "$PR_BODY"; then
+              echo "Missing PR complexity disclosure: $required"
+              exit 1
+            fi
+          done
+          if ! grep -Eq 'O\([^)]*\)|N/A' <<< "$PR_BODY"; then
+            echo "Provide explicit Big-O time/space estimates, or justify N/A for a no-code PR."
+            exit 1
+          fi
+          echo "Complexity disclosure present; reviewer must validate correctness."
+
+  static:
+    name: Typecheck, lint, formatting, workflow and lockfile policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout full history for merge-base diff
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          check-latest: true
+          cache: npm
+      - name: Enforce supported, patched Node.js
+        run: node scripts/verify-node.mjs
+      - name: Install exact locked dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Compiler-backed quality checks
+        run: npm run quality
+      - name: Lint (Biome, warnings are errors)
+        run: npm run lint
+      - name: Formatting (repo docs/config/scripts)
+        run: npm run format:check
+      - name: Formatting (changed source and tests)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: npm run format:changed
+      - name: Whitespace errors in diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git diff --check "$BASE_SHA" "$HEAD_SHA"
+      - name: Workflow release-isolation and permission policy
+        run: npm run verify:workflows
+      - name: Lockfile and supply-chain integrity
+        run: npm run verify:lockfile
+      - name: Validate workflows with actionlint (checksum-verified)
+        shell: bash
+        env:
+          ACTIONLINT_VERSION: '1.7.12'
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/actionlint.tgz"
+          curl -fsSL --retry 3 -o "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "$ACTIONLINT_SHA256  $archive" | sha256sum --check --strict
+          tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
+
+  build-test:
+    name: Build, tests, coverage and package integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          check-latest: true
+          cache: npm
+      - name: Install exact locked dependencies
+        run: npm ci
+      - name: Clean production build
+        run: npm run clean && npm run build
+      - name: Unit, integration and regression tests
+        run: npm test
+      - name: Coverage thresholds
+        run: npm run test:coverage
+      - name: Package smoke test
+        run: npm run verify:package
+
+  dependency-audit:
+    name: Dependency vulnerabilities and registry signatures
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          check-latest: true
+          cache: npm
+      - name: Install exact locked dependencies
+        run: npm ci
+      - name: Production dependency audit
+        run: npm run audit:runtime
+      - name: Production and development dependency audit
+        run: npm run audit:all
+      - name: Registry signatures and provenance attestations
+        run: npm run audit:signatures
+
+  secrets:
+    name: Git history and PR secret scan (Gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout complete history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan for hardcoded credentials
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITLEAKS_ENABLE_COMMENTS: 'false'
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
+
+  codeql:
+    name: CodeQL JavaScript/TypeScript security analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          languages: javascript-typescript
+          build-mode: none
+          queries: security-extended
+      - name: Analyze
+        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3

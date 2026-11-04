@@ -12,7 +12,7 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ToolipError } from '../src/errors/toolip-error.js';
+import type { ToolipError } from '../src/errors/toolip-error.js';
 import {
   deleteSecret,
   exportEnv,
@@ -112,7 +112,11 @@ describe('Toolip Vault', () => {
 
       if (process.platform !== 'win32') {
         const script = path.join(root, 'export.sh');
-        await writeFile(script, `${exported}\nprintf '%s' "$DANGEROUS"\n`, 'utf8');
+        await writeFile(
+          script,
+          `${exported}\nprintf '%s' "$DANGEROUS"\n`,
+          'utf8'
+        );
         const { stdout } = await execFileAsync('/bin/sh', [script]);
         expect(stdout).toBe(value);
         await expect(access(marker)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -123,7 +127,9 @@ describe('Toolip Vault', () => {
   });
 
   it('serializes concurrent mutations without losing updates', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-vault-concurrent-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-vault-concurrent-')
+    );
     const vaultPath = path.join(root, 'vault.json');
 
     try {
@@ -148,9 +154,9 @@ describe('Toolip Vault', () => {
         vaultPath
       });
       expect(secrets.map((secret) => secret.key)).toEqual(['FIRST', 'SECOND']);
-      expect(
-        (await readdir(root)).some((file) => file.endsWith('.tmp'))
-      ).toBe(false);
+      expect((await readdir(root)).some((file) => file.endsWith('.tmp'))).toBe(
+        false
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -214,7 +220,9 @@ describe('Toolip Vault', () => {
   });
 
   it('rejects invalid master passwords', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-vault-bad-pass-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-vault-bad-pass-')
+    );
     const vaultPath = path.join(root, 'vault.json');
 
     try {
