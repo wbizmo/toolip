@@ -1,14 +1,6 @@
 name: Publish npm package
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - package.json
-      - CHANGELOG.md
-      - 'RELEASE_NOTES_v*.md'
-      - .github/workflows/publish.yml
   workflow_dispatch:
     inputs:
       version:
@@ -25,7 +17,7 @@ permissions:
 
 jobs:
   publish:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     environment: npm-release
     permissions:
@@ -44,6 +36,8 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Use Node.js
         uses: actions/setup-node@v7
@@ -68,6 +62,24 @@ jobs:
           fi
 
           echo "version=$actual" >> "$GITHUB_OUTPUT"
+
+      - name: Require matching verified GitHub release tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          git fetch --tags --force
+          test "$(git rev-list -n 1 "refs/tags/$TAG")" = "$GITHUB_SHA" || {
+            echo "The release tag must reference this exact main commit." >&2
+            exit 1
+          }
+          gh release view "$TAG" >/dev/null || {
+            echo "A verified GitHub release must exist before npm publishing." >&2
+            exit 1
+          }
 
       - name: Check npm version availability
         id: availability
