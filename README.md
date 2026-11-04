@@ -6,6 +6,12 @@ Toolip is a TypeScript-powered CLI for supply-chain security, dependency intelli
 
 It is designed to run close to the developer: from a terminal, pre-commit hook, CI job, watch process, static report, or read-only MCP integration. Toolip keeps project analysis local by default and makes remote operations explicit.
 
+## v3.2.1 development (not released)
+
+The planned [v3.2.1 implementation](docs/V3.2.1-IMPLEMENTATION.md) comprises 20 independently reviewed PR batches under [master epic #88](https://github.com/wbizmo/toolip/issues/88). The published version remains v2.2.1 until the final release. Each PR must pass typecheck, build, lint/formatter, tests, dependency security audit, secret scanning, CodeQL and existing cross-platform verification. GitHub releases and npm publishing are separate manual-only workflows; normal merges must never publish.
+
+All changes require documented worst-case time and peak-space Big-O analysis, bounded concurrency, adversarial regression coverage and performance evidence when relevant. See [AGENTS.md](AGENTS.md), [contributor guidelines](CONTRIBUTING.md) and [engineering rules](docs/ENGINEERING.md).
+
 ## Toolip v2.2.1
 
 Toolip **v2.2.1** is a dependency-correctness release that closes the last split between Toolip's resolved vulnerability graph and the dependency-health path used by `scan`, `doctor`, and `score`.
