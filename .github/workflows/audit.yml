@@ -31,7 +31,7 @@ jobs:
       - name: Enforce supported, patched Node.js
         run: node scripts/verify-node.mjs
       - name: Install exact locked dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Lockfile integrity and advisory floors
         run: npm run verify:lockfile
       - name: Production dependency audit

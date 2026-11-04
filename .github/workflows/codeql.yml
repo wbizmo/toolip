@@ -1,8 +1,13 @@
-name: CodeQL baseline
+name: CodeQL
 
-# Baseline analysis of main and a weekly re-scan so newly published queries and
-# advisories are applied to unchanged code. PR analysis runs in pr-quality.yml.
+# One workflow and job for PRs, main and the weekly re-scan. Code scanning
+# identifies a configuration by workflow path and job, so PR results can only be
+# compared against main's baseline when both come from this same job. (When PR
+# analysis ran from pr-quality.yml, GitHub reported "1 configuration not found"
+# and could not attribute new alerts to the PR.)
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
   schedule:
@@ -13,7 +18,7 @@ permissions:
 
 jobs:
   analyze:
-    name: CodeQL JavaScript/TypeScript
+    name: CodeQL JavaScript/TypeScript security analysis
     runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:

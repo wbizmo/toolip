@@ -6,6 +6,7 @@
  * - release workflows (publish.yml, github-release.yml) are workflow_dispatch only;
  * - nothing else may publish to npm, create releases/tags, or read release secrets;
  * - no pull_request_target; every third-party action pinned to a full commit SHA;
+ * - every `npm ci` passes --ignore-scripts;
  * - top-level permissions are declared and read-only; write scopes are job-level
  *   and limited to the allowlist below.
  *
@@ -22,7 +23,6 @@ const SHA = /^[0-9a-f]{40}$/u;
 const WRITE_ALLOWED = {
   'publish.yml': new Set(['id-token']),
   'github-release.yml': new Set(['contents']),
-  'pr-quality.yml': new Set(['security-events']),
   'codeql.yml': new Set(['security-events'])
 };
 const problems = [];
@@ -84,6 +84,15 @@ for (const file of files) {
     if (!job['timeout-minutes'] && !release)
       fail(file, `job ${jobName} lacks timeout-minutes`);
     for (const step of job.steps ?? []) {
+      if (
+        typeof step.run === 'string' &&
+        /\bnpm\s+ci\b(?![^\n]*--ignore-scripts)/u.test(step.run)
+      ) {
+        fail(
+          file,
+          `job ${jobName}: npm ci must use --ignore-scripts so dependency lifecycle scripts never run`
+        );
+      }
       if (!step.uses || step.uses.startsWith('./')) continue;
       const ref = step.uses.split('@')[1] ?? '';
       if (!SHA.test(ref))

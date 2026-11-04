@@ -51,6 +51,29 @@ const advisoryFile =
   process.env.ADVISORY_FLOORS ?? 'security/advisory-floors.json';
 const advisories = JSON.parse(await readFile(advisoryFile, 'utf8')).packages;
 
+// A mistyped range makes semver.satisfies() return false, which would let a
+// vulnerable package pass silently. Validate every entry up front, including
+// ones for packages that are not installed today, so a typo cannot lie in wait.
+const invalidPolicies = new Set();
+for (const [pkg, policy] of Object.entries(advisories ?? {})) {
+  if (
+    typeof policy?.vulnerable !== 'string' ||
+    semver.validRange(policy.vulnerable) === null
+  ) {
+    problems.push(
+      `advisory policy for ${pkg} has an invalid vulnerable range: ${JSON.stringify(policy?.vulnerable)}`
+    );
+    invalidPolicies.add(pkg);
+  } else if (
+    !Array.isArray(policy.advisories) ||
+    policy.advisories.length === 0 ||
+    !policy.advisories.every((id) => typeof id === 'string' && id.length > 0)
+  ) {
+    problems.push(`advisory policy for ${pkg} must list advisory identifiers`);
+    invalidPolicies.add(pkg);
+  }
+}
+
 for (const [location, entry] of Object.entries(lock.packages ?? {})) {
   if (location === '' || entry.link) continue;
   if (
@@ -69,7 +92,10 @@ for (const [location, entry] of Object.entries(lock.packages ?? {})) {
     location.slice(
       location.lastIndexOf('node_modules/') + 'node_modules/'.length
     );
-  const policy = Object.hasOwn(advisories, name) ? advisories[name] : undefined;
+  const policy =
+    Object.hasOwn(advisories, name) && !invalidPolicies.has(name)
+      ? advisories[name]
+      : undefined;
   if (
     policy &&
     typeof entry.version === 'string' &&

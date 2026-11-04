@@ -8,7 +8,7 @@ toolip mcp
 
 The server provides supported Toolip security operations such as security doctor analysis, SBOM generation, and security diffs without exposing arbitrary shell execution or unrestricted filesystem writes.
 
-Toolip starts only the stdio transport; the SDK's HTTP/session/OAuth features are not used. The SDK floor (`>=1.32.2` in practice) is enforced by the lockfile advisory gate; see [Runtime and Dependency Security](RUNTIME-AND-DEPENDENCY-SECURITY.md).
+Toolip starts only the stdio transport; the SDK's HTTP/session/OAuth features are not used. `package.json` declares the SDK at `^1.32.2`; the lockfile advisory gate rejects any installed version below `1.32.0` (the advisory boundary); see [Runtime and Dependency Security](RUNTIME-AND-DEPENDENCY-SECURITY.md).
 
 ## Workspace boundary
 

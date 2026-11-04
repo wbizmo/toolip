@@ -16,7 +16,7 @@ Before beginning:
 
 ## Supported runtime
 
-`package.json#engines.node` is authoritative. Toolip v2.2.x currently declares:
+`package.json#engines.node` is authoritative. The unreleased v3.2.1 branch declares the range below (the published v2.2.1 declares `>=22 <25`):
 
 ```text
 ^22.23.4 || >=24.22.1 <25
@@ -71,7 +71,7 @@ The release guard verifies the exact npm tarball, including:
 
 The [Toolip v3.2.1 implementation schedule](docs/V3.2.1-IMPLEMENTATION.md) has 20 separately reviewed PR batches. A branch push or PR merge to `main` must **never** invoke npm publishing or GitHub release creation. Fully resolved GitHub issues close on merge, not when a PR is opened.
 
-Normal CI (`.github/workflows/ci.yml`, cross-platform build/test/coverage and packed-artifact verification) and the independent `pr-quality.yml` (typecheck, compiler-backed quality, Biome lint, Prettier formatting, workflow and lockfile policy, actionlint, build/tests/coverage, production and full dependency audit with registry signature verification, Gitleaks and CodeQL) run without npm credentials. `audit.yml` re-runs the full dependency audit and signature verification on every push to `main` and weekly, because advisories appear against unchanged code. `scripts/verify-workflows.mjs` fails CI if any workflow other than the two manual release workflows can publish, tag or read release secrets, if any action is not pinned to a full commit SHA, or if write permissions are declared at workflow level. The package version and current-release docs remain truthful for v2.2.1 until final release preparation.
+Normal CI (`.github/workflows/ci.yml`, cross-platform build/test/coverage and packed-artifact verification) and the independent `pr-quality.yml` (typecheck, compiler-backed quality, Biome lint, Prettier formatting, workflow and lockfile policy, actionlint, build/tests/coverage, production and full dependency audit with registry signature verification, and Gitleaks) run without npm credentials. CodeQL runs from the single `codeql.yml` workflow on PRs, pushes to `main` and weekly, so PR alerts compare against main's baseline (a separate PR-only CodeQL job made GitHub report "1 configuration not found"). Every `npm ci` uses `--ignore-scripts` so dependency lifecycle scripts do not run during installation; tests and builds still execute repository code until Stage A exists (see SECURITY.md). `audit.yml` re-runs the full dependency audit and signature verification on every push to `main` and weekly, because advisories appear against unchanged code. `scripts/verify-workflows.mjs` fails CI if any workflow other than the two manual release workflows can publish, tag or read release secrets, if any action is not pinned to a full commit SHA, or if write permissions are declared at workflow level. The package version and current-release docs remain truthful for v2.2.1 until final release preparation.
 
 ## Manual GitHub release
 

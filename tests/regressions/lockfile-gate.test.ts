@@ -27,7 +27,10 @@ type Lock = {
 };
 type Manifest = { name: string; version: string };
 
-function lockWith(mutate: (lock: Lock, manifest: Manifest) => void) {
+function lockWith(
+  mutate: (lock: Lock, manifest: Manifest) => void,
+  advisoryFile = floors
+) {
   const manifest: Manifest = { name: 'toolip', version: '3.2.1' };
   const lock: Lock = {
     name: 'toolip',
@@ -50,7 +53,7 @@ function lockWith(mutate: (lock: Lock, manifest: Manifest) => void) {
   return spawnSync(process.execPath, [script], {
     cwd: dir,
     encoding: 'utf8',
-    env: { ...process.env, ADVISORY_FLOORS: floors }
+    env: { ...process.env, ADVISORY_FLOORS: advisoryFile }
   });
 }
 
@@ -109,6 +112,56 @@ describe('lockfile integrity and version sync (issues #50, #51, #52)', () => {
     });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain(`${name}@${version}`);
+  });
+
+  describe('malformed advisory policy fails the gate (never silently passes)', () => {
+    const withPolicy = (policy: unknown, installUndici = '6.28.1') => {
+      const dir = mkdtempSync(path.join(os.tmpdir(), 'toolip-adv-'));
+      dirs.push(dir);
+      const file = path.join(dir, 'advisories.json');
+      writeFileSync(file, JSON.stringify({ packages: { undici: policy } }));
+      return lockWith((lock) => {
+        lock.packages['node_modules/undici'].version = installUndici;
+      }, file);
+    };
+
+    it('rejects an unparseable vulnerable range for an installed package', () => {
+      const r = withPolicy({
+        vulnerable: '>=>6.0 <<7',
+        advisories: ['GHSA-x']
+      });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('invalid vulnerable range');
+    });
+
+    it('rejects a non-string or missing range', () => {
+      expect(withPolicy({ advisories: ['GHSA-x'] }).status).toBe(1);
+      expect(withPolicy({ vulnerable: 7, advisories: ['GHSA-x'] }).status).toBe(
+        1
+      );
+    });
+
+    it('rejects malformed entries even when the package is not vulnerable here', () => {
+      const r = withPolicy(
+        { vulnerable: 'not a range', advisories: ['GHSA-x'] },
+        '8.12.3'
+      );
+      expect(r.status).toBe(1);
+    });
+
+    it('requires advisory identifiers', () => {
+      expect(withPolicy({ vulnerable: '<7.0.0', advisories: [] }).status).toBe(
+        1
+      );
+      expect(withPolicy({ vulnerable: '<7.0.0' }).status).toBe(1);
+    });
+
+    it('still passes a valid policy for a safe version', () => {
+      expect(
+        withPolicy({ vulnerable: '<7.0.0', advisories: ['GHSA-x'] }, '8.12.3')
+          .status
+      ).toBe(0);
+    });
   });
 
   it('rejects non-registry sources and weak integrity hashes', () => {

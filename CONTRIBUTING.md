@@ -66,7 +66,7 @@ If a change affects commands, security claims, Node support, package behavior, r
 
 Follow the [20-batch roadmap](docs/V3.2.1-IMPLEMENTATION.md) and [AGENTS.md](AGENTS.md). Each completed batch is pushed on its own branch as one PR. Use `Closes #N` only for fully resolved issues; these close **when merged to main**, not when opened. For partially addressed issues use `Refs #N`.
 
-Every PR runs the existing cross-platform CI and `.github/workflows/pr-quality.yml`: typechecking, compiler-backed quality, build, tests, production dependency audit, changed-source Biome lint/format, YAML Prettier, Gitleaks and CodeQL. The PR jobs have no npm publication credentials.
+Every PR runs the existing cross-platform CI and `.github/workflows/pr-quality.yml`: typechecking, compiler-backed quality, build, tests, production dependency audit, changed-source Biome lint/format, YAML Prettier and Gitleaks, plus CodeQL from `.github/workflows/codeql.yml`. Installs use `npm ci --ignore-scripts`. The PR jobs have no npm publication credentials.
 
 ### Mandatory Big-O performance review
 

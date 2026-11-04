@@ -41,7 +41,7 @@ jobs:
       - name: Enforce supported, patched Node.js
         run: node scripts/verify-node.mjs
       - name: Install exact locked dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Typecheck, quality, tests, coverage, build and package smoke test
         run: npm run verify:platform
 
