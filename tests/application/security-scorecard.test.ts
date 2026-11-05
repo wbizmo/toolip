@@ -285,6 +285,7 @@ describe('buildSecurityScorecard', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
   it('marks unknown Git observations unmeasured', async () => {
     const root = await fixture();
     const gitFinding = { ...vulnerability(), id: 'git-unknown' };
@@ -415,5 +416,4 @@ describe('buildSecurityScorecard', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
-
 });
