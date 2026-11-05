@@ -6,7 +6,8 @@ import {
 } from './scanner-context.js';
 import {
   TextFileReader,
-  type TextFileBudget
+  type TextFileBudget,
+  type TextFileReadResult
 } from './text-file-reader.js';
 import {
   configSecurityPatterns,
@@ -41,24 +42,41 @@ export type SecurityDoctorResult = {
 export type SecurityDoctorOptions = {
   budget?: TextFileBudget;
   signal?: AbortSignal;
+  /**
+   * Supplies file content instead of reading the worktree. Pre-commit uses this
+   * to scan the exact staged blobs, never the (possibly different) working copy.
+   */
+  contentProvider?: (
+    file: ScannerContext['files'][number]
+  ) => Promise<TextFileReadResult>;
 };
 
 const secretScanExtensions = new Set([
-  'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs',
-  'json', 'yml', 'yaml', 'env', 'txt', 'pem', 'key'
+  'js',
+  'jsx',
+  'ts',
+  'tsx',
+  'mjs',
+  'cjs',
+  'json',
+  'yml',
+  'yaml',
+  'env',
+  'txt',
+  'pem',
+  'key'
 ]);
 
-const codeExtensions = new Set([
-  'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs'
-]);
+const codeExtensions = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']);
 
 export async function runSecurityDoctor(
   rootOrContext: string | ScannerContext,
   options: SecurityDoctorOptions = {}
 ): Promise<SecurityDoctorResult> {
-  const context = typeof rootOrContext === 'string'
-    ? await createScannerContext(rootOrContext)
-    : rootOrContext;
+  const context =
+    typeof rootOrContext === 'string'
+      ? await createScannerContext(rootOrContext)
+      : rootOrContext;
   const reader = new TextFileReader(options.budget);
   const findings: Finding[] = [];
   const warnings: string[] = [];
@@ -66,12 +84,18 @@ export async function runSecurityDoctor(
   let filesScanned = 0;
   let filesSkipped = 0;
   let readFailures = 0;
+  let providerBytes = 0;
 
   for (const file of context.files) {
     if (!shouldScanSecrets(file.relativePath, file.extension)) continue;
 
     filesEligible += 1;
-    const read = await reader.read(file.absolutePath, options.signal);
+    const read = options.contentProvider
+      ? await options.contentProvider(file)
+      : await reader.read(file.absolutePath, options.signal);
+    if (options.contentProvider && read.status === 'ok') {
+      providerBytes += read.bytes;
+    }
 
     if (read.status !== 'ok') {
       filesSkipped += 1;
@@ -87,9 +111,7 @@ export async function runSecurityDoctor(
     }
 
     filesScanned += 1;
-    findings.push(
-      ...scanSecretContent(file.relativePath, read.content)
-    );
+    findings.push(...scanSecretContent(file.relativePath, read.content));
 
     if (codeExtensions.has(file.extension)) {
       findings.push(
@@ -114,7 +136,7 @@ export async function runSecurityDoctor(
       filesScanned,
       filesSkipped,
       readFailures,
-      bytesScanned: reader.usage.bytesRead,
+      bytesScanned: reader.usage.bytesRead + providerBytes,
       secrets: countCategory(findings, 'secrets'),
       dangerousCode: countCategory(findings, 'dangerous-code'),
       configuration: countCategory(findings, 'configuration'),
@@ -127,7 +149,10 @@ function countCategory(findings: Finding[], category: string): number {
   return findings.filter((finding) => finding.category === category).length;
 }
 
-function shouldScanSecrets(relativePath: string, extension: string): boolean {
+export function shouldScanSecrets(
+  relativePath: string,
+  extension: string
+): boolean {
   if (relativePath.endsWith('.d.ts')) return false;
   if (relativePath.endsWith('.map')) return false;
   if (relativePath.startsWith('dist/')) return false;
@@ -136,10 +161,7 @@ function shouldScanSecrets(relativePath: string, extension: string): boolean {
   return secretScanExtensions.has(extension);
 }
 
-function scanSecretContent(
-  relativePath: string,
-  content: string
-): Finding[] {
+function scanSecretContent(relativePath: string, content: string): Finding[] {
   const findings: Finding[] = [];
   const testFile = isTestFile(relativePath);
 
@@ -198,13 +220,9 @@ function scanConfigurationContent(
         `${pattern.id}:${relativePath}:${line}:${column}`
       );
 
-      findings.push(patternFinding(
-        pattern,
-        relativePath,
-        line,
-        column,
-        fingerprint
-      ));
+      findings.push(
+        patternFinding(pattern, relativePath, line, column, fingerprint)
+      );
     }
   }
 
@@ -229,10 +247,12 @@ function patternFinding(
     source: 'security-doctor',
     remediation: { summary: pattern.recommendation },
     location: { file: relativePath, line, column },
-    evidence: [{
-      summary: '[configuration pattern matched]',
-      fingerprint
-    }]
+    evidence: [
+      {
+        summary: '[configuration pattern matched]',
+        fingerprint
+      }
+    ]
   };
 }
 
@@ -254,9 +274,7 @@ function detectMissingSecurityHeaders(relativePaths: string[]): Finding[] {
   if (possibleServerFiles.length === 0) return [];
 
   return securityHeaderNames.map((header) => ({
-    id: `TOOLIP-HEADER-VERIFY-${header
-      .toUpperCase()
-      .replaceAll('-', '_')}`,
+    id: `TOOLIP-HEADER-VERIFY-${header.toUpperCase().replaceAll('-', '_')}`,
     ruleId: 'TOOLIP-HEADER-VERIFY',
     title: `Verify security header: ${header}`,
     severity: 'info',

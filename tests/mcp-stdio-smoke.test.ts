@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -67,5 +68,23 @@ describe('MCP stdio server (issue #50)', () => {
 
     const still = await client.listTools();
     expect(still.tools.length).toBe(3);
+  }, 60_000);
+
+  it('returns structured errors for hostile Git revisions and writes nothing (issue #45)', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-mcp-'));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const canary = path.join(root, 'canary.txt');
+    const client = await connect(root);
+
+    const result = (await client.callTool({
+      name: 'toolip_diff',
+      arguments: { root, base: `--output=${canary}`, head: 'HEAD' }
+    })) as { isError?: boolean; content: Array<{ text: string }> };
+
+    expect(result.isError).toBe(true);
+    const body = JSON.parse(result.content[0]?.text ?? '{}');
+    expect(body.error.code).toBe('GIT_REVISION_INVALID');
+    expect(JSON.stringify(body)).not.toContain(root);
+    expect(existsSync(canary)).toBe(false);
   }, 60_000);
 });
