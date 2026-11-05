@@ -183,7 +183,8 @@ describe('pre-commit fails closed on incomplete scans (issue #27)', () => {
       '--show-findings'
     );
     expect(none.code).toBe(0);
-    expect(none.out).not.toContain('Blocking Findings');
+    expect(none.out).toContain('Blocking Findings: 0');
+    expect(none.out).not.toContain('\nBlocking Findings\n');
   }, 20_000);
 
   it('keeps blocking on real findings and reports them rather than the incomplete reason', async () => {
