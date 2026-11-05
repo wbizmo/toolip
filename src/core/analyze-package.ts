@@ -1,5 +1,6 @@
 import semver from 'semver';
 import { fetchPackageManifest } from './npm-registry.js';
+import type { ScanBudget } from './scan-budget.js';
 import { calculateRiskScore } from './risk-score.js';
 import type { DependencyInfo, PackageHealth } from './dependency-types.js';
 
@@ -8,7 +9,10 @@ function cleanInstalledVersion(version: string): string | null {
   return semver.coerce(version)?.version ?? null;
 }
 
-function isOutdated(installedVersion: string, latestVersion: string | null): boolean {
+function isOutdated(
+  installedVersion: string,
+  latestVersion: string | null
+): boolean {
   const cleanedInstalledVersion = cleanInstalledVersion(installedVersion);
 
   if (!cleanedInstalledVersion || !latestVersion) {
@@ -25,18 +29,21 @@ function isOutdated(installedVersion: string, latestVersion: string | null): boo
 }
 
 export async function analyzePackage(
-  dependency: DependencyInfo
+  dependency: DependencyInfo,
+  budget?: ScanBudget
 ): Promise<PackageHealth> {
-  const manifest = await fetchPackageManifest(dependency.name);
-  const latestVersion = typeof manifest.version === 'string' ? manifest.version : null;
+  const manifest = await fetchPackageManifest(dependency.name, budget);
+  const latestVersion =
+    typeof manifest.version === 'string' ? manifest.version : null;
 
   const publishedDate =
-    manifest.time && latestVersion ? manifest.time[latestVersion] ?? null : null;
+    manifest.time && latestVersion
+      ? (manifest.time[latestVersion] ?? null)
+      : null;
 
   const ageInDays = publishedDate
     ? Math.floor(
-        (Date.now() - new Date(publishedDate).getTime()) /
-          (1000 * 60 * 60 * 24)
+        (Date.now() - new Date(publishedDate).getTime()) / (1000 * 60 * 60 * 24)
       )
     : null;
 

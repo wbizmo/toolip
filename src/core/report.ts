@@ -1,7 +1,5 @@
-import type {
-  Finding,
-  FindingSeverity
-} from '../contracts/finding.js';
+import type { AnalysisCoverage, AnalysisState } from '../contracts/analysis.js';
+import type { Finding, FindingSeverity } from '../contracts/finding.js';
 
 export type SerializedFinding = {
   id: string;
@@ -32,11 +30,19 @@ export type ToolipReport = {
     info: number;
   };
   findings: SerializedFinding[];
+  /**
+   * Completeness of the analysis behind this report. When present and not
+   * `complete`, an empty findings list is NOT an all-clear.
+   */
+  analysis?: {
+    state: AnalysisState;
+    reasons: string[];
+    /** Canonical totals for enumerated dependency and file inputs. */
+    coverage?: AnalysisCoverage;
+  };
 };
 
-export function serializeFinding(
-  finding: Finding
-): SerializedFinding {
+export function serializeFinding(finding: Finding): SerializedFinding {
   return {
     id: finding.id,
     title: finding.title,
@@ -56,6 +62,7 @@ export function createReport(input: {
   command: string;
   root: string;
   findings: Finding[];
+  analysis?: ToolipReport['analysis'];
 }): ToolipReport {
   return {
     tool: 'toolip',
@@ -64,7 +71,8 @@ export function createReport(input: {
     generatedAt: new Date().toISOString(),
     root: input.root,
     summary: summarizeFindings(input.findings),
-    findings: input.findings.map(serializeFinding)
+    findings: input.findings.map(serializeFinding),
+    ...(input.analysis ? { analysis: input.analysis } : {})
   };
 }
 

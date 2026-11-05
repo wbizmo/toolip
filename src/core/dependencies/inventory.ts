@@ -1,3 +1,4 @@
+import { readdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -8,6 +9,12 @@ export type DependencyIdentity = {
   version: string;
   direct: boolean;
   development: boolean;
+  /** Only reachable through optionalDependencies. */
+  optional?: boolean;
+  /** Lockfile `os` / `cpu` / `libc` constraints (npm allow-list with `!` blocks). */
+  os?: string[];
+  cpu?: string[];
+  libc?: string[];
   source: 'package-lock';
   installPath: string;
 };
@@ -17,7 +24,8 @@ export type DependencyEdge = {
   to: string;
   name: string;
   requirement: string;
-  section: 'dependency' | 'devDependency' | 'optionalDependency' | 'peerDependency';
+  section:
+    'dependency' | 'devDependency' | 'optionalDependency' | 'peerDependency';
 };
 
 export type NpmDependencyGraph = {
@@ -30,6 +38,10 @@ type PackageLockEntry = {
   name?: string;
   version?: string;
   dev?: boolean;
+  optional?: boolean;
+  os?: string[];
+  cpu?: string[];
+  libc?: string[];
   link?: boolean;
   resolved?: string;
   dependencies?: Record<string, string>;
@@ -121,10 +133,9 @@ function requirements(
   requirement: string;
   section: DependencyEdge['section'];
 }> {
-  const sections: Array<[
-    DependencyEdge['section'],
-    Record<string, string> | undefined
-  ]> = [
+  const sections: Array<
+    [DependencyEdge['section'], Record<string, string> | undefined]
+  > = [
     ['dependency', entry.dependencies],
     ['optionalDependency', entry.optionalDependencies],
     ['peerDependency', entry.peerDependencies]
@@ -150,7 +161,9 @@ export async function readNpmDependencyGraph(
   const lockfile = JSON.parse(raw) as PackageLockV2;
 
   if (!lockfile.packages) {
-    throw new Error('Toolip requires package-lock.json lockfileVersion 2 or newer.');
+    throw new Error(
+      'Toolip requires package-lock.json lockfileVersion 2 or newer.'
+    );
   }
 
   const identitiesByPath = new Map<string, DependencyIdentity>();
@@ -167,6 +180,10 @@ export async function readNpmDependencyGraph(
       version: entry.version,
       direct: false,
       development: Boolean(entry.dev),
+      optional: entry.optional === true ? true : undefined,
+      os: Array.isArray(entry.os) ? entry.os.map(String) : undefined,
+      cpu: Array.isArray(entry.cpu) ? entry.cpu.map(String) : undefined,
+      libc: Array.isArray(entry.libc) ? entry.libc.map(String) : undefined,
       source: 'package-lock',
       installPath
     });
@@ -177,9 +194,8 @@ export async function readNpmDependencyGraph(
   const seenEdges = new Set<string>();
 
   for (const [fromPath, entry] of Object.entries(lockfile.packages)) {
-    const fromIdentity = fromPath === ''
-      ? undefined
-      : identitiesByPath.get(fromPath);
+    const fromIdentity =
+      fromPath === '' ? undefined : identitiesByPath.get(fromPath);
 
     if (fromPath !== '' && !fromIdentity) continue;
 
@@ -235,4 +251,60 @@ export async function readNpmDependencyInventory(
   root: string
 ): Promise<DependencyIdentity[]> {
   return (await readNpmDependencyGraph(root)).packages;
+}
+
+function allowedBy(constraint: string[] | undefined, current: string): boolean {
+  if (!constraint || constraint.length === 0) return true;
+  if (constraint.includes(`!${current}`)) return false;
+  const allow = constraint.filter((entry) => !entry.startsWith('!'));
+  return allow.length === 0 || allow.includes(current);
+}
+
+type RuntimeLibc = 'glibc' | 'musl' | 'unknown';
+
+/** Use positive runtime evidence; unknown libc cannot exclude a package. */
+function detectRuntimeLibc(): RuntimeLibc {
+  if (process.platform !== 'linux') return 'unknown';
+  try {
+    const report = process.report.getReport() as {
+      header?: { glibcVersionRuntime?: string };
+    };
+    if (report.header?.glibcVersionRuntime) return 'glibc';
+  } catch {
+    // Runtime reports are not available on all Node distributions.
+  }
+  try {
+    if (
+      readdirSync('/lib').some(
+        (name) => name.startsWith('ld-musl-') && name.endsWith('.so.1')
+      )
+    ) {
+      return 'musl';
+    }
+  } catch {
+    // Minimal containers may not expose the musl loader directory.
+  }
+  return 'unknown';
+}
+
+const currentLibc = detectRuntimeLibc();
+
+/**
+ * True only when lockfile `os`/`cpu`/`libc` constraints prove an optional
+ * package is not applicable. Unknown libc never proves a package is omitted.
+ */
+export function isOmittedOnPlatform(
+  dependency: Pick<DependencyIdentity, 'optional' | 'os' | 'cpu' | 'libc'>,
+  platform: string = process.platform,
+  arch: string = process.arch,
+  libc: RuntimeLibc = currentLibc
+): boolean {
+  if (!dependency.optional) return false;
+  return (
+    !allowedBy(dependency.os, platform) ||
+    !allowedBy(dependency.cpu, arch) ||
+    (platform === 'linux' &&
+      libc !== 'unknown' &&
+      !allowedBy(dependency.libc, libc))
+  );
 }

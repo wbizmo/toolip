@@ -1,24 +1,18 @@
-import {
-  access,
-  readFile
-} from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   Analyzer,
   AnalyzerContext,
   AnalyzerResult
 } from '../../contracts/analyzer.js';
-import type {
-  Finding,
-  FindingSeverity
-} from '../../contracts/finding.js';
-import { readNpmDependencyInventory } from '../../core/dependencies/inventory.js';
+import type { Finding, FindingSeverity } from '../../contracts/finding.js';
+import { coverageOf } from '../../contracts/analysis.js';
+import {
+  isOmittedOnPlatform,
+  readNpmDependencyInventory
+} from '../../core/dependencies/inventory.js';
 
-const lifecycleNames = [
-  'preinstall',
-  'install',
-  'postinstall'
-] as const;
+const lifecycleNames = ['preinstall', 'install', 'postinstall'] as const;
 
 type PackageManifest = {
   name?: string;
@@ -42,8 +36,7 @@ const signals: SuspiciousSignal[] = [
     severity: 'high',
     regex:
       /\b(curl|wget|Invoke-WebRequest|fetch|axios|http\.get|https\.get)\b/i,
-    message:
-      'The lifecycle script appears to perform network access.',
+    message: 'The lifecycle script appears to perform network access.',
     remediation:
       'Review the remote destination and downloaded content before installation.'
   },
@@ -53,8 +46,7 @@ const signals: SuspiciousSignal[] = [
     severity: 'high',
     regex:
       /\b(sh|bash|zsh|cmd|powershell|pwsh)\b|child_process|execSync?\s*\(/i,
-    message:
-      'The lifecycle script invokes a shell or child process.',
+    message: 'The lifecycle script invokes a shell or child process.',
     remediation:
       'Confirm every command and argument is necessary and does not execute untrusted input.'
   },
@@ -93,12 +85,16 @@ const signals: SuspiciousSignal[] = [
   }
 ];
 
-async function exists(filePath: string): Promise<boolean> {
+type ManifestPresence = 'present' | 'missing' | 'inaccessible';
+
+/** Distinguishes a genuinely absent manifest from one we could not access. */
+async function presence(filePath: string): Promise<ManifestPresence> {
   try {
     await access(filePath);
-    return true;
-  } catch {
-    return false;
+    return 'present';
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'inaccessible';
   }
 }
 
@@ -106,22 +102,23 @@ export class InstallScriptAnalyzer implements Analyzer {
   readonly id = 'install-script-behavior';
   readonly version = '1.0.1';
 
-  async analyze(
-    context: AnalyzerContext
-  ): Promise<AnalyzerResult> {
+  async analyze(context: AnalyzerContext): Promise<AnalyzerResult> {
     const startedAt = performance.now();
-    const dependencies =
-      await readNpmDependencyInventory(context.root);
+    const dependencies = await readNpmDependencyInventory(context.root);
 
     const findings: Finding[] = [];
     let packagesInspected = 0;
     let lifecycleScripts = 0;
+    // Lifecycle scripts can only be inspected for packages present on disk.
+    // Anything else is unexamined, not clean.
+    const notInspected: string[] = [];
+    // Optional packages npm legitimately omits (platform-specific) are out of
+    // scope, not skipped: counting them would fail healthy projects.
+    let excludedOptional = 0;
 
     for (const dependency of dependencies) {
       if (context.signal?.aborted) {
-        throw new Error(
-          'Install-script analysis was cancelled.'
-        );
+        throw new Error('Install-script analysis was cancelled.');
       }
 
       const manifestPath = path.join(
@@ -130,7 +127,17 @@ export class InstallScriptAnalyzer implements Analyzer {
         'package.json'
       );
 
-      if (!(await exists(manifestPath))) {
+      const manifestState = await presence(manifestPath);
+      if (manifestState !== 'present') {
+        // Excluded only when the lockfile proves npm omits it on this platform;
+        // inaccessible or unproven-optional manifests stay unexamined.
+        if (manifestState === 'missing' && isOmittedOnPlatform(dependency)) {
+          excludedOptional += 1;
+          continue;
+        }
+        notInspected.push(
+          `${dependency.name}@${dependency.version} (${manifestState === 'missing' ? 'not installed' : 'manifest not accessible'})`
+        );
         continue;
       }
 
@@ -138,10 +145,10 @@ export class InstallScriptAnalyzer implements Analyzer {
         await readFile(manifestPath, 'utf8')
       ) as PackageManifest;
 
-      if (
-        manifest.version &&
-        manifest.version !== dependency.version
-      ) {
+      if (manifest.version && manifest.version !== dependency.version) {
+        notInspected.push(
+          `${dependency.name}@${dependency.version} (installed version ${manifest.version} differs)`
+        );
         continue;
       }
 
@@ -178,8 +185,7 @@ export class InstallScriptAnalyzer implements Analyzer {
             source: 'package-manifest',
             evidence: [
               {
-                summary:
-                  `${lifecycleName}: ${command.slice(0, 240)}`,
+                summary: `${lifecycleName}: ${command.slice(0, 240)}`,
                 fingerprint:
                   `${dependency.installPath}:${dependency.version}:` +
                   `${lifecycleName}:${signal.id}`
@@ -204,10 +210,21 @@ export class InstallScriptAnalyzer implements Analyzer {
 
     return {
       analyzer: this.id,
-      durationMs: Math.round(
-        performance.now() - startedAt
-      ),
+      durationMs: Math.round(performance.now() - startedAt),
       findings,
+      coverage: coverageOf({
+        eligible: dependencies.length - excludedOptional,
+        scanned: packagesInspected,
+        skipped: notInspected.length,
+        failed: 0,
+        excluded: excludedOptional
+      }),
+      warnings:
+        notInspected.length > 0
+          ? [
+              `${notInspected.length} dependenc${notInspected.length === 1 ? 'y was' : 'ies were'} not inspected, for example: ${notInspected.slice(0, 5).join(', ')}. Install dependencies without running scripts (npm ci --ignore-scripts) to inspect them.`
+            ]
+          : undefined,
       metadata: {
         packagesInspected,
         lifecycleScripts,

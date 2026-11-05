@@ -1,5 +1,8 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
+import { EXIT_CODES } from '../application/exit-codes.js';
+import { gatedFindings, isFailOn } from '../application/analysis-status.js';
+import { ToolipError } from '../errors/toolip-error.js';
 import { runPreCommit } from '../core/pre-commit.js';
 
 export function registerPreCommitCommand(program: Command): void {
@@ -12,13 +15,34 @@ export function registerPreCommitCommand(program: Command): void {
       'Run an explicit full-repository check instead of staged-only analysis.'
     )
     .option('--show-findings', 'Print blocking findings.')
+    .option(
+      '--fail-on <severity>',
+      'Block at or above: critical, high, medium, low, none.',
+      'high'
+    )
+    .option(
+      '--no-fail-on-incomplete',
+      'Tolerate partial coverage only with --full; staged eligible gaps always block.'
+    )
     .action(
       async (options: {
         path: string;
         full?: boolean;
         showFindings?: boolean;
+        failOn?: string;
+        failOnIncomplete?: boolean;
       }) => {
-        const result = await runPreCommit(options.path, { full: options.full });
+        if (!isFailOn(options.failOn)) {
+          throw new ToolipError(
+            `Invalid --fail-on value "${options.failOn}". Use critical, high, medium, low, info or none.`,
+            { code: 'INVALID_FAIL_ON', exitCode: 1 }
+          );
+        }
+        const result = await runPreCommit(options.path, {
+          full: options.full,
+          failOn: options.failOn,
+          failOnIncomplete: options.failOnIncomplete
+        });
 
         console.log(chalk.bold('Toolip Pre-Commit'));
         console.log('');
@@ -32,6 +56,14 @@ export function registerPreCommitCommand(program: Command): void {
           `${chalk.dim('Blocking Findings:')} ${result.summary.blocking}`
         );
 
+        const coverage = result.coverage;
+        console.log(
+          `${chalk.dim('Analysis:')} ${coverage.state.toUpperCase()} (${coverage.scanned}/${coverage.eligible} eligible scanned, ${coverage.skipped} skipped, ${coverage.failed} failed${coverage.excluded === undefined ? '' : `, ${coverage.excluded} excluded`})`
+        );
+        if (coverage.state !== 'complete' && coverage.reason) {
+          console.log(`${chalk.dim('Reason:')} ${coverage.reason}`);
+        }
+
         if (result.warnings.length > 0) {
           console.log('');
           console.log(
@@ -42,13 +74,12 @@ export function registerPreCommitCommand(program: Command): void {
           }
         }
 
-        if (options.showFindings && result.findings.length > 0) {
+        const blocking = gatedFindings(result.findings, options.failOn);
+        if (options.showFindings && blocking.length > 0) {
           console.log('');
           console.log(chalk.bold('Blocking Findings'));
 
-          for (const finding of result.findings.filter(
-            (item) => item.severity === 'critical' || item.severity === 'high'
-          )) {
+          for (const finding of blocking) {
             console.log(`${chalk.red('✖')} ${finding.title}`);
             if (finding.location?.file) {
               console.log(`  ${chalk.dim('File:')} ${finding.location.file}`);
@@ -65,10 +96,23 @@ export function registerPreCommitCommand(program: Command): void {
           console.log('');
           console.log(
             chalk.red(
-              'Pre-commit checks failed. Fix critical/high findings before committing.'
+              result.blockedByIncompleteScan
+                ? 'Pre-commit blocked: the scan was incomplete, so the result is not an all-clear. Exclude the listed files in .toolipignore if they are intentionally out of scope, or fix the read problem.'
+                : 'Pre-commit checks failed. Fix blocking findings before committing.'
             )
           );
-          process.exitCode = 1;
+          // Preserve the highest failure code when findings and missing coverage coexist.
+          const findingExitCode =
+            result.summary.blocking > 0 ? EXIT_CODES.error : EXIT_CODES.ok;
+          const coverageExitCode =
+            result.coverage.state === 'failed'
+              ? EXIT_CODES.failed
+              : result.coverage.state === 'partial' &&
+                  (result.scope === 'staged' ||
+                    options.failOnIncomplete !== false)
+                ? EXIT_CODES.incomplete
+                : EXIT_CODES.ok;
+          process.exitCode = Math.max(findingExitCode, coverageExitCode);
           return;
         }
 
