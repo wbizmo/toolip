@@ -24,7 +24,7 @@ Limits: staged blobs are bounded by the text-file budget (2 MiB per file, 64 MiB
 1. `core.hooksPath` if set (relative values resolve against the work-tree top level), else
 2. `git rev-parse --git-path hooks` (which is the shared hooks directory when run from a linked worktree).
 
-Husky v9's generated `.husky/_` directory is redirected to `.husky/pre-commit`, and a warning is printed when the hook or directory looks managed by Husky, Lefthook or simple-git-hooks (regeneration can remove the block; prefer adding `toolip pre-commit --path .` to that tool's configuration).
+Husky v9's generated `.husky/_` directory is redirected to `.husky/pre-commit` only after verifying that Husky's dispatcher (`.husky/_/pre-commit` and its `h` helper) exists and is executable (otherwise the install fails with remediation, `HOOK_HUSKY_DISPATCHER_MISSING`, and changes nothing), and a warning is printed when the hook or directory looks managed by Husky, Lefthook or simple-git-hooks (regeneration can remove the block; prefer adding `toolip pre-commit --path .` to that tool's configuration).
 
 The managed block is idempotent (exactly one, byte-identical on re-run) and is placed **immediately after the shebang**, so an `exit` or `exec` in existing logic cannot silently bypass it. Re-running migrates blocks that older versions appended after an `exit`. Existing content is preserved, the file is replaced atomically, and non-shell hooks (for example Python or Node) are refused rather than rewritten. A corrupt or duplicated block is an error and the file is left untouched.
 

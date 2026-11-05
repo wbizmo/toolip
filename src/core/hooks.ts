@@ -68,6 +68,7 @@ export async function installPreCommitHookDetailed(
     path.basename(hooksDir) === '_' &&
     path.basename(path.dirname(hooksDir)) === '.husky'
   ) {
+    await assertHuskyDispatcher(resolvedDir);
     hooksDir = path.dirname(hooksDir);
     warnings.push(
       'core.hooksPath points at Husky generated files; installing into .husky/pre-commit instead.'
@@ -101,6 +102,34 @@ export async function installPreCommitHookDetailed(
   }
 
   return { hookPath, hooksDir, source, warnings };
+}
+
+/**
+ * Husky v9 points core.hooksPath at generated files in `.husky/_`; its
+ * dispatcher there runs the user-editable `.husky/<hook>`. Installing into the
+ * user file is useless unless the dispatcher exists and can run, so verify it
+ * and fail with remediation instead of reporting a hook that will never fire.
+ */
+async function assertHuskyDispatcher(generatedDir: string): Promise<void> {
+  const dispatcher = path.join(generatedDir, 'pre-commit');
+  const helper = path.join(generatedDir, 'h');
+  let usable = false;
+
+  try {
+    const [info] = await Promise.all([stat(dispatcher), stat(helper)]);
+    usable =
+      info.isFile() &&
+      (process.platform === 'win32' || (info.mode & 0o111) !== 0);
+  } catch {
+    usable = false;
+  }
+
+  if (!usable) {
+    throw new ToolipError(
+      'core.hooksPath points at Husky generated files, but .husky/_/pre-commit (and its "h" helper) is missing or not executable, so a hook added to .husky/pre-commit would never run. Run Husky\'s install step (for example `npm run prepare`) to regenerate it, then retry; Toolip did not modify anything.',
+      { code: 'HOOK_HUSKY_DISPATCHER_MISSING', exitCode: 1 }
+    );
+  }
 }
 
 async function resolveHooksDir(

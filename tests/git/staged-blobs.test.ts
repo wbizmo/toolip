@@ -1,7 +1,6 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import {
   chmodSync,
-  existsSync,
   mkdirSync,
   rmSync,
   symlinkSync,
@@ -295,18 +294,15 @@ describe.skipIf(process.platform === 'win32')(
       expect(result.status).not.toBe(0);
     }, 60_000);
 
-    it('is not fooled by a hook run from a subdirectory path argument', () => {
+    it('blocks a path-limited commit of a staged secret in a subdirectory', () => {
       const root = repoWithHook();
-      expect(existsSync(path.join(root, '.git', 'hooks', 'pre-commit'))).toBe(
-        true
-      );
-      expect(
-        execFileSync('git', ['rev-parse', '--show-toplevel'], {
-          cwd: root,
-          encoding: 'utf8',
-          env: gitEnv()
-        }).trim()
-      ).toBe(root);
-    });
+      const before = git(root, 'rev-parse', 'HEAD').trim();
+      write(root, 'src/nested/leak.ts', fakeSecretLine('nested'));
+      git(root, 'add', 'src/nested/leak.ts');
+
+      const result = commit(root, 'src/nested/leak.ts');
+      expect(result.status).not.toBe(0);
+      expect(git(root, 'rev-parse', 'HEAD').trim()).toBe(before);
+    }, 60_000);
   }
 );

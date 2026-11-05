@@ -165,12 +165,47 @@ describe('hook installation (issue #41)', () => {
 
   it('redirects Husky generated hooks to the user-editable file and warns', async () => {
     const root = makeRepo();
-    mkdirSync(path.join(root, '.husky', '_'), { recursive: true });
+    const generated = path.join(root, '.husky', '_');
+    mkdirSync(generated, { recursive: true });
+    // Husky v9 dispatcher: `_/pre-commit` sources the helper `_/h`.
+    writeFileSync(
+      path.join(generated, 'pre-commit'),
+      '#!/usr/bin/env sh\n. "$(dirname "$0")/h"\n',
+      { mode: 0o755 }
+    );
+    writeFileSync(path.join(generated, 'h'), '#!/usr/bin/env sh\n# HUSKY\n', {
+      mode: 0o755
+    });
     git(root, 'config', 'core.hooksPath', '.husky/_');
 
     const result = await installPreCommitHookDetailed(root);
     expect(result.hookPath).toBe(path.join(root, '.husky', 'pre-commit'));
     expect(result.warnings.join('\n')).toMatch(/husky/iu);
+  });
+
+  it('fails with remediation when the Husky dispatcher is missing or not executable', async () => {
+    const root = makeRepo();
+    const generated = path.join(root, '.husky', '_');
+    mkdirSync(generated, { recursive: true });
+    git(root, 'config', 'core.hooksPath', '.husky/_');
+
+    // Missing entirely.
+    await expect(installPreCommitHookDetailed(root)).rejects.toMatchObject({
+      code: 'HOOK_HUSKY_DISPATCHER_MISSING'
+    });
+    expect(existsSync(path.join(root, '.husky', 'pre-commit'))).toBe(false);
+
+    // Present but not executable (POSIX only: mode bits are not enforced on Windows).
+    if (posix) {
+      writeFileSync(path.join(generated, 'pre-commit'), '#!/bin/sh\n', {
+        mode: 0o644
+      });
+      writeFileSync(path.join(generated, 'h'), '#!/bin/sh\n', { mode: 0o644 });
+      await expect(installPreCommitHookDetailed(root)).rejects.toMatchObject({
+        code: 'HOOK_HUSKY_DISPATCHER_MISSING'
+      });
+      expect(existsSync(path.join(root, '.husky', 'pre-commit'))).toBe(false);
+    }
   });
 
   it('warns about other hook managers', async () => {
