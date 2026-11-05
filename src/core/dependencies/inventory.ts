@@ -1,3 +1,4 @@
+import { readdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -10,9 +11,10 @@ export type DependencyIdentity = {
   development: boolean;
   /** Only reachable through optionalDependencies. */
   optional?: boolean;
-  /** Lockfile `os` / `cpu` constraints (npm allow-list with `!` block entries). */
+  /** Lockfile `os` / `cpu` / `libc` constraints (npm allow-list with `!` blocks). */
   os?: string[];
   cpu?: string[];
+  libc?: string[];
   source: 'package-lock';
   installPath: string;
 };
@@ -39,6 +41,7 @@ type PackageLockEntry = {
   optional?: boolean;
   os?: string[];
   cpu?: string[];
+  libc?: string[];
   link?: boolean;
   resolved?: string;
   dependencies?: Record<string, string>;
@@ -180,6 +183,7 @@ export async function readNpmDependencyGraph(
       optional: entry.optional === true ? true : undefined,
       os: Array.isArray(entry.os) ? entry.os.map(String) : undefined,
       cpu: Array.isArray(entry.cpu) ? entry.cpu.map(String) : undefined,
+      libc: Array.isArray(entry.libc) ? entry.libc.map(String) : undefined,
       source: 'package-lock',
       installPath
     });
@@ -256,18 +260,48 @@ function allowedBy(constraint: string[] | undefined, current: string): boolean {
   return allow.length === 0 || allow.includes(current);
 }
 
+type RuntimeLibc = 'glibc' | 'musl' | 'unknown';
+
+/** Use positive runtime evidence; unknown libc cannot exclude a package. */
+function detectRuntimeLibc(): RuntimeLibc {
+  if (process.platform !== 'linux') return 'unknown';
+  try {
+    if (process.report.getReport().header.glibcVersionRuntime) return 'glibc';
+  } catch {
+    // Runtime reports are not available on all Node distributions.
+  }
+  try {
+    if (
+      readdirSync('/lib').some(
+        (name) => name.startsWith('ld-musl-') && name.endsWith('.so.1')
+      )
+    ) {
+      return 'musl';
+    }
+  } catch {
+    // Minimal containers may not expose the musl loader directory.
+  }
+  return 'unknown';
+}
+
+const currentLibc = detectRuntimeLibc();
+
 /**
- * True only when the lockfile proves npm omits this optional package on the
- * given platform (declared `os`/`cpu` exclude it). An optional package with no
- * such proof is NOT assumed to be legitimately absent.
+ * True only when lockfile `os`/`cpu`/`libc` constraints prove an optional
+ * package is not applicable. Unknown libc never proves a package is omitted.
  */
 export function isOmittedOnPlatform(
-  dependency: Pick<DependencyIdentity, 'optional' | 'os' | 'cpu'>,
+  dependency: Pick<DependencyIdentity, 'optional' | 'os' | 'cpu' | 'libc'>,
   platform: string = process.platform,
-  arch: string = process.arch
+  arch: string = process.arch,
+  libc: RuntimeLibc = currentLibc
 ): boolean {
   if (!dependency.optional) return false;
   return (
-    !allowedBy(dependency.os, platform) || !allowedBy(dependency.cpu, arch)
+    !allowedBy(dependency.os, platform) ||
+    !allowedBy(dependency.cpu, arch) ||
+    (platform === 'linux' &&
+      libc !== 'unknown' &&
+      !allowedBy(dependency.libc, libc))
   );
 }

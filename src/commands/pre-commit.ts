@@ -22,7 +22,7 @@ export function registerPreCommitCommand(program: Command): void {
     )
     .option(
       '--no-fail-on-incomplete',
-      'Do not block when eligible staged files could not be scanned (reported as partial; NOT recommended).'
+      'Tolerate partial coverage only with --full; staged eligible gaps always block.'
     )
     .action(
       async (options: {
@@ -102,12 +102,18 @@ export function registerPreCommitCommand(program: Command): void {
                 : 'Pre-commit checks failed. Fix blocking findings before committing.'
             )
           );
-          // 1 = blocking findings (compatible with existing hooks), 3 = incomplete scan.
-          process.exitCode = result.blockedByIncompleteScan
-            ? result.coverage.state === 'failed'
+          // Preserve the highest failure code when findings and missing coverage coexist.
+          const findingExitCode =
+            result.summary.blocking > 0 ? EXIT_CODES.error : EXIT_CODES.ok;
+          const coverageExitCode =
+            result.coverage.state === 'failed'
               ? EXIT_CODES.failed
-              : EXIT_CODES.incomplete
-            : EXIT_CODES.error;
+              : result.coverage.state === 'partial' &&
+                  (result.scope === 'staged' ||
+                    options.failOnIncomplete !== false)
+                ? EXIT_CODES.incomplete
+                : EXIT_CODES.ok;
+          process.exitCode = Math.max(findingExitCode, coverageExitCode);
           return;
         }
 

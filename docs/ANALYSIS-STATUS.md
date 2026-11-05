@@ -20,7 +20,7 @@ JSON output (`--json`) includes an `analysis` block with `state`, `complete`, `r
 | 3    | Partial analysis (`--fail-on-incomplete`, default for analyzer commands and `pre-commit`) |
 | 4    | Failed analysis or nothing could be scanned                                               |
 
-`--fail-on <critical|high|medium|low|info|none>` sets the findings gate. `--no-fail-on-incomplete` tolerates some unexamined files but never tolerates a scan that examined nothing (exit 4).
+`--fail-on <critical|high|medium|low|info|none>` sets the findings gate. `--no-fail-on-incomplete` can tolerate partial coverage in non-staged scans, including explicit `pre-commit --full` runs. **Staged pre-commit always blocks unexamined eligible inputs**, even with the opt-out flag. Nothing-scanned/failed analysis always exits 4; when findings and incomplete coverage coexist, the highest applicable exit code wins.
 
 ## Enforceable analyzer termination
 
@@ -32,7 +32,7 @@ A timeout in a single JavaScript thread cannot interrupt synchronous CPU work. A
 
 ## Optional dependencies
 
-`install-scripts` counts an uninstalled optional package as `excluded` only when the lockfile's `os`/`cpu` constraints prove npm omits it on the current platform. An optional package without such proof, or whose manifest cannot be accessed, is `skipped` and makes the run `partial`.
+`install-scripts` counts an uninstalled optional package as `excluded` only when the lockfile's `os`/`cpu`/`libc` constraints prove npm omits it on the current platform. Linux libc is detected only from positive runtime evidence; unknown libc never justifies exclusion. An optional package without such proof, or whose manifest cannot be accessed, is `skipped` and makes the run `partial`.
 
 ## Complexity
 

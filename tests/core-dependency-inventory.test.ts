@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  isOmittedOnPlatform,
   readNpmDependencyGraph,
   readNpmDependencyInventory
 } from '../src/core/dependencies/inventory.js';
@@ -136,6 +137,57 @@ describe('npm dependency inventory', () => {
         to: transitive?.id,
         name: 'transitive-package'
       }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('optional libc constraints (Batch 03)', () => {
+  it('excludes only optional packages that contradict a known libc', () => {
+    const optional = { optional: true, libc: ['musl'] };
+    const required = { optional: false, libc: ['musl'] };
+    const blocked = { optional: true, libc: ['!glibc'] };
+    const otherOS = { optional: true, os: ['darwin'] };
+    const otherCPU = { optional: true, cpu: ['arm64'] };
+
+    expect(isOmittedOnPlatform(optional, 'linux', 'x64', 'glibc')).toBe(true);
+    expect(isOmittedOnPlatform(optional, 'linux', 'x64', 'musl')).toBe(false);
+    expect(isOmittedOnPlatform(optional, 'linux', 'x64', 'unknown')).toBe(false);
+    expect(isOmittedOnPlatform(optional, 'darwin', 'arm64', 'glibc')).toBe(false);
+    expect(isOmittedOnPlatform(required, 'linux', 'x64', 'glibc')).toBe(false);
+    expect(isOmittedOnPlatform(blocked, 'linux', 'x64', 'glibc')).toBe(true);
+    expect(isOmittedOnPlatform(blocked, 'linux', 'x64', 'musl')).toBe(false);
+    expect(isOmittedOnPlatform(otherOS, 'linux', 'x64', 'unknown')).toBe(true);
+    expect(isOmittedOnPlatform(otherCPU, 'linux', 'x64', 'unknown')).toBe(true);
+  });
+
+  it('preserves libc constraints from package-lock.json', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-libc-'));
+    try {
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': {
+              name: 'fixture',
+              version: '1.0.0',
+              optionalDependencies: { native: '1.0.0' }
+            },
+            'node_modules/native': {
+              version: '1.0.0',
+              optional: true,
+              os: ['linux'],
+              libc: ['musl']
+            }
+          }
+        })
+      );
+      const native = (await readNpmDependencyInventory(root)).find(
+        (item) => item.name === 'native'
+      );
+      expect(native).toMatchObject({ optional: true, libc: ['musl'] });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

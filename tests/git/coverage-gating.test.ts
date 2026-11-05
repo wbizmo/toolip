@@ -94,7 +94,7 @@ describe('pre-commit fails closed on incomplete scans (issue #27)', () => {
     expect(result.blockedByIncompleteScan).toBe(true);
   });
 
-  it('can be explicitly opted out, but the result still says partial', async () => {
+  it('cannot opt eligible staged files out of fail-closed coverage', async () => {
     const root = makeRepo();
     write(root, 'ok.ts', CLEAN);
     write(root, 'big.json', oversized());
@@ -102,9 +102,17 @@ describe('pre-commit fails closed on incomplete scans (issue #27)', () => {
 
     const result = await runPreCommit(root, { failOnIncomplete: false });
 
-    expect(result.passed).toBe(true);
+    expect(result.passed).toBe(false);
     expect(result.coverage.state).toBe('partial');
-    expect(result.blockedByIncompleteScan).toBe(false);
+    expect(result.blockedByIncompleteScan).toBe(true);
+
+    // Explicit full scans retain the opt-out for partial coverage.
+    const full = await runPreCommit(root, {
+      full: true,
+      failOnIncomplete: false
+    });
+    expect(full.coverage.state).toBe('partial');
+    expect(full.passed).toBe(true);
 
     // …but nothing-scanned cannot be opted out of.
     const nothing = makeRepo();
@@ -156,6 +164,31 @@ describe('pre-commit fails closed on incomplete scans (issue #27)', () => {
     expect(result.passed).toBe(false);
     expect(result.summary.blocking).toBeGreaterThan(0);
     expect(result.blockedByIncompleteScan).toBe(false);
+  });
+
+  it('returns the incomplete code over a blocking-finding code', async () => {
+    const root = makeRepo();
+    write(root, 'leak.ts', fakeSecretLine('mixed'));
+    write(root, 'big.json', oversized());
+    git(root, 'add', '-A');
+
+    const result = await runPreCommit(root);
+    expect(result.summary.blocking).toBeGreaterThan(0);
+    expect(result.coverage.state).toBe('partial');
+    expect(
+      (await cli(registerPreCommitCommand, 'pre-commit', '--path', root)).code
+    ).toBe(EXIT_CODES.incomplete);
+    expect(
+      (
+        await cli(
+          registerPreCommitCommand,
+          'pre-commit',
+          '--path',
+          root,
+          '--no-fail-on-incomplete'
+        )
+      ).code
+    ).toBe(EXIT_CODES.incomplete);
   });
 
   it('exposes distinct exit codes on the CLI: 4 nothing scanned, 3 partial, 1 findings, 0 complete', async () => {
@@ -215,7 +248,7 @@ describe('pre-commit fails closed on incomplete scans (issue #27)', () => {
       partial,
       '--no-fail-on-incomplete'
     );
-    expect(optOut.code).toBe(0);
+    expect(optOut.code).toBe(EXIT_CODES.incomplete);
     expect(optOut.out).toContain('PARTIAL');
   });
 

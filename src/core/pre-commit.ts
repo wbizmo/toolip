@@ -25,7 +25,8 @@ export type PreCommitOptions = {
   failOn?: FailOn;
   /**
    * Fail closed when eligible inputs were not analyzed (oversized, unreadable,
-   * binary, cancelled). Default true: a partial scan is not an all-clear.
+   * binary, cancelled). Staged scans always enforce this; only explicit
+   * full-repository scans may opt out of partial coverage.
    */
   failOnIncomplete?: boolean;
 };
@@ -187,7 +188,8 @@ function summarize(
   const blockingFindings = gatedFindings(findings, threshold);
   const critical = findings.filter((f) => f.severity === 'critical').length;
   const high = findings.filter((f) => f.severity === 'high').length;
-  const failOnIncomplete = options.failOnIncomplete ?? true;
+  const failOnIncomplete =
+    scope === 'staged' || (options.failOnIncomplete ?? true);
   // The opt-out tolerates SOME unexamined files (partial). A scan in which no
   // eligible input could be examined (failed) always blocks: nothing was verified.
   const incompleteBlocks =
