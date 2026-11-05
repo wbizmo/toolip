@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { InstallScriptAnalyzer } from '../../src/analyzers/install-scripts/install-script-analyzer.js';
+import { isOmittedOnPlatform } from '../../src/core/dependencies/inventory.js';
 
 describe('InstallScriptAnalyzer', () => {
   it('detects suspicious lifecycle-script behavior', async () => {
@@ -143,6 +144,16 @@ describe('InstallScriptAnalyzer', () => {
 });
 
 describe('InstallScriptAnalyzer optional dependency coverage', () => {
+  it('excludes incompatible libc only when its identity is known', () => {
+    const pkg = { optional: true, libc: ['musl'] };
+    const known = isOmittedOnPlatform(pkg, 'linux', 'x64', 'glibc');
+    const matching = isOmittedOnPlatform(pkg, 'linux', 'x64', 'musl');
+    const unknown = isOmittedOnPlatform(pkg, 'linux', 'x64', 'unknown');
+    expect(known).toBe(true);
+    expect(matching).toBe(false);
+    expect(unknown).toBe(false);
+  });
+
   async function lockfileProject(
     entry: Record<string, unknown>
   ): Promise<string> {

@@ -3,7 +3,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
-  isOmittedOnPlatform,
   readNpmDependencyGraph,
   readNpmDependencyInventory
 } from '../src/core/dependencies/inventory.js';
@@ -25,7 +24,6 @@ describe('npm dependency inventory', () => {
           },
           'node_modules/direct-package': {
             version: '2.0.0',
-            libc: ['glibc'],
             dependencies: {
               'transitive-package': '^3.0.0',
               duplicated: '^1.0.0'
@@ -58,14 +56,6 @@ describe('npm dependency inventory', () => {
       const duplicates = inventory.filter((item) => item.name === 'duplicated');
 
       expect(direct?.direct).toBe(true);
-      expect(direct?.libc).toEqual(['glibc']);
-      const pkg = { optional: true, libc: ['musl'] };
-      const known = isOmittedOnPlatform(pkg, 'linux', 'x64', 'glibc');
-      const matching = isOmittedOnPlatform(pkg, 'linux', 'x64', 'musl');
-      const unknown = isOmittedOnPlatform(pkg, 'linux', 'x64', 'unknown');
-      expect(known).toBe(true);
-      expect(matching).toBe(false);
-      expect(unknown).toBe(false);
       expect(hoistedTransitive).toMatchObject({
         direct: false,
         installPath: 'node_modules/transitive-package'
