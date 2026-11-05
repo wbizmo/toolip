@@ -8,8 +8,11 @@ export type DependencyIdentity = {
   version: string;
   direct: boolean;
   development: boolean;
-  /** Only reachable through optionalDependencies; npm may legitimately omit it on this platform. */
+  /** Only reachable through optionalDependencies. */
   optional?: boolean;
+  /** Lockfile `os` / `cpu` constraints (npm allow-list with `!` block entries). */
+  os?: string[];
+  cpu?: string[];
   source: 'package-lock';
   installPath: string;
 };
@@ -34,6 +37,8 @@ type PackageLockEntry = {
   version?: string;
   dev?: boolean;
   optional?: boolean;
+  os?: string[];
+  cpu?: string[];
   link?: boolean;
   resolved?: string;
   dependencies?: Record<string, string>;
@@ -173,6 +178,8 @@ export async function readNpmDependencyGraph(
       direct: false,
       development: Boolean(entry.dev),
       optional: entry.optional === true ? true : undefined,
+      os: Array.isArray(entry.os) ? entry.os.map(String) : undefined,
+      cpu: Array.isArray(entry.cpu) ? entry.cpu.map(String) : undefined,
       source: 'package-lock',
       installPath
     });
@@ -240,4 +247,27 @@ export async function readNpmDependencyInventory(
   root: string
 ): Promise<DependencyIdentity[]> {
   return (await readNpmDependencyGraph(root)).packages;
+}
+
+function allowedBy(constraint: string[] | undefined, current: string): boolean {
+  if (!constraint || constraint.length === 0) return true;
+  if (constraint.includes(`!${current}`)) return false;
+  const allow = constraint.filter((entry) => !entry.startsWith('!'));
+  return allow.length === 0 || allow.includes(current);
+}
+
+/**
+ * True only when the lockfile proves npm omits this optional package on the
+ * given platform (declared `os`/`cpu` exclude it). An optional package with no
+ * such proof is NOT assumed to be legitimately absent.
+ */
+export function isOmittedOnPlatform(
+  dependency: Pick<DependencyIdentity, 'optional' | 'os' | 'cpu'>,
+  platform: string = process.platform,
+  arch: string = process.arch
+): boolean {
+  if (!dependency.optional) return false;
+  return (
+    !allowedBy(dependency.os, platform) || !allowedBy(dependency.cpu, arch)
+  );
 }

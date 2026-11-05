@@ -143,7 +143,9 @@ describe('InstallScriptAnalyzer', () => {
 });
 
 describe('InstallScriptAnalyzer optional dependency coverage', () => {
-  async function lockfileProject(optional: boolean): Promise<string> {
+  async function lockfileProject(
+    entry: Record<string, unknown>
+  ): Promise<string> {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-optional-'));
     await mkdir(path.join(root, 'node_modules', 'present'), {
       recursive: true
@@ -162,46 +164,68 @@ describe('InstallScriptAnalyzer optional dependency coverage', () => {
             name: 'fixture',
             version: '1.0.0',
             dependencies: { present: '1.0.0' },
-            optionalDependencies: { 'native-other-os': '1.0.0' }
+            optionalDependencies: { 'native-pkg': '1.0.0' }
           },
           'node_modules/present': { version: '1.0.0' },
-          'node_modules/native-other-os': {
-            version: '1.0.0',
-            ...(optional ? { optional: true } : {})
-          }
+          'node_modules/native-pkg': { version: '1.0.0', ...entry }
         }
       })
     );
     return root;
   }
 
-  it('excludes an uninstalled optional dependency instead of reporting partial', async () => {
-    const root = await lockfileProject(true);
+  async function coverageFor(entry: Record<string, unknown>) {
+    const root = await lockfileProject(entry);
     try {
-      const result = await new InstallScriptAnalyzer().analyze({ root });
-      expect(result.coverage).toMatchObject({
-        state: 'complete',
-        eligible: 1,
-        scanned: 1,
-        skipped: 0,
-        excluded: 1
-      });
+      return (await new InstallScriptAnalyzer().analyze({ root })).coverage;
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  }
+
+  it('excludes an uninstalled optional dependency whose os constraint rules out this platform', async () => {
+    expect(
+      await coverageFor({ optional: true, os: ['definitely-not-an-os'] })
+    ).toMatchObject({
+      state: 'complete',
+      eligible: 1,
+      scanned: 1,
+      skipped: 0,
+      excluded: 1
+    });
+  });
+
+  it('excludes when the cpu constraint rules out this architecture, and honours ! block entries', async () => {
+    expect(
+      await coverageFor({ optional: true, cpu: ['definitely-not-a-cpu'] })
+    ).toMatchObject({ state: 'complete', excluded: 1 });
+    expect(
+      await coverageFor({ optional: true, os: [`!${process.platform}`] })
+    ).toMatchObject({ state: 'complete', excluded: 1 });
+  });
+
+  it('does NOT exclude an optional package that applies to this platform but is missing', async () => {
+    expect(
+      await coverageFor({
+        optional: true,
+        os: [process.platform],
+        cpu: [process.arch]
+      })
+    ).toMatchObject({ state: 'partial', eligible: 2, skipped: 1 });
+  });
+
+  it('does NOT exclude an optional package with no platform constraints (failed install is not proof)', async () => {
+    expect(await coverageFor({ optional: true })).toMatchObject({
+      state: 'partial',
+      skipped: 1
+    });
   });
 
   it('still reports a required but uninstalled dependency as skipped', async () => {
-    const root = await lockfileProject(false);
-    try {
-      const result = await new InstallScriptAnalyzer().analyze({ root });
-      expect(result.coverage).toMatchObject({
-        state: 'partial',
-        eligible: 2,
-        skipped: 1
-      });
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
+    expect(await coverageFor({})).toMatchObject({
+      state: 'partial',
+      eligible: 2,
+      skipped: 1
+    });
   });
 });

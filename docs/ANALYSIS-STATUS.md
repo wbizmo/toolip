@@ -30,6 +30,10 @@ A timeout in a single JavaScript thread cannot interrupt synchronous CPU work. A
 
 `scorecard` and dependency scans share a budget: overall deadline, `AbortSignal`, per-request timeout and a concurrency cap. Transient failures (429/5xx/network) retry a bounded number of times honouring `Retry-After` with jitter. Malformed registry responses fail closed. Unmeasured dependencies make the dependency dimension "unmeasured" and the run `partial`, never a healthy score.
 
+## Optional dependencies
+
+`install-scripts` counts an uninstalled optional package as `excluded` only when the lockfile's `os`/`cpu` constraints prove npm omits it on the current platform. An optional package without such proof, or whose manifest cannot be accessed, is `skipped` and makes the run `partial`.
+
 ## Complexity
 
 Let F be eligible files, B bytes, D dependencies, A analyzers, C concurrency.

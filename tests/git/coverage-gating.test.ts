@@ -140,10 +140,9 @@ describe('pre-commit fails closed on incomplete scans (issue #27)', () => {
     const none = await runPreCommit(root, { failOn: 'none' });
 
     expect(none.passed).toBe(true);
-    expect(strict.passed).toBe(base.passed ? strict.passed : false);
-    expect(strict.summary.blocking).toBeGreaterThanOrEqual(
-      base.summary.blocking
-    );
+    expect(base.passed).toBe(true);
+    expect(strict.passed).toBe(false);
+    expect(strict.summary.blocking).toBeGreaterThan(base.summary.blocking);
   });
 
   it('keeps blocking on real findings and reports them rather than the incomplete reason', async () => {

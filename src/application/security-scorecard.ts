@@ -124,11 +124,15 @@ export async function buildSecurityScorecard(
         .slice(0, 3)
         .map((failure) => `${failure.name}@${failure.version}`)
         .join(', ');
+      const osvNote =
+        vulnerabilityExecution && vulnerabilityExecution.status !== 'ok'
+          ? `; vulnerability analysis ${vulnerabilityExecution.status}: ${vulnerabilityExecution.error ?? 'did not complete successfully'}`
+          : '';
       dependencyDimension = unmeasuredDimension(
         dependencyCoverage.state === 'failed' || !timedOut
           ? 'failed'
           : 'timed_out',
-        `${dependencyCoverage.reason ?? 'registry lookups did not complete'}${sample ? ` (for example ${sample})` : ''}`
+        `${dependencyCoverage.reason ?? 'registry lookups did not complete'}${sample ? ` (for example ${sample})` : ''}${osvNote}`
       );
       warnings.push(
         ...failures

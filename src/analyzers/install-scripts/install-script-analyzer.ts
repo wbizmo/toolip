@@ -7,7 +7,10 @@ import type {
 } from '../../contracts/analyzer.js';
 import type { Finding, FindingSeverity } from '../../contracts/finding.js';
 import { coverageOf } from '../../contracts/analysis.js';
-import { readNpmDependencyInventory } from '../../core/dependencies/inventory.js';
+import {
+  isOmittedOnPlatform,
+  readNpmDependencyInventory
+} from '../../core/dependencies/inventory.js';
 
 const lifecycleNames = ['preinstall', 'install', 'postinstall'] as const;
 
@@ -82,12 +85,16 @@ const signals: SuspiciousSignal[] = [
   }
 ];
 
-async function exists(filePath: string): Promise<boolean> {
+type ManifestPresence = 'present' | 'missing' | 'inaccessible';
+
+/** Distinguishes a genuinely absent manifest from one we could not access. */
+async function presence(filePath: string): Promise<ManifestPresence> {
   try {
     await access(filePath);
-    return true;
-  } catch {
-    return false;
+    return 'present';
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'inaccessible';
   }
 }
 
@@ -120,13 +127,16 @@ export class InstallScriptAnalyzer implements Analyzer {
         'package.json'
       );
 
-      if (!(await exists(manifestPath))) {
-        if (dependency.optional) {
+      const manifestState = await presence(manifestPath);
+      if (manifestState !== 'present') {
+        // Excluded only when the lockfile proves npm omits it on this platform;
+        // inaccessible or unproven-optional manifests stay unexamined.
+        if (manifestState === 'missing' && isOmittedOnPlatform(dependency)) {
           excludedOptional += 1;
           continue;
         }
         notInspected.push(
-          `${dependency.name}@${dependency.version} (not installed)`
+          `${dependency.name}@${dependency.version} (${manifestState === 'missing' ? 'not installed' : 'manifest not accessible'})`
         );
         continue;
       }

@@ -194,6 +194,50 @@ describe('buildSecurityScorecard', () => {
     }
   });
 
+  it('names a failed OSV run in the reason when registry coverage is also partial', async () => {
+    const root = await fixture();
+    try {
+      const result = await buildSecurityScorecard(root, {
+        dependencyScan: async () => ({
+          packages: [packageHealth],
+          findings: [],
+          summary: cleanSummary,
+          failures: [
+            {
+              name: 'left',
+              version: '1.0.0',
+              kind: 'failed',
+              message: 'registry down'
+            }
+          ],
+          coverage: {
+            state: 'partial',
+            reason: '1 of 1 lookups failed',
+            eligible: 1,
+            scanned: 0,
+            skipped: 0,
+            failed: 1
+          }
+        }),
+        doctor: cleanDoctor as never,
+        gitAudit: cleanGit as never,
+        vulnerabilityAnalyzer: {
+          id: 'v',
+          version: '1',
+          analyze: async () => {
+            throw new Error('OSV unavailable');
+          }
+        }
+      });
+      expect(
+        result.score.dimensions.dependencyHealth.reason ??
+          JSON.stringify(result.analysis)
+      ).toContain('OSV unavailable');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('marks hygiene dimensions unavailable when eligible files were skipped', async () => {
     const root = await fixture();
     const analyzer: Analyzer = {
