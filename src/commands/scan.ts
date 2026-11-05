@@ -53,7 +53,7 @@ export function registerScanCommand(program: Command): void {
           command: 'scan',
           root: context.root,
           findings: scorecard.findings,
-          analysis: scorecard.analysis
+          analysis: { ...scorecard.analysis, coverage: scorecard.coverage }
         });
 
         if (scorecard.dependencySummary) {
@@ -85,6 +85,12 @@ export function registerScanCommand(program: Command): void {
         for (const reason of scorecard.analysis.reasons) {
           console.log(`  ${chalk.yellow('!')} ${reason}`);
         }
+        const coverage = scorecard.coverage;
+        console.log(
+          `${chalk.dim('Coverage:')} ${coverage.scanned}/${coverage.eligible} scanned, ` +
+            `${coverage.skipped} skipped, ${coverage.failed} failed, ` +
+            `${coverage.excluded ?? 0} excluded`
+        );
         if (scorecard.analysis.state !== 'complete') {
           console.log(
             chalk.yellow(

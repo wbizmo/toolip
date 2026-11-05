@@ -1,4 +1,4 @@
-import type { AnalysisState } from '../contracts/analysis.js';
+import type { AnalysisCoverage, AnalysisState } from '../contracts/analysis.js';
 import type { Finding, FindingSeverity } from '../contracts/finding.js';
 
 export type SerializedFinding = {
@@ -37,6 +37,8 @@ export type ToolipReport = {
   analysis?: {
     state: AnalysisState;
     reasons: string[];
+    /** Canonical totals for enumerated dependency and file inputs. */
+    coverage?: AnalysisCoverage;
   };
 };
 

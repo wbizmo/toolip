@@ -53,8 +53,12 @@ ${finding.message}
       ? `No findings were reported, but the analysis was **${report.analysis.state.toUpperCase()}**, so this is not an all-clear.`
       : 'No findings were detected.';
 
+  const coverage = report.analysis?.coverage;
+  const coverageSection = coverage
+    ? `\n- Eligible: ${coverage.eligible}\n- Scanned: ${coverage.scanned}\n- Skipped: ${coverage.skipped}\n- Failed: ${coverage.failed}\n- Excluded: ${coverage.excluded ?? 0}`
+    : '';
   const analysisSection = report.analysis
-    ? `\n## Analysis\n\n- State: **${report.analysis.state.toUpperCase()}**${report.analysis.reasons.map((reason) => `\n- ${reason}`).join('')}\n`
+    ? `\n## Analysis\n\n- State: **${report.analysis.state.toUpperCase()}**${report.analysis.reasons.map((reason) => `\n- ${reason}`).join('')}${coverageSection}\n`
     : '';
 
   return `# Toolip Report

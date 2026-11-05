@@ -8,6 +8,8 @@ import type { Analyzer, AnalyzerResult } from '../../src/contracts/analyzer.js';
 import { coverageOf } from '../../src/contracts/analysis.js';
 import type { Finding } from '../../src/contracts/finding.js';
 import { registerAstScanCommand } from '../../src/commands/ast-scan.js';
+import { AstSecurityAnalyzer } from '../../src/analyzers/ast/ast-security-analyzer.js';
+import { ReachabilityAnalyzer } from '../../src/analyzers/reachability/reachability-analyzer.js';
 import { registerInstallScriptsCommand } from '../../src/commands/install-scripts.js';
 import { registerReachabilityCommand } from '../../src/commands/reachability.js';
 import { registerVulnerabilitiesCommand } from '../../src/commands/vulnerabilities.js';
@@ -312,5 +314,40 @@ describe('real analyzers report honest coverage', () => {
     const { code, out } = await run(registerAstScanCommand, 'ast-scan', {});
     expect(code).toBe(EXIT_CODES.ok);
     expect(out).toMatch(/No supported dangerous-code patterns/);
+  });
+});
+
+describe('cancelled file coverage', () => {
+  it('counts remaining eligible files after cancellation', async () => {
+    writeFileSync(
+      path.join(dir, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: { '': { name: 'fixture', version: '1.0.0' } }
+      })
+    );
+    writeFileSync(path.join(dir, 'first.ts'), 'export const first = 1;');
+    writeFileSync(path.join(dir, 'second.ts'), 'export const second = 2;');
+    const controller = new AbortController();
+    controller.abort();
+    const results = await Promise.all([
+      new AstSecurityAnalyzer().analyze({
+        root: dir,
+        signal: controller.signal
+      }),
+      new ReachabilityAnalyzer().analyze({
+        root: dir,
+        signal: controller.signal
+      })
+    ]);
+    for (const result of results) {
+      expect(result.coverage).toMatchObject({
+        state: 'failed',
+        eligible: 2,
+        scanned: 0,
+        skipped: 2,
+        failed: 0
+      });
+    }
   });
 });

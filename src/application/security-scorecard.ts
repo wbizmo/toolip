@@ -1,4 +1,8 @@
-import type { AnalysisState } from '../contracts/analysis.js';
+import {
+  coverageOf,
+  type AnalysisCoverage,
+  type AnalysisState
+} from '../contracts/analysis.js';
 import type { Analyzer } from '../contracts/analyzer.js';
 import type { Finding } from '../contracts/finding.js';
 import { OsvVulnerabilityAnalyzer } from '../analyzers/vulnerability/osv-analyzer.js';
@@ -40,6 +44,8 @@ export type SecurityScorecardOptions = {
 export type SecurityScorecardResult = {
   /** Overall completeness: any unmeasured dimension makes the run partial or failed. */
   analysis: { state: AnalysisState; reasons: string[] };
+  /** Summed dependency and file coverage; other dimensions use analysis reasons. */
+  coverage: AnalysisCoverage;
   score: ToolipScore;
   dependencyHealth?: DependencyHealthBreakdown;
   dependencySummary?: DependencyScanResult['summary'];
@@ -217,10 +223,16 @@ export async function buildSecurityScorecard(
     );
   } else {
     findings.push(...gitOutcome.value.findings);
-    gitDimension = measuredDimension(
-      calculateFindingHealth(gitOutcome.value.findings),
-      gitOutcome.value.findings.length
-    );
+    gitDimension =
+      gitOutcome.value.summary.ignoreStatus === 'unknown'
+        ? unmeasuredDimension(
+            'unavailable',
+            'Git ignore and tracked-file status could not be observed.'
+          )
+        : measuredDimension(
+            calculateFindingHealth(gitOutcome.value.findings),
+            gitOutcome.value.findings.length
+          );
   }
 
   const score = calculateScore({
@@ -249,8 +261,48 @@ export async function buildSecurityScorecard(
     )
   };
 
+  // Only scanners that enumerate inputs contribute numerical coverage.
+  // OSV and Git availability are represented by analysis reasons.
+  const sources: AnalysisCoverage[] = [];
+  if (dependencyOutcome.status === 'fulfilled' && dependencyOutcome.value.coverage) {
+    sources.push(dependencyOutcome.value.coverage);
+  }
+  if (doctorOutcome.status === 'fulfilled') {
+    const doctorResult = doctorOutcome.value;
+    const summary = doctorResult.summary;
+    sources.push(
+      doctorResult.coverage ??
+        coverageOf({
+          eligible: summary.filesEligible,
+          scanned: summary.filesScanned,
+          skipped: Math.max(0, summary.filesSkipped - summary.readFailures),
+          failed: summary.readFailures,
+          excluded: Math.max(0, summary.filesDiscovered - summary.filesEligible)
+        })
+    );
+  }
+
+  const totals = sources.reduce(
+    (sum, part) => ({
+      eligible: sum.eligible + part.eligible,
+      scanned: sum.scanned + part.scanned,
+      skipped: sum.skipped + part.skipped,
+      failed: sum.failed + part.failed,
+      excluded: sum.excluded + (part.excluded ?? 0)
+    }),
+    { eligible: 0, scanned: 0, skipped: 0, failed: 0, excluded: 0 }
+  );
+  const coverage: AnalysisCoverage = {
+    state: analysis.state,
+    ...totals,
+    ...(analysis.state === 'complete'
+      ? {}
+      : { reason: analysis.reasons.join('; ') })
+  };
+
   return {
     analysis,
+    coverage,
     score,
     dependencyHealth,
     dependencySummary,

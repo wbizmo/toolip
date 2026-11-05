@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 import type { Analyzer } from '../../src/contracts/analyzer.js';
 import type { Finding } from '../../src/contracts/finding.js';
 import { buildSecurityScorecard } from '../../src/application/security-scorecard.js';
+import { createReport } from '../../src/core/report.js';
+import { renderMarkdownReport } from '../../src/core/report-writer.js';
 
 const cleanSummary = {
   totalDependencies: 1,
@@ -283,4 +285,136 @@ describe('buildSecurityScorecard', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+  it('marks unknown Git observations unmeasured', async () => {
+    const root = await fixture();
+    const gitFinding = { ...vulnerability(), id: 'git-unknown' };
+    try {
+      const result = await buildSecurityScorecard(root, {
+        dependencyScan: async () => ({
+          packages: [packageHealth],
+          findings: [],
+          summary: cleanSummary,
+          failures: [],
+          coverage: {
+            state: 'complete',
+            eligible: 1,
+            scanned: 1,
+            skipped: 0,
+            failed: 0
+          }
+        }),
+        doctor: cleanDoctor as never,
+        gitAudit: (async () => ({
+          findings: [gitFinding],
+          summary: {
+            ...(await cleanGit()).summary,
+            ignoreStatus: 'unknown',
+            trackedSensitiveFiles: 0
+          }
+        })) as never,
+        vulnerabilityAnalyzer: {
+          id: 'clean-vulns',
+          version: '1',
+          analyze: async () => ({
+            analyzer: 'clean-vulns',
+            durationMs: 0,
+            findings: []
+          })
+        }
+      });
+      expect(result.analysis.state).toBe('partial');
+      expect(result.score.dimensions.gitSafety.status).toBe('unavailable');
+      expect(result.findings.map((finding) => finding.id)).toContain(
+        'git-unknown'
+      );
+      expect(result.coverage).toMatchObject({
+        state: 'partial',
+        eligible: 2,
+        scanned: 2,
+        skipped: 0,
+        failed: 0
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('round-trips coverage through scorecard and reports', async () => {
+    const root = await fixture();
+    try {
+      const result = await buildSecurityScorecard(root, {
+        dependencyScan: async () => ({
+          packages: [packageHealth],
+          findings: [],
+          summary: cleanSummary,
+          failures: [],
+          coverage: {
+            state: 'partial',
+            eligible: 3,
+            scanned: 2,
+            skipped: 1,
+            failed: 0
+          }
+        }),
+        doctor: (async () => {
+          const doctor = await cleanDoctor();
+          return {
+            ...doctor,
+            summary: {
+              ...doctor.summary,
+              filesDiscovered: 2,
+              filesEligible: 2,
+              filesScanned: 1,
+              filesSkipped: 1
+            },
+            coverage: {
+              state: 'partial',
+              eligible: 2,
+              scanned: 1,
+              skipped: 1,
+              failed: 0
+            }
+          };
+        }) as never,
+        gitAudit: cleanGit as never,
+        vulnerabilityAnalyzer: {
+          id: 'clean-vulns',
+          version: '1',
+          analyze: async () => ({
+            analyzer: 'clean-vulns',
+            durationMs: 0,
+            findings: []
+          })
+        }
+      });
+      const totals = {
+        state: 'partial',
+        eligible: 5,
+        scanned: 3,
+        skipped: 2,
+        failed: 0,
+        excluded: 0
+      };
+      expect(result.coverage).toMatchObject(totals);
+      const report = createReport({
+        version: '2.2.1',
+        command: 'scan',
+        root,
+        findings: result.findings,
+        analysis: { ...result.analysis, coverage: result.coverage }
+      });
+      expect(JSON.parse(JSON.stringify(report)).analysis.coverage).toMatchObject(
+        totals
+      );
+      const markdown = renderMarkdownReport(report);
+      expect(markdown).toContain('- Eligible: 5');
+      expect(markdown).toContain('- Scanned: 3');
+      expect(markdown).toContain('- Skipped: 2');
+      expect(markdown).toContain('- Failed: 0');
+      expect(markdown).toContain('- Excluded: 0');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
 });

@@ -50,13 +50,16 @@ export class ReachabilityAnalyzer implements Analyzer {
       }
 
       eligible += 1;
+      if (cancelled) {
+        warnings.push(`${file.relativePath}: skipped (cancelled)`);
+        continue;
+      }
       const read = await reader.read(file.absolutePath, context.signal);
 
       if (read.status !== 'ok') {
         warnings.push(`${file.relativePath}: skipped (${read.status})`);
         if (read.status === 'cancelled') {
           cancelled = true;
-          break;
         }
         continue;
       }
