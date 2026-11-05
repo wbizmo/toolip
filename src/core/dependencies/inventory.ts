@@ -266,7 +266,10 @@ type RuntimeLibc = 'glibc' | 'musl' | 'unknown';
 function detectRuntimeLibc(): RuntimeLibc {
   if (process.platform !== 'linux') return 'unknown';
   try {
-    if (process.report.getReport().header.glibcVersionRuntime) return 'glibc';
+    const report = process.report.getReport() as {
+      header?: { glibcVersionRuntime?: string };
+    };
+    if (report.header?.glibcVersionRuntime) return 'glibc';
   } catch {
     // Runtime reports are not available on all Node distributions.
   }
