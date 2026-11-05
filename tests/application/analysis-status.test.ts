@@ -153,5 +153,22 @@ describe('analysis status model (issues #27, #35)', () => {
       expect(isFailOn('urgent')).toBe(false);
       expect(isFailOn(undefined)).toBe(false);
     });
+
+    // CodeRabbit: `in` accepted inherited names, silently disabling the gate.
+    it.each([
+      'constructor',
+      'toString',
+      'valueOf',
+      '__proto__',
+      'hasOwnProperty'
+    ])('rejects inherited property name %s', (value) => {
+      expect(isFailOn(value)).toBe(false);
+    });
+
+    it('keeps accepting every real severity', () => {
+      for (const level of ['critical', 'high', 'medium', 'low', 'info']) {
+        expect(isFailOn(level)).toBe(true);
+      }
+    });
   });
 });

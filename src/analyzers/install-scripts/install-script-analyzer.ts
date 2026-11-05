@@ -105,6 +105,9 @@ export class InstallScriptAnalyzer implements Analyzer {
     // Lifecycle scripts can only be inspected for packages present on disk.
     // Anything else is unexamined, not clean.
     const notInspected: string[] = [];
+    // Optional packages npm legitimately omits (platform-specific) are out of
+    // scope, not skipped: counting them would fail healthy projects.
+    let excludedOptional = 0;
 
     for (const dependency of dependencies) {
       if (context.signal?.aborted) {
@@ -118,6 +121,10 @@ export class InstallScriptAnalyzer implements Analyzer {
       );
 
       if (!(await exists(manifestPath))) {
+        if (dependency.optional) {
+          excludedOptional += 1;
+          continue;
+        }
         notInspected.push(
           `${dependency.name}@${dependency.version} (not installed)`
         );
@@ -196,10 +203,11 @@ export class InstallScriptAnalyzer implements Analyzer {
       durationMs: Math.round(performance.now() - startedAt),
       findings,
       coverage: coverageOf({
-        eligible: dependencies.length,
+        eligible: dependencies.length - excludedOptional,
         scanned: packagesInspected,
         skipped: notInspected.length,
-        failed: 0
+        failed: 0,
+        excluded: excludedOptional
       }),
       warnings:
         notInspected.length > 0

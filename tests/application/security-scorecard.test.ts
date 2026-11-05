@@ -142,6 +142,58 @@ describe('buildSecurityScorecard', () => {
     }
   });
 
+  it('keeps completed OSV findings when registry coverage is partial', async () => {
+    const root = await fixture();
+    const analyzer: Analyzer = {
+      id: 'test-vulns',
+      version: '1',
+      analyze: async () => ({
+        analyzer: 'test-vulns',
+        durationMs: 0,
+        findings: [vulnerability()],
+        warnings: ['osv note']
+      })
+    };
+
+    try {
+      const result = await buildSecurityScorecard(root, {
+        dependencyScan: async () => ({
+          packages: [packageHealth],
+          findings: [],
+          summary: cleanSummary,
+          failures: [
+            {
+              name: 'left',
+              version: '1.0.0',
+              kind: 'timed_out',
+              message: 'registry timeout'
+            }
+          ],
+          coverage: {
+            state: 'partial',
+            reason: '1 of 1 lookups failed',
+            eligible: 1,
+            scanned: 0,
+            skipped: 0,
+            failed: 1
+          }
+        }),
+        doctor: cleanDoctor as never,
+        gitAudit: cleanGit as never,
+        vulnerabilityAnalyzer: analyzer
+      });
+
+      expect(result.score.dimensions.dependencyHealth.status).not.toBe(
+        'measured'
+      );
+      expect(result.findings.map((f) => f.id)).toContain(vulnerability().id);
+      expect(result.warnings).toContain('osv note');
+      expect(result.warnings.filter((w) => w === 'osv note')).toHaveLength(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('marks hygiene dimensions unavailable when eligible files were skipped', async () => {
     const root = await fixture();
     const analyzer: Analyzer = {

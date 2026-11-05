@@ -187,17 +187,25 @@ export class AnalyzerRunner {
     let timeout: NodeJS.Timeout | undefined;
     let cancel: (() => void) | undefined;
 
-    const worker = new Worker(entry, {
-      workerData: {
-        module: isolation.module,
-        exportName: isolation.exportName,
-        context: { root: context.root, options: context.options }
-      },
-      execArgv,
-      resourceLimits: { maxOldGenerationSizeMb: this.workerMaxOldGenerationMb },
-      stdout: false,
-      stderr: false
-    });
+    let worker: Worker;
+    try {
+      worker = new Worker(entry, {
+        workerData: {
+          module: isolation.module,
+          exportName: isolation.exportName,
+          context: { root: context.root, options: context.options }
+        },
+        execArgv,
+        resourceLimits: {
+          maxOldGenerationSizeMb: this.workerMaxOldGenerationMb
+        },
+        stdout: false,
+        stderr: false
+      });
+    } catch (error) {
+      // e.g. DataCloneError for non-cloneable options: a failed outcome, not a rejected run().
+      return { outcome: { kind: 'failed', error }, unresponsive: false };
+    }
 
     const outcome = await new Promise<Outcome>((resolve) => {
       worker.once(

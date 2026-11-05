@@ -147,6 +147,29 @@ describe('AnalyzerRunner deadline enforcement (issue #34)', () => {
     expect(results[3]?.metadata).toMatchObject({ answer: 42, root: dir });
   }, 30_000);
 
+  it('reports a worker that cannot be constructed as failed without rejecting run() or losing siblings', async () => {
+    const dir = tmp();
+    const results = await new AnalyzerRunner({ concurrency: 2 }).run(
+      [new EchoAnalyzer(), new EchoAnalyzer()],
+      // Functions are not structured-cloneable: `new Worker` throws synchronously.
+      { root: dir, options: { bad: () => undefined } }
+    );
+    expect(results.map((r) => r.status)).toEqual(['failed', 'failed']);
+
+    const sibling = await new AnalyzerRunner().run(
+      [
+        inProcess('ok', async () => ({
+          analyzer: 'ok',
+          durationMs: 0,
+          findings: []
+        })),
+        new EchoAnalyzer()
+      ],
+      { root: dir, options: { bad: () => undefined } }
+    );
+    expect(sibling.map((r) => r.status)).toEqual(['ok', 'failed']);
+  }, 30_000);
+
   it('flags a non-cooperative in-process analyzer as unresponsive instead of pretending it stopped', async () => {
     let stillRunning = true;
     const stubborn = inProcess('stubborn', async () => {

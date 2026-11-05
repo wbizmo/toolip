@@ -26,7 +26,8 @@ const severityRank: Record<FindingSeverity, number> = {
 
 export function isFailOn(value: unknown): value is FailOn {
   return (
-    value === 'none' || (typeof value === 'string' && value in severityRank)
+    value === 'none' ||
+    (typeof value === 'string' && Object.hasOwn(severityRank, value))
   );
 }
 

@@ -108,6 +108,13 @@ export async function buildSecurityScorecard(
     findings.push(...dependencyOutcome.value.findings);
     const dependencyCoverage = dependencyOutcome.value.coverage;
 
+    // OSV runs independently of registry lookups: a completed run's findings
+    // and warnings must survive partial registry coverage.
+    if (vulnerabilityExecution?.status === 'ok') {
+      findings.push(...vulnerabilityExecution.findings);
+    }
+    warnings.push(...(vulnerabilityExecution?.warnings ?? []));
+
     if (dependencyCoverage && dependencyCoverage.state !== 'complete') {
       // Some registry lookups failed or timed out: dependency health is NOT
       // measured. Partial packages are never averaged into a healthy score.
@@ -142,9 +149,7 @@ export async function buildSecurityScorecard(
         vulnerabilityExecution.error ??
           'Vulnerability analysis did not complete successfully.'
       );
-      warnings.push(...(vulnerabilityExecution.warnings ?? []));
     } else {
-      findings.push(...vulnerabilityExecution.findings);
       dependencyHealth = calculateDependencyHealthFromPackages(
         dependencyOutcome.value.packages,
         vulnerabilityExecution.findings

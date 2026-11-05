@@ -8,6 +8,8 @@ export type DependencyIdentity = {
   version: string;
   direct: boolean;
   development: boolean;
+  /** Only reachable through optionalDependencies; npm may legitimately omit it on this platform. */
+  optional?: boolean;
   source: 'package-lock';
   installPath: string;
 };
@@ -17,7 +19,8 @@ export type DependencyEdge = {
   to: string;
   name: string;
   requirement: string;
-  section: 'dependency' | 'devDependency' | 'optionalDependency' | 'peerDependency';
+  section:
+    'dependency' | 'devDependency' | 'optionalDependency' | 'peerDependency';
 };
 
 export type NpmDependencyGraph = {
@@ -30,6 +33,7 @@ type PackageLockEntry = {
   name?: string;
   version?: string;
   dev?: boolean;
+  optional?: boolean;
   link?: boolean;
   resolved?: string;
   dependencies?: Record<string, string>;
@@ -121,10 +125,9 @@ function requirements(
   requirement: string;
   section: DependencyEdge['section'];
 }> {
-  const sections: Array<[
-    DependencyEdge['section'],
-    Record<string, string> | undefined
-  ]> = [
+  const sections: Array<
+    [DependencyEdge['section'], Record<string, string> | undefined]
+  > = [
     ['dependency', entry.dependencies],
     ['optionalDependency', entry.optionalDependencies],
     ['peerDependency', entry.peerDependencies]
@@ -150,7 +153,9 @@ export async function readNpmDependencyGraph(
   const lockfile = JSON.parse(raw) as PackageLockV2;
 
   if (!lockfile.packages) {
-    throw new Error('Toolip requires package-lock.json lockfileVersion 2 or newer.');
+    throw new Error(
+      'Toolip requires package-lock.json lockfileVersion 2 or newer.'
+    );
   }
 
   const identitiesByPath = new Map<string, DependencyIdentity>();
@@ -167,6 +172,7 @@ export async function readNpmDependencyGraph(
       version: entry.version,
       direct: false,
       development: Boolean(entry.dev),
+      optional: entry.optional === true ? true : undefined,
       source: 'package-lock',
       installPath
     });
@@ -177,9 +183,8 @@ export async function readNpmDependencyGraph(
   const seenEdges = new Set<string>();
 
   for (const [fromPath, entry] of Object.entries(lockfile.packages)) {
-    const fromIdentity = fromPath === ''
-      ? undefined
-      : identitiesByPath.get(fromPath);
+    const fromIdentity =
+      fromPath === '' ? undefined : identitiesByPath.get(fromPath);
 
     if (fromPath !== '' && !fromIdentity) continue;
 
