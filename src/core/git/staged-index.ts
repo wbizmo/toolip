@@ -149,11 +149,20 @@ export async function readBlobs(
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' }
     });
 
+    // Reject only after the child has exited so no `git cat-file` process
+    // outlives the call (a lingering child keeps its cwd locked on Windows).
+    let failure: ToolipError | undefined;
+    let exited = false;
     const fail = (message: string) => {
+      failure ??= new ToolipError(message, {
+        code: 'GIT_INDEX_READ_FAILED',
+        exitCode: 1
+      });
+      if (exited) {
+        reject(failure);
+        return;
+      }
       child.kill();
-      reject(
-        new ToolipError(message, { code: 'GIT_INDEX_READ_FAILED', exitCode: 1 })
-      );
     };
 
     let pending: Buffer = Buffer.alloc(0);
@@ -175,7 +184,11 @@ export async function readBlobs(
     child.stderr.on('data', (chunk: Buffer) => {
       if (stderr.length < 2000) stderr += chunk.toString('utf8');
     });
-    child.on('error', () => fail('Git is required but could not be started.'));
+    child.on('error', () => {
+      // 'close' may never fire when spawn itself failed.
+      exited = true;
+      fail('Git is required but could not be started.');
+    });
 
     child.stdout.on('data', (chunk: Buffer) => {
       pending = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
@@ -250,7 +263,12 @@ export async function readBlobs(
     });
 
     child.on('close', (code) => {
+      exited = true;
       signal?.removeEventListener('abort', onAbort);
+      if (failure) {
+        reject(failure);
+        return;
+      }
       if (code !== 0 || index !== unique.length || expect) {
         reject(
           new ToolipError(

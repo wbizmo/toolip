@@ -72,8 +72,16 @@ export function write(root: string, file: string, content: string): void {
 }
 
 export function cleanupRepos(): void {
-  for (const dir of cleanups.splice(0))
-    rmSync(dir, { recursive: true, force: true });
+  for (const dir of cleanups.splice(0)) {
+    // Windows can briefly hold the cwd of a just-exited Git process.
+    rmSync(dir, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100
+    });
+  }
+  emptyConfig = undefined;
 }
 
 /** A synthetic credential-shaped line assembled at runtime so no literal secret sits in the repo. */
