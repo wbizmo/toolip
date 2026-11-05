@@ -24,6 +24,25 @@ describe('profileProject', () => {
     }
   });
 
+  it('profiles a manifest larger than the source-file read limit', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-profile-large-'));
+    const description = 'x'.repeat(3 * 1024 * 1024);
+
+    try {
+      await writeFile(
+        path.join(root, 'package.json'),
+        JSON.stringify({ name: 'large-manifest', description })
+      );
+
+      const profile = await profileProject(root);
+
+      expect(profile.name).toBe('large-manifest');
+      expect(profile.description).toBe(description);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('detects TypeScript, Fastify, Prisma, scripts, metadata, and npm projects', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-profile-'));
 

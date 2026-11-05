@@ -5,6 +5,7 @@ import type {
 } from '../../contracts/analyzer.js';
 import type { Finding, FindingSeverity } from '../../contracts/finding.js';
 import { createScannerContext } from '../../core/scanner-context.js';
+import { bindSourceProvenance } from '../../core/source-provenance.js';
 import { TextFileReader } from '../../core/text-file-reader.js';
 
 type DockerRule = {
@@ -134,9 +135,10 @@ export class DockerfileAnalyzer implements Analyzer {
       dockerfiles += 1;
       const lines = read.content.split(/\r?\n/);
       const [rootRule, ...lineRules] = rules;
+      const fileFindings: Finding[] = [];
 
       if (rootRule?.test('', lines)) {
-        findings.push(
+        fileFindings.push(
           finding(
             rootRule,
             file.relativePath,
@@ -149,10 +151,13 @@ export class DockerfileAnalyzer implements Analyzer {
       for (const [index, line] of lines.entries()) {
         for (const rule of lineRules) {
           if (rule.test(line, lines)) {
-            findings.push(finding(rule, file.relativePath, index + 1, line));
+            fileFindings.push(
+              finding(rule, file.relativePath, index + 1, line)
+            );
           }
         }
       }
+      findings.push(...bindSourceProvenance(fileFindings, file, read));
     }
 
     return {

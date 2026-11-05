@@ -1,4 +1,9 @@
+import { createHash } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { AstSecurityAnalyzer } from '../../src/analyzers/ast/ast-security-analyzer.js';
 import { analyzeAstSource } from '../../src/analyzers/ast/source-analysis.js';
 
 describe('AST security source analysis', () => {
@@ -80,11 +85,32 @@ const generated = new Function('value', source);
 `
     );
 
-    expect(
-      findings.map((finding) => finding.ruleId)
-    ).toEqual([
+    expect(findings.map((finding) => finding.ruleId)).toEqual([
       'TLP-AST-001',
       'TLP-AST-002'
     ]);
+  });
+
+  it('binds AST findings to the verified source snapshot', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-ast-provenance-')
+    );
+    const content = 'eval(input);';
+
+    try {
+      await writeFile(path.join(root, 'app.ts'), content);
+      const result = await new AstSecurityAnalyzer().analyze({ root });
+      const finding = result.findings[0];
+
+      expect(finding?.metadata?.sourceProvenance).toMatchObject({
+        path: 'app.ts',
+        sha256: createHash('sha256').update(content).digest('hex'),
+        bytes: Buffer.byteLength(content),
+        discoverySnapshot: { size: Buffer.byteLength(content) },
+        readSnapshot: { size: Buffer.byteLength(content) }
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

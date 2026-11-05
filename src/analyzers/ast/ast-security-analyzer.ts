@@ -5,6 +5,7 @@ import type {
 } from '../../contracts/analyzer.js';
 import { coverageOf } from '../../contracts/analysis.js';
 import { createScannerContext } from '../../core/scanner-context.js';
+import { bindSourceProvenance } from '../../core/source-provenance.js';
 import { TextFileReader } from '../../core/text-file-reader.js';
 import { analyzeAstSource } from './source-analysis.js';
 
@@ -63,7 +64,13 @@ export class AstSecurityAnalyzer implements Analyzer {
         continue;
       }
 
-      findings.push(...analyzeAstSource(file.relativePath, read.content));
+      findings.push(
+        ...bindSourceProvenance(
+          analyzeAstSource(file.relativePath, read.content),
+          file,
+          read
+        )
+      );
 
       filesAnalyzed += 1;
     }

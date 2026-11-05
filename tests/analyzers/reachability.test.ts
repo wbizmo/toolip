@@ -1,8 +1,5 @@
-import {
-  mkdtemp,
-  rm,
-  writeFile
-} from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -10,9 +7,7 @@ import { ReachabilityAnalyzer } from '../../src/analyzers/reachability/reachabil
 
 describe('ReachabilityAnalyzer', () => {
   it('marks imported packages as reachable', async () => {
-    const root = await mkdtemp(
-      path.join(os.tmpdir(), 'toolip-reachability-')
-    );
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-reachability-'));
 
     try {
       await writeFile(
@@ -39,14 +34,12 @@ describe('ReachabilityAnalyzer', () => {
         })
       );
 
-      await writeFile(
-        path.join(root, 'server.ts'),
-        `
+      const source = `
 import express from 'express';
 
 const app = express();
-`
-      );
+`;
+      await writeFile(path.join(root, 'server.ts'), source);
 
       const result = await new ReachabilityAnalyzer().analyze({
         root
@@ -58,17 +51,25 @@ const app = express();
       }>;
 
       expect(
-        packages.find(
-          (item) => item.packageName === 'express'
-        )?.state
+        packages.find((item) => item.packageName === 'express')?.state
       ).toBe('reachable');
 
       expect(
-        packages.find(
-          (item) =>
-            item.packageName === 'unused-package'
-        )?.state
+        packages.find((item) => item.packageName === 'unused-package')?.state
       ).toBe('possibly-reachable');
+
+      const reachableFinding = result.findings.find(
+        (finding) => finding.ruleId === 'TLP-REACH-001'
+      );
+      expect(reachableFinding?.metadata?.sourceProvenance).toMatchObject([
+        {
+          path: 'server.ts',
+          sha256: createHash('sha256').update(source).digest('hex'),
+          bytes: Buffer.byteLength(source),
+          discoverySnapshot: { size: Buffer.byteLength(source) },
+          readSnapshot: { size: Buffer.byteLength(source) }
+        }
+      ]);
     } finally {
       await rm(root, {
         recursive: true,

@@ -19,7 +19,13 @@ export type FileSnapshot = {
 };
 
 export type TextFileReadResult =
-  | { status: 'ok'; content: string; bytes: number; sha256?: string }
+  | {
+      status: 'ok';
+      content: string;
+      bytes: number;
+      sha256?: string;
+      snapshot?: FileSnapshot;
+    }
   | {
       status:
         'oversized' | 'binary' | 'budget-exceeded' | 'cancelled' | 'changed';
@@ -134,15 +140,19 @@ export class TextFileReader {
         this.root === undefined
           ? undefined
           : await this.realpathFile(this.root);
+      if (signal?.aborted) return { status: 'cancelled', bytes: 0 };
       if (trustedRoot !== undefined) {
         const before = await this.realpathFile(absolutePath);
+        if (signal?.aborted) return { status: 'cancelled', bytes: 0 };
         if (!isWithin(trustedRoot, before))
           return { status: 'changed', bytes: 0 };
       }
 
       const noFollow = constants.O_NOFOLLOW ?? 0;
       handle = await this.openFile(absolutePath, constants.O_RDONLY | noFollow);
+      if (signal?.aborted) return { status: 'cancelled', bytes: 0 };
       const beforeStat = await handle.stat({ bigint: true });
+      if (signal?.aborted) return { status: 'cancelled', bytes: 0 };
       if (!beforeStat.isFile()) return { status: 'changed', bytes: 0 };
       const before = snapshotOf(beforeStat);
       if (expected && !sameSnapshot(expected, before)) {
@@ -176,18 +186,22 @@ export class TextFileReader {
         );
         if (bytesRead === 0) return { status: 'changed', bytes: offset };
         offset += bytesRead;
+        if (signal?.aborted) return { status: 'cancelled', bytes: offset };
       }
       if (signal?.aborted) return { status: 'cancelled', bytes: offset };
 
       const extra = Buffer.alloc(1);
       const grown = await handle.read(extra, 0, 1, before.size);
+      if (signal?.aborted) return { status: 'cancelled', bytes: offset };
       const afterStat = await handle.stat({ bigint: true });
+      if (signal?.aborted) return { status: 'cancelled', bytes: offset };
       const after = snapshotOf(afterStat);
       if (grown.bytesRead !== 0 || !sameSnapshot(before, after)) {
         return { status: 'changed', bytes: offset + grown.bytesRead };
       }
 
       const pathStat = await this.lstatFile(absolutePath, { bigint: true });
+      if (signal?.aborted) return { status: 'cancelled', bytes: offset };
       if (
         pathStat.isSymbolicLink() ||
         !sameSnapshot(before, snapshotOf(pathStat))
@@ -196,6 +210,7 @@ export class TextFileReader {
       }
       if (trustedRoot !== undefined) {
         const afterPath = await this.realpathFile(absolutePath);
+        if (signal?.aborted) return { status: 'cancelled', bytes: offset };
         if (!isWithin(trustedRoot, afterPath))
           return { status: 'changed', bytes: offset };
       }
@@ -209,7 +224,8 @@ export class TextFileReader {
         status: 'ok',
         content: buffer.toString('utf8'),
         bytes: offset,
-        sha256: createHash('sha256').update(buffer).digest('hex')
+        sha256: createHash('sha256').update(buffer).digest('hex'),
+        snapshot: before
       };
     } catch (error) {
       if (

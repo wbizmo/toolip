@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,15 +10,25 @@ describe('DockerfileAnalyzer', () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-'));
 
     try {
-      await writeFile(
-        path.join(root, 'Dockerfile'),
-        'FROM node:latest\nENV API_KEY=example\nCMD ["node","server.js"]\n'
-      );
+      const source =
+        'FROM node:latest\nENV API_KEY=example\nCMD ["node","server.js"]\n';
+      await writeFile(path.join(root, 'Dockerfile'), source);
 
       const result = await new DockerfileAnalyzer().analyze({ root });
 
-      expect(result.findings.some((finding) => finding.ruleId === 'TLP-DOCKER-001')).toBe(true);
-      expect(result.findings.some((finding) => finding.ruleId === 'TLP-DOCKER-002')).toBe(true);
+      expect(
+        result.findings.some((finding) => finding.ruleId === 'TLP-DOCKER-001')
+      ).toBe(true);
+      expect(
+        result.findings.some((finding) => finding.ruleId === 'TLP-DOCKER-002')
+      ).toBe(true);
+      expect(result.findings[0]?.metadata?.sourceProvenance).toMatchObject({
+        path: 'Dockerfile',
+        sha256: createHash('sha256').update(source).digest('hex'),
+        bytes: Buffer.byteLength(source),
+        discoverySnapshot: { size: Buffer.byteLength(source) },
+        readSnapshot: { size: Buffer.byteLength(source) }
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

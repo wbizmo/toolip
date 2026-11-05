@@ -10,6 +10,7 @@ import {
   type TextFileBudget,
   type TextFileReadResult
 } from './text-file-reader.js';
+import { bindSourceProvenance } from './source-provenance.js';
 import {
   configSecurityPatterns,
   secretPatterns,
@@ -124,14 +125,15 @@ export async function runSecurityDoctor(
     }
 
     filesScanned += 1;
-    findings.push(...scanSecretContent(file.relativePath, read.content));
+    const fileFindings = scanSecretContent(file.relativePath, read.content);
 
     if (codeExtensions.has(file.extension)) {
-      findings.push(
+      fileFindings.push(
         ...analyzeAstSource(file.relativePath, read.content),
         ...scanConfigurationContent(file.relativePath, read.content)
       );
     }
+    findings.push(...bindSourceProvenance(fileFindings, file, read));
   }
 
   findings.push(

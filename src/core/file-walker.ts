@@ -15,6 +15,7 @@ export type ProjectFile = {
 
 export type FileWalkOptions = {
   maxFiles?: number;
+  statTarget?: typeof statTarget;
 };
 
 const metadataConcurrency = 32;
@@ -27,6 +28,7 @@ export async function walkProjectFiles(
 ): Promise<ProjectFile[]> {
   const absoluteRoot = await realpath(path.resolve(root));
   const toolipIgnore = await loadToolipIgnore(absoluteRoot);
+  const resolveTargetStat = options.statTarget ?? statTarget;
 
   const entries = await fg(['**/*'], {
     cwd: absoluteRoot,
@@ -51,7 +53,7 @@ export async function walkProjectFiles(
         const stat = await lstat(absolutePath, { bigint: true });
         if (stat.isSymbolicLink()) {
           try {
-            if ((await statTarget(absolutePath)).isDirectory()) {
+            if ((await resolveTargetStat(absolutePath)).isDirectory()) {
               throw new ToolipError(
                 `Project discovery encountered a symbolic directory at ${entry}; traversal is incomplete.`,
                 { code: 'SCAN_DISCOVERY_INCOMPLETE' }
@@ -59,6 +61,14 @@ export async function walkProjectFiles(
             }
           } catch (error) {
             if (error instanceof ToolipError) throw error;
+            if (
+              error === null ||
+              typeof error !== 'object' ||
+              !('code' in error) ||
+              error.code !== 'ENOENT'
+            ) {
+              throw error;
+            }
             // A dangling or concurrently changed symbolic link is kept as a
             // file entry so its later descriptor read is reported incomplete.
           }

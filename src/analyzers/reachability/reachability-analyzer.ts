@@ -6,6 +6,7 @@ import type {
 import type { Finding } from '../../contracts/finding.js';
 import { coverageOf } from '../../contracts/analysis.js';
 import { createScannerContext } from '../../core/scanner-context.js';
+import { sourceProvenanceFor } from '../../core/source-provenance.js';
 import { TextFileReader } from '../../core/text-file-reader.js';
 import { readNpmDependencyInventory } from '../../core/dependencies/inventory.js';
 import { extractPackageImports, type ImportReference } from './import-graph.js';
@@ -40,6 +41,10 @@ export class ReachabilityAnalyzer implements Analyzer {
     let cancelled = false;
 
     const references = new Map<string, PackageReachability['references']>();
+    const sourceProvenance = new Map<
+      string,
+      ReturnType<typeof sourceProvenanceFor>
+    >();
 
     for (const file of scannerContext.files) {
       if (
@@ -69,6 +74,7 @@ export class ReachabilityAnalyzer implements Analyzer {
         continue;
       }
       scanned += 1;
+      sourceProvenance.set(file.relativePath, sourceProvenanceFor(file, read));
 
       for (const reference of extractPackageImports(
         file.relativePath,
@@ -130,7 +136,15 @@ export class ReachabilityAnalyzer implements Analyzer {
           state: item.state,
           direct: item.direct,
           development: item.development,
-          references: item.references
+          references: item.references,
+          sourceProvenance: [
+            ...new Set(item.references.map((reference) => reference.file))
+          ]
+            .sort((a, b) => a.localeCompare(b))
+            .flatMap((file) => {
+              const provenance = sourceProvenance.get(file);
+              return provenance ? [provenance] : [];
+            })
         }
       }));
 

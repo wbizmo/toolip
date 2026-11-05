@@ -1,6 +1,10 @@
 import {
   open as openFile,
+  mkdir,
   mkdtemp,
+  lstat,
+  realpath,
+  rename,
   rm,
   symlink,
   truncate,
@@ -137,13 +141,15 @@ describe('TextFileReader', () => {
       { maxFiles: 1, maxFileBytes: 4, maxTotalBytes: 4 },
       { root: path.dirname(file) }
     );
+    const expectedSnapshot = await snapshot(file);
     await expect(
-      reader.read(file, undefined, await snapshot(file))
+      reader.read(file, undefined, expectedSnapshot)
     ).resolves.toEqual({
       status: 'ok',
       content: '1234',
       bytes: 4,
-      sha256: createHash('sha256').update('1234').digest('hex')
+      sha256: createHash('sha256').update('1234').digest('hex'),
+      snapshot: expectedSnapshot
     });
     expect(reader.usage).toEqual({ filesRead: 1, bytesRead: 4 });
   });
@@ -175,6 +181,72 @@ describe('TextFileReader', () => {
       bytes: 6
     });
   });
+
+  it.each(['read', 'stat', 'lstat', 'realpath'] as const)(
+    'returns cancelled when post-read %s validation aborts, including empty files',
+    async (operation) => {
+      const file = await tempFile(`cancel-${operation}.txt`, '');
+      const root = path.dirname(file);
+      const controller = new AbortController();
+      let statCalls = 0;
+      let realpathCalls = 0;
+      const reader = new TextFileReader(undefined, {
+        root,
+        openFile: async (filePath, flags) => {
+          const handle = await openFile(filePath, flags);
+          return new Proxy(handle, {
+            get(target, property) {
+              if (property === 'read' && operation === 'read') {
+                return async (
+                  buffer: Buffer,
+                  offset: number,
+                  length: number,
+                  position: number
+                ) => {
+                  const result = await target.read(
+                    buffer,
+                    offset,
+                    length,
+                    position
+                  );
+                  controller.abort();
+                  return result;
+                };
+              }
+              if (property === 'stat' && operation === 'stat') {
+                return async (...args: Parameters<typeof target.stat>) => {
+                  const result = await target.stat(...args);
+                  statCalls += 1;
+                  if (statCalls === 2) controller.abort();
+                  return result;
+                };
+              }
+              const value = Reflect.get(target, property, target) as unknown;
+              return typeof value === 'function' ? value.bind(target) : value;
+            }
+          });
+        },
+        lstatFile: async (filePath, options) => {
+          const result = await lstat(filePath, options);
+          if (operation === 'lstat') controller.abort();
+          return result;
+        },
+        realpathFile: async (filePath) => {
+          const result = await realpath(filePath);
+          realpathCalls += 1;
+          if (operation === 'realpath' && realpathCalls === 3) {
+            controller.abort();
+          }
+          return result;
+        }
+      });
+
+      const result = await reader.read(file, controller.signal);
+
+      expect(result).toEqual({ status: 'cancelled', bytes: 0 });
+      expect(result).not.toHaveProperty('content');
+    }
+  );
 
   it('marks shrink, growth, and discovery identity changes incomplete', async () => {
     const shrunk = await tempFile('shrunk.txt', 'abcdef');
@@ -317,6 +389,110 @@ describe('TextFileReader', () => {
       ).resolves.toMatchObject({ status: 'changed' });
     }
   );
+
+  it.skipIf(process.platform === 'win32')(
+    'returns no content when concurrent reads race with an outside symlink swap',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-swap-'));
+      roots.push(root);
+      const outside = await tempFile('outside-race.txt', 'outside secret');
+      const file = path.join(root, 'input.txt');
+      await writeFile(file, 'inside text');
+      const expected = await snapshot(file);
+      let release!: () => void;
+      let openCount = 0;
+      let resolveBothOpened!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const bothOpened = new Promise<void>((resolve) => {
+        resolveBothOpened = resolve;
+      });
+      const reader = new TextFileReader(undefined, {
+        root,
+        openFile: async (filePath, flags) => {
+          const handle = await openFile(filePath, flags);
+          openCount += 1;
+          if (openCount === 2) resolveBothOpened();
+          await gate;
+          return handle;
+        }
+      });
+
+      const reads = [
+        reader.read(file, undefined, expected),
+        reader.read(file, undefined, expected)
+      ];
+      await bothOpened;
+      await rm(file);
+      await symlink(outside, file);
+      release();
+
+      const results = await Promise.all(reads);
+      for (const result of results) {
+        expect(result).toMatchObject({ status: 'changed' });
+        expect(result).not.toHaveProperty('content');
+      }
+    }
+  );
+
+  it('rejects a parent-directory rename to an outside symlink or junction', async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), 'toolip-rename-'));
+    roots.push(parent);
+    const root = path.join(parent, 'project');
+    const directory = path.join(root, 'linked');
+    const movedDirectory = path.join(parent, 'moved-outside');
+    await mkdir(directory, { recursive: true });
+    const file = path.join(directory, 'input.txt');
+    await writeFile(file, 'original content');
+    const expected = await snapshot(file);
+    let swapped = false;
+    const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+    const reader = new TextFileReader(undefined, {
+      root,
+      openFile: async (filePath, flags) => {
+        if (!swapped) {
+          swapped = true;
+          await rename(directory, movedDirectory);
+          await symlink(movedDirectory, directory, linkType);
+        }
+        return openFile(filePath, flags);
+      }
+    });
+
+    const result = await reader.read(file, undefined, expected);
+    expect(result).toMatchObject({ status: 'changed' });
+    expect(result).not.toHaveProperty('content');
+  });
+
+  it('normalizes paths before checking approved-root containment', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-normalize-'));
+    roots.push(root);
+    const nested = path.join(root, 'nested');
+    const inside = path.join(root, 'input.txt');
+    const outside = path.join(
+      path.dirname(root),
+      `${path.basename(root)}-outside.txt`
+    );
+    await mkdir(nested);
+    await writeFile(inside, 'inside');
+    await writeFile(outside, 'outside');
+    roots.push(outside);
+
+    const reader = new TextFileReader(undefined, { root });
+    await expect(
+      reader.read(
+        path.join(nested, '..', 'input.txt'),
+        undefined,
+        await snapshot(inside)
+      )
+    ).resolves.toMatchObject({ status: 'ok', content: 'inside' });
+    const outsideResult = await reader.read(
+      outside,
+      undefined,
+      await snapshot(outside)
+    );
+    expect(outsideResult).toMatchObject({ status: 'changed' });
+    expect(outsideResult).not.toHaveProperty('content');
+  });
 
   it.skipIf(process.platform === 'win32')(
     'fails discovery when a symbolic directory hides unscanned inputs',

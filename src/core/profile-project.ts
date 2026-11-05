@@ -8,6 +8,12 @@ import {
   type PackageManager
 } from './package-manager.js';
 
+const manifestBudget = {
+  maxFiles: 1,
+  maxFileBytes: 16 * 1024 * 1024,
+  maxTotalBytes: 16 * 1024 * 1024
+};
+
 export type ProjectProfile = {
   root: string;
   name: string;
@@ -84,7 +90,7 @@ async function readPackageJson(
       });
     }
   }
-  const result = await new TextFileReader(undefined, { root }).read(
+  const result = await new TextFileReader(manifestBudget, { root }).read(
     manifest.absolutePath,
     undefined,
     manifest.snapshot
