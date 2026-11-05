@@ -14,7 +14,10 @@ export function detectReportFormat(outputPath: string): ReportFormat {
   return 'json';
 }
 
-export async function writeReport(outputPath: string, report: ToolipReport): Promise<void> {
+export async function writeReport(
+  outputPath: string,
+  report: ToolipReport
+): Promise<void> {
   const format = detectReportFormat(outputPath);
 
   if (format === 'md') {
@@ -30,7 +33,9 @@ export function renderMarkdownReport(report: ToolipReport): string {
     ? report.findings
         .map((finding) => {
           const fileLine = finding.file ? `\n- File: \`${finding.file}\`` : '';
-          const evidenceLine = finding.evidence ? `\n- Evidence: \`${finding.evidence}\`` : '';
+          const evidenceLine = finding.evidence
+            ? `\n- Evidence: \`${finding.evidence}\``
+            : '';
 
           return `### ${finding.title}
 
@@ -44,7 +49,13 @@ ${finding.message}
 `;
         })
         .join('\n')
-    : 'No findings were detected.';
+    : report.analysis && report.analysis.state !== 'complete'
+      ? `No findings were reported, but the analysis was **${report.analysis.state.toUpperCase()}**, so this is not an all-clear.`
+      : 'No findings were detected.';
+
+  const analysisSection = report.analysis
+    ? `\n## Analysis\n\n- State: **${report.analysis.state.toUpperCase()}**${report.analysis.reasons.map((reason) => `\n- ${reason}`).join('')}\n`
+    : '';
 
   return `# Toolip Report
 
@@ -64,7 +75,7 @@ Command: \`${report.command}\`
 | Low | ${report.summary.low} |
 | Info | ${report.summary.info} |
 | Total | ${report.summary.totalFindings} |
-
+${analysisSection}
 ## Findings
 
 ${findings}

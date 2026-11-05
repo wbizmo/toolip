@@ -1,4 +1,5 @@
 import { mapConcurrent } from '../application/concurrency.js';
+import { coverageOf, type AnalysisCoverage } from '../contracts/analysis.js';
 import type { Finding } from '../contracts/finding.js';
 import { analyzePackage } from './analyze-package.js';
 import {
@@ -7,10 +8,28 @@ import {
 } from './dependencies/inventory.js';
 import type { DependencyInfo, PackageHealth } from './dependency-types.js';
 import { readDependencies } from './read-dependencies.js';
+import { ProviderError, type ScanBudget } from './scan-budget.js';
+
+export type DependencyLookupFailure = {
+  name: string;
+  version: string;
+  kind: 'timed_out' | 'cancelled' | 'unavailable' | 'failed';
+  message: string;
+};
+
+export type DependencyScanOptions = {
+  /** Deadline, cancellation and request limits shared by every registry call. */
+  budget?: ScanBudget;
+  /** Concurrency when no budget is supplied. Default 8. */
+  concurrency?: number;
+};
 
 export type DependencyScanResult = {
   packages: PackageHealth[];
   findings: Finding[];
+  /** Packages whose registry lookup did not complete. Never counted as healthy. */
+  failures: DependencyLookupFailure[];
+  coverage: AnalysisCoverage;
   summary: {
     totalDependencies: number;
     outdated: number;
@@ -71,23 +90,63 @@ async function readDependencyScanInputs(root: string): Promise<DependencyScanInp
   }
 }
 
-export async function scanDependencies(root: string): Promise<DependencyScanResult> {
+export async function scanDependencies(
+  root: string,
+  options: DependencyScanOptions = {}
+): Promise<DependencyScanResult> {
   const inputs = await readDependencyScanInputs(root);
+  const budget = options.budget;
 
   // Dependency-health facts and score penalties are package/version facts, so
   // npm lockfile projects analyze each exact resolved version once even if npm
   // installs it at more than one path. totalDependencies still reports the
   // complete resolved graph size.
-  const packages = await mapConcurrent(
+  //
+  // A failed or timed-out lookup is recorded and excluded; it is never treated
+  // as a healthy package, and the scan reports partial coverage.
+  const outcomes = await mapConcurrent(
     inputs.dependencies,
-    8,
-    (dependency) => analyzePackage(dependency)
+    budget?.maxConcurrentRequests ?? options.concurrency ?? 8,
+    async (
+      dependency
+    ): Promise<
+      | { ok: true; health: PackageHealth }
+      | { ok: false; failure: DependencyLookupFailure }
+    > => {
+      try {
+        return { ok: true, health: await analyzePackage(dependency, budget) };
+      } catch (error) {
+        const kind = error instanceof ProviderError ? error.kind : 'failed';
+        return {
+          ok: false,
+          failure: {
+            name: dependency.name,
+            version: dependency.version,
+            kind,
+            message: error instanceof Error ? error.message : String(error)
+          }
+        };
+      }
+    }
   );
+
+  const packages = outcomes.flatMap((outcome) => (outcome.ok ? [outcome.health] : []));
+  const failures = outcomes.flatMap((outcome) => (outcome.ok ? [] : [outcome.failure]));
   const findings = packages.flatMap(packageToFindings);
+  const cancelled = failures.some((failure) => failure.kind === 'cancelled');
+  const coverage = coverageOf({
+    eligible: inputs.dependencies.length,
+    scanned: packages.length,
+    skipped: failures.filter((f) => f.kind === 'timed_out' || f.kind === 'cancelled').length,
+    failed: failures.filter((f) => f.kind !== 'timed_out' && f.kind !== 'cancelled').length,
+    cancelled
+  });
 
   return {
     packages,
     findings,
+    failures,
+    coverage,
     summary: {
       totalDependencies: inputs.totalDependencies,
       outdated: packages.filter((pkg) => pkg.outdated).length,

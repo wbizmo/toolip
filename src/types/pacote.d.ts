@@ -7,8 +7,20 @@ declare module 'pacote' {
     time?: Record<string, string>;
   };
 
+  /** Subset of pacote/npm-registry-fetch options Toolip relies on. */
+  export type ManifestOptions = {
+    signal?: AbortSignal;
+    /** Per-request timeout in ms. */
+    timeout?: number;
+    /** Library-level retries; Toolip sets 0 and applies its own bounded policy. */
+    fetchRetries?: number;
+  };
+
   const pacote: {
-    manifest(packageName: string): Promise<PackageManifest>;
+    manifest(
+      packageName: string,
+      options?: ManifestOptions
+    ): Promise<PackageManifest>;
   };
 
   export default pacote;

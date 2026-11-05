@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,7 +25,9 @@ const requiredFiles = [
   'package/package.json',
   'package/README.md',
   'package/LICENSE',
-  'package/dist/src/index.js'
+  'package/dist/src/index.js',
+  // Worker entry for isolated analyzers (deadline-enforced AST analysis).
+  'package/dist/src/application/analyzer-worker.js'
 ];
 
 for (const requiredFile of requiredFiles) {
@@ -80,6 +82,30 @@ try {
     cwd: root,
     stdio: 'pipe'
   });
+
+  // The AST analyzer runs in a worker thread; prove the packed artifact can
+  // start it and reports a complete analysis (issue #34, #35).
+  const fixture = path.join(prefix, 'ast-fixture');
+  await mkdir(fixture, { recursive: true });
+  await writeFile(
+    path.join(fixture, 'package.json'),
+    JSON.stringify({ name: 'fixture', version: '1.0.0' })
+  );
+  await writeFile(path.join(fixture, 'ok.ts'), 'export const value = 1;\n');
+  const astOutput = JSON.parse(
+    execFileSync(binary, ['ast-scan', '--path', fixture, '--json'], {
+      cwd: root,
+      encoding: 'utf8'
+    })
+  );
+  if (
+    astOutput.analysis?.state !== 'complete' ||
+    astOutput.analysis?.scanned !== 1
+  ) {
+    throw new Error(
+      `Packed ast-scan did not complete in its worker: ${JSON.stringify(astOutput.analysis)}`
+    );
+  }
 
   // MCP stdio smoke test against the installed tarball (issue #50). The
   // .cmd shim on Windows needs a shell, so it is covered by the source-tree

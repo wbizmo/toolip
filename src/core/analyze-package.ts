@@ -1,5 +1,6 @@
 import semver from 'semver';
 import { fetchPackageManifest } from './npm-registry.js';
+import type { ScanBudget } from './scan-budget.js';
 import { calculateRiskScore } from './risk-score.js';
 import type { DependencyInfo, PackageHealth } from './dependency-types.js';
 
@@ -25,9 +26,10 @@ function isOutdated(installedVersion: string, latestVersion: string | null): boo
 }
 
 export async function analyzePackage(
-  dependency: DependencyInfo
+  dependency: DependencyInfo,
+  budget?: ScanBudget
 ): Promise<PackageHealth> {
-  const manifest = await fetchPackageManifest(dependency.name);
+  const manifest = await fetchPackageManifest(dependency.name, budget);
   const latestVersion = typeof manifest.version === 'string' ? manifest.version : null;
 
   const publishedDate =

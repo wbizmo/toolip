@@ -12,6 +12,7 @@ import type {
   Finding,
   FindingSeverity
 } from '../../contracts/finding.js';
+import { coverageOf } from '../../contracts/analysis.js';
 import { readNpmDependencyInventory } from '../../core/dependencies/inventory.js';
 
 const lifecycleNames = [
@@ -116,6 +117,9 @@ export class InstallScriptAnalyzer implements Analyzer {
     const findings: Finding[] = [];
     let packagesInspected = 0;
     let lifecycleScripts = 0;
+    // Lifecycle scripts can only be inspected for packages present on disk.
+    // Anything else is unexamined, not clean.
+    const notInspected: string[] = [];
 
     for (const dependency of dependencies) {
       if (context.signal?.aborted) {
@@ -131,6 +135,7 @@ export class InstallScriptAnalyzer implements Analyzer {
       );
 
       if (!(await exists(manifestPath))) {
+        notInspected.push(`${dependency.name}@${dependency.version} (not installed)`);
         continue;
       }
 
@@ -142,6 +147,9 @@ export class InstallScriptAnalyzer implements Analyzer {
         manifest.version &&
         manifest.version !== dependency.version
       ) {
+        notInspected.push(
+          `${dependency.name}@${dependency.version} (installed version ${manifest.version} differs)`
+        );
         continue;
       }
 
@@ -208,6 +216,18 @@ export class InstallScriptAnalyzer implements Analyzer {
         performance.now() - startedAt
       ),
       findings,
+      coverage: coverageOf({
+        eligible: dependencies.length,
+        scanned: packagesInspected,
+        skipped: notInspected.length,
+        failed: 0
+      }),
+      warnings:
+        notInspected.length > 0
+          ? [
+              `${notInspected.length} dependenc${notInspected.length === 1 ? 'y was' : 'ies were'} not inspected, for example: ${notInspected.slice(0, 5).join(', ')}. Install dependencies without running scripts (npm ci --ignore-scripts) to inspect them.`
+            ]
+          : undefined,
       metadata: {
         packagesInspected,
         lifecycleScripts,

@@ -12,6 +12,10 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 
 ### Fixed
 
+- `ast-scan`, `install-scripts`, `reachability` and `vulnerabilities` no longer print a clean-success message and exit 0 when the analyzer failed, timed out or skipped inputs; results carry a `complete|partial|failed` state with coverage, and exit codes 0/2/3/4 are documented (#35, #34). See `docs/ANALYSIS-STATUS.md`.
+- Analyzer timeouts are enforceable: the AST analyzer runs in a worker thread that is terminated on deadline or cancellation, and non-cooperative in-process analyzers are reported `unresponsive` (#27).
+- `doctor`, `scan` and `pre-commit` report scanned/skipped/failed coverage and fail closed when nothing could be scanned; `pre-commit` blocks partial scans unless `--no-fail-on-incomplete` (#34).
+- Registry lookups run under a scan budget (deadline, cancellation, request timeout, concurrency cap, bounded retry with `Retry-After`); malformed responses and unmeasured dependencies are never scored as healthy (#48).
 - `toolip diff` and the MCP `toolip_diff` tool no longer pass `${base}..${head}` to Git as one argument; a value such as `--output=/path` could create a file. Revisions are validated, resolved to commit IDs and rejected with typed errors when unsafe (#45). Ranges and expressions like `HEAD~1` are no longer accepted; use a commit ID.
 - `toolip pre-commit` now scans the staged blobs from the Git object database instead of working-tree files, so a clean worktree can no longer hide a staged secret and an unstaged secret no longer blocks a safe commit; Git read failures and unmerged entries fail closed (#26).
 - `toolip hook install` installs into Git's effective hooks directory (`core.hooksPath`, linked worktrees), places the block ahead of user logic, refuses non-shell hooks and never downloads packages (#41).

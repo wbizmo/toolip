@@ -1,4 +1,5 @@
 import { analyzeAstSource } from '../analyzers/ast/source-analysis.js';
+import { type AnalysisCoverage, coverageOf } from '../contracts/analysis.js';
 import type { Finding } from '../contracts/finding.js';
 import {
   createScannerContext,
@@ -24,6 +25,8 @@ import {
 
 export type SecurityDoctorResult = {
   findings: Finding[];
+  /** Canonical completeness: skipped or unreadable eligible files make a run partial. */
+  coverage: AnalysisCoverage;
   warnings?: string[];
   summary: {
     filesDiscovered: number;
@@ -86,10 +89,13 @@ export async function runSecurityDoctor(
   let readFailures = 0;
   let providerBytes = 0;
 
-  for (const file of context.files) {
-    if (!shouldScanSecrets(file.relativePath, file.extension)) continue;
+  const eligibleFiles = context.files.filter((file) =>
+    shouldScanSecrets(file.relativePath, file.extension)
+  );
+  filesEligible = eligibleFiles.length;
+  let cancelled = false;
 
-    filesEligible += 1;
+  for (const [index, file] of eligibleFiles.entries()) {
     const read = options.contentProvider
       ? await options.contentProvider(file)
       : await reader.read(file.absolutePath, options.signal);
@@ -106,7 +112,13 @@ export async function runSecurityDoctor(
         warnings.push(`${file.relativePath}: skipped (${read.status})`);
       }
 
-      if (read.status === 'cancelled') break;
+      if (read.status === 'cancelled') {
+        // Files after the cancellation point were never examined: count them
+        // so the run cannot look complete.
+        cancelled = true;
+        filesSkipped += eligibleFiles.length - index - 1;
+        break;
+      }
       continue;
     }
 
@@ -129,6 +141,14 @@ export async function runSecurityDoctor(
 
   return {
     findings,
+    coverage: coverageOf({
+      eligible: filesEligible,
+      scanned: filesScanned,
+      skipped: filesSkipped - readFailures,
+      failed: readFailures,
+      excluded: context.files.length - filesEligible,
+      cancelled
+    }),
     warnings: warnings.length > 0 ? warnings : undefined,
     summary: {
       filesDiscovered: context.files.length,

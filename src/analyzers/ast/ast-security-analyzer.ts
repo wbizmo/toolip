@@ -3,6 +3,7 @@ import type {
   AnalyzerContext,
   AnalyzerResult
 } from '../../contracts/analyzer.js';
+import { coverageOf } from '../../contracts/analysis.js';
 import { createScannerContext } from '../../core/scanner-context.js';
 import { TextFileReader } from '../../core/text-file-reader.js';
 import { analyzeAstSource } from './source-analysis.js';
@@ -30,6 +31,11 @@ function shouldAnalyze(
 export class AstSecurityAnalyzer implements Analyzer {
   readonly id = 'typescript-ast-security';
   readonly version = '1.0.0';
+  /** The TypeScript compiler is CPU-heavy; run it where the deadline is enforceable. */
+  readonly isolation = {
+    module: import.meta.url,
+    exportName: 'AstSecurityAnalyzer'
+  };
 
   async analyze(
     context: AnalyzerContext
@@ -42,6 +48,8 @@ export class AstSecurityAnalyzer implements Analyzer {
     const findings = [];
     const warnings: string[] = [];
     let filesAnalyzed = 0;
+    let eligible = 0;
+    let cancelled = false;
 
     for (const file of scannerContext.files) {
       if (
@@ -53,6 +61,7 @@ export class AstSecurityAnalyzer implements Analyzer {
         continue;
       }
 
+      eligible += 1;
       const read = await reader.read(
         file.absolutePath,
         context.signal
@@ -62,7 +71,10 @@ export class AstSecurityAnalyzer implements Analyzer {
         warnings.push(
           `${file.relativePath}: skipped (${read.status})`
         );
-        if (read.status === 'cancelled') break;
+        if (read.status === 'cancelled') {
+          cancelled = true;
+          break;
+        }
         continue;
       }
 
@@ -82,6 +94,13 @@ export class AstSecurityAnalyzer implements Analyzer {
         performance.now() - startedAt
       ),
       findings,
+      coverage: coverageOf({
+        eligible,
+        scanned: filesAnalyzed,
+        skipped: warnings.length,
+        failed: 0,
+        cancelled
+      }),
       warnings:
         warnings.length > 0 ? warnings : undefined,
       metadata: {

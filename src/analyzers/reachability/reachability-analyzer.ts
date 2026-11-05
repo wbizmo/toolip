@@ -4,6 +4,7 @@ import type {
   AnalyzerResult
 } from '../../contracts/analyzer.js';
 import type { Finding } from '../../contracts/finding.js';
+import { coverageOf } from '../../contracts/analysis.js';
 import { createScannerContext } from '../../core/scanner-context.js';
 import { TextFileReader } from '../../core/text-file-reader.js';
 import { readNpmDependencyInventory } from '../../core/dependencies/inventory.js';
@@ -50,6 +51,9 @@ export class ReachabilityAnalyzer implements Analyzer {
       await createScannerContext(context.root);
     const reader = new TextFileReader();
     const warnings: string[] = [];
+    let eligible = 0;
+    let scanned = 0;
+    let cancelled = false;
 
     const references = new Map<
       string,
@@ -65,6 +69,7 @@ export class ReachabilityAnalyzer implements Analyzer {
         continue;
       }
 
+      eligible += 1;
       const read = await reader.read(
         file.absolutePath,
         context.signal
@@ -74,9 +79,13 @@ export class ReachabilityAnalyzer implements Analyzer {
         warnings.push(
           `${file.relativePath}: skipped (${read.status})`
         );
-        if (read.status === 'cancelled') break;
+        if (read.status === 'cancelled') {
+          cancelled = true;
+          break;
+        }
         continue;
       }
+      scanned += 1;
 
       for (const reference of extractPackageImports(
         file.relativePath,
@@ -153,6 +162,13 @@ export class ReachabilityAnalyzer implements Analyzer {
         performance.now() - startedAt
       ),
       findings,
+      coverage: coverageOf({
+        eligible,
+        scanned,
+        skipped: warnings.length,
+        failed: 0,
+        cancelled
+      }),
       warnings: warnings.length > 0 ? warnings : undefined,
       metadata: {
         dependencies: packageStates.length,

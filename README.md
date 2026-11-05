@@ -387,6 +387,7 @@ node dist/src/index.js --help
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [Analysis status and exit codes](docs/ANALYSIS-STATUS.md)
 - [Engineering standards](docs/ENGINEERING.md)
 - [Vulnerability intelligence](docs/VULNERABILITY-INTELLIGENCE.md)
 - [AST security](docs/AST-SECURITY.md)
