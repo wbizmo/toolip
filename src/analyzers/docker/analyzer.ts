@@ -1,4 +1,8 @@
-import type { Analyzer, AnalyzerContext, AnalyzerResult } from '../../contracts/analyzer.js';
+import type {
+  Analyzer,
+  AnalyzerContext,
+  AnalyzerResult
+} from '../../contracts/analyzer.js';
 import type { Finding, FindingSeverity } from '../../contracts/finding.js';
 import { createScannerContext } from '../../core/scanner-context.js';
 import { TextFileReader } from '../../core/text-file-reader.js';
@@ -17,25 +21,34 @@ const rules: DockerRule[] = [
     id: 'TLP-DOCKER-001',
     title: 'Container may run as root',
     severity: 'high',
-    test: (_line, lines) => !lines.some((line) => /^USER\s+(?!root\b|0\b)/i.test(line.trim())),
+    test: (_line, lines) =>
+      !lines.some((line) => /^USER\s+(?!root\b|0\b)/i.test(line.trim())),
     message: 'No non-root USER instruction was found.',
-    remediation: 'Create and switch to a dedicated non-root user before the final command.'
+    remediation:
+      'Create and switch to a dedicated non-root user before the final command.'
   },
   {
     id: 'TLP-DOCKER-002',
     title: 'Secret-like value in Docker ARG or ENV',
     severity: 'critical',
-    test: (line) => /^(ARG|ENV)\s+.*(TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY)/i.test(line.trim()),
+    test: (line) =>
+      /^(ARG|ENV)\s+.*(TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY)/i.test(
+        line.trim()
+      ),
     message: 'A secret-like variable is declared through ARG or ENV.',
-    remediation: 'Use runtime secret injection or BuildKit secret mounts instead of image metadata.'
+    remediation:
+      'Use runtime secret injection or BuildKit secret mounts instead of image metadata.'
   },
   {
     id: 'TLP-DOCKER-003',
     title: 'Unpinned base image tag',
     severity: 'medium',
-    test: (line) => /^FROM\s+\S+(?::latest)?(?:\s|$)/i.test(line.trim()) && !/@sha256:/i.test(line),
+    test: (line) =>
+      /^FROM\s+\S+(?::latest)?(?:\s|$)/i.test(line.trim()) &&
+      !/@sha256:/i.test(line),
     message: 'The base image is not pinned by digest.',
-    remediation: 'Pin trusted base images by immutable digest and review updates deliberately.'
+    remediation:
+      'Pin trusted base images by immutable digest and review updates deliberately.'
   },
   {
     id: 'TLP-DOCKER-004',
@@ -43,13 +56,16 @@ const rules: DockerRule[] = [
     severity: 'high',
     test: (line) => /^ADD\s+https?:\/\//i.test(line.trim()),
     message: 'ADD downloads remote content during the image build.',
-    remediation: 'Download explicitly, verify checksums, and use COPY for local content.'
+    remediation:
+      'Download explicitly, verify checksums, and use COPY for local content.'
   },
   {
     id: 'TLP-DOCKER-005',
     title: 'Package installation without cleanup',
     severity: 'low',
-    test: (line) => /apt-get\s+install/i.test(line) && !/rm\s+-rf\s+\/var\/lib\/apt\/lists/i.test(line),
+    test: (line) =>
+      /apt-get\s+install/i.test(line) &&
+      !/rm\s+-rf\s+\/var\/lib\/apt\/lists/i.test(line),
     message: 'apt package metadata may remain in the image layer.',
     remediation: 'Combine installation and cleanup in the same RUN instruction.'
   }
@@ -75,10 +91,12 @@ function finding(
       line: lineNumber,
       column: 1
     },
-    evidence: [{
-      summary: summary.trim().slice(0, 200) || 'No non-root USER instruction',
-      fingerprint: `${relativePath}:${lineNumber}:${rule.id}`
-    }],
+    evidence: [
+      {
+        summary: summary.trim().slice(0, 200) || 'No non-root USER instruction',
+        fingerprint: `${relativePath}:${lineNumber}:${rule.id}`
+      }
+    ],
     remediation: {
       summary: rule.remediation
     }
@@ -117,16 +135,19 @@ export class DockerfileAnalyzer implements Analyzer {
 
       if (rootRule?.test('', lines)) {
         findings.push(
-          finding(rootRule, file.relativePath, 1, 'No non-root USER instruction')
+          finding(
+            rootRule,
+            file.relativePath,
+            1,
+            'No non-root USER instruction'
+          )
         );
       }
 
       for (const [index, line] of lines.entries()) {
         for (const rule of lineRules) {
           if (rule.test(line, lines)) {
-            findings.push(
-              finding(rule, file.relativePath, index + 1, line)
-            );
+            findings.push(finding(rule, file.relativePath, index + 1, line));
           }
         }
       }

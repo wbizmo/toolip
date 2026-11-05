@@ -1,9 +1,6 @@
 import { access } from 'node:fs/promises';
 import path from 'node:path';
-import {
-  walkProjectFiles,
-  type ProjectFile
-} from './file-walker.js';
+import { walkProjectFiles, type ProjectFile } from './file-walker.js';
 import { TextFileReader } from './text-file-reader.js';
 import { ToolipError } from '../errors/toolip-error.js';
 import {
@@ -55,16 +52,21 @@ async function readPackageJson(
     manifest.snapshot
   );
   if (result.status !== 'ok') {
-    throw new ToolipError('Project manifest changed or could not be read safely.', {
-      code: 'SCAN_DISCOVERY_INCOMPLETE'
-    });
+    throw new ToolipError(
+      'Project manifest changed or could not be read safely.',
+      {
+        code: 'SCAN_DISCOVERY_INCOMPLETE'
+      }
+    );
   }
   return JSON.parse(result.content) as Record<string, unknown>;
 }
 
 function dependencyNames(packageJson: Record<string, unknown>): string[] {
-  const dependencies = packageJson.dependencies as Record<string, string> | undefined;
-  const devDependencies = packageJson.devDependencies as Record<string, string> | undefined;
+  const dependencies = packageJson.dependencies as
+    Record<string, string> | undefined;
+  const devDependencies = packageJson.devDependencies as
+    Record<string, string> | undefined;
 
   return [
     ...Object.keys(dependencies ?? {}),
@@ -77,7 +79,9 @@ function packageScripts(packageJson: Record<string, unknown>): string[] {
   return Object.keys(scripts ?? {});
 }
 
-function summarizeLanguages(files: readonly ProjectFile[]): Record<string, number> {
+function summarizeLanguages(
+  files: readonly ProjectFile[]
+): Record<string, number> {
   const languageMap: Record<string, string> = {
     ts: 'TypeScript',
     tsx: 'TypeScript React',
@@ -107,7 +111,7 @@ export async function profileProject(
   discoveredFiles?: readonly ProjectFile[]
 ): Promise<ProjectProfile> {
   const absoluteRoot = path.resolve(root);
-  const files = discoveredFiles ?? await walkProjectFiles(absoluteRoot);
+  const files = discoveredFiles ?? (await walkProjectFiles(absoluteRoot));
   const packageJson = await readPackageJson(absoluteRoot, files);
   const deps = dependencyNames(packageJson);
   const scripts = packageScripts(packageJson);
@@ -116,21 +120,31 @@ export async function profileProject(
   const profile: ProjectProfile = {
     root: absoluteRoot,
     name: typeof packageJson.name === 'string' ? packageJson.name : 'unknown',
-    version: typeof packageJson.version === 'string' ? packageJson.version : 'unknown',
-    description: typeof packageJson.description === 'string' ? packageJson.description : '',
+    version:
+      typeof packageJson.version === 'string' ? packageJson.version : 'unknown',
+    description:
+      typeof packageJson.description === 'string'
+        ? packageJson.description
+        : '',
     packageManager,
-    hasTypeScript: deps.includes('typescript') || await fileExists(path.join(absoluteRoot, 'tsconfig.json')),
+    hasTypeScript:
+      deps.includes('typescript') ||
+      (await fileExists(path.join(absoluteRoot, 'tsconfig.json'))),
     hasJavaScript: files.some((file) => ['js', 'jsx'].includes(file.extension)),
     hasReact: deps.includes('react'),
     hasExpress: deps.includes('express'),
     hasFastify: deps.includes('fastify'),
     hasPrisma: deps.includes('prisma') || deps.includes('@prisma/client'),
-    hasDocker: await fileExists(path.join(absoluteRoot, 'Dockerfile')) || await fileExists(path.join(absoluteRoot, 'docker-compose.yml')),
+    hasDocker:
+      (await fileExists(path.join(absoluteRoot, 'Dockerfile'))) ||
+      (await fileExists(path.join(absoluteRoot, 'docker-compose.yml'))),
     hasVitest: deps.includes('vitest'),
     hasJest: deps.includes('jest'),
     hasESLint: deps.includes('eslint'),
     hasPrettier: deps.includes('prettier'),
-    hasGitHubActions: await fileExists(path.join(absoluteRoot, '.github', 'workflows')),
+    hasGitHubActions: await fileExists(
+      path.join(absoluteRoot, '.github', 'workflows')
+    ),
     detected: [],
     languages: summarizeLanguages(files),
     packageScripts: scripts
