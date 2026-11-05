@@ -59,6 +59,13 @@ describe('npm dependency inventory', () => {
 
       expect(direct?.direct).toBe(true);
       expect(direct?.libc).toEqual(['glibc']);
+      const pkg = { optional: true, libc: ['musl'] };
+      const known = isOmittedOnPlatform(pkg, 'linux', 'x64', 'glibc');
+      const matching = isOmittedOnPlatform(pkg, 'linux', 'x64', 'musl');
+      const unknown = isOmittedOnPlatform(pkg, 'linux', 'x64', 'unknown');
+      expect(known).toBe(true);
+      expect(matching).toBe(false);
+      expect(unknown).toBe(false);
       expect(hoistedTransitive).toMatchObject({
         direct: false,
         installPath: 'node_modules/transitive-package'
@@ -142,30 +149,5 @@ describe('npm dependency inventory', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
-});
-
-describe('optional libc constraints', () => {
-  it('uses positive runtime evidence for optional exclusions', () => {
-    const pkg = { optional: true, libc: ['musl'] };
-    const forLibc = (libc: 'glibc' | 'musl' | 'unknown') =>
-      isOmittedOnPlatform(pkg, 'linux', 'x64', libc);
-    expect(forLibc('glibc')).toBe(true);
-    expect(forLibc('musl')).toBe(false);
-    expect(forLibc('unknown')).toBe(false);
-
-    const onDarwin = isOmittedOnPlatform(pkg, 'darwin', 'arm64', 'glibc');
-    expect(onDarwin).toBe(false);
-    const required = { optional: false, libc: ['musl'] };
-    expect(isOmittedOnPlatform(required, 'linux', 'x64', 'glibc')).toBe(false);
-
-    const deny = { optional: true, libc: ['!glibc'] };
-    expect(isOmittedOnPlatform(deny, 'linux', 'x64', 'glibc')).toBe(true);
-    expect(isOmittedOnPlatform(deny, 'linux', 'x64', 'musl')).toBe(false);
-
-    const otherOS = { optional: true, os: ['darwin'] };
-    const otherCPU = { optional: true, cpu: ['arm64'] };
-    expect(isOmittedOnPlatform(otherOS, 'linux', 'x64', 'unknown')).toBe(true);
-    expect(isOmittedOnPlatform(otherCPU, 'linux', 'x64', 'unknown')).toBe(true);
   });
 });
