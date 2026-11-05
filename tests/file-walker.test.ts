@@ -9,7 +9,11 @@ import {
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { walkProjectFiles } from '../src/core/file-walker.js';
+import {
+  filterIgnoredEntries,
+  walkProjectFiles
+} from '../src/core/file-walker.js';
+import { loadToolipIgnore } from '../src/core/load-toolip-ignore.js';
 
 describe('walkProjectFiles', () => {
   it('walks files while respecting .toolipignore', async () => {
@@ -33,11 +37,19 @@ describe('walkProjectFiles', () => {
 
       const files = await walkProjectFiles(root);
       const relativePaths = files.map((file) => file.relativePath);
+      const toolipIgnore = await loadToolipIgnore(root);
 
       expect(relativePaths).toContain('.toolipignore');
       expect(relativePaths).toContain('src/index.ts');
       expect(relativePaths).not.toContain('dist/index.js');
       expect(relativePaths).not.toContain('secrets/local.txt');
+      expect(
+        filterIgnoredEntries(
+          ['src/index.ts', 'dist/index.js', 'secrets/local.txt'],
+          root,
+          toolipIgnore
+        )
+      ).toEqual(['src/index.ts']);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

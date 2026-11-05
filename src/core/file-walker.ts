@@ -3,7 +3,7 @@ import { lstat, realpath, stat as statTarget } from 'node:fs/promises';
 import fg from 'fast-glob';
 import { mapConcurrent } from '../application/concurrency.js';
 import { ToolipError } from '../errors/toolip-error.js';
-import { loadToolipIgnore } from './load-toolip-ignore.js';
+import { loadToolipIgnore, type ToolipIgnore } from './load-toolip-ignore.js';
 import { snapshotOf, type FileSnapshot } from './text-file-reader.js';
 
 export type ProjectFile = {
@@ -20,6 +20,17 @@ export type FileWalkOptions = {
 
 const metadataConcurrency = 32;
 const defaultMaxFiles = 50_000;
+
+/** Removes ordinary ignored paths before scheduling metadata inspection. */
+export function filterIgnoredEntries(
+  entries: string[],
+  root: string,
+  toolipIgnore: ToolipIgnore
+): string[] {
+  return entries.filter(
+    (entry) => !toolipIgnore.ignores(path.join(root, entry))
+  );
+}
 
 /** Discovers eligible project files with bounded, snapshot-aware metadata reads. */
 export async function walkProjectFiles(
@@ -40,15 +51,13 @@ export async function walkProjectFiles(
   });
 
   const maxFiles = options.maxFiles ?? defaultMaxFiles;
+  const candidates = filterIgnoredEntries(entries, absoluteRoot, toolipIgnore);
   const files = await mapConcurrent(
-    entries,
+    candidates,
     metadataConcurrency,
     async (entry) => {
       const absolutePath = path.join(absoluteRoot, entry);
       try {
-        // Skip ordinary file-pattern matches before metadata I/O. Directory-
-        // only rules are checked again after a symlink target is classified.
-        if (toolipIgnore.ignores(absolutePath)) return undefined;
         const stat = await lstat(absolutePath, { bigint: true });
         let isDirectory = stat.isDirectory();
         if (stat.isSymbolicLink()) {
