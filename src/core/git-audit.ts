@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process';
 import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { runGit } from './git/safe-git.js';
@@ -62,7 +61,7 @@ const envProbePaths = ['.env', '.env.local', '.env.production'];
 const pemProbePaths = ['server.pem', 'private.key'];
 
 type GitObservation =
-  | { available: false }
+  | { available: false; reason: string }
   | {
       available: true;
       /** path -> ignoring rule, or null when Git would NOT ignore it. */
@@ -126,13 +125,12 @@ export async function runGitAudit(
         'TOOLIP-GIT-STATUS-UNKNOWN',
         'Git ignore and tracked-file status unknown',
         'low',
-        'The scanned path is not inside a Git work tree (or Git is unavailable), so Toolip cannot observe whether sensitive files are ignored or already committed. Nothing is assumed to be protected.',
+        `Toolip could not observe Git state: ${observation.reason}. Whether sensitive files are ignored or already committed is unknown, and nothing is assumed to be protected.`,
         'Run the audit inside the repository work tree.'
       ),
       evidence: [
         {
-          summary:
-            'Observed: Git work tree not found. Status is unknown, not safe.'
+          summary: `Observed: ${observation.reason}. Status is unknown, not safe.`
         }
       ]
     });
@@ -268,7 +266,11 @@ async function observeGit(
     maxBuffer: 1024
   }).catch(() => undefined);
   if (inside?.code !== 0 || inside.stdout.toString('utf8').trim() !== 'true') {
-    return { available: false };
+    return {
+      available: false,
+      reason:
+        'the scanned path is not inside a Git work tree (or Git could not be run)'
+    };
   }
 
   const unique = [...new Set(probes)];
@@ -277,13 +279,28 @@ async function observeGit(
     { source: string; line: string; pattern: string } | null
   >();
 
-  const check = await spawnWithInput(
+  const check = await runGit(
     ['check-ignore', '--no-index', '-v', '-n', '-z', '--stdin'],
-    root,
-    `${unique.join('\0')}\0`
-  );
+    {
+      cwd: root,
+      timeoutMs: 15_000,
+      maxBuffer: 16 * 1024 * 1024,
+      input: `${unique.join('\0')}\0`
+    }
+  ).catch((error: unknown) => error as Error);
+  if (check instanceof Error) {
+    return {
+      available: false,
+      reason: `git check-ignore could not complete (${check.message})`
+    };
+  }
   // Exit 0 = something ignored, 1 = nothing ignored; both are valid answers.
-  if (check.code !== 0 && check.code !== 1) return { available: false };
+  if (check.code !== 0 && check.code !== 1) {
+    return {
+      available: false,
+      reason: `git check-ignore failed (exit ${check.code})`
+    };
+  }
   const fields = check.stdout.toString('utf8').split('\0');
   for (let i = 0; i + 3 < fields.length; i += 4) {
     const [source, line, pattern, pathname] = fields.slice(i, i + 4) as [
@@ -298,41 +315,25 @@ async function observeGit(
   const ls = await runGit(['ls-files', '-z', '--'], {
     cwd: root,
     maxBuffer: 64 * 1024 * 1024
-  });
-  if (ls.code !== 0) return { available: false };
+  }).catch((error: unknown) => error as Error);
+  if (ls instanceof Error) {
+    return {
+      available: false,
+      reason: `git ls-files could not complete (${ls.message})`
+    };
+  }
+  if (ls.code !== 0) {
+    return {
+      available: false,
+      reason: `git ls-files failed (exit ${ls.code})`
+    };
+  }
 
   return {
     available: true,
     ignored,
     tracked: ls.stdout.toString('utf8').split('\0').filter(Boolean)
   };
-}
-
-function spawnWithInput(
-  args: readonly string[],
-  cwd: string,
-  input: string
-): Promise<{ code: number; stdout: Buffer }> {
-  return new Promise((resolve) => {
-    const child = spawn('git', [...args], {
-      cwd,
-      stdio: ['pipe', 'pipe', 'ignore'],
-      windowsHide: true,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' }
-    });
-    const chunks: Buffer[] = [];
-    let size = 0;
-    child.stdout.on('data', (chunk: Buffer) => {
-      size += chunk.length;
-      if (size <= 16 * 1024 * 1024) chunks.push(chunk);
-    });
-    child.on('error', () => resolve({ code: 128, stdout: Buffer.alloc(0) }));
-    child.on('close', (code) =>
-      resolve({ code: code ?? 128, stdout: Buffer.concat(chunks) })
-    );
-    child.stdin.on('error', () => undefined);
-    child.stdin.end(input);
-  });
 }
 
 function gitFinding(

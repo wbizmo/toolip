@@ -104,7 +104,11 @@ export async function startMcpServer(
         };
       } catch (error) {
         // Typed, path-free errors for rejected or unresolvable revisions.
-        if (error instanceof ToolipError && error.code.startsWith('GIT_')) {
+        if (
+          error instanceof ToolipError &&
+          (error.code === 'GIT_REVISION_INVALID' ||
+            error.code === 'GIT_REVISION_NOT_FOUND')
+        ) {
           return {
             isError: true,
             content: [

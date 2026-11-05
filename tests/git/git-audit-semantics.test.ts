@@ -112,6 +112,9 @@ describe('git-audit uses Git behavior, not .gitignore text (issue #42)', () => {
     expect(result.summary.ignoreStatus).toBe('unknown');
     expect(result.summary.envIgnored).toBe(false);
     expect(has(result, 'STATUS-UNKNOWN')).toBe(true);
+    expect(
+      result.findings.find((f) => f.id.includes('STATUS-UNKNOWN'))?.message
+    ).toContain('not inside a Git work tree');
     expect(has(result, 'NOT-IGNORED')).toBe(false); // nothing guessed
     expect(has(result, 'TRACKED')).toBe(false);
   });

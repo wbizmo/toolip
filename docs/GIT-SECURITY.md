@@ -37,7 +37,7 @@ The hook never downloads anything. It uses the project-local `node_modules/.bin/
 - Ignore status comes from `git check-ignore --no-index -v` on representative paths (`.env`, `.env.local`, `.env.production`, `server.pem`, `private.key`) and on sensitive files actually present, so precedence, negation (`!.env`), comments, lookalike patterns and nested `.gitignore` files behave exactly as in Git.
 - **Tracked** sensitive files (`.env`, PEM, keys) are found with `git ls-files -z` and reported separately, because ignore rules do not protect files already in the index. Template files such as `.env.example`, `.env.sample` and `.env.template` are allowed.
 - Policy presence (a `.gitignore` exists), observed ignore status and tracked exposure are reported as separate facts, and findings carry an `Observed with git …` evidence line to separate them from heuristic advice.
-- Outside a Git work tree the status is **unknown**: Toolip emits `TOOLIP-GIT-STATUS-UNKNOWN` and does not guess that anything is protected or unprotected.
+- If Git state cannot be observed (not a work tree, or a Git command fails or times out) the status is **unknown** and the finding states the reason: Toolip emits `TOOLIP-GIT-STATUS-UNKNOWN` and does not guess that anything is protected or unprotected.
 
 ## Git revisions (`toolip diff`, MCP `toolip_diff`)
 
@@ -45,4 +45,4 @@ Revisions are validated, then resolved to commit object IDs with `git rev-parse 
 
 Before this change the range was one string, `${base}..${head}`, so a value such as `--output=/path` was parsed by Git as an option and created a file. Invalid or unknown revisions now return a typed error (`GIT_REVISION_INVALID`, `GIT_REVISION_NOT_FOUND`); over MCP these are structured `isError` results that contain no filesystem paths.
 
-Requires Git 2.24 or newer (`--end-of-options`); older Git fails closed.
+Requires Git 2.30 or newer (`git rev-parse --end-of-options`); older Git fails closed.

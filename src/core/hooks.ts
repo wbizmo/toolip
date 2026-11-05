@@ -163,8 +163,10 @@ function assertShellHook(existing: string): void {
   const interpreter = firstLine
     .replace(/^#!\s*/, '')
     .split(/\s+/)
-    .filter((part) => part !== 'env' && !part.startsWith('-'))
-    .map((part) => path.posix.basename(part))[0];
+    .map((part) => path.posix.basename(part))
+    .filter(
+      (part) => part !== '' && part !== 'env' && !part.startsWith('-')
+    )[0];
 
   if (!interpreter || !/^(?:ba|da|z|k|a)?sh$/.test(interpreter)) {
     throw new ToolipError(

@@ -187,10 +187,42 @@ describe('hook installation (issue #41)', () => {
     expect(result.warnings.join('\n')).toMatch(/lefthook/u);
   });
 
+  it('accepts env-style shell shebangs and keeps the original interpreter line', async () => {
+    const root = makeRepo();
+    const hook = path.join(root, '.git', 'hooks', 'pre-commit');
+    mkdirSync(path.dirname(hook), { recursive: true });
+    for (const shebang of [
+      '#!/usr/bin/env sh',
+      '#!/usr/bin/env bash',
+      '#!/usr/bin/env -S bash -e',
+      '#!/bin/bash',
+      '#!/bin/dash'
+    ]) {
+      writeFileSync(hook, `${shebang}\necho user\n`, { mode: 0o755 });
+      await installPreCommitHook(root);
+      const content = readFileSync(hook, 'utf8');
+      expect(content.startsWith(`${shebang}\n`)).toBe(true);
+      expect(count(content, BLOCK_START)).toBe(1);
+      expect(content).toContain('echo user');
+    }
+  });
+
   it('refuses to rewrite a non-shell hook and leaves it untouched', async () => {
     const root = makeRepo();
     const hook = path.join(root, '.git', 'hooks', 'pre-commit');
     mkdirSync(path.dirname(hook), { recursive: true });
+    for (const interpreter of [
+      '#!/usr/bin/env python3',
+      '#!/usr/bin/env node',
+      '#!/usr/bin/perl'
+    ]) {
+      const body = `${interpreter}\nprint("hi")\n`;
+      writeFileSync(hook, body, { mode: 0o755 });
+      await expect(installPreCommitHook(root)).rejects.toMatchObject({
+        code: 'HOOK_UNSUPPORTED_INTERPRETER'
+      });
+      expect(readFileSync(hook, 'utf8')).toBe(body);
+    }
     const original = '#!/usr/bin/env python3\nprint("hi")\n';
     writeFileSync(hook, original, { mode: 0o755 });
 

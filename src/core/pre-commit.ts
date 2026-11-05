@@ -10,7 +10,7 @@ import {
   createScannerContext,
   type ScannerContext
 } from './scanner-context.js';
-import { runSecurityDoctor } from './security-doctor.js';
+import { runSecurityDoctor, shouldScanSecrets } from './security-doctor.js';
 import {
   defaultTextFileBudget,
   type TextFileReadResult
@@ -68,7 +68,16 @@ export async function runPreCommit(
   );
   const blobs = await readBlobs(
     absoluteRoot,
-    entries.map((entry) => entry.oid),
+    // Only blobs the secret scan will open: assets and build output must not
+    // consume the byte/file budget and starve eligible files into warnings.
+    entries
+      .filter((entry) =>
+        shouldScanSecrets(
+          entry.path,
+          path.extname(entry.path).replace('.', '').toLowerCase()
+        )
+      )
+      .map((entry) => entry.oid),
     defaultTextFileBudget,
     options.signal
   );

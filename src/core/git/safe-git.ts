@@ -8,6 +8,8 @@ export type GitRunOptions = {
   /** Maximum captured stdout/stderr bytes. Default 16 MiB. */
   maxBuffer?: number;
   signal?: AbortSignal;
+  /** Written to stdin then closed (for `--stdin` style commands). */
+  input?: string;
 };
 
 export type GitResult = {
@@ -34,7 +36,7 @@ export function runGit(
   options: GitRunOptions
 ): Promise<GitResult> {
   return new Promise((resolve, reject) => {
-    execFile(
+    const child = execFile(
       'git',
       [...args],
       {
@@ -87,6 +89,8 @@ export function runGit(
         );
       }
     );
+    child.stdin?.on('error', () => undefined);
+    child.stdin?.end(options.input);
   });
 }
 

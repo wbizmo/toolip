@@ -149,7 +149,10 @@ function countCategory(findings: Finding[], category: string): number {
   return findings.filter((finding) => finding.category === category).length;
 }
 
-function shouldScanSecrets(relativePath: string, extension: string): boolean {
+export function shouldScanSecrets(
+  relativePath: string,
+  extension: string
+): boolean {
   if (relativePath.endsWith('.d.ts')) return false;
   if (relativePath.endsWith('.map')) return false;
   if (relativePath.startsWith('dist/')) return false;

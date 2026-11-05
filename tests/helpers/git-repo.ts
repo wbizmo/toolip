@@ -12,6 +12,18 @@ import path from 'node:path';
 const cleanups: string[] = [];
 
 /** Environment for Git subprocesses that is isolated from the developer's config. */
+let emptyConfig: string | undefined;
+/** An empty file used as the global/system config (os.devNull is unusable on Windows). */
+function emptyConfigFile(): string {
+  if (!emptyConfig) {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'toolip-gitcfg-'));
+    cleanups.push(dir);
+    emptyConfig = path.join(dir, 'empty.gitconfig');
+    writeFileSync(emptyConfig, '');
+  }
+  return emptyConfig;
+}
+
 export function gitEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, ...extra };
   for (const key of Object.keys(env)) {
@@ -21,8 +33,9 @@ export function gitEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     ...env,
     ...extra,
-    GIT_CONFIG_GLOBAL: os.devNull,
-    GIT_CONFIG_SYSTEM: os.devNull,
+    GIT_CONFIG_GLOBAL: emptyConfigFile(),
+    GIT_CONFIG_SYSTEM: emptyConfigFile(),
+    GIT_CONFIG_NOSYSTEM: '1',
     GIT_AUTHOR_NAME: 'Toolip Test',
     GIT_AUTHOR_EMAIL: 'toolip@example.test',
     GIT_COMMITTER_NAME: 'Toolip Test',

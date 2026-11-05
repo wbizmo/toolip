@@ -177,6 +177,28 @@ describe('pre-commit scans the staged blob, not the worktree (issue #26)', () =>
     });
   });
 
+  it('does not read blobs the secret scan would never open (assets, build output)', async () => {
+    const root = makeRepo();
+    write(root, 'logo.png', 'not really a png');
+    write(root, 'ok.ts', CLEAN);
+    git(root, 'add', '-A');
+    // If pre-commit read every staged blob, this missing asset would fail the
+    // whole run; reading only eligible blobs keeps assets out of the budget.
+    const oid = git(root, 'rev-parse', ':logo.png').trim();
+    const object = path.join(
+      root,
+      '.git',
+      'objects',
+      oid.slice(0, 2),
+      oid.slice(2)
+    );
+    chmodSync(object, 0o666);
+    rmSync(object, { force: true });
+
+    const result = await runPreCommit(root);
+    expect(result.passed).toBe(true);
+  });
+
   it('requires a Git work tree for staged mode', async () => {
     await expect(runPreCommit(tempDir())).rejects.toMatchObject({
       code: 'PRE_COMMIT_GIT_REQUIRED'
