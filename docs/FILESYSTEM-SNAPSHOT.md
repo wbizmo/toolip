@@ -1,0 +1,9 @@
+# Filesystem input consistency
+
+Toolip discovers project files without following symbolic links. A symbolic directory makes discovery incomplete because its children cannot be represented safely in the current traversal. A symbolic file is retained as an input candidate but its reader rejects an outside-root target or a final-component symlink. Discovery errors fail the scan rather than silently removing paths from the input set.
+
+Text reads enforce per-file, aggregate-byte and file-count budgets before allocating output buffers. The reader uses a zero-initialized buffer, loops over short reads, and checks for early EOF and growth past the observed file length. It compares device, inode, size, modification time and change time from discovery and from the open descriptor, then rechecks path identity and canonical containment after reading. A changed or cancelled read returns no content and releases its reserved byte budget. Successful reads include a SHA-256 of the exact bytes returned to analyzers.
+
+For `F` discovered paths and `B` bytes read, discovery and identity checks are O(F) metadata operations; sorting remains O(F log F). Reading and hashing is O(B) time and O(T) additional memory across concurrent reads, where `T` is the configured aggregate-byte budget; each individual buffer is bounded by the per-file limit. Traversal and content hashing do not build a separate project-wide source copy.
+
+The implementation reduces path races by comparing canonical paths and opened-file identity before and after each read. Portable Node.js APIs do not provide an equivalent race-free `openat`/directory-handle traversal on every supported OS; descriptor reads and post-read identity checks are therefore part of the guarantee, and concurrent mutation that is detected is reported as incomplete. These checks do not make arbitrary concurrent filesystem mutation impossible on every filesystem.

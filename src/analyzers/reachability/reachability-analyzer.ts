@@ -32,7 +32,7 @@ export class ReachabilityAnalyzer implements Analyzer {
     const startedAt = performance.now();
     const dependencies = await readNpmDependencyInventory(context.root);
     const scannerContext = await createScannerContext(context.root);
-    const reader = new TextFileReader();
+    const reader = new TextFileReader(undefined, { root: scannerContext.root });
     const warnings: string[] = [];
     let eligible = 0;
     let scanned = 0;
@@ -54,7 +54,11 @@ export class ReachabilityAnalyzer implements Analyzer {
         warnings.push(`${file.relativePath}: skipped (cancelled)`);
         continue;
       }
-      const read = await reader.read(file.absolutePath, context.signal);
+      const read = await reader.read(
+        file.absolutePath,
+        context.signal,
+        file.snapshot
+      );
 
       if (read.status !== 'ok') {
         warnings.push(`${file.relativePath}: skipped (${read.status})`);

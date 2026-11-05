@@ -1,4 +1,8 @@
+import { createHash } from 'node:crypto';
+import { constants } from 'node:fs';
 import { type FileHandle, open } from 'node:fs/promises';
+import { lstat, realpath } from 'node:fs/promises';
+import path from 'node:path';
 
 export type TextFileBudget = {
   maxFiles: number;
@@ -6,10 +10,19 @@ export type TextFileBudget = {
   maxTotalBytes: number;
 };
 
+export type FileSnapshot = {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+};
+
 export type TextFileReadResult =
-  | { status: 'ok'; content: string; bytes: number }
+  | { status: 'ok'; content: string; bytes: number; sha256?: string }
   | {
-      status: 'oversized' | 'binary' | 'budget-exceeded' | 'cancelled';
+      status:
+        'oversized' | 'binary' | 'budget-exceeded' | 'cancelled' | 'changed';
       bytes: number;
     }
   | { status: 'failed'; bytes: 0; error: string };
@@ -20,81 +33,189 @@ export const defaultTextFileBudget: TextFileBudget = {
   maxTotalBytes: 64 * 1024 * 1024
 };
 
+export type TextFileReaderOptions = {
+  root?: string;
+  openFile?: (filePath: string, flags: number) => Promise<FileHandle>;
+  realpathFile?: (filePath: string) => Promise<string>;
+  lstatFile?: (filePath: string) => Promise<Awaited<ReturnType<typeof lstat>>>;
+};
+
+function sameSnapshot(a: FileSnapshot, b: FileSnapshot): boolean {
+  return (
+    a.dev === b.dev &&
+    a.ino === b.ino &&
+    a.size === b.size &&
+    a.mtimeMs === b.mtimeMs &&
+    a.ctimeMs === b.ctimeMs
+  );
+}
+
+function snapshotOf(
+  stat: Awaited<ReturnType<FileHandle['stat']>>
+): FileSnapshot {
+  return {
+    dev: Number(stat.dev),
+    ino: Number(stat.ino),
+    size: Number(stat.size),
+    mtimeMs: Number(stat.mtimeMs),
+    ctimeMs: Number(stat.ctimeMs)
+  };
+}
+
+function isWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return (
+    relative === '' ||
+    (!path.isAbsolute(relative) &&
+      relative !== '..' &&
+      !relative.startsWith(`..${path.sep}`))
+  );
+}
+
 export class TextFileReader {
   private filesRead = 0;
+  private filesInFlight = 0;
   private bytesRead = 0;
+  private readonly budget: TextFileBudget;
+  private readonly root?: string;
+  private readonly openFile: NonNullable<TextFileReaderOptions['openFile']>;
+  private readonly realpathFile: NonNullable<
+    TextFileReaderOptions['realpathFile']
+  >;
+  private readonly lstatFile: NonNullable<TextFileReaderOptions['lstatFile']>;
 
   constructor(
-    private readonly budget: TextFileBudget = defaultTextFileBudget
-  ) {}
+    budget: TextFileBudget = defaultTextFileBudget,
+    options: TextFileReaderOptions = {}
+  ) {
+    for (const value of Object.values(budget)) {
+      if (!Number.isSafeInteger(value) || value < 0) {
+        throw new RangeError(
+          'Text file budgets must be non-negative safe integers.'
+        );
+      }
+    }
+    this.budget = { ...budget };
+    this.root =
+      options.root === undefined ? undefined : path.resolve(options.root);
+    this.openFile = options.openFile ?? open;
+    this.realpathFile = options.realpathFile ?? realpath;
+    this.lstatFile = options.lstatFile ?? lstat;
+  }
 
   get usage(): { filesRead: number; bytesRead: number } {
-    return {
-      filesRead: this.filesRead,
-      bytesRead: this.bytesRead
-    };
+    return { filesRead: this.filesRead, bytesRead: this.bytesRead };
   }
 
   async read(
     filePath: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    expected?: FileSnapshot
   ): Promise<TextFileReadResult> {
-    if (signal?.aborted) {
-      return { status: 'cancelled', bytes: 0 };
-    }
-
-    if (this.filesRead >= this.budget.maxFiles) {
+    if (signal?.aborted) return { status: 'cancelled', bytes: 0 };
+    if (this.filesRead + this.filesInFlight >= this.budget.maxFiles) {
       return { status: 'budget-exceeded', bytes: 0 };
     }
 
+    this.filesInFlight += 1;
     let handle: FileHandle | undefined;
-
+    let reservedBytes = 0;
     try {
-      handle = await open(filePath, 'r');
-      const { size } = await handle.stat();
-
-      if (size > this.budget.maxFileBytes) {
-        return { status: 'oversized', bytes: size };
+      const absolutePath = path.resolve(filePath);
+      const trustedRoot =
+        this.root === undefined
+          ? undefined
+          : await this.realpathFile(this.root);
+      if (trustedRoot !== undefined) {
+        const before = await this.realpathFile(absolutePath);
+        if (!isWithin(trustedRoot, before))
+          return { status: 'changed', bytes: 0 };
       }
 
-      if (this.bytesRead + size > this.budget.maxTotalBytes) {
-        return { status: 'budget-exceeded', bytes: size };
+      const noFollow = constants.O_NOFOLLOW ?? 0;
+      handle = await this.openFile(absolutePath, constants.O_RDONLY | noFollow);
+      const beforeStat = await handle.stat();
+      if (!beforeStat.isFile()) return { status: 'changed', bytes: 0 };
+      const before = snapshotOf(beforeStat);
+      if (expected && !sameSnapshot(expected, before)) {
+        return { status: 'changed', bytes: before.size };
+      }
+      if (!Number.isSafeInteger(before.size) || before.size < 0) {
+        return { status: 'changed', bytes: 0 };
+      }
+      if (before.size > this.budget.maxFileBytes) {
+        return { status: 'oversized', bytes: before.size };
+      }
+      if (this.bytesRead + before.size > this.budget.maxTotalBytes) {
+        return { status: 'budget-exceeded', bytes: before.size };
+      }
+      reservedBytes = before.size;
+      this.bytesRead += reservedBytes;
+
+      const buffer = Buffer.alloc(before.size);
+      let offset = 0;
+      while (offset < before.size) {
+        if (signal?.aborted) return { status: 'cancelled', bytes: offset };
+        const { bytesRead } = await handle.read(
+          buffer,
+          offset,
+          before.size - offset,
+          offset
+        );
+        if (bytesRead === 0) return { status: 'changed', bytes: offset };
+        offset += bytesRead;
+      }
+      if (signal?.aborted) return { status: 'cancelled', bytes: offset };
+
+      const extra = Buffer.alloc(1);
+      const grown = await handle.read(extra, 0, 1, before.size);
+      const afterStat = await handle.stat();
+      const after = snapshotOf(afterStat);
+      if (grown.bytesRead !== 0 || !sameSnapshot(before, after)) {
+        return { status: 'changed', bytes: offset + grown.bytesRead };
       }
 
-      const sampleLength = Math.min(size, 8 * 1024);
-      if (sampleLength > 0) {
-        const sample = Buffer.allocUnsafe(sampleLength);
-        await handle.read(sample, 0, sampleLength, 0);
-
-        if (sample.includes(0)) {
-          return { status: 'binary', bytes: size };
-        }
+      const pathStat = await this.lstatFile(absolutePath);
+      if (
+        pathStat.isSymbolicLink() ||
+        !sameSnapshot(before, snapshotOf(pathStat))
+      ) {
+        return { status: 'changed', bytes: offset };
       }
-
-      if (signal?.aborted) {
-        return { status: 'cancelled', bytes: 0 };
+      if (trustedRoot !== undefined) {
+        const afterPath = await this.realpathFile(absolutePath);
+        if (!isWithin(trustedRoot, afterPath))
+          return { status: 'changed', bytes: offset };
       }
-
-      const buffer = Buffer.allocUnsafe(size);
-      if (size > 0) {
-        await handle.read(buffer, 0, size, 0);
+      if (buffer.subarray(0, Math.min(buffer.length, 8 * 1024)).includes(0)) {
+        return { status: 'binary', bytes: offset };
       }
 
       this.filesRead += 1;
-      this.bytesRead += size;
-
+      reservedBytes = 0;
       return {
         status: 'ok',
         content: buffer.toString('utf8'),
-        bytes: size
+        bytes: offset,
+        sha256: createHash('sha256').update(buffer).digest('hex')
       };
     } catch (error) {
+      if (
+        error !== null &&
+        typeof error === 'object' &&
+        'code' in error &&
+        error.code === 'ELOOP'
+      ) {
+        return { status: 'changed', bytes: 0 };
+      }
       return {
         status: 'failed',
         bytes: 0,
         error: error instanceof Error ? error.message : String(error)
       };
     } finally {
+      this.filesInFlight -= 1;
+      if (reservedBytes > 0) this.bytesRead -= reservedBytes;
       await handle?.close();
     }
   }

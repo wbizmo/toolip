@@ -80,7 +80,7 @@ export async function runSecurityDoctor(
     typeof rootOrContext === 'string'
       ? await createScannerContext(rootOrContext)
       : rootOrContext;
-  const reader = new TextFileReader(options.budget);
+  const reader = new TextFileReader(options.budget, { root: context.root });
   const findings: Finding[] = [];
   const warnings: string[] = [];
   let filesEligible = 0;
@@ -98,7 +98,7 @@ export async function runSecurityDoctor(
   for (const [index, file] of eligibleFiles.entries()) {
     const read = options.contentProvider
       ? await options.contentProvider(file)
-      : await reader.read(file.absolutePath, options.signal);
+      : await reader.read(file.absolutePath, options.signal, file.snapshot);
     if (options.contentProvider && read.status === 'ok') {
       providerBytes += read.bytes;
     }

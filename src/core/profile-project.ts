@@ -1,9 +1,11 @@
-import { access, readFile } from 'node:fs/promises';
+import { access } from 'node:fs/promises';
 import path from 'node:path';
 import {
   walkProjectFiles,
   type ProjectFile
 } from './file-walker.js';
+import { TextFileReader } from './text-file-reader.js';
+import { ToolipError } from '../errors/toolip-error.js';
 import {
   detectPackageManager,
   type PackageManager
@@ -41,15 +43,23 @@ async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
-async function readPackageJson(root: string): Promise<Record<string, unknown>> {
-  const packagePath = path.join(root, 'package.json');
-
-  if (!(await fileExists(packagePath))) {
-    return {};
+async function readPackageJson(
+  root: string,
+  files: readonly ProjectFile[]
+): Promise<Record<string, unknown>> {
+  const manifest = files.find((file) => file.relativePath === 'package.json');
+  if (!manifest) return {};
+  const result = await new TextFileReader(undefined, { root }).read(
+    manifest.absolutePath,
+    undefined,
+    manifest.snapshot
+  );
+  if (result.status !== 'ok') {
+    throw new ToolipError('Project manifest changed or could not be read safely.', {
+      code: 'SCAN_DISCOVERY_INCOMPLETE'
+    });
   }
-
-  const raw = await readFile(packagePath, 'utf8');
-  return JSON.parse(raw) as Record<string, unknown>;
+  return JSON.parse(result.content) as Record<string, unknown>;
 }
 
 function dependencyNames(packageJson: Record<string, unknown>): string[] {
@@ -97,10 +107,10 @@ export async function profileProject(
   discoveredFiles?: readonly ProjectFile[]
 ): Promise<ProjectProfile> {
   const absoluteRoot = path.resolve(root);
-  const packageJson = await readPackageJson(absoluteRoot);
+  const files = discoveredFiles ?? await walkProjectFiles(absoluteRoot);
+  const packageJson = await readPackageJson(absoluteRoot, files);
   const deps = dependencyNames(packageJson);
   const scripts = packageScripts(packageJson);
-  const files = discoveredFiles ?? await walkProjectFiles(absoluteRoot);
   const packageManager = await detectPackageManager(absoluteRoot);
 
   const profile: ProjectProfile = {

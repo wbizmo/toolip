@@ -1,12 +1,15 @@
 import path from 'node:path';
+import { lstat, realpath, stat as statTarget } from 'node:fs/promises';
 import fg from 'fast-glob';
 import { ToolipError } from '../errors/toolip-error.js';
 import { loadToolipIgnore } from './load-toolip-ignore.js';
+import type { FileSnapshot } from './text-file-reader.js';
 
 export type ProjectFile = {
   absolutePath: string;
   relativePath: string;
   extension: string;
+  snapshot?: FileSnapshot;
 };
 
 export type FileWalkOptions = {
@@ -19,35 +22,70 @@ export async function walkProjectFiles(
   root: string,
   options: FileWalkOptions = {}
 ): Promise<ProjectFile[]> {
-  const absoluteRoot = path.resolve(root);
+  const absoluteRoot = await realpath(path.resolve(root));
   const toolipIgnore = await loadToolipIgnore(absoluteRoot);
 
   const entries = await fg(['**/*'], {
     cwd: absoluteRoot,
     dot: true,
-    onlyFiles: true,
+    onlyFiles: false,
     unique: true,
     followSymbolicLinks: false,
     ignore: toolipIgnore.patterns
   });
 
   const maxFiles = options.maxFiles ?? defaultMaxFiles;
-  if (entries.length > maxFiles) {
+
+  const files = await Promise.all(
+    entries.map(async (entry) => {
+      const absolutePath = path.join(absoluteRoot, entry);
+      try {
+        const stat = await lstat(absolutePath);
+        if (stat.isSymbolicLink()) {
+          try {
+            if ((await statTarget(absolutePath)).isDirectory()) {
+              throw new ToolipError(
+                `Project discovery encountered a symbolic directory at ${entry}; traversal is incomplete.`,
+                { code: 'SCAN_DISCOVERY_INCOMPLETE' }
+              );
+            }
+          } catch (error) {
+            if (error instanceof ToolipError) throw error;
+            // A dangling or concurrently changed symbolic link is kept as a
+            // file entry so its later descriptor read is reported incomplete.
+          }
+        }
+        if (!stat.isFile() && !stat.isSymbolicLink()) return undefined;
+        return {
+          absolutePath,
+          relativePath: entry.replaceAll('\\', '/'),
+          extension: path.extname(entry).replace('.', '').toLowerCase(),
+          snapshot: {
+            dev: stat.dev,
+            ino: stat.ino,
+            size: stat.size,
+            mtimeMs: stat.mtimeMs,
+            ctimeMs: stat.ctimeMs
+          }
+        } satisfies ProjectFile;
+      } catch (error) {
+        throw new ToolipError(
+          `Project discovery could not inspect ${entry}: ${error instanceof Error ? error.message : String(error)}`,
+          { code: 'SCAN_DISCOVERY_INCOMPLETE' }
+        );
+      }
+    })
+  );
+
+  const discovered = files
+    .flatMap((file) => (file === undefined ? [] : [file]))
+    .filter((file) => !toolipIgnore.ignores(file.absolutePath))
+    .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  if (discovered.length > maxFiles) {
     throw new ToolipError(
-      `Project discovery found ${entries.length} files, above the configured limit of ${maxFiles}. Refine .toolipignore or raise the scan budget explicitly.`,
+      `Project discovery found ${discovered.length} files, above the configured limit of ${maxFiles}. Refine .toolipignore or raise the scan budget explicitly.`,
       { code: 'SCAN_FILE_LIMIT_EXCEEDED' }
     );
   }
-
-  return entries
-    .map((entry) => {
-      const absolutePath = path.join(absoluteRoot, entry);
-      return {
-        absolutePath,
-        relativePath: entry.replaceAll('\\', '/'),
-        extension: path.extname(entry).replace('.', '').toLowerCase()
-      };
-    })
-    .filter((file) => !toolipIgnore.ignores(file.absolutePath))
-    .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  return discovered;
 }

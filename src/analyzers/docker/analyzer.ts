@@ -92,7 +92,7 @@ export class DockerfileAnalyzer implements Analyzer {
   async analyze(context: AnalyzerContext): Promise<AnalyzerResult> {
     const startedAt = performance.now();
     const scanner = await createScannerContext(context.root);
-    const reader = new TextFileReader();
+    const reader = new TextFileReader(undefined, { root: scanner.root });
     const findings: Finding[] = [];
     const warnings: string[] = [];
     let dockerfiles = 0;
@@ -100,7 +100,11 @@ export class DockerfileAnalyzer implements Analyzer {
     for (const file of scanner.files) {
       if (!/(^|\/)Dockerfile(?:\.[^/]+)?$/i.test(file.relativePath)) continue;
 
-      const read = await reader.read(file.absolutePath, context.signal);
+      const read = await reader.read(
+        file.absolutePath,
+        context.signal,
+        file.snapshot
+      );
       if (read.status !== 'ok') {
         warnings.push(`${file.relativePath}: skipped (${read.status})`);
         if (read.status === 'cancelled') break;

@@ -30,7 +30,7 @@ export class AstSecurityAnalyzer implements Analyzer {
   async analyze(context: AnalyzerContext): Promise<AnalyzerResult> {
     const startedAt = performance.now();
     const scannerContext = await createScannerContext(context.root);
-    const reader = new TextFileReader();
+    const reader = new TextFileReader(undefined, { root: scannerContext.root });
     const findings = [];
     const warnings: string[] = [];
     let filesAnalyzed = 0;
@@ -47,7 +47,11 @@ export class AstSecurityAnalyzer implements Analyzer {
         warnings.push(`${file.relativePath}: skipped (cancelled)`);
         continue;
       }
-      const read = await reader.read(file.absolutePath, context.signal);
+      const read = await reader.read(
+        file.absolutePath,
+        context.signal,
+        file.snapshot
+      );
 
       if (read.status !== 'ok') {
         warnings.push(`${file.relativePath}: skipped (${read.status})`);
