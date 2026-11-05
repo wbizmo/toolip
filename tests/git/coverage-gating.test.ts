@@ -155,6 +155,37 @@ describe('pre-commit fails closed on incomplete scans (issue #27)', () => {
     expect(strict.summary.blocking).toBeGreaterThan(base.summary.blocking);
   });
 
+  it('shows only findings meeting the selected CLI threshold', async () => {
+    const root = makeRepo();
+    write(root, 'server.ts', "app.use(cors({ origin: '*' }));\n");
+    git(root, 'add', '-A');
+
+    const strict = await cli(
+      registerPreCommitCommand,
+      'pre-commit',
+      '--path',
+      root,
+      '--fail-on',
+      'low',
+      '--show-findings'
+    );
+    expect(strict.code).toBe(EXIT_CODES.error);
+    expect(strict.out).toContain('Blocking Findings');
+
+    stdout = [];
+    const none = await cli(
+      registerPreCommitCommand,
+      'pre-commit',
+      '--path',
+      root,
+      '--fail-on',
+      'none',
+      '--show-findings'
+    );
+    expect(none.code).toBe(0);
+    expect(none.out).not.toContain('Blocking Findings');
+  }, 20_000);
+
   it('keeps blocking on real findings and reports them rather than the incomplete reason', async () => {
     const root = makeRepo();
     write(root, 'leak.ts', fakeSecretLine('blocked'));

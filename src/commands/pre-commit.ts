@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
 import { EXIT_CODES } from '../application/exit-codes.js';
-import { isFailOn } from '../application/analysis-status.js';
+import { gatedFindings, isFailOn } from '../application/analysis-status.js';
 import { ToolipError } from '../errors/toolip-error.js';
 import { runPreCommit } from '../core/pre-commit.js';
 
@@ -74,13 +74,12 @@ export function registerPreCommitCommand(program: Command): void {
           }
         }
 
-        if (options.showFindings && result.findings.length > 0) {
+        const blocking = gatedFindings(result.findings, options.failOn);
+        if (options.showFindings && blocking.length > 0) {
           console.log('');
           console.log(chalk.bold('Blocking Findings'));
 
-          for (const finding of result.findings.filter(
-            (item) => item.severity === 'critical' || item.severity === 'high'
-          )) {
+          for (const finding of blocking) {
             console.log(`${chalk.red('✖')} ${finding.title}`);
             if (finding.location?.file) {
               console.log(`  ${chalk.dim('File:')} ${finding.location.file}`);
