@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, type BigIntStats } from 'node:fs';
 import { type FileHandle, open } from 'node:fs/promises';
 import { lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
@@ -11,8 +11,8 @@ export type TextFileBudget = {
 };
 
 export type FileSnapshot = {
-  dev: number;
-  ino: number;
+  dev: bigint;
+  ino: bigint;
   size: number;
   mtimeMs: number;
   ctimeMs: number;
@@ -37,9 +37,13 @@ export type TextFileReaderOptions = {
   root?: string;
   openFile?: (filePath: string, flags: number) => Promise<FileHandle>;
   realpathFile?: (filePath: string) => Promise<string>;
-  lstatFile?: (filePath: string) => Promise<Awaited<ReturnType<typeof lstat>>>;
+  lstatFile?: (
+    filePath: string,
+    options: { bigint: true }
+  ) => Promise<BigIntStats>;
 };
 
+/** Compares all discovery/read identity fields for a file snapshot. */
 function sameSnapshot(a: FileSnapshot, b: FileSnapshot): boolean {
   return (
     a.dev === b.dev &&
@@ -50,18 +54,18 @@ function sameSnapshot(a: FileSnapshot, b: FileSnapshot): boolean {
   );
 }
 
-function snapshotOf(
-  stat: Awaited<ReturnType<FileHandle['stat']>>
-): FileSnapshot {
+/** Converts bigint filesystem metadata to bounded numeric content metadata. */
+function snapshotOf(stat: BigIntStats): FileSnapshot {
   return {
-    dev: Number(stat.dev),
-    ino: Number(stat.ino),
+    dev: stat.dev,
+    ino: stat.ino,
     size: Number(stat.size),
     mtimeMs: Number(stat.mtimeMs),
     ctimeMs: Number(stat.ctimeMs)
   };
 }
 
+/** Tests canonical path containment without relying on string prefixes. */
 function isWithin(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
   return (
@@ -72,6 +76,7 @@ function isWithin(root: string, candidate: string): boolean {
   );
 }
 
+/** Reads bounded text snapshots and rejects incomplete or changed inputs. */
 export class TextFileReader {
   private filesRead = 0;
   private filesInFlight = 0;
@@ -84,6 +89,7 @@ export class TextFileReader {
   >;
   private readonly lstatFile: NonNullable<TextFileReaderOptions['lstatFile']>;
 
+  /** Validates and stores the read budgets and filesystem dependencies. */
   constructor(
     budget: TextFileBudget = defaultTextFileBudget,
     options: TextFileReaderOptions = {}
@@ -103,10 +109,12 @@ export class TextFileReader {
     this.lstatFile = options.lstatFile ?? lstat;
   }
 
+  /** Returns completed file and byte totals for this reader instance. */
   get usage(): { filesRead: number; bytesRead: number } {
     return { filesRead: this.filesRead, bytesRead: this.bytesRead };
   }
 
+  /** Reads exactly one bounded file snapshot, honoring cancellation and root. */
   async read(
     filePath: string,
     signal?: AbortSignal,
@@ -134,13 +142,17 @@ export class TextFileReader {
 
       const noFollow = constants.O_NOFOLLOW ?? 0;
       handle = await this.openFile(absolutePath, constants.O_RDONLY | noFollow);
-      const beforeStat = await handle.stat();
+      const beforeStat = await handle.stat({ bigint: true });
       if (!beforeStat.isFile()) return { status: 'changed', bytes: 0 };
       const before = snapshotOf(beforeStat);
       if (expected && !sameSnapshot(expected, before)) {
         return { status: 'changed', bytes: before.size };
       }
-      if (!Number.isSafeInteger(before.size) || before.size < 0) {
+      if (
+        beforeStat.size > BigInt(Number.MAX_SAFE_INTEGER) ||
+        !Number.isSafeInteger(before.size) ||
+        before.size < 0
+      ) {
         return { status: 'changed', bytes: 0 };
       }
       if (before.size > this.budget.maxFileBytes) {
@@ -169,13 +181,13 @@ export class TextFileReader {
 
       const extra = Buffer.alloc(1);
       const grown = await handle.read(extra, 0, 1, before.size);
-      const afterStat = await handle.stat();
+      const afterStat = await handle.stat({ bigint: true });
       const after = snapshotOf(afterStat);
       if (grown.bytesRead !== 0 || !sameSnapshot(before, after)) {
         return { status: 'changed', bytes: offset + grown.bytesRead };
       }
 
-      const pathStat = await this.lstatFile(absolutePath);
+      const pathStat = await this.lstatFile(absolutePath, { bigint: true });
       if (
         pathStat.isSymbolicLink() ||
         !sameSnapshot(before, snapshotOf(pathStat))

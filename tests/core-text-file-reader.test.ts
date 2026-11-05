@@ -4,6 +4,7 @@ import {
   rm,
   symlink,
   truncate,
+  utimes,
   writeFile
 } from 'node:fs/promises';
 import os from 'node:os';
@@ -31,13 +32,13 @@ async function tempFile(
 
 async function snapshot(file: string): Promise<FileSnapshot> {
   const { stat } = await import('node:fs/promises');
-  const value = await stat(file);
+  const value = await stat(file, { bigint: true });
   return {
     dev: value.dev,
     ino: value.ino,
-    size: value.size,
-    mtimeMs: value.mtimeMs,
-    ctimeMs: value.ctimeMs
+    size: Number(value.size),
+    mtimeMs: Number(value.mtimeMs),
+    ctimeMs: Number(value.ctimeMs)
   };
 }
 
@@ -254,6 +255,8 @@ describe('TextFileReader', () => {
     const replaced = await tempFile('replaced.txt', 'before');
     const before = await snapshot(replaced);
     await writeFile(replaced, 'after!');
+    const later = new Date(before.mtimeMs + 1_000);
+    await utimes(replaced, later, later);
     await expect(
       new TextFileReader().read(replaced, undefined, before)
     ).resolves.toMatchObject({ status: 'changed' });

@@ -10,6 +10,7 @@ import { analyzeAstSource } from './source-analysis.js';
 
 const supportedExtensions = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']);
 
+/** Filters generated declarations and unsupported file types from AST analysis. */
 function shouldAnalyze(relativePath: string, extension: string): boolean {
   if (!supportedExtensions.has(extension)) return false;
   if (relativePath.endsWith('.d.ts')) return false;
@@ -27,6 +28,7 @@ export class AstSecurityAnalyzer implements Analyzer {
     exportName: 'AstSecurityAnalyzer'
   };
 
+  /** Analyzes eligible source snapshots and reports incomplete reads. */
   async analyze(context: AnalyzerContext): Promise<AnalyzerResult> {
     const startedAt = performance.now();
     const scannerContext = await createScannerContext(context.root);

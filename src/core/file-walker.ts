@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { lstat, realpath, stat as statTarget } from 'node:fs/promises';
 import fg from 'fast-glob';
+import { mapConcurrent } from '../application/concurrency.js';
 import { ToolipError } from '../errors/toolip-error.js';
 import { loadToolipIgnore } from './load-toolip-ignore.js';
 import type { FileSnapshot } from './text-file-reader.js';
@@ -16,8 +17,10 @@ export type FileWalkOptions = {
   maxFiles?: number;
 };
 
+const metadataConcurrency = 32;
 const defaultMaxFiles = 50_000;
 
+/** Discovers eligible project files with bounded, snapshot-aware metadata reads. */
 export async function walkProjectFiles(
   root: string,
   options: FileWalkOptions = {}
@@ -35,12 +38,17 @@ export async function walkProjectFiles(
   });
 
   const maxFiles = options.maxFiles ?? defaultMaxFiles;
+  const candidates = entries.filter(
+    (entry) => !toolipIgnore.ignores(path.join(absoluteRoot, entry))
+  );
 
-  const files = await Promise.all(
-    entries.map(async (entry) => {
+  const files = await mapConcurrent(
+    candidates,
+    metadataConcurrency,
+    async (entry) => {
       const absolutePath = path.join(absoluteRoot, entry);
       try {
-        const stat = await lstat(absolutePath);
+        const stat = await lstat(absolutePath, { bigint: true });
         if (stat.isSymbolicLink()) {
           try {
             if ((await statTarget(absolutePath)).isDirectory()) {
@@ -63,9 +71,9 @@ export async function walkProjectFiles(
           snapshot: {
             dev: stat.dev,
             ino: stat.ino,
-            size: stat.size,
-            mtimeMs: stat.mtimeMs,
-            ctimeMs: stat.ctimeMs
+            size: Number(stat.size),
+            mtimeMs: Number(stat.mtimeMs),
+            ctimeMs: Number(stat.ctimeMs)
           }
         } satisfies ProjectFile;
       } catch (error) {
@@ -74,12 +82,11 @@ export async function walkProjectFiles(
           { code: 'SCAN_DISCOVERY_INCOMPLETE' }
         );
       }
-    })
+    }
   );
 
   const discovered = files
     .flatMap((file) => (file === undefined ? [] : [file]))
-    .filter((file) => !toolipIgnore.ignores(file.absolutePath))
     .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   if (discovered.length > maxFiles) {
     throw new ToolipError(

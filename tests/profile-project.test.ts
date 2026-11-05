@@ -5,6 +5,25 @@ import path from 'node:path';
 import { profileProject } from '../src/core/profile-project.js';
 
 describe('profileProject', () => {
+  it('reads a root manifest safely when .toolipignore excludes it', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-profile-'));
+
+    try {
+      await writeFile(
+        path.join(root, 'package.json'),
+        JSON.stringify({ name: 'ignored-manifest', version: '1.0.0' })
+      );
+      await writeFile(path.join(root, '.toolipignore'), 'package.json\n');
+
+      const profile = await profileProject(root);
+
+      expect(profile.name).toBe('ignored-manifest');
+      expect(profile.version).toBe('1.0.0');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('detects TypeScript, Fastify, Prisma, scripts, metadata, and npm projects', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-profile-'));
 
@@ -62,7 +81,10 @@ describe('profileProject', () => {
     try {
       await mkdir(path.join(root, '.github', 'workflows'), { recursive: true });
       await writeFile(path.join(root, 'Dockerfile'), 'FROM node:22-alpine');
-      await writeFile(path.join(root, '.github', 'workflows', 'ci.yml'), 'name: CI');
+      await writeFile(
+        path.join(root, '.github', 'workflows', 'ci.yml'),
+        'name: CI'
+      );
 
       const profile = await profileProject(root);
 

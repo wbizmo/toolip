@@ -72,6 +72,7 @@ const secretScanExtensions = new Set([
 
 const codeExtensions = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']);
 
+/** Runs the local security checks and records truthful scan coverage. */
 export async function runSecurityDoctor(
   rootOrContext: string | ScannerContext,
   options: SecurityDoctorOptions = {}
@@ -165,10 +166,12 @@ export async function runSecurityDoctor(
   };
 }
 
+/** Counts findings belonging to one canonical finding category. */
 function countCategory(findings: Finding[], category: string): number {
   return findings.filter((finding) => finding.category === category).length;
 }
 
+/** Identifies source and configuration files eligible for secret inspection. */
 export function shouldScanSecrets(
   relativePath: string,
   extension: string
@@ -181,6 +184,7 @@ export function shouldScanSecrets(
   return secretScanExtensions.has(extension);
 }
 
+/** Produces secret findings from a single already-read source file. */
 function scanSecretContent(relativePath: string, content: string): Finding[] {
   const findings: Finding[] = [];
   const testFile = isTestFile(relativePath);
@@ -223,6 +227,7 @@ function scanSecretContent(relativePath: string, content: string): Finding[] {
   return findings;
 }
 
+/** Inspects configuration text for unsafe security settings. */
 function scanConfigurationContent(
   relativePath: string,
   content: string
@@ -249,6 +254,7 @@ function scanConfigurationContent(
   return findings;
 }
 
+/** Builds a finding from a matched security configuration pattern. */
 function patternFinding(
   pattern: SecurityPattern,
   relativePath: string,
@@ -276,6 +282,7 @@ function patternFinding(
   };
 }
 
+/** Returns a fresh global regex so repeated scans do not share lastIndex. */
 function globalRegex(pattern: RegExp): RegExp {
   return new RegExp(
     pattern.source,
@@ -283,6 +290,7 @@ function globalRegex(pattern: RegExp): RegExp {
   );
 }
 
+/** Reports missing baseline HTTP security headers from project configuration. */
 function detectMissingSecurityHeaders(relativePaths: string[]): Finding[] {
   const possibleServerFiles = relativePaths.filter(
     (file) =>

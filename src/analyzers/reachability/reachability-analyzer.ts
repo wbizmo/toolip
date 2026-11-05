@@ -28,6 +28,7 @@ export class ReachabilityAnalyzer implements Analyzer {
   readonly id = 'package-reachability';
   readonly version = '1.0.0';
 
+  /** Maps observed project imports to the resolved dependency inventory. */
   async analyze(context: AnalyzerContext): Promise<AnalyzerResult> {
     const startedAt = performance.now();
     const dependencies = await readNpmDependencyInventory(context.root);

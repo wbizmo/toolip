@@ -1,4 +1,4 @@
-import { access } from 'node:fs/promises';
+import { access, lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { walkProjectFiles, type ProjectFile } from './file-walker.js';
 import { TextFileReader } from './text-file-reader.js';
@@ -31,6 +31,7 @@ export type ProjectProfile = {
   packageScripts: string[];
 };
 
+/** Checks whether a project capability path exists without reading its content. */
 async function fileExists(filePath: string): Promise<boolean> {
   try {
     await access(filePath);
@@ -40,12 +41,49 @@ async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
+/** Reads the root manifest through the bounded, snapshot-checked reader. */
 async function readPackageJson(
   root: string,
   files: readonly ProjectFile[]
 ): Promise<Record<string, unknown>> {
-  const manifest = files.find((file) => file.relativePath === 'package.json');
-  if (!manifest) return {};
+  let manifest = files.find((file) => file.relativePath === 'package.json');
+  if (!manifest) {
+    const absolutePath = path.join(root, 'package.json');
+    try {
+      const stat = await lstat(absolutePath, { bigint: true });
+      if (!stat.isFile()) {
+        throw new ToolipError(
+          'Project manifest changed or could not be read safely.',
+          { code: 'SCAN_DISCOVERY_INCOMPLETE' }
+        );
+      }
+      manifest = {
+        absolutePath,
+        relativePath: 'package.json',
+        extension: 'json',
+        snapshot: {
+          dev: stat.dev,
+          ino: stat.ino,
+          size: Number(stat.size),
+          mtimeMs: Number(stat.mtimeMs),
+          ctimeMs: Number(stat.ctimeMs)
+        }
+      };
+    } catch (error) {
+      if (
+        error !== null &&
+        typeof error === 'object' &&
+        'code' in error &&
+        error.code === 'ENOENT'
+      ) {
+        return {};
+      }
+      if (error instanceof ToolipError) throw error;
+      throw new ToolipError('Project manifest could not be inspected safely.', {
+        code: 'SCAN_DISCOVERY_INCOMPLETE'
+      });
+    }
+  }
   const result = await new TextFileReader(undefined, { root }).read(
     manifest.absolutePath,
     undefined,
@@ -62,6 +100,7 @@ async function readPackageJson(
   return JSON.parse(result.content) as Record<string, unknown>;
 }
 
+/** Lists declared production and development dependency names. */
 function dependencyNames(packageJson: Record<string, unknown>): string[] {
   const dependencies = packageJson.dependencies as
     Record<string, string> | undefined;
@@ -74,11 +113,13 @@ function dependencyNames(packageJson: Record<string, unknown>): string[] {
   ];
 }
 
+/** Returns lifecycle and project script names declared in the manifest. */
 function packageScripts(packageJson: Record<string, unknown>): string[] {
   const scripts = packageJson.scripts as Record<string, string> | undefined;
   return Object.keys(scripts ?? {});
 }
 
+/** Counts recognized source and configuration languages in discovered files. */
 function summarizeLanguages(
   files: readonly ProjectFile[]
 ): Record<string, number> {
@@ -106,6 +147,7 @@ function summarizeLanguages(
   }, {});
 }
 
+/** Builds the project summary used to select and configure analyzers. */
 export async function profileProject(
   root: string,
   discoveredFiles?: readonly ProjectFile[]

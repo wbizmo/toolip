@@ -71,6 +71,7 @@ const rules: DockerRule[] = [
   }
 ];
 
+/** Creates the canonical finding for one Dockerfile rule match. */
 function finding(
   rule: DockerRule,
   relativePath: string,
@@ -107,6 +108,7 @@ export class DockerfileAnalyzer implements Analyzer {
   readonly id = 'dockerfile-security';
   readonly version = '1.0.0';
 
+  /** Applies Dockerfile rules to bounded, verified input snapshots. */
   async analyze(context: AnalyzerContext): Promise<AnalyzerResult> {
     const startedAt = performance.now();
     const scanner = await createScannerContext(context.root);
