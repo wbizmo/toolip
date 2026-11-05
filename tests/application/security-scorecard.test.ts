@@ -403,9 +403,8 @@ describe('buildSecurityScorecard', () => {
         findings: result.findings,
         analysis: { ...result.analysis, coverage: result.coverage }
       });
-      expect(JSON.parse(JSON.stringify(report)).analysis.coverage).toMatchObject(
-        totals
-      );
+      const serialized = JSON.parse(JSON.stringify(report));
+      expect(serialized.analysis.coverage).toMatchObject(totals);
       const markdown = renderMarkdownReport(report);
       expect(markdown).toContain('- Eligible: 5');
       expect(markdown).toContain('- Scanned: 3');

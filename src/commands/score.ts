@@ -25,13 +25,6 @@ export function registerScoreCommand(program: Command): void {
 
       console.log(chalk.bold('Toolip Security Scorecard'));
       console.log('');
-      const coverage = scorecard.coverage;
-      console.log(
-        `${chalk.dim('Coverage:')} ${coverage.scanned}/${coverage.eligible} scanned, ` +
-          `${coverage.skipped} skipped, ${coverage.failed} failed, ` +
-          `${coverage.excluded ?? 0} excluded`
-      );
-      console.log('');
       printDimension('Dependency Health ....', scorecard.score.dimensions.dependencyHealth);
       printDimension('Secret Hygiene .......', scorecard.score.dimensions.secretHygiene);
       printDimension('Configuration ........', scorecard.score.dimensions.configurationSecurity);

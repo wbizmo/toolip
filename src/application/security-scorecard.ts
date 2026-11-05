@@ -264,7 +264,10 @@ export async function buildSecurityScorecard(
   // Only scanners that enumerate inputs contribute numerical coverage.
   // OSV and Git availability are represented by analysis reasons.
   const sources: AnalysisCoverage[] = [];
-  if (dependencyOutcome.status === 'fulfilled' && dependencyOutcome.value.coverage) {
+  if (
+    dependencyOutcome.status === 'fulfilled' &&
+    dependencyOutcome.value.coverage
+  ) {
     sources.push(dependencyOutcome.value.coverage);
   }
   if (doctorOutcome.status === 'fulfilled') {
