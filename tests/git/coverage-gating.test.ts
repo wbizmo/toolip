@@ -112,7 +112,9 @@ describe('pre-commit fails closed on incomplete scans (issue #27)', () => {
       failOnIncomplete: false
     });
     expect(full.coverage.state).toBe('partial');
-    expect(full.passed).toBe(true);
+    // The full-scan coverage opt-out does not override unrelated findings.
+    expect(full.blockedByIncompleteScan).toBe(false);
+    expect(full.passed).toBe(full.summary.blocking === 0);
 
     // …but nothing-scanned cannot be opted out of.
     const nothing = makeRepo();

@@ -153,8 +153,12 @@ describe('optional libc constraints (Batch 03)', () => {
 
     expect(isOmittedOnPlatform(optional, 'linux', 'x64', 'glibc')).toBe(true);
     expect(isOmittedOnPlatform(optional, 'linux', 'x64', 'musl')).toBe(false);
-    expect(isOmittedOnPlatform(optional, 'linux', 'x64', 'unknown')).toBe(false);
-    expect(isOmittedOnPlatform(optional, 'darwin', 'arm64', 'glibc')).toBe(false);
+    expect(
+      isOmittedOnPlatform(optional, 'linux', 'x64', 'unknown')
+    ).toBe(false);
+    expect(
+      isOmittedOnPlatform(optional, 'darwin', 'arm64', 'glibc')
+    ).toBe(false);
     expect(isOmittedOnPlatform(required, 'linux', 'x64', 'glibc')).toBe(false);
     expect(isOmittedOnPlatform(blocked, 'linux', 'x64', 'glibc')).toBe(true);
     expect(isOmittedOnPlatform(blocked, 'linux', 'x64', 'musl')).toBe(false);
