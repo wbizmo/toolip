@@ -13,7 +13,7 @@ afterEach(async () => {
   }
 });
 
-async function createPair() {
+async function createPair(acceptExtraKeys = false) {
   const server = new McpServer(
     { name: 'toolip-resilience-test', version: '0.0.0' },
     { maxToolInputElements: 32 }
@@ -22,7 +22,9 @@ async function createPair() {
   server.registerTool(
     'probe',
     {
-      inputSchema: z.object({ value: z.string().max(64).optional() }).strict()
+      inputSchema: acceptExtraKeys
+        ? z.object({}).catchall(z.unknown())
+        : z.object({ value: z.string().max(64).optional() }).strict()
     },
     async (_args, extra) => {
       handlerSignal = extra.signal;
@@ -61,10 +63,7 @@ describe('MCP SDK adversarial input and cancellation behavior (#50)', () => {
       [],
       { value: 1 },
       { value: 'x'.repeat(65) },
-      { value: 'ok', extra: true },
-      Object.fromEntries(
-        Array.from({ length: 40 }, (_, index) => [`k${index}`, index])
-      )
+      { value: 'ok', extra: true }
     ];
 
     for (const argument of malformed) {
@@ -84,6 +83,24 @@ describe('MCP SDK adversarial input and cancellation behavior (#50)', () => {
     ).resolves.toMatchObject({
       content: [{ text: 'settled' }]
     });
+  });
+
+  it('enforces the SDK element limit before schema validation', async () => {
+    const { client } = await createPair(true);
+    const result = await client
+      .callTool({
+        name: 'probe',
+        arguments: Object.fromEntries(
+          Array.from({ length: 40 }, (_, index) => [`k${index}`, index])
+        )
+      })
+      .then(
+        (value) => value,
+        (error: unknown) => ({ error })
+      );
+    expect(JSON.stringify(result)).toContain(
+      'arguments contain more than the maximum of 32 elements'
+    );
   });
 
   it('propagates a client AbortSignal into the server handler and settles it', async () => {
