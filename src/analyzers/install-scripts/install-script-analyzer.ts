@@ -1,25 +1,15 @@
-import {
-  access,
-  readFile
-} from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   Analyzer,
   AnalyzerContext,
   AnalyzerResult
 } from '../../contracts/analyzer.js';
-import type {
-  Finding,
-  FindingSeverity
-} from '../../contracts/finding.js';
+import type { Finding, FindingSeverity } from '../../contracts/finding.js';
 import { coverageOf } from '../../contracts/analysis.js';
 import { readNpmDependencyInventory } from '../../core/dependencies/inventory.js';
 
-const lifecycleNames = [
-  'preinstall',
-  'install',
-  'postinstall'
-] as const;
+const lifecycleNames = ['preinstall', 'install', 'postinstall'] as const;
 
 type PackageManifest = {
   name?: string;
@@ -43,8 +33,7 @@ const signals: SuspiciousSignal[] = [
     severity: 'high',
     regex:
       /\b(curl|wget|Invoke-WebRequest|fetch|axios|http\.get|https\.get)\b/i,
-    message:
-      'The lifecycle script appears to perform network access.',
+    message: 'The lifecycle script appears to perform network access.',
     remediation:
       'Review the remote destination and downloaded content before installation.'
   },
@@ -54,8 +43,7 @@ const signals: SuspiciousSignal[] = [
     severity: 'high',
     regex:
       /\b(sh|bash|zsh|cmd|powershell|pwsh)\b|child_process|execSync?\s*\(/i,
-    message:
-      'The lifecycle script invokes a shell or child process.',
+    message: 'The lifecycle script invokes a shell or child process.',
     remediation:
       'Confirm every command and argument is necessary and does not execute untrusted input.'
   },
@@ -107,12 +95,9 @@ export class InstallScriptAnalyzer implements Analyzer {
   readonly id = 'install-script-behavior';
   readonly version = '1.0.1';
 
-  async analyze(
-    context: AnalyzerContext
-  ): Promise<AnalyzerResult> {
+  async analyze(context: AnalyzerContext): Promise<AnalyzerResult> {
     const startedAt = performance.now();
-    const dependencies =
-      await readNpmDependencyInventory(context.root);
+    const dependencies = await readNpmDependencyInventory(context.root);
 
     const findings: Finding[] = [];
     let packagesInspected = 0;
@@ -123,9 +108,7 @@ export class InstallScriptAnalyzer implements Analyzer {
 
     for (const dependency of dependencies) {
       if (context.signal?.aborted) {
-        throw new Error(
-          'Install-script analysis was cancelled.'
-        );
+        throw new Error('Install-script analysis was cancelled.');
       }
 
       const manifestPath = path.join(
@@ -135,7 +118,9 @@ export class InstallScriptAnalyzer implements Analyzer {
       );
 
       if (!(await exists(manifestPath))) {
-        notInspected.push(`${dependency.name}@${dependency.version} (not installed)`);
+        notInspected.push(
+          `${dependency.name}@${dependency.version} (not installed)`
+        );
         continue;
       }
 
@@ -143,10 +128,7 @@ export class InstallScriptAnalyzer implements Analyzer {
         await readFile(manifestPath, 'utf8')
       ) as PackageManifest;
 
-      if (
-        manifest.version &&
-        manifest.version !== dependency.version
-      ) {
+      if (manifest.version && manifest.version !== dependency.version) {
         notInspected.push(
           `${dependency.name}@${dependency.version} (installed version ${manifest.version} differs)`
         );
@@ -186,8 +168,7 @@ export class InstallScriptAnalyzer implements Analyzer {
             source: 'package-manifest',
             evidence: [
               {
-                summary:
-                  `${lifecycleName}: ${command.slice(0, 240)}`,
+                summary: `${lifecycleName}: ${command.slice(0, 240)}`,
                 fingerprint:
                   `${dependency.installPath}:${dependency.version}:` +
                   `${lifecycleName}:${signal.id}`
@@ -212,9 +193,7 @@ export class InstallScriptAnalyzer implements Analyzer {
 
     return {
       analyzer: this.id,
-      durationMs: Math.round(
-        performance.now() - startedAt
-      ),
+      durationMs: Math.round(performance.now() - startedAt),
       findings,
       coverage: coverageOf({
         eligible: dependencies.length,

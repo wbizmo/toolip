@@ -8,26 +8,13 @@ import { coverageOf } from '../../contracts/analysis.js';
 import { createScannerContext } from '../../core/scanner-context.js';
 import { TextFileReader } from '../../core/text-file-reader.js';
 import { readNpmDependencyInventory } from '../../core/dependencies/inventory.js';
-import {
-  extractPackageImports,
-  type ImportReference
-} from './import-graph.js';
+import { extractPackageImports, type ImportReference } from './import-graph.js';
 
-const codeExtensions = new Set([
-  'js',
-  'jsx',
-  'ts',
-  'tsx',
-  'mjs',
-  'cjs'
-]);
+const codeExtensions = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']);
 
 export type PackageReachability = {
   packageName: string;
-  state:
-    | 'reachable'
-    | 'possibly-reachable'
-    | 'not-observed';
+  state: 'reachable' | 'possibly-reachable' | 'not-observed';
   direct: boolean;
   development: boolean;
   references: Array<
@@ -41,24 +28,17 @@ export class ReachabilityAnalyzer implements Analyzer {
   readonly id = 'package-reachability';
   readonly version = '1.0.0';
 
-  async analyze(
-    context: AnalyzerContext
-  ): Promise<AnalyzerResult> {
+  async analyze(context: AnalyzerContext): Promise<AnalyzerResult> {
     const startedAt = performance.now();
-    const dependencies =
-      await readNpmDependencyInventory(context.root);
-    const scannerContext =
-      await createScannerContext(context.root);
+    const dependencies = await readNpmDependencyInventory(context.root);
+    const scannerContext = await createScannerContext(context.root);
     const reader = new TextFileReader();
     const warnings: string[] = [];
     let eligible = 0;
     let scanned = 0;
     let cancelled = false;
 
-    const references = new Map<
-      string,
-      PackageReachability['references']
-    >();
+    const references = new Map<string, PackageReachability['references']>();
 
     for (const file of scannerContext.files) {
       if (
@@ -70,15 +50,10 @@ export class ReachabilityAnalyzer implements Analyzer {
       }
 
       eligible += 1;
-      const read = await reader.read(
-        file.absolutePath,
-        context.signal
-      );
+      const read = await reader.read(file.absolutePath, context.signal);
 
       if (read.status !== 'ok') {
-        warnings.push(
-          `${file.relativePath}: skipped (${read.status})`
-        );
+        warnings.push(`${file.relativePath}: skipped (${read.status})`);
         if (read.status === 'cancelled') {
           cancelled = true;
           break;
@@ -91,8 +66,7 @@ export class ReachabilityAnalyzer implements Analyzer {
         file.relativePath,
         read.content
       )) {
-        const current =
-          references.get(reference.packageName) ?? [];
+        const current = references.get(reference.packageName) ?? [];
 
         current.push({
           ...reference,
@@ -105,8 +79,7 @@ export class ReachabilityAnalyzer implements Analyzer {
 
     const packageStates = dependencies.map(
       (dependency): PackageReachability => {
-        const packageReferences =
-          references.get(dependency.name) ?? [];
+        const packageReferences = references.get(dependency.name) ?? [];
 
         return {
           packageName: dependency.name,
@@ -134,19 +107,16 @@ export class ReachabilityAnalyzer implements Analyzer {
         category: 'reachability',
         severity: 'info',
         confidence: 'high',
-        message:
-          `${item.packageName} is imported or required by project source files.`,
+        message: `${item.packageName} is imported or required by project source files.`,
         source: 'typescript-ast',
-        evidence: item.references.slice(0, 20).map(
-          (reference) => ({
-            summary:
-              `${reference.file}:${reference.line}:${reference.column} ` +
-              `${reference.kind} import`,
-            fingerprint:
-              `${item.packageName}:${reference.file}:` +
-              `${reference.line}:${reference.column}`
-          })
-        ),
+        evidence: item.references.slice(0, 20).map((reference) => ({
+          summary:
+            `${reference.file}:${reference.line}:${reference.column} ` +
+            `${reference.kind} import`,
+          fingerprint:
+            `${item.packageName}:${reference.file}:` +
+            `${reference.line}:${reference.column}`
+        })),
         metadata: {
           package: item.packageName,
           state: item.state,
@@ -158,9 +128,7 @@ export class ReachabilityAnalyzer implements Analyzer {
 
     return {
       analyzer: this.id,
-      durationMs: Math.round(
-        performance.now() - startedAt
-      ),
+      durationMs: Math.round(performance.now() - startedAt),
       findings,
       coverage: coverageOf({
         eligible,
@@ -173,12 +141,10 @@ export class ReachabilityAnalyzer implements Analyzer {
       metadata: {
         dependencies: packageStates.length,
         bytesAnalyzed: reader.usage.bytesRead,
-        reachable: packageStates.filter(
-          (item) => item.state === 'reachable'
-        ).length,
+        reachable: packageStates.filter((item) => item.state === 'reachable')
+          .length,
         possiblyReachable: packageStates.filter(
-          (item) =>
-            item.state === 'possibly-reachable'
+          (item) => item.state === 'possibly-reachable'
         ).length,
         notObserved: packageStates.filter(
           (item) => item.state === 'not-observed'
