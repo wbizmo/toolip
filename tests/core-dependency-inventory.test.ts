@@ -25,6 +25,7 @@ describe('npm dependency inventory', () => {
           },
           'node_modules/direct-package': {
             version: '2.0.0',
+            libc: ['glibc'],
             dependencies: {
               'transitive-package': '^3.0.0',
               duplicated: '^1.0.0'
@@ -57,6 +58,7 @@ describe('npm dependency inventory', () => {
       const duplicates = inventory.filter((item) => item.name === 'duplicated');
 
       expect(direct?.direct).toBe(true);
+      expect(direct?.libc).toEqual(['glibc']);
       expect(hoistedTransitive).toMatchObject({
         direct: false,
         installPath: 'node_modules/transitive-package'
@@ -143,57 +145,27 @@ describe('npm dependency inventory', () => {
   });
 });
 
-describe('optional libc constraints (Batch 03)', () => {
-  it('excludes only optional packages that contradict a known libc', () => {
-    const optional = { optional: true, libc: ['musl'] };
+describe('optional libc constraints', () => {
+  it('uses positive runtime evidence for optional exclusions', () => {
+    const pkg = { optional: true, libc: ['musl'] };
+    const forLibc = (libc: 'glibc' | 'musl' | 'unknown') =>
+      isOmittedOnPlatform(pkg, 'linux', 'x64', libc);
+    expect(forLibc('glibc')).toBe(true);
+    expect(forLibc('musl')).toBe(false);
+    expect(forLibc('unknown')).toBe(false);
+
+    const onDarwin = isOmittedOnPlatform(pkg, 'darwin', 'arm64', 'glibc');
+    expect(onDarwin).toBe(false);
     const required = { optional: false, libc: ['musl'] };
-    const blocked = { optional: true, libc: ['!glibc'] };
+    expect(isOmittedOnPlatform(required, 'linux', 'x64', 'glibc')).toBe(false);
+
+    const deny = { optional: true, libc: ['!glibc'] };
+    expect(isOmittedOnPlatform(deny, 'linux', 'x64', 'glibc')).toBe(true);
+    expect(isOmittedOnPlatform(deny, 'linux', 'x64', 'musl')).toBe(false);
+
     const otherOS = { optional: true, os: ['darwin'] };
     const otherCPU = { optional: true, cpu: ['arm64'] };
-
-    expect(isOmittedOnPlatform(optional, 'linux', 'x64', 'glibc')).toBe(true);
-    expect(isOmittedOnPlatform(optional, 'linux', 'x64', 'musl')).toBe(false);
-    expect(
-      isOmittedOnPlatform(optional, 'linux', 'x64', 'unknown')
-    ).toBe(false);
-    expect(
-      isOmittedOnPlatform(optional, 'darwin', 'arm64', 'glibc')
-    ).toBe(false);
-    expect(isOmittedOnPlatform(required, 'linux', 'x64', 'glibc')).toBe(false);
-    expect(isOmittedOnPlatform(blocked, 'linux', 'x64', 'glibc')).toBe(true);
-    expect(isOmittedOnPlatform(blocked, 'linux', 'x64', 'musl')).toBe(false);
     expect(isOmittedOnPlatform(otherOS, 'linux', 'x64', 'unknown')).toBe(true);
     expect(isOmittedOnPlatform(otherCPU, 'linux', 'x64', 'unknown')).toBe(true);
-  });
-
-  it('preserves libc constraints from package-lock.json', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-libc-'));
-    try {
-      await writeFile(
-        path.join(root, 'package-lock.json'),
-        JSON.stringify({
-          lockfileVersion: 3,
-          packages: {
-            '': {
-              name: 'fixture',
-              version: '1.0.0',
-              optionalDependencies: { native: '1.0.0' }
-            },
-            'node_modules/native': {
-              version: '1.0.0',
-              optional: true,
-              os: ['linux'],
-              libc: ['musl']
-            }
-          }
-        })
-      );
-      const native = (await readNpmDependencyInventory(root)).find(
-        (item) => item.name === 'native'
-      );
-      expect(native).toMatchObject({ optional: true, libc: ['musl'] });
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
   });
 });

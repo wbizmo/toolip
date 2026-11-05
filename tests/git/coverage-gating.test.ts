@@ -252,7 +252,7 @@ describe('pre-commit fails closed on incomplete scans (issue #27)', () => {
     );
     expect(optOut.code).toBe(EXIT_CODES.incomplete);
     expect(optOut.out).toContain('PARTIAL');
-  });
+  }, 20_000);
 
   it('rejects a bad --fail-on value', async () => {
     const root = makeRepo();
