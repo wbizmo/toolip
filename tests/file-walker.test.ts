@@ -50,7 +50,11 @@ describe('walkProjectFiles', () => {
 
     try {
       await writeFile(path.join(outside, 'hidden.ts'), 'const hidden = true;');
-      await symlink(outside, link, 'dir');
+      await symlink(
+        outside,
+        link,
+        process.platform === 'win32' ? 'junction' : 'dir'
+      );
 
       await expect(
         walkProjectFiles(root, {
@@ -64,6 +68,36 @@ describe('walkProjectFiles', () => {
           }
         })
       ).rejects.toMatchObject({ code: 'SCAN_DISCOVERY_INCOMPLETE' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores symlinked directories matched by directory ignore rules', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-walk-ignore-link-')
+    );
+    const outside = await mkdtemp(path.join(os.tmpdir(), 'toolip-outside-'));
+    const link = path.join(root, 'generated-link');
+
+    try {
+      await writeFile(path.join(outside, 'hidden.ts'), 'const hidden = true;');
+      await writeFile(path.join(root, '.toolipignore'), 'generated-link/\n');
+      await symlink(
+        outside,
+        link,
+        process.platform === 'win32' ? 'junction' : 'dir'
+      );
+
+      await expect(walkProjectFiles(root)).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ relativePath: '.toolipignore' })
+        ])
+      );
+      await expect(walkProjectFiles(root)).resolves.not.toContainEqual(
+        expect.objectContaining({ relativePath: 'generated-link' })
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(outside, { recursive: true, force: true });

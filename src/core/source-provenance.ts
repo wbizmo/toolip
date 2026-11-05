@@ -20,6 +20,8 @@ type SerializedFileSnapshot = {
   size: number;
   mtimeMs: number;
   ctimeMs: number;
+  mtimeNs: string;
+  ctimeNs: string;
 };
 
 /** Binds source findings to the exact content digest and checked file identity. */
@@ -67,6 +69,8 @@ export function serializeSnapshot(
     ino: snapshot.ino.toString(),
     size: snapshot.size,
     mtimeMs: snapshot.mtimeMs,
-    ctimeMs: snapshot.ctimeMs
+    ctimeMs: snapshot.ctimeMs,
+    mtimeNs: snapshot.mtimeNs.toString(),
+    ctimeNs: snapshot.ctimeNs.toString()
   };
 }

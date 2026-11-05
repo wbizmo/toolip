@@ -16,6 +16,8 @@ export type FileSnapshot = {
   size: number;
   mtimeMs: number;
   ctimeMs: number;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
 };
 
 export type TextFileReadResult =
@@ -56,18 +58,22 @@ function sameSnapshot(a: FileSnapshot, b: FileSnapshot): boolean {
     a.ino === b.ino &&
     a.size === b.size &&
     a.mtimeMs === b.mtimeMs &&
-    a.ctimeMs === b.ctimeMs
+    a.ctimeMs === b.ctimeMs &&
+    a.mtimeNs === b.mtimeNs &&
+    a.ctimeNs === b.ctimeNs
   );
 }
 
 /** Converts bigint filesystem metadata to bounded numeric content metadata. */
-function snapshotOf(stat: BigIntStats): FileSnapshot {
+export function snapshotOf(stat: BigIntStats): FileSnapshot {
   return {
     dev: stat.dev,
     ino: stat.ino,
     size: Number(stat.size),
     mtimeMs: Number(stat.mtimeMs),
-    ctimeMs: Number(stat.ctimeMs)
+    ctimeMs: Number(stat.ctimeMs),
+    mtimeNs: stat.mtimeNs,
+    ctimeNs: stat.ctimeNs
   };
 }
 

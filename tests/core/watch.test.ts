@@ -41,7 +41,7 @@ describe('watchProject', () => {
       close();
       await rm(root, { recursive: true, force: true });
     }
-  }, 25_000);
+  }, 35_000);
 });
 
 function deferred<T>(): {

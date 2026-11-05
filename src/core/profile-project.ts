@@ -1,7 +1,7 @@
 import { access, lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { walkProjectFiles, type ProjectFile } from './file-walker.js';
-import { TextFileReader } from './text-file-reader.js';
+import { snapshotOf, TextFileReader } from './text-file-reader.js';
 import { ToolipError } from '../errors/toolip-error.js';
 import {
   detectPackageManager,
@@ -67,13 +67,7 @@ async function readPackageJson(
         absolutePath,
         relativePath: 'package.json',
         extension: 'json',
-        snapshot: {
-          dev: stat.dev,
-          ino: stat.ino,
-          size: Number(stat.size),
-          mtimeMs: Number(stat.mtimeMs),
-          ctimeMs: Number(stat.ctimeMs)
-        }
+        snapshot: snapshotOf(stat)
       };
     } catch (error) {
       if (

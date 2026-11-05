@@ -4,7 +4,7 @@ import fg from 'fast-glob';
 import { mapConcurrent } from '../application/concurrency.js';
 import { ToolipError } from '../errors/toolip-error.js';
 import { loadToolipIgnore } from './load-toolip-ignore.js';
-import type { FileSnapshot } from './text-file-reader.js';
+import { snapshotOf, type FileSnapshot } from './text-file-reader.js';
 
 export type ProjectFile = {
   absolutePath: string;
@@ -40,20 +40,22 @@ export async function walkProjectFiles(
   });
 
   const maxFiles = options.maxFiles ?? defaultMaxFiles;
-  const candidates = entries.filter(
-    (entry) => !toolipIgnore.ignores(path.join(absoluteRoot, entry))
-  );
-
   const files = await mapConcurrent(
-    candidates,
+    entries,
     metadataConcurrency,
     async (entry) => {
       const absolutePath = path.join(absoluteRoot, entry);
       try {
+        // Skip ordinary file-pattern matches before metadata I/O. Directory-
+        // only rules are checked again after a symlink target is classified.
+        if (toolipIgnore.ignores(absolutePath)) return undefined;
         const stat = await lstat(absolutePath, { bigint: true });
+        let isDirectory = stat.isDirectory();
         if (stat.isSymbolicLink()) {
           try {
-            if ((await resolveTargetStat(absolutePath)).isDirectory()) {
+            isDirectory = (await resolveTargetStat(absolutePath)).isDirectory();
+            if (isDirectory) {
+              if (toolipIgnore.ignores(absolutePath, true)) return undefined;
               throw new ToolipError(
                 `Project discovery encountered a symbolic directory at ${entry}; traversal is incomplete.`,
                 { code: 'SCAN_DISCOVERY_INCOMPLETE' }
@@ -73,18 +75,14 @@ export async function walkProjectFiles(
             // file entry so its later descriptor read is reported incomplete.
           }
         }
+        if (toolipIgnore.ignores(absolutePath, isDirectory)) return undefined;
+        if (isDirectory) return undefined;
         if (!stat.isFile() && !stat.isSymbolicLink()) return undefined;
         return {
           absolutePath,
           relativePath: entry.replaceAll('\\', '/'),
           extension: path.extname(entry).replace('.', '').toLowerCase(),
-          snapshot: {
-            dev: stat.dev,
-            ino: stat.ino,
-            size: Number(stat.size),
-            mtimeMs: Number(stat.mtimeMs),
-            ctimeMs: Number(stat.ctimeMs)
-          }
+          snapshot: snapshotOf(stat)
         } satisfies ProjectFile;
       } catch (error) {
         throw new ToolipError(

@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { walkProjectFiles } from '../src/core/file-walker.js';
 import {
   TextFileReader,
+  snapshotOf,
   type FileSnapshot
 } from '../src/core/text-file-reader.js';
 
@@ -36,14 +37,7 @@ async function tempFile(
 
 async function snapshot(file: string): Promise<FileSnapshot> {
   const { stat } = await import('node:fs/promises');
-  const value = await stat(file, { bigint: true });
-  return {
-    dev: value.dev,
-    ino: value.ino,
-    size: Number(value.size),
-    mtimeMs: Number(value.mtimeMs),
-    ctimeMs: Number(value.ctimeMs)
-  };
+  return snapshotOf(await stat(file, { bigint: true }));
 }
 
 afterEach(async () => {
@@ -152,6 +146,19 @@ describe('TextFileReader', () => {
       snapshot: expectedSnapshot
     });
     expect(reader.usage).toEqual({ filesRead: 1, bytesRead: 4 });
+  });
+
+  it('detects nanosecond timestamp changes when millisecond values match', async () => {
+    const file = await tempFile('nanosecond.txt', 'stable');
+    const expected = await snapshot(file);
+    const reader = new TextFileReader();
+
+    await expect(
+      reader.read(file, undefined, {
+        ...expected,
+        mtimeNs: expected.mtimeNs + 1n
+      })
+    ).resolves.toMatchObject({ status: 'changed' });
   });
 
   it('loops over short reads rather than accepting a partial buffer', async () => {
