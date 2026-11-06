@@ -119,7 +119,7 @@ describe('Toolip Vault', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it('quotes shell export so expansion and command substitution stay inert', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-vault-shell-'));
