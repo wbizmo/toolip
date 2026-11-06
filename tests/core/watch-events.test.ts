@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type { FSWatcher } from 'node:fs';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -24,6 +24,7 @@ class TestWatcher extends EventEmitter implements FSWatcher {
 describe('watchProject filename-less events', () => {
   it('runs a scan when a recursive watcher has no filename', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-watch-null-'));
+    const canonicalRoot = await realpath(root);
     const listeners = new Map<string, NativeCallback>();
     const readCount = { value: 0 };
     const restorePlatform = overridePlatform('linux');
@@ -41,7 +42,7 @@ describe('watchProject filename-less events', () => {
     );
 
     try {
-      listeners.get(root)?.('change', null);
+      listeners.get(canonicalRoot)?.('change', null);
       await withTimeout(scanned.promise);
       expect(calls).toBe(1);
     } finally {
@@ -55,6 +56,7 @@ describe('watchProject filename-less events', () => {
   it('reconciles directories and scans after a tree watcher has no filename', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-watch-tree-'));
     const nested = path.join(root, 'nested');
+    const canonicalRoot = await realpath(root);
     const listeners = new Map<string, NativeCallback>();
     const readCount = { value: 0 };
     const restorePlatform = overridePlatform('darwin');
@@ -77,17 +79,18 @@ describe('watchProject filename-less events', () => {
       const firstScan = deferred<void>();
       scans.push(firstScan.resolve);
       const readsBeforeReconciliation = readCount.value;
-      listeners.get(root)?.('rename', null);
-      listeners.get(root)?.('rename', null);
-      listeners.get(root)?.('rename', null);
+      listeners.get(canonicalRoot)?.('rename', null);
+      listeners.get(canonicalRoot)?.('rename', null);
+      listeners.get(canonicalRoot)?.('rename', null);
       await withTimeout(firstScan.promise);
 
-      expect(listeners.has(nested)).toBe(true);
+      const canonicalNested = await realpath(nested);
+      expect(listeners.has(canonicalNested)).toBe(true);
       expect(readCount.value - readsBeforeReconciliation).toBe(2);
 
       const secondScan = deferred<void>();
       scans.push(secondScan.resolve);
-      listeners.get(nested)?.('change', 'later.txt');
+      listeners.get(canonicalNested)?.('change', 'later.txt');
       await withTimeout(secondScan.promise);
       expect(calls).toBe(2);
     } finally {
