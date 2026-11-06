@@ -67,7 +67,12 @@ describe('cross-process local-state lock ownership', () => {
       expect((await stat(lockPath)).isDirectory()).toBe(true);
       expect(await readFile(ownerPath, 'utf8')).toBe('replacement-owner\n');
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100
+      });
     }
   });
 
