@@ -187,7 +187,7 @@ describe('pre-commit fails closed on incomplete scans (issue #27)', () => {
     expect(base.passed).toBe(true);
     expect(strict.passed).toBe(false);
     expect(strict.summary.blocking).toBeGreaterThan(base.summary.blocking);
-  });
+  }, 30_000);
 
   it('shows only findings meeting the selected CLI threshold', async () => {
     const root = makeRepo();

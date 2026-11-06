@@ -137,15 +137,19 @@ describe('secret detection hardening', () => {
       );
       await writeFile(
         path.join(root, 'unterminated.yml'),
-        'password: "unterminated\nand-this-line-is-long-enough-to-match"\n'
+        'password: "unterminated\nunrelated: "not-a-password-value"\n'
+      );
+      await writeFile(
+        path.join(root, 'multiline.yml'),
+        'password: "multiline-password-fixture\n  continuation-value"\n'
       );
       const result = await runSecurityDoctor(root);
       const passwordFindings = result.findings.filter(
         (finding) => finding.ruleId === 'TOOLIP-SECRET-HARDCODED-PASSWORD'
       );
-      expect(passwordFindings.map((finding) => finding.location?.file)).toEqual(
-        ['settings.sh']
-      );
+      expect(
+        passwordFindings.map((finding) => finding.location?.file).sort()
+      ).toEqual(['multiline.yml', 'settings.sh']);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
