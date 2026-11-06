@@ -41,6 +41,16 @@ export function redactSensitiveText(value: string): string {
     );
 }
 
+/** Redacts high-confidence credentials without rewriting identifier suffixes. */
+function redactIdentifier(value: string): string {
+  return value
+    .replace(/(https?:\/\/)(?=[^\s/?#]*@)[^\s/?#]*@/gi, '$1[redacted]@')
+    .replace(
+      /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|npm_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,})\b/g,
+      '[redacted-token]'
+    );
+}
+
 /** Recursively sanitizes arbitrary analyzer payloads, including errors and nested metadata. */
 export function sanitizeOutput<T>(
   value: T,
@@ -64,6 +74,9 @@ export function sanitizeOutput<T>(
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value).map(([key, item]) => {
+        if ((key === 'id' || key === 'ruleId') && typeof item === 'string') {
+          return [key, redactIdentifier(item)];
+        }
         if (/fingerprint/i.test(key)) {
           const fingerprint =
             typeof item === 'string'

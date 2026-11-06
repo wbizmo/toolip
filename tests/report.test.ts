@@ -92,6 +92,41 @@ describe('report', () => {
     expect(JSON.stringify(report)).toContain('[redacted]');
   });
 
+  it('redacts unquoted passphrase and passwd fields in serialized and markdown reports', () => {
+    const report = createReport({
+      version: '0.1.0',
+      command: 'scan',
+      root: '/project',
+      findings: [
+        {
+          ...finding('TLP-SECRET-PASSWORD:config.ts:10:2', 'high', 'Rotate it.'),
+          message: 'unlock failed: passphrase=first-secret passwd=second-secret',
+          location: { file: 'config.ts', line: 10, column: 2 }
+        },
+        {
+          ...finding('TLP-SECRET-PASSWORD:config.ts:11:2', 'high', 'Rotate it.'),
+          message: 'unlock failed: passphrase=third-secret passwd=fourth-secret',
+          location: { file: 'config.ts', line: 11, column: 2 }
+        }
+      ]
+    });
+    const serialized = JSON.stringify(report);
+    const markdown = renderMarkdownReport(report);
+
+    expect(serialized).toContain('passphrase=[redacted]');
+    expect(serialized).toContain('passwd=[redacted]');
+    for (const secret of [
+      'first-secret',
+      'second-secret',
+      'third-secret',
+      'fourth-secret'
+    ]) {
+      expect(serialized).not.toContain(secret);
+      expect(markdown).not.toContain(secret);
+    }
+    expect(report.findings[0]?.id).not.toBe(report.findings[1]?.id);
+  });
+
   it('redacts credentials from serialized findings rendered as HTML', () => {
     const credential = `ghp_${'d'.repeat(36)}`;
     const serialized = serializeFinding(

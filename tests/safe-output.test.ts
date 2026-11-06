@@ -68,6 +68,26 @@ describe('safe output boundaries', () => {
     });
   });
 
+  it('preserves distinct finding location suffixes in identifiers', () => {
+    const findings = sanitizeOutput([
+      {
+        ruleId: 'TLP-SECRET-PASSWORD',
+        id: 'TLP-SECRET-PASSWORD:src/config.ts:10:4',
+        location: { file: 'src/config.ts', line: 10, column: 4 }
+      },
+      {
+        ruleId: 'TLP-SECRET-PASSWORD',
+        id: 'TLP-SECRET-PASSWORD:src/config.ts:11:4',
+        location: { file: 'src/config.ts', line: 11, column: 4 }
+      }
+    ]);
+
+    expect(findings[0]?.ruleId).toBe('TLP-SECRET-PASSWORD');
+    expect(findings[0]?.id).toBe('TLP-SECRET-PASSWORD:src/config.ts:10:4');
+    expect(findings[1]?.id).toBe('TLP-SECRET-PASSWORD:src/config.ts:11:4');
+    expect(findings[0]?.id).not.toBe(findings[1]?.id);
+  });
+
   it('pseudonymizes fingerprints while preserving secret-specific correlation', () => {
     const first = 'a'.repeat(64);
     const second = 'b'.repeat(64);
