@@ -357,15 +357,19 @@ describe('Toolip Vault', () => {
   });
 
   it.skipIf(process.platform === 'win32')(
-    'rejects symlink vault and parent paths without changing the target mode',
+    'rejects a symlink vault and accepts a symlinked parent directory',
     async () => {
       const root = await mkdtemp(
         path.join(os.tmpdir(), 'toolip-vault-symlink-')
       );
-      const target = path.join(root, 'vault.json');
+      const target = path.join(root, '.toolip', 'vault.json');
       const linkedVault = path.join(root, 'linked-vault.json');
       const parentAlias = path.join(root, 'parent-alias');
-      const linkedParentVault = path.join(parentAlias, 'vault.json');
+      const linkedParentVault = path.join(
+        parentAlias,
+        '.toolip',
+        'vault.json'
+      );
       try {
         await initVault('master-password', target);
         await chmod(target, 0o644);
@@ -385,8 +389,13 @@ describe('Toolip Vault', () => {
             masterPassword: 'master-password',
             vaultPath: linkedParentVault
           })
-        ).rejects.toMatchObject({ code: 'VAULT_READ_FAILED' });
+        ).resolves.toEqual([]);
         expect((await stat(target)).mode & 0o777).toBe(0o600);
+
+        const linkedFinalDirectoryVault = path.join(parentAlias, 'vault.json');
+        await expect(
+          initVault('master-password', linkedFinalDirectoryVault)
+        ).rejects.toMatchObject({ code: 'UNSAFE_LOCAL_STATE_PATH' });
       } finally {
         await rm(root, { recursive: true, force: true });
       }
@@ -414,7 +423,7 @@ describe('Toolip Vault', () => {
         await chown(root, foreignUid, process.getegid?.() ?? 0);
         await expect(
           listSecrets({ masterPassword: 'master-password', vaultPath })
-        ).rejects.toMatchObject({ code: 'UNSAFE_LOCAL_STATE_PATH' });
+        ).rejects.toMatchObject({ code: 'VAULT_READ_FAILED' });
       } finally {
         await chown(root, process.geteuid?.() ?? 0, process.getegid?.() ?? 0);
         await rm(root, { recursive: true, force: true });

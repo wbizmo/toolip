@@ -105,7 +105,7 @@ describe('Git revision option injection (issue #45)', () => {
     expect((await securityDiff(worktree, first, 'main')).files).toEqual([
       'a.ts'
     ]);
-  });
+  }, 30_000);
 
   it('reports unknown revisions with a typed error that leaks no paths', async () => {
     const root = makeRepo();

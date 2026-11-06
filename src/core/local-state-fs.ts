@@ -1,5 +1,5 @@
-import { constants } from 'node:fs';
-import { lstat, mkdir, open, realpath } from 'node:fs/promises';
+import { constants, type Stats } from 'node:fs';
+import { lstat, mkdir, open } from 'node:fs/promises';
 import path from 'node:path';
 
 export type DirectoryIdentity = {
@@ -7,7 +7,7 @@ export type DirectoryIdentity = {
   ino: number;
 };
 
-const noFollow = constants.O_NOFOLLOW ?? 0;
+const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
 const directoryOnly = constants.O_DIRECTORY ?? 0;
 
 /** Creates or repairs a private, user-owned local-state directory without following its final symlink. */
@@ -30,38 +30,49 @@ export async function validatePrivateDirectory(
 ): Promise<DirectoryIdentity | undefined> {
   const resolved = path.resolve(directoryPath);
 
-  let named: Awaited<ReturnType<typeof lstat>>;
-  try {
-    named = await lstat(resolved);
-  } catch (error) {
-    if (errorCode(error) === 'ENOENT') return undefined;
-    throw error;
-  }
-  if (named.isSymbolicLink() || !named.isDirectory()) {
-    throw localStatePathError(
-      'Local state directory must be a real directory.'
-    );
-  }
-
-  const canonical = await realpath(resolved);
-  if (!samePath(canonical, resolved)) {
-    throw localStatePathError(
-      'Local state directory cannot be reached through a symlink.'
-    );
-  }
-
   if (process.platform === 'win32') {
+    let named: Stats;
+    try {
+      named = await lstat(resolved);
+    } catch (error) {
+      if (errorCode(error) === 'ENOENT') return undefined;
+      throw error;
+    }
+    if (named.isSymbolicLink() || !named.isDirectory()) {
+      throw localStatePathError(
+        'Local state directory must be a real directory.'
+      );
+    }
+    // Windows 8.3 paths may differ from canonical long names; final-component
+    // lstat detects symlinks and junctions without comparing path strings.
     return identity(named);
   }
 
-  assertCurrentOwner(named.uid, resolved);
-  const handle = await open(
-    resolved,
-    constants.O_RDONLY | directoryOnly | noFollow
-  );
+  // Open the directory first with O_NOFOLLOW, then validate the opened handle
+  // against the name before changing permissions or using its identity.
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(resolved, constants.O_RDONLY | directoryOnly | noFollow);
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return undefined;
+    if (errorCode(error) === 'ELOOP' || errorCode(error) === 'ENOTDIR') {
+      const named = await lstat(resolved).catch(() => undefined);
+      if (named?.isSymbolicLink()) {
+        throw localStatePathError(
+          'Local state directory must be a real, non-symlink directory.'
+        );
+      }
+    }
+    throw error;
+  }
   try {
     const opened = await handle.stat();
-    if (!sameIdentity(named, opened)) {
+    const named = await lstat(resolved);
+    if (
+      named.isSymbolicLink() ||
+      !named.isDirectory() ||
+      !sameIdentity(named, opened)
+    ) {
       throw localStatePathError(
         'Local state directory changed while it was being validated.'
       );
@@ -77,15 +88,6 @@ export async function validatePrivateDirectory(
 /** Opens a regular local-state file without following a symlink and repairs mode through its handle. */
 export async function openPrivateFile(filePath: string): Promise<string> {
   const resolved = path.resolve(filePath);
-  const namedBefore = await lstat(resolved);
-  if (namedBefore.isSymbolicLink() || !namedBefore.isFile()) {
-    throw localStatePathError(
-      'Local state file must be a regular, non-symlink file.'
-    );
-  }
-  if (process.platform !== 'win32')
-    assertCurrentOwner(namedBefore.uid, resolved);
-
   const handle = await open(resolved, constants.O_RDONLY | noFollow);
   try {
     const opened = await handle.stat();
@@ -93,7 +95,6 @@ export async function openPrivateFile(filePath: string): Promise<string> {
     if (
       namedAfter.isSymbolicLink() ||
       !namedAfter.isFile() ||
-      !sameIdentity(namedBefore, opened) ||
       !sameIdentity(opened, namedAfter)
     ) {
       throw localStatePathError(
@@ -177,14 +178,6 @@ function sameIdentity(
 
 function identity(value: { dev: number; ino: number }): DirectoryIdentity {
   return { dev: value.dev, ino: value.ino };
-}
-
-function samePath(left: string, right: string): boolean {
-  const a = path.normalize(left);
-  const b = path.normalize(right);
-  return process.platform === 'win32'
-    ? a.toLocaleLowerCase('en-US') === b.toLocaleLowerCase('en-US')
-    : a === b;
 }
 
 function errorCode(error: unknown): string | undefined {
