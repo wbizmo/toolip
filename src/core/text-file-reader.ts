@@ -155,7 +155,12 @@ export class TextFileReader {
       }
 
       const noFollow = constants.O_NOFOLLOW ?? 0;
-      handle = await this.openFile(absolutePath, constants.O_RDONLY | noFollow);
+      const nonBlocking =
+        process.platform === 'win32' ? 0 : (constants.O_NONBLOCK ?? 0);
+      handle = await this.openFile(
+        absolutePath,
+        constants.O_RDONLY | noFollow | nonBlocking
+      );
       if (signal?.aborted) return { status: 'cancelled', bytes: 0 };
       const beforeStat = await handle.stat({ bigint: true });
       if (signal?.aborted) return { status: 'cancelled', bytes: 0 };

@@ -4,9 +4,12 @@ import type {
   AnalyzerResult
 } from '../../contracts/analyzer.js';
 import type { Finding, FindingSeverity } from '../../contracts/finding.js';
+import { coverageOf } from '../../contracts/analysis.js';
 import { createScannerContext } from '../../core/scanner-context.js';
 import { bindSourceProvenance } from '../../core/source-provenance.js';
 import { TextFileReader } from '../../core/text-file-reader.js';
+
+type DockerfileReader = Pick<TextFileReader, 'read' | 'usage'>;
 
 type DockerRule = {
   id: string;
@@ -109,17 +112,34 @@ export class DockerfileAnalyzer implements Analyzer {
   readonly id = 'dockerfile-security';
   readonly version = '1.0.0';
 
+  constructor(
+    private readonly readerFactory: (root: string) => DockerfileReader = (
+      root
+    ) => new TextFileReader(undefined, { root })
+  ) {}
+
   /** Applies Dockerfile rules to bounded, verified input snapshots. */
   async analyze(context: AnalyzerContext): Promise<AnalyzerResult> {
     const startedAt = performance.now();
     const scanner = await createScannerContext(context.root);
-    const reader = new TextFileReader(undefined, { root: scanner.root });
+    const reader = this.readerFactory(scanner.root);
     const findings: Finding[] = [];
     const warnings: string[] = [];
     let dockerfiles = 0;
+    let eligible = 0;
+    let skipped = 0;
+    let failed = 0;
+    let cancelled = false;
 
     for (const file of scanner.files) {
       if (!/(^|\/)Dockerfile(?:\.[^/]+)?$/i.test(file.relativePath)) continue;
+      eligible += 1;
+
+      if (cancelled) {
+        warnings.push(`${file.relativePath}: skipped (cancelled)`);
+        skipped += 1;
+        continue;
+      }
 
       const read = await reader.read(
         file.absolutePath,
@@ -128,7 +148,9 @@ export class DockerfileAnalyzer implements Analyzer {
       );
       if (read.status !== 'ok') {
         warnings.push(`${file.relativePath}: skipped (${read.status})`);
-        if (read.status === 'cancelled') break;
+        if (read.status === 'failed') failed += 1;
+        else skipped += 1;
+        if (read.status === 'cancelled') cancelled = true;
         continue;
       }
 
@@ -164,8 +186,16 @@ export class DockerfileAnalyzer implements Analyzer {
       analyzer: this.id,
       durationMs: Math.round(performance.now() - startedAt),
       findings,
+      coverage: coverageOf({
+        eligible,
+        scanned: dockerfiles,
+        skipped,
+        failed,
+        cancelled
+      }),
       warnings: warnings.length > 0 ? warnings : undefined,
       metadata: {
+        eligibleDockerfiles: eligible,
         dockerfiles,
         bytesAnalyzed: reader.usage.bytesRead,
         findings: findings.length

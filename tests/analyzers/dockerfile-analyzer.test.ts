@@ -53,4 +53,74 @@ describe('DockerfileAnalyzer', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('reports a changed Dockerfile as failed coverage when none were scanned', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-changed-')
+    );
+
+    try {
+      await writeFile(path.join(root, 'Dockerfile'), 'FROM node:latest\n');
+
+      const result = await new DockerfileAnalyzer(() => ({
+        read: async () => ({ status: 'changed', bytes: 0 }),
+        usage: { filesRead: 0, bytesRead: 0 }
+      })).analyze({ root });
+
+      expect(result.coverage).toMatchObject({
+        state: 'failed',
+        eligible: 1,
+        scanned: 0,
+        skipped: 1,
+        failed: 0
+      });
+      expect(result.metadata).toMatchObject({
+        eligibleDockerfiles: 1,
+        dockerfiles: 0
+      });
+      expect(result.warnings).toEqual(['Dockerfile: skipped (changed)']);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports partial coverage when another Dockerfile was scanned', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-partial-')
+    );
+
+    try {
+      await writeFile(path.join(root, 'Dockerfile'), 'FROM node:latest\n');
+      await writeFile(
+        path.join(root, 'Dockerfile.dev'),
+        'FROM node:20\nUSER node\n'
+      );
+
+      const result = await new DockerfileAnalyzer(() => ({
+        read: async (filePath) =>
+          path.basename(filePath) === 'Dockerfile'
+            ? { status: 'changed', bytes: 0 }
+            : {
+                status: 'ok',
+                content: 'FROM node:20\nUSER node\n',
+                bytes: 23
+              },
+        usage: { filesRead: 1, bytesRead: 23 }
+      })).analyze({ root });
+
+      expect(result.coverage).toMatchObject({
+        state: 'partial',
+        eligible: 2,
+        scanned: 1,
+        skipped: 1,
+        failed: 0
+      });
+      expect(result.metadata).toMatchObject({
+        eligibleDockerfiles: 2,
+        dockerfiles: 1
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

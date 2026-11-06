@@ -11,6 +11,7 @@ import {
   utimes,
   writeFile
 } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -72,6 +73,26 @@ describe('TextFileReader', () => {
     await expect(reader.read(file)).resolves.toMatchObject({
       status: 'binary'
     });
+  });
+
+  it('opens candidate files nonblocking on POSIX systems', async () => {
+    const file = await tempFile('candidate.txt', 'text');
+    let openFlags = 0;
+    const reader = new TextFileReader(undefined, {
+      openFile: async (_filePath, flags) => {
+        openFlags = flags;
+        throw new Error('test open intercepted');
+      }
+    });
+
+    await expect(reader.read(file)).resolves.toMatchObject({
+      status: 'failed'
+    });
+    if (process.platform === 'win32') {
+      expect(openFlags & (constants.O_NONBLOCK ?? 0)).toBe(0);
+    } else {
+      expect(openFlags & (constants.O_NONBLOCK ?? 0)).not.toBe(0);
+    }
   });
 
   it('enforces total byte and file-count budgets', async () => {

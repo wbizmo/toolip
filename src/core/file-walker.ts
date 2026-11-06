@@ -15,6 +15,8 @@ export type ProjectFile = {
 
 export type FileWalkOptions = {
   maxFiles?: number;
+  findEntries?: (root: string, ignorePatterns: string[]) => Promise<string[]>;
+  lstatEntry?: typeof lstat;
   statTarget?: typeof statTarget;
 };
 
@@ -39,16 +41,19 @@ export async function walkProjectFiles(
 ): Promise<ProjectFile[]> {
   const absoluteRoot = await realpath(path.resolve(root));
   const toolipIgnore = await loadToolipIgnore(absoluteRoot);
+  const inspectEntry = options.lstatEntry ?? lstat;
   const resolveTargetStat = options.statTarget ?? statTarget;
 
-  const entries = await fg(['**/*'], {
-    cwd: absoluteRoot,
-    dot: true,
-    onlyFiles: false,
-    unique: true,
-    followSymbolicLinks: false,
-    ignore: toolipIgnore.patterns
-  });
+  const entries = options.findEntries
+    ? await options.findEntries(absoluteRoot, toolipIgnore.patterns)
+    : await fg(['**/*'], {
+        cwd: absoluteRoot,
+        dot: true,
+        onlyFiles: false,
+        unique: true,
+        followSymbolicLinks: false,
+        ignore: toolipIgnore.patterns
+      });
 
   const maxFiles = options.maxFiles ?? defaultMaxFiles;
   const candidates = filterIgnoredEntries(entries, absoluteRoot, toolipIgnore);
@@ -58,30 +63,16 @@ export async function walkProjectFiles(
     async (entry) => {
       const absolutePath = path.join(absoluteRoot, entry);
       try {
-        const stat = await lstat(absolutePath, { bigint: true });
+        const stat = await inspectEntry(absolutePath, { bigint: true });
         let isDirectory = stat.isDirectory();
         if (stat.isSymbolicLink()) {
-          try {
-            isDirectory = (await resolveTargetStat(absolutePath)).isDirectory();
-            if (isDirectory) {
-              if (toolipIgnore.ignores(absolutePath, true)) return undefined;
-              throw new ToolipError(
-                `Project discovery encountered a symbolic directory at ${entry}; traversal is incomplete.`,
-                { code: 'SCAN_DISCOVERY_INCOMPLETE' }
-              );
-            }
-          } catch (error) {
-            if (error instanceof ToolipError) throw error;
-            if (
-              error === null ||
-              typeof error !== 'object' ||
-              !('code' in error) ||
-              error.code !== 'ENOENT'
-            ) {
-              throw error;
-            }
-            // A dangling or concurrently changed symbolic link is kept as a
-            // file entry so its later descriptor read is reported incomplete.
+          isDirectory = (await resolveTargetStat(absolutePath)).isDirectory();
+          if (isDirectory) {
+            if (toolipIgnore.ignores(absolutePath, true)) return undefined;
+            throw new ToolipError(
+              `Project discovery encountered a symbolic directory at ${entry}; traversal is incomplete.`,
+              { code: 'SCAN_DISCOVERY_INCOMPLETE' }
+            );
           }
         }
         if (toolipIgnore.ignores(absolutePath, isDirectory)) return undefined;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   mkdir,
+  lstat,
   mkdtemp,
   rm,
   stat as statTarget,
@@ -55,6 +56,32 @@ describe('walkProjectFiles', () => {
     }
   });
 
+  it('filters ignored entries before scheduling metadata inspection', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-walk-prefilter-')
+    );
+    const ignored = path.join(root, 'ignored.txt');
+    let inspected = false;
+
+    try {
+      await writeFile(path.join(root, '.toolipignore'), 'ignored.txt\n');
+      await writeFile(ignored, 'ignored');
+
+      await expect(
+        walkProjectFiles(root, {
+          findEntries: async () => ['ignored.txt'],
+          lstatEntry: async (entry, options) => {
+            inspected = true;
+            return lstat(entry, options);
+          }
+        })
+      ).resolves.toEqual([]);
+      expect(inspected).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('reports inaccessible symbolic targets as incomplete discovery', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-walk-link-'));
     const outside = await mkdtemp(path.join(os.tmpdir(), 'toolip-outside-'));
@@ -83,6 +110,31 @@ describe('walkProjectFiles', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
       await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a symbolic target that disappears during discovery as incomplete', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-walk-missing-link-')
+    );
+    const target = path.join(root, 'target.ts');
+    const link = path.join(root, 'source.ts');
+
+    try {
+      await writeFile(target, 'const source = true;');
+      await symlink(target, link);
+
+      await expect(
+        walkProjectFiles(root, {
+          statTarget: async () => {
+            throw Object.assign(new Error('target disappeared'), {
+              code: 'ENOENT'
+            });
+          }
+        })
+      ).rejects.toMatchObject({ code: 'SCAN_DISCOVERY_INCOMPLETE' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 

@@ -1,25 +1,64 @@
 import type { Command } from 'commander';
+import type { AnalyzerCommandDeps } from '../application/analyzer-command.js';
+import {
+  assessExecution,
+  assessmentJson,
+  finishAnalysis
+} from '../application/analysis-status.js';
 import { AnalyzerRunner } from '../application/analyzer-runner.js';
 import { DockerfileAnalyzer } from '../analyzers/docker/analyzer.js';
 
-export function registerDockerScanCommand(program: Command): void {
+type DockerScanOptions = {
+  path: string;
+  json?: boolean;
+  failOnIncomplete?: boolean;
+};
+
+export function registerDockerScanCommand(
+  program: Command,
+  deps: AnalyzerCommandDeps = {}
+): void {
   program
     .command('docker-scan')
     .description('Scan Dockerfiles for risky container build patterns.')
     .option('-p, --path <path>', 'Project path.', process.cwd())
     .option('--json', 'Print JSON.')
-    .action(async (options: { path: string; json?: boolean }) => {
+    .option(
+      '--no-fail-on-incomplete',
+      'Do not exit 3 when some Dockerfiles were not analyzed (the run is still reported as partial).'
+    )
+    .action(async (options: DockerScanOptions) => {
       const [result] = await new AnalyzerRunner({
         concurrency: 1,
-        timeoutMs: 60_000
-      }).run([new DockerfileAnalyzer()], {
+        timeoutMs: deps.timeoutMs ?? 60_000
+      }).run([deps.analyzer ?? new DockerfileAnalyzer()], {
         root: options.path
       });
 
       if (!result) throw new Error('Docker analyzer returned no result.');
+      const assessment = assessExecution(result);
 
       if (options.json) {
-        console.log(JSON.stringify(result, null, 2));
+        console.log(
+          JSON.stringify(
+            {
+              analyzer: result.analyzer,
+              durationMs: result.durationMs,
+              analysis: assessmentJson(assessment),
+              summary: result.metadata,
+              findings: result.findings,
+              warnings: result.warnings ?? []
+            },
+            null,
+            2
+          )
+        );
+        finishAnalysis({
+          assessment,
+          findings: result.findings,
+          failOnIncomplete: options.failOnIncomplete,
+          quiet: true
+        });
         return;
       }
 
@@ -34,5 +73,15 @@ export function registerDockerScanCommand(program: Command): void {
         console.log(`${finding.location?.file}:${finding.location?.line}`);
         console.log('');
       }
+
+      for (const warning of result.warnings ?? []) {
+        console.log(`Warning: ${warning}`);
+      }
+
+      finishAnalysis({
+        assessment,
+        findings: result.findings,
+        failOnIncomplete: options.failOnIncomplete
+      });
     });
 }
