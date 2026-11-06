@@ -94,4 +94,21 @@ describe('cross-process local-state lock ownership', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('skips stale-marker directories without blocking lock acquisition', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-lock-marker-dir-')
+    );
+    const resource = path.join(root, 'state');
+    const markerDirectory = path.join(root, 'state.lock.owner.orphan');
+    try {
+      await mkdir(markerDirectory);
+      await expect(
+        withLocalStateLock(resource, async () => 'acquired')
+      ).resolves.toBe('acquired');
+      expect((await lstat(markerDirectory)).isDirectory()).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

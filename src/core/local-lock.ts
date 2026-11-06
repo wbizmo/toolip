@@ -153,12 +153,10 @@ async function removeStaleOwnerMarkers(
   let inspected = 0;
   for await (const entry of directoryHandle) {
     if (inspected++ >= staleMarkerCleanupLimit) break;
-    if (!entry.name.startsWith(prefix)) continue;
+    if (!entry.isFile() || !entry.name.startsWith(prefix)) continue;
     const staleOwnerPath = path.join(directory, entry.name);
     if (staleOwnerPath === currentOwnerPath) continue;
-    await unlink(staleOwnerPath).catch((error: unknown) => {
-      if (lockErrorCode(error) !== 'ENOENT') throw error;
-    });
+    await unlink(staleOwnerPath).catch(() => undefined);
   }
 }
 

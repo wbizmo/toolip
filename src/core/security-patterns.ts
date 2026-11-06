@@ -55,7 +55,7 @@ export const secretPatterns: SecurityPattern[] = [
     category: 'secrets',
     severity: 'critical',
     regex:
-      /^\s*(?:\/\/[^/\s]+\/:)?_auth(?:Token)?\s*=\s*(?!\$\{)[^\s#"']{8,}/gim,
+      /^\s*(?:\/\/[^/\s]+(?:\/[^/\s]+)*\/:)?_auth(?:Token)?\s*=\s*(?!\$\{)[^\s#"']{8,}/gim,
     message: 'An npm registry authentication value was found.',
     recommendation:
       'Revoke the registry credential and store its replacement outside the repository.'

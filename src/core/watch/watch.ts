@@ -93,8 +93,7 @@ function watchRecursively(
   onError: (error: unknown) => void
 ): () => void {
   const watcher = watch(root, { recursive: true }, (_event, filename) => {
-    if (!filename) return;
-    onChange(filename.toString());
+    onChange(filename?.toString() ?? '');
   });
 
   watcher.on('error', onError);
@@ -133,7 +132,11 @@ function watchDirectoryTree(
         canonicalDirectory,
         { recursive: false },
         (event, filename) => {
-          if (closed || !filename) return;
+          if (closed) return;
+          if (!filename) {
+            onChange('');
+            return;
+          }
 
           const absolutePath = path.join(canonicalDirectory, filename.toString());
           const relativePath = path.relative(root, absolutePath);

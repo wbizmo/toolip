@@ -171,7 +171,7 @@ describe('secret detection hardening', () => {
       await mkdir(path.join(root, 'nested'), { recursive: true });
       await writeFile(
         path.join(root, '.npmrc'),
-        `//registry.npmjs.org/:_authToken=${token}\n`
+        `//registry.npmjs.org/:_authToken=${token}\n//registry.npmjs.org/team/private/:_authToken=${'b'.repeat(24)}\n`
       );
       await writeFile(
         path.join(root, 'nested', 'deploy.conf'),
@@ -179,10 +179,10 @@ describe('secret detection hardening', () => {
       );
       const result = await runSecurityDoctor(root);
       expect(
-        result.findings.some(
+        result.findings.filter(
           (finding) => finding.ruleId === 'TOOLIP-SECRET-NPM-AUTH'
         )
-      ).toBe(true);
+      ).toHaveLength(2);
       expect(
         result.findings.some(
           (finding) => finding.location?.file === 'nested/deploy.conf'

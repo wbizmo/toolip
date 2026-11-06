@@ -5,7 +5,10 @@ const fingerprintKey = randomBytes(32);
 /** Redacts common credential forms before untrusted text crosses an output boundary. */
 export function redactSensitiveText(value: string): string {
   return value
-    .replace(/(https?:\/\/)(?=[^\s/?#]*@)[^\s/?#]*@/gi, '$1[redacted]@')
+    .replace(
+      /([a-z][a-z0-9+.-]*:\/\/)(?=[^\s/?#]*@)[^\s/?#]*@/gi,
+      '$1[redacted]@'
+    )
     .replace(
       /([?&](?:token|access_token|refresh_token|api[_-]?key|password|secret|signature|sig)=)[^&#\s]+/gi,
       '$1[redacted]'
@@ -44,7 +47,10 @@ export function redactSensitiveText(value: string): string {
 /** Redacts high-confidence credentials without rewriting identifier suffixes. */
 function redactIdentifier(value: string): string {
   return value
-    .replace(/(https?:\/\/)(?=[^\s/?#]*@)[^\s/?#]*@/gi, '$1[redacted]@')
+    .replace(
+      /([a-z][a-z0-9+.-]*:\/\/)(?=[^\s/?#]*@)[^\s/?#]*@/gi,
+      '$1[redacted]@'
+    )
     .replace(
       /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|npm_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,})\b/g,
       '[redacted-token]'

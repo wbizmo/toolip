@@ -43,4 +43,23 @@ describe('CLI error sanitization', () => {
     expect(rendered).toContain('passphrase=[redacted]');
     expect(rendered).not.toContain('typed-secret');
   });
+
+  it('redacts non-HTTP URL userinfo in provider and CLI errors', () => {
+    const output = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(process, 'exit').mockImplementation((code) => {
+      throw new Error(`exit:${code}`);
+    });
+
+    expect(() =>
+      handleError(
+        new Error(
+          'git provider failed for git+ssh://alice:provider-secret@git.example/org/repo'
+        )
+      )
+    ).toThrow('exit:1');
+
+    const rendered = output.mock.calls.flat().join(' ');
+    expect(rendered).toContain('git+ssh://[redacted]@git.example/org/repo');
+    expect(rendered).not.toContain('provider-secret');
+  });
 });
