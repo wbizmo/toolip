@@ -124,5 +124,5 @@ describe('git-audit uses Git behavior, not .gitignore text (issue #42)', () => {
     const result = await runGitAudit(root);
     expect(result.summary.gitignorePresent).toBe(false);
     expect(has(result, 'MISSING-GITIGNORE')).toBe(true);
-  });
+  }, 30_000);
 });

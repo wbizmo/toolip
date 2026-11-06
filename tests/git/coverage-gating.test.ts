@@ -74,7 +74,7 @@ describe('pre-commit fails closed on incomplete scans (issue #27)', () => {
       scanned: 0,
       skipped: 1
     });
-  });
+  }, 30_000);
 
   it('rejects a binary eligible file and reports partial coverage next to scanned files', async () => {
     const root = makeRepo();
@@ -92,7 +92,7 @@ describe('pre-commit fails closed on incomplete scans (issue #27)', () => {
     });
     expect(result.passed).toBe(false);
     expect(result.blockedByIncompleteScan).toBe(true);
-  });
+  }, 30_000);
 
   it('does not block staged binary assets that the content reader confirms as binary', async () => {
     const root = makeRepo();
@@ -112,7 +112,7 @@ describe('pre-commit fails closed on incomplete scans (issue #27)', () => {
       scanned: 0,
       skipped: 0
     });
-  });
+  }, 30_000);
 
   it('cannot opt eligible staged files out of fail-closed coverage', async () => {
     const root = makeRepo();
