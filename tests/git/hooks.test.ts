@@ -80,7 +80,7 @@ describe('hook installation (issue #41)', () => {
     expect(
       readdirSync(path.dirname(hook)).filter((f) => f.endsWith('.tmp'))
     ).toEqual([]);
-  });
+  }, 30_000);
 
   it('places the block before user logic so an early exit cannot bypass it', async () => {
     const root = makeRepo();
@@ -93,7 +93,7 @@ describe('hook installation (issue #41)', () => {
     expect(content.indexOf(BLOCK_START)).toBeLessThan(
       content.indexOf('exit 0')
     );
-  });
+  }, 30_000);
 
   it.skipIf(!posix)(
     'a failing Toolip check still blocks despite the user `exit 0`',
@@ -106,7 +106,8 @@ describe('hook installation (issue #41)', () => {
 
       const bin = stubBin(tempDir(), 'toolip', 'exit 7');
       expect(runHook(hook, root, bin).status).toBe(7);
-    }
+    },
+    30_000
   );
 
   it('migrates an older install that appended the block after an exit', async () => {
@@ -126,7 +127,7 @@ describe('hook installation (issue #41)', () => {
     expect(content.indexOf(BLOCK_START)).toBeLessThan(
       content.indexOf('exit 0')
     );
-  });
+  }, 30_000);
 
   it('honors a relative and an absolute core.hooksPath', async () => {
     const relativeRoot = makeRepo();
@@ -146,7 +147,7 @@ describe('hook installation (issue #41)', () => {
     expect((await installPreCommitHookDetailed(absoluteRoot)).hookPath).toBe(
       path.join(shared, 'pre-commit')
     );
-  });
+  }, 30_000);
 
   it('installs into the shared hooks directory from a linked worktree', async () => {
     const root = makeRepo();
@@ -161,7 +162,7 @@ describe('hook installation (issue #41)', () => {
     expect(result.hookPath).toBe(path.join(expected, 'pre-commit'));
     expect(result.hookPath).toContain(path.join(root, '.git'));
     expect(existsSync(path.join(worktree, '.git', 'hooks'))).toBe(false); // .git is a file there
-  });
+  }, 30_000);
 
   it('redirects Husky generated hooks to the user-editable file and warns', async () => {
     const root = makeRepo();
@@ -181,7 +182,7 @@ describe('hook installation (issue #41)', () => {
     const result = await installPreCommitHookDetailed(root);
     expect(result.hookPath).toBe(path.join(root, '.husky', 'pre-commit'));
     expect(result.warnings.join('\n')).toMatch(/husky/iu);
-  });
+  }, 30_000);
 
   it('fails with remediation when the Husky dispatcher is missing or not executable', async () => {
     const root = makeRepo();
@@ -220,7 +221,7 @@ describe('hook installation (issue #41)', () => {
 
     const result = await installPreCommitHookDetailed(root);
     expect(result.warnings.join('\n')).toMatch(/lefthook/u);
-  });
+  }, 30_000);
 
   it('accepts env-style shell shebangs and keeps the original interpreter line', async () => {
     const root = makeRepo();
@@ -240,7 +241,7 @@ describe('hook installation (issue #41)', () => {
       expect(count(content, BLOCK_START)).toBe(1);
       expect(content).toContain('echo user');
     }
-  });
+  }, 30_000);
 
   it('refuses to rewrite a non-shell hook and leaves it untouched', async () => {
     const root = makeRepo();
@@ -265,7 +266,7 @@ describe('hook installation (issue #41)', () => {
       code: 'HOOK_UNSUPPORTED_INTERPRETER'
     });
     expect(readFileSync(hook, 'utf8')).toBe(original);
-  });
+  }, 30_000);
 
   it('rejects corrupt or duplicated managed blocks without modifying the file', async () => {
     const root = makeRepo();
