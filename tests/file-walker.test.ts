@@ -113,30 +113,33 @@ describe('walkProjectFiles', () => {
     }
   });
 
-  it('reports a symbolic target that disappears during discovery as incomplete', async () => {
-    const root = await mkdtemp(
-      path.join(os.tmpdir(), 'toolip-walk-missing-link-')
-    );
-    const target = path.join(root, 'target.ts');
-    const link = path.join(root, 'source.ts');
+  it.skipIf(process.platform === 'win32')(
+    'reports a symbolic target that disappears during discovery as incomplete',
+    async () => {
+      const root = await mkdtemp(
+        path.join(os.tmpdir(), 'toolip-walk-missing-link-')
+      );
+      const target = path.join(root, 'target.ts');
+      const link = path.join(root, 'source.ts');
 
-    try {
-      await writeFile(target, 'const source = true;');
-      await symlink(target, link);
+      try {
+        await writeFile(target, 'const source = true;');
+        await symlink(target, link);
 
-      await expect(
-        walkProjectFiles(root, {
-          statTarget: async () => {
-            throw Object.assign(new Error('target disappeared'), {
-              code: 'ENOENT'
-            });
-          }
-        })
-      ).rejects.toMatchObject({ code: 'SCAN_DISCOVERY_INCOMPLETE' });
-    } finally {
-      await rm(root, { recursive: true, force: true });
+        await expect(
+          walkProjectFiles(root, {
+            statTarget: async () => {
+              throw Object.assign(new Error('target disappeared'), {
+                code: 'ENOENT'
+              });
+            }
+          })
+        ).rejects.toMatchObject({ code: 'SCAN_DISCOVERY_INCOMPLETE' });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it('ignores symlinked directories matched by directory ignore rules', async () => {
     const root = await mkdtemp(
