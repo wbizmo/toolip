@@ -118,8 +118,22 @@ function watchDirectoryTree(
     { watcher: FSWatcher; dev: bigint; ino: bigint }
   >();
   const pendingReconciliations = new Set<string>();
+  const rootKey = canonicalDirectoryKey(root);
+  let rootRecoveryTimer: NodeJS.Timeout | undefined;
   let reconciliationQueued = false;
   let closed = false;
+
+  /** Retries root registration while a temporarily moved root is unavailable. */
+  function scheduleRootRecovery(): void {
+    if (closed || rootRecoveryTimer) return;
+    rootRecoveryTimer = setTimeout(() => {
+      rootRecoveryTimer = undefined;
+      if (closed || watchers.has(rootKey)) return;
+      addDirectory(root);
+      if (!watchers.has(rootKey)) scheduleRootRecovery();
+    }, 100);
+    rootRecoveryTimer.unref();
+  }
 
   /** Registers a directory watcher and recursively discovers its children. */
   const addDirectory = (directory: string): void => {
@@ -134,6 +148,7 @@ function watchDirectoryTree(
       identity = { dev: stat.dev, ino: stat.ino };
     } catch {
       removeWatchTree(key);
+      if (key === rootKey) scheduleRootRecovery();
       return;
     }
 
@@ -177,14 +192,22 @@ function watchDirectoryTree(
       );
     } catch (error) {
       onError(error);
+      if (key === rootKey) scheduleRootRecovery();
       return;
     }
 
     watchers.set(key, { watcher, ...identity });
+    if (key === rootKey && rootRecoveryTimer) {
+      clearTimeout(rootRecoveryTimer);
+      rootRecoveryTimer = undefined;
+    }
     watcher.on('error', (error) => {
       onError(error);
       watcher.close();
-      if (watchers.get(key)?.watcher === watcher) watchers.delete(key);
+      if (watchers.get(key)?.watcher === watcher) {
+        watchers.delete(key);
+        if (key === rootKey) scheduleRootRecovery();
+      }
     });
 
     try {
@@ -227,6 +250,7 @@ function watchDirectoryTree(
       }
     } catch (error) {
       onError(error);
+      if (directoryKey === rootKey) scheduleRootRecovery();
     }
     for (const [key, entry] of watchers) {
       if (key !== directoryKey && path.dirname(key) !== directoryKey) continue;
@@ -261,6 +285,8 @@ function watchDirectoryTree(
 
   return () => {
     closed = true;
+    if (rootRecoveryTimer) clearTimeout(rootRecoveryTimer);
+    rootRecoveryTimer = undefined;
     pendingReconciliations.clear();
     for (const entry of watchers.values()) {
       entry.watcher.close();

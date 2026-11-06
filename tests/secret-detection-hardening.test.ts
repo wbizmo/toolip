@@ -135,6 +135,10 @@ describe('secret detection hardening', () => {
         path.join(root, 'settings.sh'),
         'password="$DB_PASSWORD"\npassword="quoted-hardcoded-password"\n'
       );
+      await writeFile(
+        path.join(root, 'unterminated.yml'),
+        'password: "unterminated\nand-this-line-is-long-enough-to-match"\n'
+      );
       const result = await runSecurityDoctor(root);
       const passwordFindings = result.findings.filter(
         (finding) => finding.ruleId === 'TOOLIP-SECRET-HARDCODED-PASSWORD'

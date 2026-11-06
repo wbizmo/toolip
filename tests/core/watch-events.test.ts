@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { renameSync } from 'node:fs';
 import type { FSWatcher } from 'node:fs';
 import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -100,6 +101,55 @@ describe('watchProject filename-less events', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('restores the root watcher after a pending child event and move-away-back', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-watch-root-'));
+    const movedRoot = `${root}-moved`;
+    const canonicalRoot = await realpath(root);
+    const listeners = new Map<string, NativeCallback>();
+    const readCount = { value: 0 };
+    const restorePlatform = overridePlatform('darwin');
+    const cleanupModules = await mockWatchers(listeners, readCount);
+    const { watchProject } = await import('../../src/core/watch/watch.js');
+    const firstScan = deferred<void>();
+    const restoredScan = deferred<void>();
+    let calls = 0;
+    const close = watchProject(
+      root,
+      async () => {
+        calls += 1;
+        if (calls === 1) firstScan.resolve();
+        if (calls === 2) restoredScan.resolve();
+      },
+      { debounceMs: 10 }
+    );
+    const originalRootListener = listeners.get(canonicalRoot);
+
+    try {
+      listeners.get(canonicalRoot)?.('rename', 'pending-child.txt');
+      renameSync(root, movedRoot);
+      await Promise.resolve();
+      renameSync(movedRoot, root);
+
+      await withTimeout(firstScan.promise);
+      await waitFor(() => {
+        const currentListener = listeners.get(canonicalRoot);
+        return Boolean(
+          currentListener && currentListener !== originalRootListener
+        );
+      });
+
+      listeners.get(canonicalRoot)?.('change', 'after-return.txt');
+      await withTimeout(restoredScan.promise);
+      expect(calls).toBe(2);
+    } finally {
+      close();
+      restorePlatform();
+      cleanupModules();
+      await rm(root, { recursive: true, force: true });
+      await rm(movedRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 async function mockWatchers(
@@ -168,4 +218,12 @@ async function withTimeout(promise: Promise<void>): Promise<void> {
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 500 && !predicate(); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  if (!predicate())
+    throw new Error('Timed out waiting for root watcher recovery.');
 }

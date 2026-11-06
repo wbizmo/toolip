@@ -76,7 +76,7 @@ export const secretPatterns: SecurityPattern[] = [
     category: 'secrets',
     severity: 'high',
     regex:
-      /\b(password|passwd|pwd)\s*[:=]\s*(?:"(?!\$)[^"]{8,}"|'(?!\$)[^']{8,}'|(?!\$\{|[A-Za-z_$][\w$]*\s*(?:\.|\())[^\s,;"'`$().{}]{8,})/gi,
+      /\b(password|passwd|pwd)\s*[:=]\s*(?:"(?!\$)[^"\n]{8,}"|'(?!\$)[^'\n]{8,}'|(?!\$\{|[A-Za-z_$][\w$]*\s*(?:\.|\())[^\s,;"'`$().{}]{8,})/gi,
     message: 'A hardcoded password-like assignment was found.',
     recommendation:
       'Move passwords into environment variables or an encrypted secret manager.'
