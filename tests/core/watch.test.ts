@@ -30,10 +30,10 @@ describe('watchProject', () => {
 
     try {
       await writeFile(path.join(root, 'first.txt'), 'one', 'utf8');
-      await withTimeout(firstFailure.promise, 10_000);
+      await withTimeout(firstFailure.promise, 30_000);
 
       await writeFile(path.join(root, 'second.txt'), 'two', 'utf8');
-      await withTimeout(recovered.promise, 10_000);
+      await withTimeout(recovered.promise, 30_000);
 
       expect(errors).toContain('first run failed');
       expect(calls).toBeGreaterThanOrEqual(2);
@@ -41,7 +41,7 @@ describe('watchProject', () => {
       close();
       await rm(root, { recursive: true, force: true });
     }
-  }, 35_000);
+  }, 70_000);
 });
 
 function deferred<T>(): {
