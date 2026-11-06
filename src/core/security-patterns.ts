@@ -28,8 +28,7 @@ export const secretPatterns: SecurityPattern[] = [
     severity: 'critical',
     regex: /\bAKIA[0-9A-Z]{16}\b/g,
     message: 'An AWS access key-like value was found.',
-    recommendation:
-      'Rotate the credential immediately and audit its usage.'
+    recommendation: 'Rotate the credential immediately and audit its usage.'
   },
   {
     id: 'TOOLIP-SECRET-PRIVATE-KEY',
@@ -48,15 +47,34 @@ export const secretPatterns: SecurityPattern[] = [
     severity: 'critical',
     regex: /\bnpm_[A-Za-z0-9]{20,}\b/g,
     message: 'An npm token-like value was found.',
+    recommendation: 'Rotate the token and store its replacement securely.'
+  },
+  {
+    id: 'TOOLIP-SECRET-NPM-AUTH',
+    title: 'npm registry credential detected',
+    category: 'secrets',
+    severity: 'critical',
+    regex: /(?:_authToken\s*=\s*|:_authToken=|\b_auth\s*=\s*)[^\s#"']{8,}/gi,
+    message: 'An npm registry authentication value was found.',
     recommendation:
-      'Rotate the token and store its replacement securely.'
+      'Revoke the registry credential and store its replacement outside the repository.'
+  },
+  {
+    id: 'TOOLIP-SECRET-URL-CREDENTIALS',
+    title: 'Credential-bearing URL detected',
+    category: 'secrets',
+    severity: 'high',
+    regex: /\bhttps?:\/\/[^\s/:@?#]+:[^\s/@?#]+@[^\s/?#]+/gi,
+    message: 'A URL containing user credentials was found.',
+    recommendation: 'Rotate the credential and remove it from the URL.'
   },
   {
     id: 'TOOLIP-SECRET-HARDCODED-PASSWORD',
     title: 'Hardcoded password detected',
     category: 'secrets',
     severity: 'high',
-    regex: /\b(password|passwd|pwd)\s*[:=]\s*['"][^'"]{8,}['"]/gi,
+    regex:
+      /\b(password|passwd|pwd)\s*[:=]\s*(?:"[^"]{8,}"|'[^']{8,}'|[^\s,;"']{8,})/gi,
     message: 'A hardcoded password-like assignment was found.',
     recommendation:
       'Move passwords into environment variables or an encrypted secret manager.'
@@ -68,8 +86,7 @@ export const secretPatterns: SecurityPattern[] = [
     severity: 'high',
     regex: /\b(jwtSecret|JWT_SECRET|jwt_secret)\s*[:=]\s*['"][^'"]{8,}['"]/g,
     message: 'A hardcoded JWT secret was found.',
-    recommendation:
-      'Load a strong random secret from a secure runtime source.'
+    recommendation: 'Load a strong random secret from a secure runtime source.'
   },
   {
     id: 'TOOLIP-SECRET-GENERIC-API-KEY',
@@ -91,8 +108,7 @@ export const configSecurityPatterns: SecurityPattern[] = [
     severity: 'medium',
     regex: /\borigin\s*:\s*['"]\*['"]/g,
     message: 'CORS origin is configured as "*".',
-    recommendation:
-      'Restrict allowed origins to trusted domains.'
+    recommendation: 'Restrict allowed origins to trusted domains.'
   },
   {
     id: 'TOOLIP-CONFIG-WEAK-JWT-SECRET',
@@ -102,8 +118,7 @@ export const configSecurityPatterns: SecurityPattern[] = [
     regex:
       /\b(jwtSecret|JWT_SECRET|jwt_secret)\s*[:=]\s*['"](secret|changeme|password|123456|devsecret)['"]/gi,
     message: 'A weak JWT secret was detected.',
-    recommendation:
-      'Use a long, random, high-entropy secret.'
+    recommendation: 'Use a long, random, high-entropy secret.'
   },
   {
     id: 'TOOLIP-CONFIG-LONG-JWT-EXPIRY',
@@ -113,8 +128,7 @@ export const configSecurityPatterns: SecurityPattern[] = [
     regex:
       /\b(expiresIn|JWT_EXPIRES_IN)\s*[:=]\s*['"](?:365d|999d|1000d|never|10y)['"]/gi,
     message: 'A long-lived JWT expiry was detected.',
-    recommendation:
-      'Use short-lived access tokens and refresh-token rotation.'
+    recommendation: 'Use short-lived access tokens and refresh-token rotation.'
   }
 ];
 

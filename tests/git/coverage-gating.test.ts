@@ -319,12 +319,12 @@ describe('doctor coverage covers I/O failures, caps and cancellation (issue #27)
       const result = await runSecurityDoctor(context);
       expect(result.coverage).toMatchObject({
         state: 'complete',
-        eligible: 2,
-        scanned: 2,
+        eligible: 3,
+        scanned: 3,
         skipped: 0,
         failed: 0
       });
-      expect(result.coverage.excluded).toBeGreaterThanOrEqual(1);
+      expect(result.coverage.excluded).toBe(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

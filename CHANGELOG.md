@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Redact arbitrary source expressions, install-script commands, nested analyzer output and error text before reports or MCP output; remove low-entropy secret hashes from public finding summaries and identities.
+- Scan bounded readable text files including credential dotfiles such as `.npmrc`; source comments no longer suppress secret findings, and fixture suppression requires caller-owned policy with optional expiry.
+
 All notable changes to Toolip are documented in this file.
 
 The format follows Keep a Changelog principles, and Toolip uses semantic versioning.

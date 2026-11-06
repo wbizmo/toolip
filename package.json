@@ -70,7 +70,7 @@
   "bugs": {
     "url": "https://github.com/wbizmo/toolip/issues"
   },
-  "homepage": "https://github.com/wbizmo/toolip#readme",
+  "homepage": "https://www.zivoralabs.xyz/open-source/toolip/",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
     "chalk": "^5.4.1",

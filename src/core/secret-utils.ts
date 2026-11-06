@@ -1,15 +1,46 @@
 import { createHash } from 'node:crypto';
 
-export const SECRET_FIXTURE_MARKER = 'toolip:allow-secret-fixture';
-
 export type SecretMatch = {
   value: string;
   index: number;
   line: number;
   column: number;
   fingerprint: string;
-  fixtureAllowed: boolean;
 };
+
+export type TrustedFixtureSuppression = {
+  id: string;
+  ruleId: string;
+  filePath: string;
+  owner: string;
+  justification: string;
+  expiresAt?: string;
+};
+
+/** Looks up an exact rule/path suppression in a prevalidated policy index. */
+export function trustedSuppressionFor(
+  suppressions: ReadonlyMap<string, TrustedFixtureSuppression>,
+  ruleId: string,
+  filePath: string
+): TrustedFixtureSuppression | undefined {
+  return suppressions.get(JSON.stringify([ruleId, filePath]));
+}
+
+/** Builds the bounded exact-key index for valid and unexpired suppressions. */
+export function createFixtureSuppressionIndex(
+  suppressions: readonly TrustedFixtureSuppression[] = [],
+  now = Date.now()
+): Map<string, TrustedFixtureSuppression> {
+  const index = new Map<string, TrustedFixtureSuppression>();
+  for (const item of suppressions) {
+    if (!item.id.trim() || !item.owner.trim() || !item.justification.trim())
+      continue;
+    if (item.expiresAt && !(Date.parse(item.expiresAt) > now)) continue;
+    const key = JSON.stringify([item.ruleId, item.filePath]);
+    if (!index.has(key)) index.set(key, item);
+  }
+  return index;
+}
 
 export function isTestFile(relativePath?: string): boolean {
   if (!relativePath) return false;
@@ -40,11 +71,12 @@ export function secretEvidence(value: string): {
 } {
   const fingerprint = secretFingerprint(value);
   return {
-    summary: `[redacted secret; sha256:${fingerprint.slice(0, 12)}]`,
+    summary: '[redacted secret]',
     fingerprint
   };
 }
 
+/** Returns every occurrence with stable location and fingerprint metadata. */
 export function findSecretMatches(
   content: string,
   pattern: RegExp
@@ -53,25 +85,18 @@ export function findSecretMatches(
     pattern.source,
     pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`
   );
-  const lines = content.split('\n');
   const matches: SecretMatch[] = [];
 
   for (const match of content.matchAll(regex)) {
     const value = match[0];
     const index = match.index ?? 0;
     const { line, column } = lineAndColumn(content, index);
-    const currentLine = lines[line - 1] ?? '';
-    const previousLine = lines[line - 2] ?? '';
-
     matches.push({
       value,
       index,
       line,
       column,
-      fingerprint: secretFingerprint(value),
-      fixtureAllowed:
-        currentLine.includes(SECRET_FIXTURE_MARKER) ||
-        previousLine.includes(SECRET_FIXTURE_MARKER)
+      fingerprint: secretFingerprint(value)
     });
   }
 

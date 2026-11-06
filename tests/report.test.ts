@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { Finding } from '../src/contracts/finding.js';
 import { createReport } from '../src/core/report.js';
-import { detectReportFormat, renderMarkdownReport } from '../src/core/report-writer.js';
+import {
+  detectReportFormat,
+  renderMarkdownReport
+} from '../src/core/report-writer.js';
 
 function finding(
   id: string,
@@ -56,9 +59,7 @@ describe('report', () => {
       version: '0.1.0',
       command: 'doctor',
       root: '/project',
-      findings: [
-        finding('TOOLIP-1', 'low', 'Do the right thing.')
-      ]
+      findings: [finding('TOOLIP-1', 'low', 'Do the right thing.')]
     });
 
     const markdown = renderMarkdownReport(report);
@@ -67,5 +68,50 @@ describe('report', () => {
     expect(markdown).toContain('Example finding');
     expect(markdown).toContain('LOW');
     expect(markdown).toContain('Do the right thing.');
+  });
+
+  it('redacts credential-bearing message and remediation fields at report boundaries', () => {
+    const credential = `ghp_${'a'.repeat(36)}`;
+    const report = createReport({
+      version: '0.1.0',
+      command: 'scan',
+      root: '/project',
+      findings: [
+        {
+          ...finding('credential', 'high', `rotate ${credential}`),
+          message: `https://user:${credential}@example.test/?token=${credential}`,
+          metadata: { nested: { password: credential } },
+          evidence: [
+            { summary: `NPM_TOKEN=${credential}`, fingerprint: credential }
+          ]
+        }
+      ]
+    });
+    expect(JSON.stringify(report)).not.toContain(credential);
+    expect(JSON.stringify(report)).toContain('[redacted]');
+  });
+
+  it('sanitizes analysis reasons and nested finding metadata for the whole report', () => {
+    const credential = `ghp_${'b'.repeat(36)}`;
+    const report = createReport({
+      version: '0.1.0',
+      command: 'scan',
+      root: '/project',
+      findings: [
+        {
+          ...finding('nested', 'high', 'Rotate this credential.'),
+          metadata: {
+            credentials: { password: 'correct horse battery staple' }
+          }
+        }
+      ],
+      analysis: {
+        state: 'partial',
+        reasons: [`provider failed: ${credential}`]
+      }
+    });
+    const serialized = JSON.stringify(report);
+    expect(serialized).not.toContain(credential);
+    expect(serialized).not.toContain('correct horse battery staple');
   });
 });

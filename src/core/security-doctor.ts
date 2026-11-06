@@ -21,7 +21,10 @@ import {
   findSecretMatches,
   isTestFile,
   secretEvidence,
-  secretFingerprint
+  secretFingerprint,
+  createFixtureSuppressionIndex,
+  trustedSuppressionFor,
+  type TrustedFixtureSuppression
 } from './secret-utils.js';
 
 export type SecurityDoctorResult = {
@@ -29,6 +32,7 @@ export type SecurityDoctorResult = {
   /** Canonical completeness: skipped or unreadable eligible files make a run partial. */
   coverage: AnalysisCoverage;
   warnings?: string[];
+  suppressedFixtures: { count: number; ids: string[] };
   summary: {
     filesDiscovered: number;
     filesEligible: number;
@@ -53,6 +57,8 @@ export type SecurityDoctorOptions = {
   contentProvider?: (
     file: ScannerContext['files'][number]
   ) => Promise<TextFileReadResult>;
+  /** Trusted caller-owned fixture policy; comments in scanned content never grant suppression. */
+  trustedFixtureSuppressions?: readonly TrustedFixtureSuppression[];
 };
 
 const secretScanExtensions = new Set([
@@ -90,6 +96,10 @@ export async function runSecurityDoctor(
   let filesSkipped = 0;
   let readFailures = 0;
   let providerBytes = 0;
+  const suppressedFixtureIds: string[] = [];
+  const fixturePolicy = createFixtureSuppressionIndex(
+    options.trustedFixtureSuppressions
+  );
 
   const eligibleFiles = context.files.filter((file) =>
     shouldScanSecrets(file.relativePath, file.extension)
@@ -126,14 +136,24 @@ export async function runSecurityDoctor(
 
     filesScanned += 1;
     const fileFindings = scanSecretContent(file.relativePath, read.content);
+    const allowedFindings = fileFindings.filter((finding) => {
+      const policy = trustedSuppressionFor(
+        fixturePolicy,
+        finding.ruleId,
+        file.relativePath
+      );
+      if (!policy) return true;
+      suppressedFixtureIds.push(policy.id);
+      return false;
+    });
 
     if (codeExtensions.has(file.extension)) {
-      fileFindings.push(
+      allowedFindings.push(
         ...analyzeAstSource(file.relativePath, read.content),
         ...scanConfigurationContent(file.relativePath, read.content)
       );
     }
-    findings.push(...bindSourceProvenance(fileFindings, file, read));
+    findings.push(...bindSourceProvenance(allowedFindings, file, read));
   }
 
   findings.push(
@@ -153,6 +173,10 @@ export async function runSecurityDoctor(
       cancelled
     }),
     warnings: warnings.length > 0 ? warnings : undefined,
+    suppressedFixtures: {
+      count: suppressedFixtureIds.length,
+      ids: [...new Set(suppressedFixtureIds)]
+    },
     summary: {
       filesDiscovered: context.files.length,
       filesEligible,
@@ -183,7 +207,44 @@ export function shouldScanSecrets(
   if (relativePath.startsWith('dist/')) return false;
   if (relativePath.endsWith('.env')) return true;
   if (relativePath.includes('.env.')) return true;
-  return secretScanExtensions.has(extension);
+  const basename = relativePath.split('/').at(-1)?.toLowerCase() ?? '';
+  if (
+    /^(\.npmrc|\.pypirc|\.netrc|\.env(?:\..*)?|credentials(?:\..*)?|secrets?(?:\..*)?)$/.test(
+      basename
+    )
+  )
+    return true;
+  const binaryExtensions = new Set([
+    '7z',
+    'a',
+    'avi',
+    'bin',
+    'bmp',
+    'class',
+    'dll',
+    'dylib',
+    'exe',
+    'gif',
+    'gz',
+    'ico',
+    'jar',
+    'jpeg',
+    'jpg',
+    'mp3',
+    'mp4',
+    'o',
+    'pdf',
+    'png',
+    'so',
+    'sqlite',
+    'tar',
+    'wasm',
+    'webp',
+    'zip'
+  ]);
+  return (
+    secretScanExtensions.has(extension) || !binaryExtensions.has(extension)
+  );
 }
 
 /** Produces secret findings from a single already-read source file. */
@@ -193,13 +254,9 @@ function scanSecretContent(relativePath: string, content: string): Finding[] {
 
   for (const pattern of secretPatterns) {
     for (const match of findSecretMatches(content, pattern.regex)) {
-      if (match.fixtureAllowed) continue;
-
       const evidence = secretEvidence(match.value);
-      const instance = match.fingerprint.slice(0, 16);
-
       findings.push({
-        id: `${pattern.id}:${relativePath}:${match.line}:${match.column}:${instance}`,
+        id: `${pattern.id}:${relativePath}:${match.line}:${match.column}`,
         ruleId: pattern.id,
         title: testFile
           ? `Potential test fixture: ${pattern.title}`

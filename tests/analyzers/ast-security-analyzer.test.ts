@@ -91,6 +91,16 @@ const generated = new Function('value', source);
     ]);
   });
 
+  it('does not retain literal arguments in AST evidence', () => {
+    const token = `ghp_${'a'.repeat(36)}`;
+    const findings = analyzeAstSource('runner.ts', `eval("${token}");`);
+    expect(findings).toHaveLength(1);
+    expect(JSON.stringify(findings)).not.toContain(token);
+    expect(findings[0]?.evidence?.[0]?.summary).toMatch(
+      /^\[source expression redacted;/
+    );
+  });
+
   it('binds AST findings to the verified source snapshot', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-ast-provenance-')
