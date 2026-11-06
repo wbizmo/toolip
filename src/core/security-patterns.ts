@@ -54,7 +54,7 @@ export const secretPatterns: SecurityPattern[] = [
     title: 'npm registry credential detected',
     category: 'secrets',
     severity: 'critical',
-    regex: /(?:_authToken\s*=\s*|:_authToken=|\b_auth\s*=\s*)[^\s#"']{8,}/gi,
+    regex: /(?:_authToken\s*=\s*|\b_auth\s*=\s*)(?!\$\{)[^\s#"']{8,}/gi,
     message: 'An npm registry authentication value was found.',
     recommendation:
       'Revoke the registry credential and store its replacement outside the repository.'
@@ -74,7 +74,7 @@ export const secretPatterns: SecurityPattern[] = [
     category: 'secrets',
     severity: 'high',
     regex:
-      /\b(password|passwd|pwd)\s*[:=]\s*(?:"[^"]{8,}"|'[^']{8,}'|[^\s,;"']{8,})/gi,
+      /\b(password|passwd|pwd)\s*[:=]\s*(?!\$\{|[A-Za-z_$][\w$]*\s*(?:\.|\())(?:"[^"]{8,}"|'[^']{8,}'|[^\s,;"'`$().{}]{8,})/gi,
     message: 'A hardcoded password-like assignment was found.',
     recommendation:
       'Move passwords into environment variables or an encrypted secret manager.'

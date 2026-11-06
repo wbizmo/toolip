@@ -84,6 +84,28 @@ describe('GitHistorySecretAnalyzer', () => {
     }
   });
 
+  it('continues scanning added lines after source lines beginning with plus signs', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-git-history-plus-lines-')
+    );
+    const secret = `ghp_${'3'.repeat(36)}`;
+    try {
+      await configureGit(root);
+      await writeFile(
+        path.join(root, 'config.ts'),
+        `++counter;\nconst token = "${secret}";\n`
+      );
+      await commitAll(root, 'add counter and credential');
+      const result = await new GitHistorySecretAnalyzer(20).analyze({ root });
+      const finding = result.findings.find(
+        (item) => item.ruleId === 'TLP-GIT-101'
+      );
+      expect(finding?.location?.line).toBe(2);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('preserves severity for historical password candidates in tests', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-git-history-fixture-')

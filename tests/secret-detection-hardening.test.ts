@@ -204,4 +204,31 @@ describe('secret detection hardening', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('does not report environment references as literal credentials', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-secret-refs-'));
+    try {
+      await writeFile(
+        path.join(root, '.npmrc'),
+        '//registry.npmjs.org/:_authToken=$' + '{NPM_TOKEN}\n'
+      );
+      await writeFile(
+        path.join(root, 'settings.conf'),
+        'password = process.env.DB_PASSWORD\n' +
+          'passwd = $' +
+          '{DB_PASSWORD}\n' +
+          'pwd = getPassword(cfg)\n'
+      );
+      const result = await runSecurityDoctor(root);
+      expect(
+        result.findings.some(
+          (finding) =>
+            finding.ruleId === 'TOOLIP-SECRET-NPM-AUTH' ||
+            finding.ruleId === 'TOOLIP-SECRET-HARDCODED-PASSWORD'
+        )
+      ).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

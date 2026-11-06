@@ -77,12 +77,12 @@ async function streamGitLog(
         return;
       }
 
-      if (line.startsWith('+++ b/')) {
+      if (!inHunk && line.startsWith('+++ b/')) {
         currentFile = line.slice('+++ b/'.length);
         return;
       }
 
-      if (line.startsWith('+++ /dev/null')) {
+      if (!inHunk && line.startsWith('+++ /dev/null')) {
         currentFile = undefined;
         return;
       }
@@ -94,12 +94,7 @@ async function streamGitLog(
         return;
       }
 
-      if (
-        currentCommit &&
-        inHunk &&
-        line.startsWith('+') &&
-        !line.startsWith('+++')
-      ) {
+      if (currentCommit && inHunk && line.startsWith('+')) {
         onAddedLine(currentCommit, {
           file: currentFile,
           content: line.slice(1),

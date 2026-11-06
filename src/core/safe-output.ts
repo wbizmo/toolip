@@ -1,7 +1,10 @@
 /** Redacts common credential forms before untrusted text crosses an output boundary. */
 export function redactSensitiveText(value: string): string {
   return value
-    .replace(/(https?:\/\/)[^\s/@:?#]+:[^\s/@?#]+@/gi, '$1[redacted]@')
+    .replace(
+      /(https?:\/\/)(?=[^\s/?#]*:[^\s/?#]*@)[^\s/?#]*@/gi,
+      '$1[redacted]@'
+    )
     .replace(
       /([?&](?:token|access_token|refresh_token|api[_-]?key|password|secret|signature|sig)=)[^&#\s]+/gi,
       '$1[redacted]'
@@ -13,7 +16,7 @@ export function redactSensitiveText(value: string): string {
       '$1$2[redacted]'
     )
     .replace(
-      /(--?(?:token|password|secret|api[-_]?key|auth)(?:=|\s+))[^\s]+/gi,
+      /(--?(?:token|password|secret|api[-_]?key|auth)(?:=|\s+))(?:"[^"]*"|'[^']*'|[^\s]+)/gi,
       '$1[redacted]'
     )
     .replace(
@@ -36,8 +39,9 @@ export function sanitizeOutput<T>(
   if (sensitiveContext && typeof value === 'string') return '[redacted]' as T;
   if (typeof value === 'string') return redactSensitiveText(value) as T;
   if (value instanceof Error) {
+    if (sensitiveContext) return '[redacted]' as T;
     return {
-      name: value.name,
+      name: redactSensitiveText(value.name),
       message: redactSensitiveText(value.message)
     } as T;
   }

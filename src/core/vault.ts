@@ -1,18 +1,18 @@
 import crypto from 'node:crypto';
-import {
-  chmod,
-  mkdir,
-  open,
-  readFile,
-  rename,
-  rm,
-  stat,
-  writeFile
-} from 'node:fs/promises';
+import { open, rename, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import { ToolipError } from '../errors/toolip-error.js';
+import {
+  assertDirectoryIdentity,
+  ensurePrivateDirectory,
+  openPrivateFile,
+  syncDirectory,
+  validatePrivateDirectory,
+  validateRegularFileIfPresent,
+  type DirectoryIdentity
+} from './local-state-fs.js';
+import { withLocalStateLock, type LockGuard } from './local-lock.js';
 
 export type VaultRecord = {
   key: string;
@@ -37,7 +37,6 @@ export type VaultExportFormat = 'shell' | 'json';
 
 const algorithm = 'aes-256-gcm';
 const lockTimeoutMs = 5_000;
-const invalidLockStaleMs = 30_000;
 
 export function defaultVaultPath(): string {
   return path.join(os.homedir(), '.toolip', 'vault.json');
@@ -47,9 +46,9 @@ export async function initVault(
   masterPassword: string,
   vaultPath = defaultVaultPath()
 ): Promise<void> {
-  await withVaultLock(vaultPath, async () => {
+  await withVaultLock(vaultPath, async (assertOwned, directoryIdentity) => {
     try {
-      await readFile(vaultPath, 'utf8');
+      await openPrivateFile(vaultPath);
       throw new ToolipError('Vault already exists. Refusing to overwrite it.', {
         code: 'VAULT_ALREADY_EXISTS',
         exitCode: 1
@@ -59,7 +58,13 @@ export async function initVault(
       if (errorCode(error) !== 'ENOENT') throw error;
     }
 
-    await writeEncryptedVault({ secrets: [] }, masterPassword, vaultPath);
+    await writeEncryptedVault(
+      { secrets: [] },
+      masterPassword,
+      vaultPath,
+      assertOwned,
+      directoryIdentity
+    );
   });
 }
 
@@ -72,7 +77,7 @@ export async function setSecret(input: {
 }): Promise<void> {
   const vaultPath = input.vaultPath ?? defaultVaultPath();
 
-  await withVaultLock(vaultPath, async () => {
+  await withVaultLock(vaultPath, async (assertOwned, directoryIdentity) => {
     const data = await readEncryptedVault(input.masterPassword, vaultPath);
     const env = input.env ?? 'development';
     const existing = data.secrets.find(
@@ -91,7 +96,13 @@ export async function setSecret(input: {
       });
     }
 
-    await writeEncryptedVault(data, input.masterPassword, vaultPath);
+    await writeEncryptedVault(
+      data,
+      input.masterPassword,
+      vaultPath,
+      assertOwned,
+      directoryIdentity
+    );
   });
 }
 
@@ -143,7 +154,7 @@ export async function deleteSecret(input: {
 }): Promise<boolean> {
   const vaultPath = input.vaultPath ?? defaultVaultPath();
 
-  return withVaultLock(vaultPath, async () => {
+  return withVaultLock(vaultPath, async (assertOwned, directoryIdentity) => {
     const data = await readEncryptedVault(input.masterPassword, vaultPath);
     const env = input.env ?? 'development';
     const before = data.secrets.length;
@@ -153,7 +164,13 @@ export async function deleteSecret(input: {
     );
 
     if (data.secrets.length !== before) {
-      await writeEncryptedVault(data, input.masterPassword, vaultPath);
+      await writeEncryptedVault(
+        data,
+        input.masterPassword,
+        vaultPath,
+        assertOwned,
+        directoryIdentity
+      );
     }
 
     return data.secrets.length < before;
@@ -198,8 +215,12 @@ export async function exportVault(input: {
 export async function destroyVault(
   vaultPath = defaultVaultPath()
 ): Promise<void> {
-  await withVaultLock(vaultPath, async () => {
+  await withVaultLock(vaultPath, async (assertOwned, directoryIdentity) => {
+    await validateRegularFileIfPresent(vaultPath);
+    await assertDirectoryIdentity(path.dirname(vaultPath), directoryIdentity);
+    await assertOwned();
     await rm(vaultPath, { force: true });
+    await syncDirectory(path.dirname(vaultPath));
   });
 }
 
@@ -210,14 +231,24 @@ async function readEncryptedVault(
   let raw: string;
 
   try {
-    raw = await readFile(vaultPath, 'utf8');
-    await enforcePrivatePermissions(vaultPath);
+    const directory = path.dirname(vaultPath);
+    const directoryIdentity = await validatePrivateDirectory(directory);
+    if (!directoryIdentity) {
+      throw Object.assign(new Error('Vault directory does not exist.'), {
+        code: 'ENOENT'
+      });
+    }
+    raw = await openPrivateFile(vaultPath);
+    await assertDirectoryIdentity(directory, directoryIdentity);
   } catch (error) {
     if (errorCode(error) === 'ENOENT') {
-      throw new ToolipError('Vault not initialized. Run toolip vault init first.', {
-        code: 'VAULT_NOT_INITIALIZED',
-        exitCode: 1
-      });
+      throw new ToolipError(
+        'Vault not initialized. Run toolip vault init first.',
+        {
+          code: 'VAULT_NOT_INITIALIZED',
+          exitCode: 1
+        }
+      );
     }
 
     throw new ToolipError('Unable to read Toolip Vault.', {
@@ -256,10 +287,11 @@ async function readEncryptedVault(
 async function writeEncryptedVault(
   data: VaultData,
   masterPassword: string,
-  vaultPath: string
+  vaultPath: string,
+  assertOwned: LockGuard,
+  directoryIdentity: DirectoryIdentity
 ): Promise<void> {
   const directory = path.dirname(vaultPath);
-  await mkdir(directory, { recursive: true, mode: 0o700 });
 
   const salt = crypto.randomBytes(16);
   const iv = crypto.randomBytes(12);
@@ -282,77 +314,64 @@ async function writeEncryptedVault(
     `.${path.basename(vaultPath)}.${process.pid}.${crypto.randomUUID()}.tmp`
   );
 
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    await writeFile(tempPath, `${JSON.stringify(file, null, 2)}\n`, {
-      encoding: 'utf8',
-      mode: 0o600,
-      flag: 'wx'
-    });
-    await enforcePrivatePermissions(tempPath);
+    await validateRegularFileIfPresent(vaultPath);
+    await assertDirectoryIdentity(directory, directoryIdentity);
+    handle = await open(tempPath, 'wx', 0o600);
+    await handle.writeFile(`${JSON.stringify(file, null, 2)}\n`, 'utf8');
+    if (process.platform !== 'win32') await handle.chmod(0o600);
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+
+    await assertOwned();
+    await assertDirectoryIdentity(directory, directoryIdentity);
+    await validateRegularFileIfPresent(vaultPath);
     await rename(tempPath, vaultPath);
-    await enforcePrivatePermissions(vaultPath);
+    await syncDirectory(directory);
+    await assertDirectoryIdentity(directory, directoryIdentity);
   } finally {
+    await handle?.close();
     await rm(tempPath, { force: true });
   }
 }
 
 async function withVaultLock<T>(
   vaultPath: string,
-  operation: () => Promise<T>
+  operation: (
+    assertOwned: LockGuard,
+    directoryIdentity: DirectoryIdentity
+  ) => Promise<T>
 ): Promise<T> {
   const directory = path.dirname(vaultPath);
-  const lockPath = `${vaultPath}.lock`;
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  const startedAt = Date.now();
-
-  while (true) {
-    try {
-      const handle = await open(lockPath, 'wx', 0o600);
-      try {
-        await handle.writeFile(`${process.pid}\n`, 'utf8');
-        return await operation();
-      } finally {
-        await handle.close();
-        await rm(lockPath, { force: true });
-      }
-    } catch (error) {
-      if (errorCode(error) !== 'EEXIST') throw error;
-
-      if (await abandonedLock(lockPath)) {
-        await rm(lockPath, { force: true });
-        continue;
-      }
-
-      if (Date.now() - startedAt >= lockTimeoutMs) {
-        throw new ToolipError('Toolip Vault is busy. Try again after the active mutation completes.', {
-          code: 'VAULT_LOCK_TIMEOUT',
-          exitCode: 1
-        });
-      }
-
-      await delay(25);
-    }
-  }
-}
-
-async function abandonedLock(lockPath: string): Promise<boolean> {
+  const identity = await ensurePrivateDirectory(directory);
   try {
-    const raw = await readFile(lockPath, 'utf8');
-    const pid = Number.parseInt(raw.trim(), 10);
-
-    if (Number.isInteger(pid) && pid > 0) {
-      try {
-        process.kill(pid, 0);
-        return false;
-      } catch (error) {
-        return errorCode(error) === 'ESRCH';
-      }
-    }
-
-    const metadata = await stat(lockPath);
-    return Date.now() - metadata.mtimeMs > invalidLockStaleMs;
+    return await withLocalStateLock(
+      vaultPath,
+      async (assertOwned) => {
+        await assertDirectoryIdentity(directory, identity);
+        return operation(assertOwned, identity);
+      },
+      lockTimeoutMs
+    );
   } catch (error) {
-    return errorCode(error) === 'ENOENT';
+    if (errorCode(error) === 'LOCAL_STATE_LOCK_TIMEOUT') {
+      throw new ToolipError(
+        'Toolip Vault is busy. Try again after the active mutation completes.',
+        { code: 'VAULT_LOCK_TIMEOUT', exitCode: 1 }
+      );
+    }
+    if (errorCode(error) === 'LOCAL_STATE_LOCK_COMPROMISED') {
+      throw new ToolipError(
+        'Toolip Vault lock ownership changed during a mutation.',
+        {
+          code: 'VAULT_LOCK_COMPROMISED',
+          exitCode: 1
+        }
+      );
+    }
+    throw error;
   }
 }
 
@@ -413,10 +432,7 @@ function parseVaultData(raw: string): VaultData {
 }
 
 function decodeBase64(value: string, expectedLength?: number): Buffer {
-  if (
-    value.length % 4 !== 0 ||
-    !/^[A-Za-z0-9+/]+={0,2}$/.test(value)
-  ) {
+  if (value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
     throw corruptVault('Vault contains invalid base64 data.');
   }
 
@@ -424,7 +440,8 @@ function decodeBase64(value: string, expectedLength?: number): Buffer {
   if (expectedLength !== undefined && decoded.length !== expectedLength) {
     throw corruptVault('Vault cryptographic parameters have invalid lengths.');
   }
-  if (decoded.length === 0) throw corruptVault('Vault contains empty encrypted data.');
+  if (decoded.length === 0)
+    throw corruptVault('Vault contains empty encrypted data.');
   return decoded;
 }
 
@@ -446,14 +463,6 @@ function validateShellKey(key: string): void {
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
-}
-
-async function enforcePrivatePermissions(filePath: string): Promise<void> {
-  try {
-    await chmod(filePath, 0o600);
-  } catch (error) {
-    if (process.platform !== 'win32') throw error;
-  }
 }
 
 function corruptVault(message: string): ToolipError {

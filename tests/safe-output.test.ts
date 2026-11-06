@@ -29,4 +29,21 @@ describe('safe output boundaries', () => {
       Buffer.from('user:pass').toString('base64')
     );
   });
+
+  it('redacts embedded URL userinfo, quoted CLI values, and errors in secrets', () => {
+    const result = sanitizeOutput({
+      url: 'https://user:part1@part2@example.test/path?ok=1',
+      command: '--password "correct horse battery staple"',
+      credentials: new Error('correct horse battery staple'),
+      failure: Object.assign(new Error('request failed'), {
+        name: `ghp_${'4'.repeat(36)}`
+      })
+    });
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain('part1');
+    expect(serialized).not.toContain('part2@');
+    expect(serialized).not.toContain('correct horse battery staple');
+    expect(serialized).not.toContain('ghp_');
+    expect(serialized).toContain('https://[redacted]@example.test/path?ok=1');
+  });
 });

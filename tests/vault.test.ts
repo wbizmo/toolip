@@ -1,16 +1,22 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   access,
   chmod,
+  chown,
+  lstat,
+  mkdir,
   mkdtemp,
   readdir,
   rm,
   stat,
+  symlink,
+  utimes,
   writeFile
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 import type { ToolipError } from '../src/errors/toolip-error.js';
 import {
@@ -24,6 +30,31 @@ import {
 } from '../src/core/vault.js';
 
 const execFileAsync = promisify(execFile);
+const workerPath = path.resolve('tests/helpers/local-state-worker.ts');
+
+async function runWorker(...args: string[]): Promise<void> {
+  await execFileAsync(
+    process.execPath,
+    ['--import', 'tsx', workerPath, ...args],
+    {
+      cwd: process.cwd(),
+      timeout: 30_000
+    }
+  );
+}
+
+async function waitForFile(filePath: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    try {
+      await access(filePath);
+      return;
+    } catch {
+      await delay(20);
+    }
+  }
+  throw new Error(`Worker did not create its ready marker: ${filePath}`);
+}
 
 describe('Toolip Vault', () => {
   it('initializes, stores, retrieves, lists, exports, and deletes secrets', async () => {
@@ -162,6 +193,110 @@ describe('Toolip Vault', () => {
     }
   });
 
+  it('serializes mutations from three independent processes', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-vault-processes-')
+    );
+    const vaultPath = path.join(root, 'vault.json');
+    try {
+      await initVault('worker-test-password', vaultPath);
+      await Promise.all(
+        ['FIRST_PROCESS', 'SECOND_PROCESS', 'THIRD_PROCESS'].map((key) =>
+          runWorker('vault', vaultPath, key, `value-${key}`)
+        )
+      );
+      const secrets = await listSecrets({
+        masterPassword: 'worker-test-password',
+        vaultPath
+      });
+      expect(secrets.map((secret) => secret.key).sort()).toEqual([
+        'FIRST_PROCESS',
+        'SECOND_PROCESS',
+        'THIRD_PROCESS'
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 45_000);
+
+  it('keeps a live process lock in place while contenders wait', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-vault-live-lock-')
+    );
+    const vaultPath = path.join(root, 'vault.json');
+    const readyPath = path.join(root, 'ready');
+    try {
+      await initVault('worker-test-password', vaultPath);
+      const holder = spawn(
+        process.execPath,
+        [
+          '--import',
+          'tsx',
+          workerPath,
+          'hold-lock',
+          vaultPath,
+          'unused',
+          '1200',
+          readyPath
+        ],
+        { cwd: process.cwd(), stdio: 'ignore' }
+      );
+      await waitForFile(readyPath);
+      const lockPath = `${vaultPath}.lock`;
+      const ownerPath = `${lockPath}.owner`;
+      const [lockInfo, owner] = await Promise.all([
+        stat(lockPath),
+        import('node:fs/promises').then(({ readFile }) =>
+          readFile(ownerPath, 'utf8')
+        )
+      ]);
+      expect(lockInfo.isDirectory()).toBe(true);
+      expect(owner.trim()).toMatch(/^[0-9a-f-]{36}$/i);
+      if (process.platform !== 'win32') {
+        expect(lockInfo.mode & 0o777).toBe(0o700);
+      }
+      const holderExit = new Promise<void>((resolve, reject) => {
+        holder.once('error', reject);
+        holder.once('exit', (code) =>
+          code === 0
+            ? resolve()
+            : reject(new Error(`Lock holder exited ${code}.`))
+        );
+      });
+      await runWorker('vault', vaultPath, 'CONTENDER', 'waited');
+      await holderExit;
+      await expect(lstat(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('recovers the stale lease left by a crashed or PID-reused owner', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-vault-crashed-lock-')
+    );
+    const resource = path.join(root, 'state');
+    try {
+      const lockPath = `${resource}.lock`;
+      await mkdir(lockPath, { mode: 0o700 });
+      await writeFile(`${lockPath}.owner`, `pid=${process.pid}\n`, 'utf8');
+      const staleTime = new Date(Date.now() - 5_000);
+      await utimes(lockPath, staleTime, staleTime);
+      const { withLocalStateLock } = await import('../src/core/local-lock.js');
+      await withLocalStateLock(
+        resource,
+        async (assertOwned) => assertOwned(),
+        5_000,
+        2_000
+      );
+      await expect(lstat(`${resource}.lock`)).rejects.toMatchObject({
+        code: 'ENOENT'
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('limits shell-key validation to shell export and normalizes malformed vault files', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-vault-corrupt-'));
     const vaultPath = path.join(root, 'vault.json');
@@ -211,13 +346,81 @@ describe('Toolip Vault', () => {
       if (process.platform !== 'win32') {
         expect((await stat(vaultPath)).mode & 0o777).toBe(0o600);
         await chmod(vaultPath, 0o644);
+        await chmod(root, 0o755);
         await listSecrets({ masterPassword: 'master-password', vaultPath });
         expect((await stat(vaultPath)).mode & 0o777).toBe(0o600);
+        expect((await stat(root)).mode & 0o777).toBe(0o700);
       }
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects symlink vault and parent paths without changing the target mode',
+    async () => {
+      const root = await mkdtemp(
+        path.join(os.tmpdir(), 'toolip-vault-symlink-')
+      );
+      const target = path.join(root, 'vault.json');
+      const linkedVault = path.join(root, 'linked-vault.json');
+      const parentAlias = path.join(root, 'parent-alias');
+      const linkedParentVault = path.join(parentAlias, 'vault.json');
+      try {
+        await initVault('master-password', target);
+        await chmod(target, 0o644);
+        await symlink(target, linkedVault);
+        await expect(
+          listSecrets({
+            masterPassword: 'master-password',
+            vaultPath: linkedVault
+          })
+        ).rejects.toMatchObject({ code: 'VAULT_READ_FAILED' });
+        expect((await stat(target)).mode & 0o777).toBe(0o644);
+
+        await chmod(target, 0o600);
+        await symlink(root, parentAlias, 'dir');
+        await expect(
+          listSecrets({
+            masterPassword: 'master-password',
+            vaultPath: linkedParentVault
+          })
+        ).rejects.toMatchObject({ code: 'VAULT_READ_FAILED' });
+        expect((await stat(target)).mode & 0o777).toBe(0o600);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.skipIf(process.platform === 'win32' || process.geteuid?.() !== 0)(
+    'rejects vault files and directories owned by another user',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-vault-owner-'));
+      const vaultPath = path.join(root, 'vault.json');
+      const foreignUid = (process.geteuid?.() ?? 0) + 1;
+      try {
+        await initVault('master-password', vaultPath);
+        await chown(vaultPath, foreignUid, process.getegid?.() ?? 0);
+        await expect(
+          listSecrets({ masterPassword: 'master-password', vaultPath })
+        ).rejects.toMatchObject({ code: 'VAULT_READ_FAILED' });
+
+        await chown(
+          vaultPath,
+          process.geteuid?.() ?? 0,
+          process.getegid?.() ?? 0
+        );
+        await chown(root, foreignUid, process.getegid?.() ?? 0);
+        await expect(
+          listSecrets({ masterPassword: 'master-password', vaultPath })
+        ).rejects.toMatchObject({ code: 'UNSAFE_LOCAL_STATE_PATH' });
+      } finally {
+        await chown(root, process.geteuid?.() ?? 0, process.getegid?.() ?? 0);
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
 
   it('rejects invalid master passwords', async () => {
     const root = await mkdtemp(
