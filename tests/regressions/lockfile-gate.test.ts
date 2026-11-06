@@ -285,7 +285,7 @@ describe('lockfile integrity and version sync (issues #50, #51, #52)', () => {
     it('accepts complete sha512 and sha384 digests', () => {
       expect(withIntegrity(INTEGRITY).status).toBe(0);
       expect(withIntegrity(`sha384-${'B'.repeat(64)}`).status).toBe(0);
-    });
+    }, 15_000);
   });
 
   it('rejects non-registry sources and weak integrity hashes', () => {

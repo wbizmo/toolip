@@ -10,6 +10,7 @@ import {
   type TextFileBudget,
   type TextFileReadResult
 } from './text-file-reader.js';
+import { bindSourceProvenance } from './source-provenance.js';
 import {
   configSecurityPatterns,
   secretPatterns,
@@ -72,6 +73,7 @@ const secretScanExtensions = new Set([
 
 const codeExtensions = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']);
 
+/** Runs the local security checks and records truthful scan coverage. */
 export async function runSecurityDoctor(
   rootOrContext: string | ScannerContext,
   options: SecurityDoctorOptions = {}
@@ -80,7 +82,7 @@ export async function runSecurityDoctor(
     typeof rootOrContext === 'string'
       ? await createScannerContext(rootOrContext)
       : rootOrContext;
-  const reader = new TextFileReader(options.budget);
+  const reader = new TextFileReader(options.budget, { root: context.root });
   const findings: Finding[] = [];
   const warnings: string[] = [];
   let filesEligible = 0;
@@ -98,7 +100,7 @@ export async function runSecurityDoctor(
   for (const [index, file] of eligibleFiles.entries()) {
     const read = options.contentProvider
       ? await options.contentProvider(file)
-      : await reader.read(file.absolutePath, options.signal);
+      : await reader.read(file.absolutePath, options.signal, file.snapshot);
     if (options.contentProvider && read.status === 'ok') {
       providerBytes += read.bytes;
     }
@@ -123,14 +125,15 @@ export async function runSecurityDoctor(
     }
 
     filesScanned += 1;
-    findings.push(...scanSecretContent(file.relativePath, read.content));
+    const fileFindings = scanSecretContent(file.relativePath, read.content);
 
     if (codeExtensions.has(file.extension)) {
-      findings.push(
+      fileFindings.push(
         ...analyzeAstSource(file.relativePath, read.content),
         ...scanConfigurationContent(file.relativePath, read.content)
       );
     }
+    findings.push(...bindSourceProvenance(fileFindings, file, read));
   }
 
   findings.push(
@@ -165,10 +168,12 @@ export async function runSecurityDoctor(
   };
 }
 
+/** Counts findings belonging to one canonical finding category. */
 function countCategory(findings: Finding[], category: string): number {
   return findings.filter((finding) => finding.category === category).length;
 }
 
+/** Identifies source and configuration files eligible for secret inspection. */
 export function shouldScanSecrets(
   relativePath: string,
   extension: string
@@ -181,6 +186,7 @@ export function shouldScanSecrets(
   return secretScanExtensions.has(extension);
 }
 
+/** Produces secret findings from a single already-read source file. */
 function scanSecretContent(relativePath: string, content: string): Finding[] {
   const findings: Finding[] = [];
   const testFile = isTestFile(relativePath);
@@ -223,6 +229,7 @@ function scanSecretContent(relativePath: string, content: string): Finding[] {
   return findings;
 }
 
+/** Inspects configuration text for unsafe security settings. */
 function scanConfigurationContent(
   relativePath: string,
   content: string
@@ -249,6 +256,7 @@ function scanConfigurationContent(
   return findings;
 }
 
+/** Builds a finding from a matched security configuration pattern. */
 function patternFinding(
   pattern: SecurityPattern,
   relativePath: string,
@@ -276,6 +284,7 @@ function patternFinding(
   };
 }
 
+/** Returns a fresh global regex so repeated scans do not share lastIndex. */
 function globalRegex(pattern: RegExp): RegExp {
   return new RegExp(
     pattern.source,
@@ -283,6 +292,7 @@ function globalRegex(pattern: RegExp): RegExp {
   );
 }
 
+/** Reports missing baseline HTTP security headers from project configuration. */
 function detectMissingSecurityHeaders(relativePaths: string[]): Finding[] {
   const possibleServerFiles = relativePaths.filter(
     (file) =>

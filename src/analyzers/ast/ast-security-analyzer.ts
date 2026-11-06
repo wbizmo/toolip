@@ -5,11 +5,13 @@ import type {
 } from '../../contracts/analyzer.js';
 import { coverageOf } from '../../contracts/analysis.js';
 import { createScannerContext } from '../../core/scanner-context.js';
+import { bindSourceProvenance } from '../../core/source-provenance.js';
 import { TextFileReader } from '../../core/text-file-reader.js';
 import { analyzeAstSource } from './source-analysis.js';
 
 const supportedExtensions = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']);
 
+/** Filters generated declarations and unsupported file types from AST analysis. */
 function shouldAnalyze(relativePath: string, extension: string): boolean {
   if (!supportedExtensions.has(extension)) return false;
   if (relativePath.endsWith('.d.ts')) return false;
@@ -27,10 +29,11 @@ export class AstSecurityAnalyzer implements Analyzer {
     exportName: 'AstSecurityAnalyzer'
   };
 
+  /** Analyzes eligible source snapshots and reports incomplete reads. */
   async analyze(context: AnalyzerContext): Promise<AnalyzerResult> {
     const startedAt = performance.now();
     const scannerContext = await createScannerContext(context.root);
-    const reader = new TextFileReader();
+    const reader = new TextFileReader(undefined, { root: scannerContext.root });
     const findings = [];
     const warnings: string[] = [];
     let filesAnalyzed = 0;
@@ -47,7 +50,11 @@ export class AstSecurityAnalyzer implements Analyzer {
         warnings.push(`${file.relativePath}: skipped (cancelled)`);
         continue;
       }
-      const read = await reader.read(file.absolutePath, context.signal);
+      const read = await reader.read(
+        file.absolutePath,
+        context.signal,
+        file.snapshot
+      );
 
       if (read.status !== 'ok') {
         warnings.push(`${file.relativePath}: skipped (${read.status})`);
@@ -57,7 +64,13 @@ export class AstSecurityAnalyzer implements Analyzer {
         continue;
       }
 
-      findings.push(...analyzeAstSource(file.relativePath, read.content));
+      findings.push(
+        ...bindSourceProvenance(
+          analyzeAstSource(file.relativePath, read.content),
+          file,
+          read
+        )
+      );
 
       filesAnalyzed += 1;
     }

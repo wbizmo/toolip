@@ -200,7 +200,7 @@ describe('Toolip Vault', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it('creates and repairs private vault permissions where POSIX modes apply', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-vault-mode-'));

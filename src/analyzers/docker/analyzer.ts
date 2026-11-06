@@ -1,7 +1,15 @@
-import type { Analyzer, AnalyzerContext, AnalyzerResult } from '../../contracts/analyzer.js';
+import type {
+  Analyzer,
+  AnalyzerContext,
+  AnalyzerResult
+} from '../../contracts/analyzer.js';
 import type { Finding, FindingSeverity } from '../../contracts/finding.js';
+import { coverageOf } from '../../contracts/analysis.js';
 import { createScannerContext } from '../../core/scanner-context.js';
+import { bindSourceProvenance } from '../../core/source-provenance.js';
 import { TextFileReader } from '../../core/text-file-reader.js';
+
+type DockerfileReader = Pick<TextFileReader, 'read' | 'usage'>;
 
 type DockerRule = {
   id: string;
@@ -17,25 +25,34 @@ const rules: DockerRule[] = [
     id: 'TLP-DOCKER-001',
     title: 'Container may run as root',
     severity: 'high',
-    test: (_line, lines) => !lines.some((line) => /^USER\s+(?!root\b|0\b)/i.test(line.trim())),
+    test: (_line, lines) =>
+      !lines.some((line) => /^USER\s+(?!root\b|0\b)/i.test(line.trim())),
     message: 'No non-root USER instruction was found.',
-    remediation: 'Create and switch to a dedicated non-root user before the final command.'
+    remediation:
+      'Create and switch to a dedicated non-root user before the final command.'
   },
   {
     id: 'TLP-DOCKER-002',
     title: 'Secret-like value in Docker ARG or ENV',
     severity: 'critical',
-    test: (line) => /^(ARG|ENV)\s+.*(TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY)/i.test(line.trim()),
+    test: (line) =>
+      /^(ARG|ENV)\s+.*(TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY)/i.test(
+        line.trim()
+      ),
     message: 'A secret-like variable is declared through ARG or ENV.',
-    remediation: 'Use runtime secret injection or BuildKit secret mounts instead of image metadata.'
+    remediation:
+      'Use runtime secret injection or BuildKit secret mounts instead of image metadata.'
   },
   {
     id: 'TLP-DOCKER-003',
     title: 'Unpinned base image tag',
     severity: 'medium',
-    test: (line) => /^FROM\s+\S+(?::latest)?(?:\s|$)/i.test(line.trim()) && !/@sha256:/i.test(line),
+    test: (line) =>
+      /^FROM\s+\S+(?::latest)?(?:\s|$)/i.test(line.trim()) &&
+      !/@sha256:/i.test(line),
     message: 'The base image is not pinned by digest.',
-    remediation: 'Pin trusted base images by immutable digest and review updates deliberately.'
+    remediation:
+      'Pin trusted base images by immutable digest and review updates deliberately.'
   },
   {
     id: 'TLP-DOCKER-004',
@@ -43,18 +60,22 @@ const rules: DockerRule[] = [
     severity: 'high',
     test: (line) => /^ADD\s+https?:\/\//i.test(line.trim()),
     message: 'ADD downloads remote content during the image build.',
-    remediation: 'Download explicitly, verify checksums, and use COPY for local content.'
+    remediation:
+      'Download explicitly, verify checksums, and use COPY for local content.'
   },
   {
     id: 'TLP-DOCKER-005',
     title: 'Package installation without cleanup',
     severity: 'low',
-    test: (line) => /apt-get\s+install/i.test(line) && !/rm\s+-rf\s+\/var\/lib\/apt\/lists/i.test(line),
+    test: (line) =>
+      /apt-get\s+install/i.test(line) &&
+      !/rm\s+-rf\s+\/var\/lib\/apt\/lists/i.test(line),
     message: 'apt package metadata may remain in the image layer.',
     remediation: 'Combine installation and cleanup in the same RUN instruction.'
   }
 ];
 
+/** Creates the canonical finding for one Dockerfile rule match. */
 function finding(
   rule: DockerRule,
   relativePath: string,
@@ -75,10 +96,12 @@ function finding(
       line: lineNumber,
       column: 1
     },
-    evidence: [{
-      summary: summary.trim().slice(0, 200) || 'No non-root USER instruction',
-      fingerprint: `${relativePath}:${lineNumber}:${rule.id}`
-    }],
+    evidence: [
+      {
+        summary: summary.trim().slice(0, 200) || 'No non-root USER instruction',
+        fingerprint: `${relativePath}:${lineNumber}:${rule.id}`
+      }
+    ],
     remediation: {
       summary: rule.remediation
     }
@@ -89,51 +112,90 @@ export class DockerfileAnalyzer implements Analyzer {
   readonly id = 'dockerfile-security';
   readonly version = '1.0.0';
 
+  constructor(
+    private readonly readerFactory: (root: string) => DockerfileReader = (
+      root
+    ) => new TextFileReader(undefined, { root })
+  ) {}
+
+  /** Applies Dockerfile rules to bounded, verified input snapshots. */
   async analyze(context: AnalyzerContext): Promise<AnalyzerResult> {
     const startedAt = performance.now();
     const scanner = await createScannerContext(context.root);
-    const reader = new TextFileReader();
+    const reader = this.readerFactory(scanner.root);
     const findings: Finding[] = [];
     const warnings: string[] = [];
     let dockerfiles = 0;
+    let eligible = 0;
+    let skipped = 0;
+    let failed = 0;
+    let cancelled = false;
 
     for (const file of scanner.files) {
       if (!/(^|\/)Dockerfile(?:\.[^/]+)?$/i.test(file.relativePath)) continue;
+      eligible += 1;
 
-      const read = await reader.read(file.absolutePath, context.signal);
+      if (cancelled) {
+        warnings.push(`${file.relativePath}: skipped (cancelled)`);
+        skipped += 1;
+        continue;
+      }
+
+      const read = await reader.read(
+        file.absolutePath,
+        context.signal,
+        file.snapshot
+      );
       if (read.status !== 'ok') {
         warnings.push(`${file.relativePath}: skipped (${read.status})`);
-        if (read.status === 'cancelled') break;
+        if (read.status === 'failed') failed += 1;
+        else skipped += 1;
+        if (read.status === 'cancelled') cancelled = true;
         continue;
       }
 
       dockerfiles += 1;
       const lines = read.content.split(/\r?\n/);
       const [rootRule, ...lineRules] = rules;
+      const fileFindings: Finding[] = [];
 
       if (rootRule?.test('', lines)) {
-        findings.push(
-          finding(rootRule, file.relativePath, 1, 'No non-root USER instruction')
+        fileFindings.push(
+          finding(
+            rootRule,
+            file.relativePath,
+            1,
+            'No non-root USER instruction'
+          )
         );
       }
 
       for (const [index, line] of lines.entries()) {
         for (const rule of lineRules) {
           if (rule.test(line, lines)) {
-            findings.push(
+            fileFindings.push(
               finding(rule, file.relativePath, index + 1, line)
             );
           }
         }
       }
+      findings.push(...bindSourceProvenance(fileFindings, file, read));
     }
 
     return {
       analyzer: this.id,
       durationMs: Math.round(performance.now() - startedAt),
       findings,
+      coverage: coverageOf({
+        eligible,
+        scanned: dockerfiles,
+        skipped,
+        failed,
+        cancelled
+      }),
       warnings: warnings.length > 0 ? warnings : undefined,
       metadata: {
+        eligibleDockerfiles: eligible,
         dockerfiles,
         bytesAnalyzed: reader.usage.bytesRead,
         findings: findings.length

@@ -3,7 +3,7 @@ import path from 'node:path';
 import ignore from 'ignore';
 
 export type ToolipIgnore = {
-  ignores(filePath: string): boolean;
+  ignores(filePath: string, isDirectory?: boolean): boolean;
   patterns: string[];
 };
 
@@ -35,9 +35,12 @@ export async function loadToolipIgnore(root: string): Promise<ToolipIgnore> {
 
   return {
     patterns,
-    ignores(filePath: string): boolean {
+    ignores(filePath: string, isDirectory = false): boolean {
       const relativePath = path.relative(root, filePath).replaceAll('\\', '/');
-      return relativePath.length > 0 && ig.ignores(relativePath);
+      if (relativePath.length === 0) return false;
+      // The ignore package uses a trailing slash to distinguish a directory
+      // match. Keep that detail here because path.relative() removes it.
+      return ig.ignores(isDirectory ? `${relativePath}/` : relativePath);
     }
   };
 }

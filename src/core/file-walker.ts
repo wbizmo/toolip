@@ -1,53 +1,106 @@
 import path from 'node:path';
+import { lstat, realpath, stat as statTarget } from 'node:fs/promises';
 import fg from 'fast-glob';
+import { mapConcurrent } from '../application/concurrency.js';
 import { ToolipError } from '../errors/toolip-error.js';
-import { loadToolipIgnore } from './load-toolip-ignore.js';
+import { loadToolipIgnore, type ToolipIgnore } from './load-toolip-ignore.js';
+import { snapshotOf, type FileSnapshot } from './text-file-reader.js';
 
 export type ProjectFile = {
   absolutePath: string;
   relativePath: string;
   extension: string;
+  snapshot?: FileSnapshot;
 };
 
 export type FileWalkOptions = {
   maxFiles?: number;
+  findEntries?: (root: string, ignorePatterns: string[]) => Promise<string[]>;
+  lstatEntry?: typeof lstat;
+  statTarget?: typeof statTarget;
 };
 
+const metadataConcurrency = 32;
 const defaultMaxFiles = 50_000;
 
+/** Removes ordinary ignored paths before scheduling metadata inspection. */
+export function filterIgnoredEntries(
+  entries: string[],
+  root: string,
+  toolipIgnore: ToolipIgnore
+): string[] {
+  return entries.filter(
+    (entry) => !toolipIgnore.ignores(path.join(root, entry))
+  );
+}
+
+/** Discovers eligible project files with bounded, snapshot-aware metadata reads. */
 export async function walkProjectFiles(
   root: string,
   options: FileWalkOptions = {}
 ): Promise<ProjectFile[]> {
-  const absoluteRoot = path.resolve(root);
+  const absoluteRoot = await realpath(path.resolve(root));
   const toolipIgnore = await loadToolipIgnore(absoluteRoot);
+  const inspectEntry = options.lstatEntry ?? lstat;
+  const resolveTargetStat = options.statTarget ?? statTarget;
 
-  const entries = await fg(['**/*'], {
-    cwd: absoluteRoot,
-    dot: true,
-    onlyFiles: true,
-    unique: true,
-    followSymbolicLinks: false,
-    ignore: toolipIgnore.patterns
-  });
+  const entries = options.findEntries
+    ? await options.findEntries(absoluteRoot, toolipIgnore.patterns)
+    : await fg(['**/*'], {
+        cwd: absoluteRoot,
+        dot: true,
+        onlyFiles: false,
+        unique: true,
+        followSymbolicLinks: false,
+        ignore: toolipIgnore.patterns
+      });
 
   const maxFiles = options.maxFiles ?? defaultMaxFiles;
-  if (entries.length > maxFiles) {
+  const candidates = filterIgnoredEntries(entries, absoluteRoot, toolipIgnore);
+  const files = await mapConcurrent(
+    candidates,
+    metadataConcurrency,
+    async (entry) => {
+      const absolutePath = path.join(absoluteRoot, entry);
+      try {
+        const stat = await inspectEntry(absolutePath, { bigint: true });
+        let isDirectory = stat.isDirectory();
+        if (stat.isSymbolicLink()) {
+          isDirectory = (await resolveTargetStat(absolutePath)).isDirectory();
+          if (isDirectory) {
+            if (toolipIgnore.ignores(absolutePath, true)) return undefined;
+            throw new ToolipError(
+              `Project discovery encountered a symbolic directory at ${entry}; traversal is incomplete.`,
+              { code: 'SCAN_DISCOVERY_INCOMPLETE' }
+            );
+          }
+        }
+        if (toolipIgnore.ignores(absolutePath, isDirectory)) return undefined;
+        if (isDirectory) return undefined;
+        if (!stat.isFile() && !stat.isSymbolicLink()) return undefined;
+        return {
+          absolutePath,
+          relativePath: entry.replaceAll('\\', '/'),
+          extension: path.extname(entry).replace('.', '').toLowerCase(),
+          snapshot: snapshotOf(stat)
+        } satisfies ProjectFile;
+      } catch (error) {
+        throw new ToolipError(
+          `Project discovery could not inspect ${entry}: ${error instanceof Error ? error.message : String(error)}`,
+          { code: 'SCAN_DISCOVERY_INCOMPLETE' }
+        );
+      }
+    }
+  );
+
+  const discovered = files
+    .flatMap((file) => (file === undefined ? [] : [file]))
+    .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  if (discovered.length > maxFiles) {
     throw new ToolipError(
-      `Project discovery found ${entries.length} files, above the configured limit of ${maxFiles}. Refine .toolipignore or raise the scan budget explicitly.`,
+      `Project discovery found ${discovered.length} files, above the configured limit of ${maxFiles}. Refine .toolipignore or raise the scan budget explicitly.`,
       { code: 'SCAN_FILE_LIMIT_EXCEEDED' }
     );
   }
-
-  return entries
-    .map((entry) => {
-      const absolutePath = path.join(absoluteRoot, entry);
-      return {
-        absolutePath,
-        relativePath: entry.replaceAll('\\', '/'),
-        extension: path.extname(entry).replace('.', '').toLowerCase()
-      };
-    })
-    .filter((file) => !toolipIgnore.ignores(file.absolutePath))
-    .sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  return discovered;
 }

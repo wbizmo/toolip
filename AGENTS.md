@@ -39,3 +39,10 @@ Applies to all changes in this repository. Read `CONTRIBUTING.md`, `docs/ENGINEE
 PRs must pass locked dependency install, TypeScript typechecking, compiler-backed checks, Biome lint, Prettier formatting, workflow/lockfile policy, build, tests, coverage thresholds, production and development dependency audit with signature verification, secret scanning, CodeQL and the Linux/macOS/Windows × Node 22/24 CI matrix. Run `npm run verify` locally first. Review any scanner finding instead of assuming either a false positive or an automatically exploitable vulnerability.
 
 Do not auto-merge; report CI failures and fix before merging. The owner authorizes the final release separately.
+
+## Local completion before GitHub updates
+
+- Complete each batch entirely in the local checkout: inspect scope and reviews, implement the full batch, run all applicable verification, review the entire diff, and resolve findings before pushing.
+- Make one consolidated push per completed batch. Do not push unfinished work, use CI to debug local failures, or push speculative/intermediate corrections. If external CI or review surfaces a new defect, collect all findings, fix them together locally, rerun the full applicable suite, then make one consolidated correction push.
+- If local verification is unavailable, leave the work unpushed.
+- Never bypass required reviews or branch protections. Merge only after required checks and independent approvals pass.
