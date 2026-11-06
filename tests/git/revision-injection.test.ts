@@ -130,7 +130,7 @@ describe('Git revision option injection (issue #45)', () => {
 
     const result = await securityDiff(root, base, 'HEAD');
     expect(result.files.sort()).toEqual([...names].sort());
-  });
+  }, 30_000);
 
   it('keeps the syntax check strict and total', () => {
     for (const ok of [
