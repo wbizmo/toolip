@@ -418,6 +418,7 @@ describe('Toolip Vault', () => {
       const target = path.join(root, '.toolip', 'vault.json');
       const linkedVault = path.join(root, 'linked-vault.json');
       const parentAlias = path.join(root, 'parent-alias');
+      const finalDirectoryAlias = path.join(root, 'final-directory-alias');
       const linkedParentVault = path.join(parentAlias, '.toolip', 'vault.json');
       try {
         await initVault('master-password', target);
@@ -432,6 +433,19 @@ describe('Toolip Vault', () => {
         expect((await stat(target)).mode & 0o777).toBe(0o644);
 
         await chmod(target, 0o600);
+        await symlink(path.dirname(target), finalDirectoryAlias, 'dir');
+        await expect(
+          listSecrets({
+            masterPassword: 'master-password',
+            vaultPath: path.join(finalDirectoryAlias, 'vault.json')
+          })
+        ).rejects.toMatchObject({
+          code: 'VAULT_READ_FAILED',
+          message: expect.stringContaining(
+            'Local state directory must be a real, non-symlink directory.'
+          )
+        });
+
         await symlink(root, parentAlias, 'dir');
         await expect(
           listSecrets({

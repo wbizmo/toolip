@@ -29,7 +29,7 @@ describe('GitHistorySecretAnalyzer', () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-git-history-real-')
     );
-    const secret = 'ghp_123456789012345678901234567890123456';
+    const secret = `ghp_${'1'.repeat(36)}`;
 
     try {
       await configureGit(root);

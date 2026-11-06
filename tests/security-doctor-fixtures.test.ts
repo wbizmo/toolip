@@ -11,9 +11,10 @@ describe('security doctor hardening', () => {
     try {
       await writeFile(path.join(root, 'package.json'), '{}');
 
+      const token = `npm_${'1'.repeat(28)}`;
       await writeFile(
         path.join(root, 'index.ts'),
-        'const token = "npm_123456789012345678901234567890";'
+        `const token = "${token}";`
       );
 
       const result = await runSecurityDoctor(root);

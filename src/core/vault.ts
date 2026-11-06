@@ -251,6 +251,14 @@ async function readEncryptedVault(
       );
     }
 
+    if (errorCode(error) === 'UNSAFE_LOCAL_STATE_PATH') {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new ToolipError(`Unable to read Toolip Vault: ${reason}`, {
+        code: 'VAULT_READ_FAILED',
+        exitCode: 1
+      });
+    }
+
     throw new ToolipError('Unable to read Toolip Vault.', {
       code: 'VAULT_READ_FAILED',
       exitCode: 1

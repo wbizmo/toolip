@@ -115,8 +115,10 @@ function watchDirectoryTree(
 ): () => void {
   const watchers = new Map<
     string,
-    { watcher: FSWatcher; dev: number; ino: number }
+    { watcher: FSWatcher; dev: bigint; ino: bigint }
   >();
+  const pendingReconciliations = new Set<string>();
+  let reconciliationQueued = false;
   let closed = false;
 
   /** Registers a directory watcher and recursively discovers its children. */
@@ -125,9 +127,9 @@ function watchDirectoryTree(
 
     const canonicalDirectory = canonicalWatchPath(directory);
     const key = canonicalDirectoryKey(canonicalDirectory);
-    let identity: { dev: number; ino: number };
+    let identity: { dev: bigint; ino: bigint };
     try {
-      const stat = statSync(canonicalDirectory);
+      const stat = statSync(canonicalDirectory, { bigint: true });
       if (!stat.isDirectory()) return;
       identity = { dev: stat.dev, ino: stat.ino };
     } catch {
@@ -158,7 +160,7 @@ function watchDirectoryTree(
         (event, filename) => {
           if (closed || watchers.get(key)?.watcher !== watcher) return;
           if (!filename) {
-            reconcileDirectory(canonicalDirectory);
+            queueReconciliation(canonicalDirectory);
             onChange('');
             return;
           }
@@ -170,10 +172,7 @@ function watchDirectoryTree(
           const relativePath = path.relative(root, absolutePath);
           onChange(relativePath);
 
-          if (event === 'rename') {
-            tryAddNewDirectory(absolutePath);
-            reconcileDirectory(canonicalDirectory);
-          }
+          if (event === 'rename') queueReconciliation(canonicalDirectory);
         }
       );
     } catch (error) {
@@ -200,30 +199,42 @@ function watchDirectoryTree(
     }
   };
 
-  /** Adds a renamed path if it currently names a directory. */
-  const tryAddNewDirectory = (candidate: string): void => {
-    try {
-      if (statSync(candidate).isDirectory()) {
-        addDirectory(candidate);
-      }
-    } catch {
-      // Rename events also represent deletions; a missing path needs no watcher.
-    }
-  };
+  /** Coalesces duplicate rename events for the same directory within one tick. */
+  function queueReconciliation(directory: string): void {
+    pendingReconciliations.add(
+      canonicalDirectoryKey(canonicalWatchPath(directory))
+    );
+    if (reconciliationQueued) return;
+
+    reconciliationQueued = true;
+    queueMicrotask(() => {
+      reconciliationQueued = false;
+      const pending = [...pendingReconciliations];
+      pendingReconciliations.clear();
+      for (const key of pending) reconcileDirectory(key);
+    });
+  }
 
   /** Reconciles child registrations and removes watches for stale identities. */
   function reconcileDirectory(directory: string): void {
     if (closed) return;
+    const directoryKey = canonicalDirectoryKey(canonicalWatchPath(directory));
     try {
-      for (const entry of readdirSync(directory, { withFileTypes: true })) {
-        if (entry.isDirectory()) addDirectory(path.join(directory, entry.name));
+      for (const entry of readdirSync(directoryKey, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          addDirectory(path.join(directoryKey, entry.name));
+        }
       }
     } catch (error) {
       onError(error);
     }
+    const prefix = directoryKey.endsWith(path.sep)
+      ? directoryKey
+      : `${directoryKey}${path.sep}`;
     for (const [key, entry] of watchers) {
+      if (key !== directoryKey && !key.startsWith(prefix)) continue;
       try {
-        const current = statSync(key);
+        const current = statSync(key, { bigint: true });
         if (
           !current.isDirectory() ||
           current.dev !== entry.dev ||
@@ -253,6 +264,7 @@ function watchDirectoryTree(
 
   return () => {
     closed = true;
+    pendingReconciliations.clear();
     for (const entry of watchers.values()) {
       entry.watcher.close();
     }
