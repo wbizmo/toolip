@@ -1,16 +1,20 @@
 import type { Command } from 'commander';
 import { auditRemoteRepository } from '../core/github/remote-audit.js';
 
+import { sanitizeOutput } from '../core/safe-output.js';
+
 export function registerAuditRepoCommand(program: Command): void {
   program
     .command('audit-repo <url>')
-    .description('Audit a public GitHub repository through the authenticated gh CLI.')
+    .description(
+      'Audit a public GitHub repository through the authenticated gh CLI.'
+    )
     .option('--json', 'Print JSON.')
     .action(async (url: string, options: { json?: boolean }) => {
       const result = await auditRemoteRepository(url);
 
       if (options.json) {
-        console.log(JSON.stringify(result, null, 2));
+        console.log(JSON.stringify(sanitizeOutput(result), null, 2));
         return;
       }
 

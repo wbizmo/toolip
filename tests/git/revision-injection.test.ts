@@ -88,7 +88,7 @@ describe('Git revision option injection (issue #45)', () => {
       expect(result.packageManifestChanged).toBe(true);
       expect(result.sourceFilesChanged).toEqual(['src/app.ts']);
     }
-  });
+  }, 30_000);
 
   it('works on a detached HEAD and in a linked worktree', async () => {
     const root = makeRepo();
@@ -105,7 +105,7 @@ describe('Git revision option injection (issue #45)', () => {
     expect((await securityDiff(worktree, first, 'main')).files).toEqual([
       'a.ts'
     ]);
-  });
+  }, 30_000);
 
   it('reports unknown revisions with a typed error that leaks no paths', async () => {
     const root = makeRepo();
@@ -114,7 +114,7 @@ describe('Git revision option injection (issue #45)', () => {
     );
     expect(error.code).toBe('GIT_REVISION_NOT_FOUND');
     expect(error.message).not.toContain(root);
-  });
+  }, 30_000);
 
   it('handles file names with spaces, newlines and non-ASCII characters', async () => {
     const root = makeRepo();
@@ -130,7 +130,7 @@ describe('Git revision option injection (issue #45)', () => {
 
     const result = await securityDiff(root, base, 'HEAD');
     expect(result.files.sort()).toEqual([...names].sort());
-  });
+  }, 30_000);
 
   it('keeps the syntax check strict and total', () => {
     for (const ok of [

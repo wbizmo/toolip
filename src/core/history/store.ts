@@ -1,56 +1,45 @@
-import {
-  mkdir,
-  readFile,
-  rename,
-  writeFile
-} from 'node:fs/promises';
+import crypto from 'node:crypto';
+import { open, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
-import type {
-  HistoryEntry,
-  HistoryStore
-} from './types.js';
+import type { HistoryEntry, HistoryStore } from './types.js';
+import {
+  assertDirectoryIdentity,
+  ensurePrivateDirectory,
+  openPrivateFile,
+  syncDirectory,
+  validatePrivateDirectory,
+  validateRegularFileIfPresent,
+  type DirectoryIdentity
+} from '../local-state-fs.js';
+import { withLocalStateLock, type LockGuard } from '../local-lock.js';
 
 const schemaVersion = '1.0' as const;
 
+/** Returns the canonical history file path for a project root. */
 export function historyFilePath(root: string): string {
   return path.join(root, '.toolip', 'history.json');
 }
 
-export async function readHistory(
-  root: string
-): Promise<HistoryStore> {
+/** Reads a validated versioned history file, treating only absence as an empty store. */
+export async function readHistory(root: string): Promise<HistoryStore> {
   const filePath = historyFilePath(root);
+  const directory = path.dirname(filePath);
+  const identity = await validatePrivateDirectory(directory);
+  if (!identity) return { schemaVersion, entries: [] };
 
   try {
-    const raw = await readFile(filePath, 'utf8');
-    const parsed = JSON.parse(raw) as HistoryStore;
-
-    if (
-      parsed.schemaVersion !== schemaVersion ||
-      !Array.isArray(parsed.entries)
-    ) {
-      throw new Error(
-        'Unsupported Toolip history schema.'
-      );
-    }
-
-    return parsed;
+    const raw = await openPrivateFile(filePath);
+    await assertDirectoryIdentity(directory, identity);
+    return parseHistory(raw);
   } catch (error) {
-    if (
-      error instanceof Error &&
-      'code' in error &&
-      error.code === 'ENOENT'
-    ) {
-      return {
-        schemaVersion,
-        entries: []
-      };
+    if (errorCode(error) === 'ENOENT') {
+      return { schemaVersion, entries: [] };
     }
-
     throw error;
   }
 }
 
+/** Appends under a cross-process lease and atomically commits a unique temp file. */
 export async function appendHistory(
   root: string,
   entry: HistoryEntry,
@@ -58,60 +47,120 @@ export async function appendHistory(
 ): Promise<void> {
   const filePath = historyFilePath(root);
   const directory = path.dirname(filePath);
-  const temporary = `${filePath}.tmp`;
+  const identity = await ensurePrivateDirectory(directory);
 
-  await mkdir(directory, {
-    recursive: true
-  });
+  await withLocalStateLock(
+    filePath,
+    async (assertOwned) => {
+      await assertStoreDirectory(directory, identity);
+      const current = await readHistory(root);
+      if (current.entries.some((stored) => stored.id === entry.id)) return;
 
-  const current = await readHistory(root);
-  const entries = [
-    ...current.entries,
-    entry
-  ].slice(-Math.max(1, maxEntries));
-
-  await writeFile(
-    temporary,
-    `${JSON.stringify(
-      {
-        schemaVersion,
-        entries
-      } satisfies HistoryStore,
-      null,
-      2
-    )}\n`,
-    {
-      encoding: 'utf8',
-      mode: 0o600
-    }
+      const entries = [...current.entries, entry].slice(
+        -Math.max(1, Math.floor(maxEntries))
+      );
+      await writeHistoryAtomically(
+        filePath,
+        { schemaVersion, entries },
+        directory,
+        identity,
+        assertOwned
+      );
+    },
+    30_000
   );
-
-  await rename(temporary, filePath);
 }
 
-export async function clearHistory(
-  root: string
-): Promise<void> {
+/** Clears history as one serialized transaction; appends before clear are removed, later appends remain. */
+export async function clearHistory(root: string): Promise<void> {
   const filePath = historyFilePath(root);
   const directory = path.dirname(filePath);
+  const identity = await ensurePrivateDirectory(directory);
 
-  await mkdir(directory, {
-    recursive: true
-  });
-
-  await writeFile(
+  await withLocalStateLock(
     filePath,
-    `${JSON.stringify(
-      {
-        schemaVersion,
-        entries: []
-      } satisfies HistoryStore,
-      null,
-      2
-    )}\n`,
-    {
-      encoding: 'utf8',
-      mode: 0o600
-    }
+    async (assertOwned) => {
+      await assertStoreDirectory(directory, identity);
+      await writeHistoryAtomically(
+        filePath,
+        { schemaVersion, entries: [] },
+        directory,
+        identity,
+        assertOwned
+      );
+    },
+    30_000
   );
+}
+
+/** Parses and validates the supported history schema. */
+function parseHistory(raw: string): HistoryStore {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('Toolip history file is corrupt JSON.');
+  }
+
+  if (
+    !parsed ||
+    typeof parsed !== 'object' ||
+    !('schemaVersion' in parsed) ||
+    parsed.schemaVersion !== schemaVersion ||
+    !('entries' in parsed) ||
+    !Array.isArray(parsed.entries)
+  ) {
+    throw new Error('Unsupported Toolip history schema.');
+  }
+
+  return parsed as HistoryStore;
+}
+
+/** Writes a history snapshot through a private same-directory temporary file. */
+async function writeHistoryAtomically(
+  filePath: string,
+  store: HistoryStore,
+  directory: string,
+  identity: DirectoryIdentity,
+  assertOwned: LockGuard
+): Promise<void> {
+  const temporary = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  const serialized = `${JSON.stringify(store, null, 2)}\n`;
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+
+  try {
+    await validateRegularFileIfPresent(filePath);
+    await assertStoreDirectory(directory, identity);
+    handle = await open(temporary, 'wx', 0o600);
+    await handle.writeFile(serialized, 'utf8');
+    if (process.platform !== 'win32') await handle.chmod(0o600);
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+
+    await assertOwned();
+    await assertStoreDirectory(directory, identity);
+    await validateRegularFileIfPresent(filePath);
+    await rename(temporary, filePath);
+    await syncDirectory(directory);
+    await assertStoreDirectory(directory, identity);
+  } finally {
+    await handle?.close();
+    await rm(temporary, { force: true });
+  }
+}
+
+/** Confirms that the store directory still has its validated filesystem identity. */
+async function assertStoreDirectory(
+  directory: string,
+  identity: DirectoryIdentity
+): Promise<void> {
+  await assertDirectoryIdentity(directory, identity);
+}
+
+/** Returns a Node filesystem error code when one is present. */
+function errorCode(error: unknown): string | undefined {
+  return error && typeof error === 'object' && 'code' in error
+    ? String((error as { code?: unknown }).code)
+    : undefined;
 }

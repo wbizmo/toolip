@@ -102,6 +102,7 @@ export class InstallScriptAnalyzer implements Analyzer {
   readonly id = 'install-script-behavior';
   readonly version = '1.0.1';
 
+  /** Inspects installed manifests and reports bounded lifecycle-script risks. */
   async analyze(context: AnalyzerContext): Promise<AnalyzerResult> {
     const startedAt = performance.now();
     const dependencies = await readNpmDependencyInventory(context.root);
@@ -185,7 +186,7 @@ export class InstallScriptAnalyzer implements Analyzer {
             source: 'package-manifest',
             evidence: [
               {
-                summary: `${lifecycleName}: ${command.slice(0, 240)}`,
+                summary: `${lifecycleName} script contains a potentially risky operation.`,
                 fingerprint:
                   `${dependency.installPath}:${dependency.version}:` +
                   `${lifecycleName}:${signal.id}`
@@ -201,7 +202,7 @@ export class InstallScriptAnalyzer implements Analyzer {
               direct: dependency.direct,
               development: dependency.development,
               lifecycle: lifecycleName,
-              command
+              commandRedacted: true
             }
           });
         }

@@ -12,11 +12,13 @@ Existing valid version-1 vaults remain readable after upgrades. Unsupported futu
 
 ## Persistence guarantees
 
-Mutating operations are serialized with a vault-local lock file. This prevents concurrent read-modify-write operations from silently overwriting one another.
+Mutations use an atomic directory lease from `proper-lockfile` with a 30-second stale threshold and 10-second heartbeat. The owner token is stored next to the lock and checked before each atomic replacement; release is skipped if that token or lease changes. Stale recovery uses lease timestamps, not process IDs, so PID reuse does not strand a vault. Lock acquisition times out after five seconds with `VAULT_LOCK_TIMEOUT`; permission and compromised-lease errors fail closed.
 
-Encrypted updates are written to a uniquely named temporary file in the same directory and then atomically renamed over the primary vault. A failed or interrupted temporary write therefore does not leave a partially written primary vault file.
+Encrypted updates are written through an exclusively created, uniquely named temporary file in the same directory, flushed, checked against the current lock owner and validated parent directory, then atomically renamed over the primary vault. The containing directory is synced where supported. A failed or interrupted temporary write therefore leaves either the previous complete vault or the newly committed complete vault.
 
-On platforms with POSIX permission modes, Toolip creates and repairs the vault file to mode `0600`. The vault directory is created with restrictive permissions as well. Windows does not expose equivalent POSIX mode semantics, so Toolip does not claim that `0600` provides an access-control boundary there.
+The final vault directory must be a real, current-user-owned directory; POSIX permissions are repaired through an open directory handle to `0700`. The vault must be a regular, current-user-owned file and is opened without following its final symlink; permissions are repaired through that open file handle to `0600`. A symlinked ancestor is treated only as a path alias: the final `.toolip` directory is secured and its identity is revalidated before commit, so replacing that parent after validation fails closed. Toolip rejects a symlinked vault, symlinked final state directory, foreign-owned POSIX path, and path replacement detected during the operation.
+
+On Windows, the Node filesystem API does not expose a portable owner/DACL verifier or POSIX mode boundary. Toolip rejects detected symlinks/reparse points and compares opened-file identity, uses the same atomic directory lease, and relies on the user's inherited Windows ACL for confidentiality. It does not claim to repair or verify a Windows DACL. The threat model is a local user able to race an unsafe state path; it does not treat another process running as the same user as an isolation boundary.
 
 ## Export formats
 

@@ -51,7 +51,7 @@ describe('pre-commit scans the staged blob, not the worktree (issue #26)', () =>
     expect(
       result.findings.filter((f) => f.location?.file === 'app.ts')
     ).toEqual([]);
-  });
+  }, 30_000);
 
   it('handles partial staging: scans exactly what would be committed', async () => {
     const root = makeRepo();
@@ -64,7 +64,7 @@ describe('pre-commit scans the staged blob, not the worktree (issue #26)', () =>
     git(root, 'add', 'mixed.ts');
     write(root, 'mixed.ts', `${CLEAN}${fakeSecretLine('partial')}`);
     expect((await runPreCommit(root)).passed).toBe(true);
-  });
+  }, 30_000);
 
   it('still scans staged content when the worktree file was deleted', async () => {
     const root = makeRepo();

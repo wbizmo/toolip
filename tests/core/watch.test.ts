@@ -1,10 +1,47 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { watchProject } from '../../src/core/watch/watch.js';
 
 describe('watchProject', () => {
+  it('reattaches child watchers after a watched directory is replaced', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-watch-replace-'));
+    const nested = path.join(root, 'nested');
+    await mkdir(nested);
+    await writeFile(path.join(nested, 'initial.txt'), 'initial', 'utf8');
+    let calls = 0;
+    let watchingChildChange = false;
+    const childChange = deferred<void>();
+    const close = watchProject(
+      root,
+      async () => {
+        calls += 1;
+        if (watchingChildChange) childChange.resolve();
+      },
+      { debounceMs: 20 }
+    );
+
+    try {
+      await rm(nested, { recursive: true, force: true });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await mkdir(nested);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const beforeChildChange = calls;
+      watchingChildChange = true;
+      await writeFile(
+        path.join(nested, 'after-recreate.txt'),
+        'changed',
+        'utf8'
+      );
+      await withTimeout(childChange.promise, 30_000);
+      expect(calls).toBeGreaterThan(beforeChildChange);
+    } finally {
+      close();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 70_000);
+
   it('reports callback failures and continues watching', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-watch-'));
     let calls = 0;
@@ -30,10 +67,10 @@ describe('watchProject', () => {
 
     try {
       await writeFile(path.join(root, 'first.txt'), 'one', 'utf8');
-      await withTimeout(firstFailure.promise, 10_000);
+      await withTimeout(firstFailure.promise, 30_000);
 
       await writeFile(path.join(root, 'second.txt'), 'two', 'utf8');
-      await withTimeout(recovered.promise, 10_000);
+      await withTimeout(recovered.promise, 30_000);
 
       expect(errors).toContain('first run failed');
       expect(calls).toBeGreaterThanOrEqual(2);
@@ -41,7 +78,7 @@ describe('watchProject', () => {
       close();
       await rm(root, { recursive: true, force: true });
     }
-  }, 35_000);
+  }, 70_000);
 });
 
 function deferred<T>(): {

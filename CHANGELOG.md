@@ -6,6 +6,12 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 
 ## Unreleased
 
+- Avoid copying source expressions into AST evidence, omit install-script command text, and redact supported credential patterns in analyzer output, errors, reports and MCP output; remove low-entropy secret hashes from public finding summaries and identities.
+- Scan bounded readable text files including credential dotfiles such as `.npmrc`; source comments no longer suppress secret findings, and fixture suppression requires caller-owned policy with optional expiry.
+- Serialize vault and history mutations across processes, reject unsafe local-state symlinks and foreign-owned POSIX paths with actionable vault-read errors, atomically flush replacements, and reclaim lock leases left by terminated owners after lease expiry.
+- Reconcile security-watch directories after filename-less events and directory replacement so recreated subtrees remain monitored; keep the recursive watcher on Linux and use reconciled per-directory watches on macOS and Windows.
+- Set the package homepage metadata to `https://www.zivoralabs.xyz/open-source/toolip/`.
+
 ### Security
 
 - File scans now bind reads to discovery-time file identity, preserve nanosecond modification/change times, use nonblocking opens on POSIX, use initialized bounded buffers, loop until the exact file length is read, hash completed content, and mark changed, escaped, short, or growing files incomplete instead of analyzing partial bytes (#47, #53). Filesystem-backed findings include the exact source digest plus JSON-safe discovery and verified-read identity metadata. Discovery reports incomplete scans for unignored symbolic directories, missing symlink targets, or entries it cannot inspect, applies directory-only ignore rules to symlink targets, filters ignored paths before metadata reads, limits concurrent inspection, and applies `maxFiles` only to non-ignored files; projects with ignored manifests retain profile metadata through a separate checked read. `docker-scan` reports failed or partial coverage when discovered Dockerfiles change before analysis.

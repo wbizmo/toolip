@@ -7,8 +7,10 @@ import type {
 import type { Finding } from '../../contracts/finding.js';
 import {
   isTestFile,
-  SECRET_FIXTURE_MARKER,
-  secretEvidence
+  secretEvidence,
+  createFixtureSuppressionIndex,
+  trustedSuppressionFor,
+  type TrustedFixtureSuppression
 } from '../../core/secret-utils.js';
 import { historicalSecretPatterns } from './secret-patterns.js';
 
@@ -21,8 +23,10 @@ type CommitMetadata = {
 type AddedLine = {
   file?: string;
   content: string;
+  lineNumber: number;
 };
 
+/** Streams added patch lines while retaining their post-change line numbers. */
 async function streamGitLog(
   root: string,
   maxCommits: number,
@@ -52,6 +56,8 @@ async function streamGitLog(
     let stderr = '';
     let currentFile: string | undefined;
     let currentCommit: CommitMetadata | undefined;
+    let addedLineNumber = 0;
+    let inHunk = false;
     let commitsScanned = 0;
     let cancelled = false;
 
@@ -66,29 +72,41 @@ async function streamGitLog(
           date: date ?? 'unknown'
         };
         currentFile = undefined;
+        inHunk = false;
         commitsScanned += 1;
         return;
       }
 
-      if (line.startsWith('+++ b/')) {
+      if (!inHunk && line.startsWith('+++ b/')) {
         currentFile = line.slice('+++ b/'.length);
         return;
       }
 
-      if (line.startsWith('+++ /dev/null')) {
+      if (!inHunk && line.startsWith('+++ /dev/null')) {
         currentFile = undefined;
         return;
       }
 
-      if (
-        currentCommit &&
-        line.startsWith('+') &&
-        !line.startsWith('+++')
-      ) {
+      const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+      if (hunk) {
+        addedLineNumber = Number(hunk[1]);
+        inHunk = true;
+        return;
+      }
+
+      if (currentCommit && inHunk && line.startsWith('+')) {
         onAddedLine(currentCommit, {
           file: currentFile,
-          content: line.slice(1)
+          content: line.slice(1),
+          lineNumber: addedLineNumber
         });
+        addedLineNumber += 1;
+      } else if (inHunk && line.startsWith(' ')) {
+        addedLineNumber += 1;
+      } else if (line.startsWith('\\')) {
+        return;
+      } else if (!line.startsWith('-')) {
+        inHunk = false;
       }
     };
 
@@ -137,30 +155,47 @@ export class GitHistorySecretAnalyzer implements Analyzer {
   readonly id = 'git-history-secrets';
   readonly version = '1.1.0';
 
-  constructor(private readonly maxCommits = 1000) {}
+  /** Creates a bounded history scanner with optional trusted fixture policy. */
+  constructor(
+    private readonly maxCommits = 1000,
+    private readonly trustedFixtureSuppressions: readonly TrustedFixtureSuppression[] = []
+  ) {}
 
+  /** Reports secret-like values on added lines and counts trusted suppressions. */
   async analyze(context: AnalyzerContext): Promise<AnalyzerResult> {
     const startedAt = performance.now();
     const findings: Finding[] = [];
     const seen = new Set<string>();
+    const suppressedFixtureIds = new Set<string>();
+    let suppressedMatchCount = 0;
+    const fixturePolicy = createFixtureSuppressionIndex(
+      this.trustedFixtureSuppressions
+    );
 
     const commitsScanned = await streamGitLog(
       context.root,
       this.maxCommits,
       context.signal,
       (section, line) => {
-        if (line.content.includes(SECRET_FIXTURE_MARKER)) return;
-
         for (const pattern of historicalSecretPatterns) {
           pattern.regex.lastIndex = 0;
 
           for (const match of line.content.matchAll(pattern.regex)) {
+            const suppression = trustedSuppressionFor(
+              fixturePolicy,
+              pattern.id,
+              line.file ?? ''
+            );
+            if (suppression) {
+              suppressedFixtureIds.add(suppression.id);
+              suppressedMatchCount += 1;
+              continue;
+            }
             const evidence = secretEvidence(match[0]);
             const column = (match.index ?? 0) + 1;
             const key =
               `${pattern.id}:${section.commit}:` +
-              `${line.file ?? 'unknown'}:${column}:` +
-              evidence.fingerprint.slice(0, 16);
+              `${line.file ?? 'unknown'}:${line.lineNumber}:${column}`;
 
             if (seen.has(key)) continue;
             seen.add(key);
@@ -181,12 +216,12 @@ export class GitHistorySecretAnalyzer implements Analyzer {
                 : `A secret-like value was introduced in commit ${section.commit}.`,
               source: 'git-history',
               location: line.file
-                ? { file: line.file, column }
+                ? { file: line.file, line: line.lineNumber, column }
                 : undefined,
               evidence: [evidence],
               remediation: {
                 summary: testFixtureCandidate
-                  ? 'Confirm that the value is synthetic test data. Use the explicit Toolip fixture marker only for intentionally fake credentials.'
+                  ? 'Confirm whether the value is synthetic. Only caller-owned trusted fixture policy can suppress this finding.'
                   : 'Revoke or rotate the credential immediately, then remove it from repository history using an approved history-rewrite process.'
               },
               metadata: {
@@ -212,7 +247,11 @@ export class GitHistorySecretAnalyzer implements Analyzer {
         testFixtureCandidates: findings.filter(
           (finding) => finding.metadata?.testFixtureCandidate === true
         ).length,
-        maxCommits: this.maxCommits
+        maxCommits: this.maxCommits,
+        suppressedFixtures: {
+          count: suppressedMatchCount,
+          ids: [...suppressedFixtureIds]
+        }
       }
     };
   }

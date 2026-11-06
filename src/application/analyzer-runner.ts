@@ -6,6 +6,7 @@ import type {
   AnalyzerResult
 } from '../contracts/analyzer.js';
 import { mapConcurrent } from './concurrency.js';
+import { sanitizeOutput } from '../core/safe-output.js';
 
 export type AnalyzerRunnerOptions = {
   concurrency?: number;
@@ -255,6 +256,7 @@ export class AnalyzerRunner {
     return { outcome, unresponsive: false };
   }
 
+  /** Converts a settled analyzer outcome into a sanitized public result. */
   private settle(
     analyzer: Analyzer,
     startedAt: number,
@@ -264,12 +266,12 @@ export class AnalyzerRunner {
     const durationMs = Math.round(performance.now() - startedAt);
 
     if (outcome.kind === 'ok') {
-      return {
+      return sanitizeOutput({
         ...outcome.result,
         analyzer: analyzer.id,
         durationMs,
         status: 'ok'
-      };
+      });
     }
 
     if (outcome.kind === 'timed_out') {
@@ -303,10 +305,11 @@ export class AnalyzerRunner {
       };
     }
 
-    const error =
+    const error = sanitizeOutput(
       outcome.error instanceof Error
         ? outcome.error.message
-        : String(outcome.error);
+        : String(outcome.error)
+    );
 
     return {
       analyzer: analyzer.id,

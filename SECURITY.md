@@ -38,6 +38,7 @@ Toolip is designed around the following boundaries:
 - **bounded execution** — file reads, concurrency, analyzer deadlines, and scan work are bounded
 - **non-destructive Git automation** — mutable upgrade workflows are isolated from the caller's worktree
 - **atomic encrypted storage** — vault mutations are serialized and atomically replaced
+- **local-state concurrency** — vault and history updates use atomic cross-process leases, ownership checks before commit, unique flushed temporary files, and crash-safe replacement
 - **release isolation** — ordinary CI does not receive npm publish credentials
 - **packed-artifact verification** — releases are tested from the npm tarball users install
 

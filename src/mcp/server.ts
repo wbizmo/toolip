@@ -6,12 +6,19 @@ import { z } from 'zod';
 import { runSecurityDoctor } from '../core/security-doctor.js';
 import { generateSbom } from '../core/sbom/generate.js';
 import { securityDiff } from '../core/diff/security-diff.js';
+import { sanitizeOutput } from '../core/safe-output.js';
 import { createWorkspaceBoundary } from './workspace-boundary.js';
 
 export type McpServerOptions = {
   allowedRoots?: readonly string[];
 };
 
+/** Serializes MCP tool output after applying the shared secret redactor. */
+export function serializeMcpOutput(value: unknown): string {
+  return JSON.stringify(sanitizeOutput(value), null, 2);
+}
+
+/** Starts local MCP tools with approved workspace boundaries and safe output. */
 export async function startMcpServer(
   options: McpServerOptions = {}
 ): Promise<void> {
@@ -46,7 +53,7 @@ export async function startMcpServer(
         content: [
           {
             type: 'text',
-            text: JSON.stringify(report, null, 2)
+            text: serializeMcpOutput(report)
           }
         ]
       };
@@ -71,7 +78,7 @@ export async function startMcpServer(
         content: [
           {
             type: 'text',
-            text: JSON.stringify(report, null, 2)
+            text: serializeMcpOutput(report)
           }
         ]
       };
@@ -98,7 +105,7 @@ export async function startMcpServer(
           content: [
             {
               type: 'text',
-              text: JSON.stringify(result, null, 2)
+              text: serializeMcpOutput(result)
             }
           ]
         };

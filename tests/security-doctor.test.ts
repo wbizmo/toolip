@@ -13,12 +13,13 @@ describe('runSecurityDoctor', () => {
     try {
       await writeFile(path.join(root, 'package.json'), '{}');
 
+      const githubToken = `ghp_${'1'.repeat(36)}`;
       await writeFile(
         path.join(root, 'server.ts'),
         `
 import { exec } from 'node:child_process';
 
-const githubToken = "ghp_123456789012345678901234567890123456";
+const githubToken = "${githubToken}";
 const password = "strong-password";
 const jwtSecret = "secret";
 const cors = { origin: "*" };

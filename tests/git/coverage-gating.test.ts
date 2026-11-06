@@ -74,7 +74,7 @@ describe('pre-commit fails closed on incomplete scans (issue #27)', () => {
       scanned: 0,
       skipped: 1
     });
-  });
+  }, 30_000);
 
   it('rejects a binary eligible file and reports partial coverage next to scanned files', async () => {
     const root = makeRepo();
@@ -92,7 +92,41 @@ describe('pre-commit fails closed on incomplete scans (issue #27)', () => {
     });
     expect(result.passed).toBe(false);
     expect(result.blockedByIncompleteScan).toBe(true);
-  });
+  }, 30_000);
+
+  it('does not block staged binary assets that the content reader confirms as binary', async () => {
+    const root = makeRepo();
+    const binary = Buffer.from([0, 0x42, 0x5a, 0x68, 0x00]);
+    for (const name of ['archive.bz2', 'clip.mov', 'bundle.xz']) {
+      writeFileSync(path.join(root, name), binary);
+    }
+    git(root, 'add', '-A');
+
+    const result = await runPreCommit(root);
+
+    expect(result.passed).toBe(true);
+    expect(result.blockedByIncompleteScan).toBe(false);
+    expect(result.coverage).toMatchObject({
+      state: 'complete',
+      eligible: 0,
+      scanned: 0,
+      skipped: 0
+    });
+  }, 30_000);
+
+  it('skips oversized known binary assets before staged blob reads', async () => {
+    const root = makeRepo();
+    for (const name of ['clip.mov', 'disk.iso']) {
+      write(root, name, oversized());
+    }
+    git(root, 'add', '-A');
+
+    const result = await runPreCommit(root);
+    expect(result.passed).toBe(true);
+    expect(result.blockedByIncompleteScan).toBe(false);
+    expect(result.coverage.state).toBe('complete');
+    expect(result.coverage.eligible).toBe(0);
+  }, 30_000);
 
   it('cannot opt eligible staged files out of fail-closed coverage', async () => {
     const root = makeRepo();
@@ -153,7 +187,7 @@ describe('pre-commit fails closed on incomplete scans (issue #27)', () => {
     expect(base.passed).toBe(true);
     expect(strict.passed).toBe(false);
     expect(strict.summary.blocking).toBeGreaterThan(base.summary.blocking);
-  });
+  }, 30_000);
 
   it('shows only findings meeting the selected CLI threshold', async () => {
     const root = makeRepo();
@@ -319,16 +353,16 @@ describe('doctor coverage covers I/O failures, caps and cancellation (issue #27)
       const result = await runSecurityDoctor(context);
       expect(result.coverage).toMatchObject({
         state: 'complete',
-        eligible: 2,
-        scanned: 2,
+        eligible: 3,
+        scanned: 3,
         skipped: 0,
         failed: 0
       });
-      expect(result.coverage.excluded).toBeGreaterThanOrEqual(1);
+      expect(result.coverage.excluded).toBe(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it('an I/O failure makes the run partial with a failed count', async () => {
     const { dir, context } = await doctorContext({

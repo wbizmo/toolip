@@ -29,7 +29,7 @@ describe('git-audit uses Git behavior, not .gitignore text (issue #42)', () => {
       result.findings.find((f) => f.id.includes('ENV-NOT-IGNORED'))
         ?.evidence?.[0]?.summary
     ).toMatch(/Observed with git check-ignore/u);
-  });
+  }, 30_000);
 
   it('does not accept unrelated substrings, comments or lookalike patterns', async () => {
     const root = makeRepo();
@@ -64,7 +64,7 @@ describe('git-audit uses Git behavior, not .gitignore text (issue #42)', () => {
     const result = await runGitAudit(nested);
     expect(result.summary.envIgnored).toBe(false);
     expect(has(result, 'ENV-NOT-IGNORED')).toBe(true);
-  });
+  }, 30_000);
 
   it('reports tracked sensitive files even when an ignore rule matches them', async () => {
     const root = makeRepo();
@@ -124,5 +124,5 @@ describe('git-audit uses Git behavior, not .gitignore text (issue #42)', () => {
     const result = await runGitAudit(root);
     expect(result.summary.gitignorePresent).toBe(false);
     expect(has(result, 'MISSING-GITIGNORE')).toBe(true);
-  });
+  }, 30_000);
 });

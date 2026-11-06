@@ -1,13 +1,9 @@
-import {
-  mkdir,
-  mkdtemp,
-  rm,
-  writeFile
-} from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
+import { sanitizeOutput } from '../../src/core/safe-output.js';
 import { describe, expect, it } from 'vitest';
 import { GitHistorySecretAnalyzer } from '../../src/analyzers/git-history/analyzer.js';
 
@@ -15,16 +11,12 @@ const execFileAsync = promisify(execFile);
 
 async function configureGit(root: string): Promise<void> {
   await execFileAsync('git', ['init'], { cwd: root });
-  await execFileAsync(
-    'git',
-    ['config', 'user.email', 'test@example.com'],
-    { cwd: root }
-  );
-  await execFileAsync(
-    'git',
-    ['config', 'user.name', 'Toolip Test'],
-    { cwd: root }
-  );
+  await execFileAsync('git', ['config', 'user.email', 'test@example.com'], {
+    cwd: root
+  });
+  await execFileAsync('git', ['config', 'user.name', 'Toolip Test'], {
+    cwd: root
+  });
 }
 
 async function commitAll(root: string, message: string): Promise<void> {
@@ -37,7 +29,7 @@ describe('GitHistorySecretAnalyzer', () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-git-history-real-')
     );
-    const secret = 'ghp_123456789012345678901234567890123456';
+    const secret = `ghp_${'1'.repeat(36)}`;
 
     try {
       await configureGit(root);
@@ -63,6 +55,61 @@ describe('GitHistorySecretAnalyzer', () => {
       expect(finding?.evidence?.[0]?.summary).not.toContain(secret);
       expect(finding?.evidence?.[0]?.summary).not.toContain('ghp_');
       expect(finding?.evidence?.[0]?.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps distinct same-column credentials from separate added lines', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-git-history-occurrences-')
+    );
+    const first = `ghp_${'1'.repeat(36)}`;
+    const second = `ghp_${'2'.repeat(36)}`;
+    try {
+      await configureGit(root);
+      await writeFile(
+        path.join(root, 'config.ts'),
+        `const token = "${first}";\nconst token = "${second}";\n`
+      );
+      await commitAll(root, 'add two credentials');
+      const result = await new GitHistorySecretAnalyzer(20).analyze({ root });
+      const findings = result.findings.filter(
+        (finding) => finding.ruleId === 'TLP-GIT-101'
+      );
+      expect(findings).toHaveLength(2);
+      expect(findings.map((finding) => finding.location?.line)).toEqual([1, 2]);
+      expect(new Set(findings.map((finding) => finding.id)).size).toBe(2);
+      const safeFindings = sanitizeOutput(findings);
+      const safeFingerprints = safeFindings.map(
+        (finding) => finding.evidence?.[0]?.fingerprint
+      );
+      expect(new Set(safeFingerprints).size).toBe(2);
+      expect(
+        safeFingerprints.every((value) => /^[a-f0-9]{64}$/.test(value ?? ''))
+      ).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('continues scanning added lines after source lines beginning with plus signs', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-git-history-plus-lines-')
+    );
+    const secret = `ghp_${'3'.repeat(36)}`;
+    try {
+      await configureGit(root);
+      await writeFile(
+        path.join(root, 'config.ts'),
+        `++counter;\nconst token = "${secret}";\n`
+      );
+      await commitAll(root, 'add counter and credential');
+      const result = await new GitHistorySecretAnalyzer(20).analyze({ root });
+      const finding = result.findings.find(
+        (item) => item.ruleId === 'TLP-GIT-101'
+      );
+      expect(finding?.location?.line).toBe(2);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -126,7 +173,7 @@ describe('GitHistorySecretAnalyzer', () => {
     }
   });
 
-  it('honors an explicit same-line fixture marker', async () => {
+  it('does not trust source markers in history and honors only caller policy', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-git-history-allow-')
     );
@@ -136,12 +183,28 @@ describe('GitHistorySecretAnalyzer', () => {
       await mkdir(path.join(root, 'tests'), { recursive: true });
       await writeFile(
         path.join(root, 'tests', 'fixture.test.ts'),
-        'const password = "fixture-password"; // toolip:allow-secret-fixture\n'
+        'const password = "fixture-password"; // toolip:allow-secret-fixture\n' +
+          'const password = "another-fixture-password";\n'
       );
       await commitAll(root, 'add explicit fixture');
 
       const result = await new GitHistorySecretAnalyzer(20).analyze({ root });
-      expect(result.findings).toHaveLength(0);
+      expect(result.findings).toHaveLength(2);
+      const trusted = await new GitHistorySecretAnalyzer(20, [
+        {
+          id: 'history-fixture-001',
+          ruleId: 'TLP-GIT-105',
+          filePath: 'tests/fixture.test.ts',
+          owner: 'security-tests',
+          justification: 'Synthetic test credential',
+          expiresAt: '2999-01-01T00:00:00.000Z'
+        }
+      ]).analyze({ root });
+      expect(trusted.findings).toHaveLength(0);
+      expect(trusted.metadata?.suppressedFixtures).toEqual({
+        count: 2,
+        ids: ['history-fixture-001']
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

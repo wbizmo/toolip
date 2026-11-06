@@ -13,6 +13,7 @@ export type WatchOptions = {
   onError?: (error: unknown) => void;
 };
 
+/** Watches project files and queues serialized scans when relevant paths change. */
 export function watchProject(
   root: string,
   onChange: () => Promise<void>,
@@ -32,6 +33,7 @@ export function watchProject(
   let queued = false;
   let closed = false;
 
+  /** Reports watcher errors without allowing callbacks to break the monitor. */
   const reportError = (error: unknown): void => {
     try {
       options.onError?.(error);
@@ -40,6 +42,7 @@ export function watchProject(
     }
   };
 
+  /** Runs scans serially and queues a follow-up when changes arrive mid-scan. */
   const run = async (): Promise<void> => {
     if (closed) return;
 
@@ -64,6 +67,7 @@ export function watchProject(
     }
   };
 
+  /** Debounces changes and ignores paths excluded from security scans. */
   const schedule = (relativePath: string): void => {
     if (closed) return;
     const normalized = normalizeRelativePath(relativePath);
@@ -75,9 +79,10 @@ export function watchProject(
     }, debounceMs);
   };
 
-  const closeWatcher = process.platform === 'win32'
-    ? watchDirectoryTree(absoluteRoot, schedule, ignored, reportError)
-    : watchRecursively(absoluteRoot, schedule, reportError);
+  const closeWatcher =
+    process.platform === 'linux'
+      ? watchRecursively(absoluteRoot, schedule, reportError)
+      : watchDirectoryTree(absoluteRoot, schedule, ignored, reportError);
 
   return () => {
     closed = true;
@@ -87,35 +92,70 @@ export function watchProject(
   };
 }
 
+/** Installs one native recursive watcher for platforms that support it reliably. */
 function watchRecursively(
   root: string,
   onChange: (relativePath: string) => void,
   onError: (error: unknown) => void
 ): () => void {
   const watcher = watch(root, { recursive: true }, (_event, filename) => {
-    if (!filename) return;
-    onChange(filename.toString());
+    onChange(filename?.toString() ?? '');
   });
 
   watcher.on('error', onError);
   return () => watcher.close();
 }
 
+/** Maintains per-directory watches and reconciles replaced or missed subtrees. */
 function watchDirectoryTree(
   root: string,
   onChange: (relativePath: string) => void,
   ignored: readonly RegExp[],
   onError: (error: unknown) => void
 ): () => void {
-  const watchers = new Map<string, FSWatcher>();
+  const watchers = new Map<
+    string,
+    { watcher: FSWatcher; dev: bigint; ino: bigint }
+  >();
+  const pendingReconciliations = new Set<string>();
+  const rootKey = canonicalDirectoryKey(root);
+  let rootRecoveryTimer: NodeJS.Timeout | undefined;
+  let reconciliationQueued = false;
   let closed = false;
 
+  /** Retries root registration while a temporarily moved root is unavailable. */
+  function scheduleRootRecovery(): void {
+    if (closed || rootRecoveryTimer) return;
+    rootRecoveryTimer = setTimeout(() => {
+      rootRecoveryTimer = undefined;
+      if (closed || watchers.has(rootKey)) return;
+      addDirectory(root);
+      if (!watchers.has(rootKey)) scheduleRootRecovery();
+    }, 100);
+    rootRecoveryTimer.unref();
+  }
+
+  /** Registers a directory watcher and recursively discovers its children. */
   const addDirectory = (directory: string): void => {
     if (closed) return;
 
     const canonicalDirectory = canonicalWatchPath(directory);
     const key = canonicalDirectoryKey(canonicalDirectory);
-    if (watchers.has(key)) return;
+    let identity: { dev: bigint; ino: bigint };
+    try {
+      const stat = statSync(canonicalDirectory, { bigint: true });
+      if (!stat.isDirectory()) return;
+      identity = { dev: stat.dev, ino: stat.ino };
+    } catch {
+      removeWatchTree(key);
+      if (key === rootKey) scheduleRootRecovery();
+      return;
+    }
+
+    const existing = watchers.get(key);
+    if (existing?.dev === identity.dev && existing.ino === identity.ino) return;
+    existing?.watcher.close();
+    watchers.delete(key);
 
     const relativeDirectory = normalizeRelativePath(
       path.relative(root, canonicalDirectory)
@@ -133,31 +173,47 @@ function watchDirectoryTree(
         canonicalDirectory,
         { recursive: false },
         (event, filename) => {
-          if (closed || !filename) return;
+          if (closed || watchers.get(key)?.watcher !== watcher) return;
+          if (!filename) {
+            queueReconciliation(canonicalDirectory);
+            onChange('');
+            return;
+          }
 
-          const absolutePath = path.join(canonicalDirectory, filename.toString());
+          const absolutePath = path.join(
+            canonicalDirectory,
+            filename.toString()
+          );
           const relativePath = path.relative(root, absolutePath);
           onChange(relativePath);
 
-          if (event === 'rename') {
-            tryAddNewDirectory(absolutePath);
-          }
+          if (event === 'rename') queueReconciliation(canonicalDirectory);
         }
       );
     } catch (error) {
       onError(error);
+      if (key === rootKey) scheduleRootRecovery();
       return;
     }
 
-    watchers.set(key, watcher);
+    watchers.set(key, { watcher, ...identity });
+    if (key === rootKey && rootRecoveryTimer) {
+      clearTimeout(rootRecoveryTimer);
+      rootRecoveryTimer = undefined;
+    }
     watcher.on('error', (error) => {
       onError(error);
       watcher.close();
-      watchers.delete(key);
+      if (watchers.get(key)?.watcher === watcher) {
+        watchers.delete(key);
+        if (key === rootKey) scheduleRootRecovery();
+      }
     });
 
     try {
-      for (const entry of readdirSync(canonicalDirectory, { withFileTypes: true })) {
+      for (const entry of readdirSync(canonicalDirectory, {
+        withFileTypes: true
+      })) {
         if (!entry.isDirectory()) continue;
         addDirectory(path.join(canonicalDirectory, entry.name));
       }
@@ -166,27 +222,80 @@ function watchDirectoryTree(
     }
   };
 
-  const tryAddNewDirectory = (candidate: string): void => {
+  /** Coalesces duplicate rename events for the same directory within one tick. */
+  function queueReconciliation(directory: string): void {
+    pendingReconciliations.add(
+      canonicalDirectoryKey(canonicalWatchPath(directory))
+    );
+    if (reconciliationQueued) return;
+
+    reconciliationQueued = true;
+    queueMicrotask(() => {
+      reconciliationQueued = false;
+      const pending = [...pendingReconciliations];
+      pendingReconciliations.clear();
+      for (const key of pending) reconcileDirectory(key);
+    });
+  }
+
+  /** Reconciles child registrations and removes watches for stale identities. */
+  function reconcileDirectory(directory: string): void {
+    if (closed) return;
+    const directoryKey = canonicalDirectoryKey(canonicalWatchPath(directory));
     try {
-      if (statSync(candidate).isDirectory()) {
-        addDirectory(candidate);
+      for (const entry of readdirSync(directoryKey, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          addDirectory(path.join(directoryKey, entry.name));
+        }
       }
-    } catch {
-      // Rename events also represent deletions; a missing path needs no watcher.
+    } catch (error) {
+      onError(error);
+      if (directoryKey === rootKey) scheduleRootRecovery();
     }
-  };
+    for (const [key, entry] of watchers) {
+      if (key !== directoryKey && path.dirname(key) !== directoryKey) continue;
+      try {
+        const current = statSync(key, { bigint: true });
+        if (
+          !current.isDirectory() ||
+          current.dev !== entry.dev ||
+          current.ino !== entry.ino
+        ) {
+          removeWatchTree(key);
+        }
+      } catch {
+        removeWatchTree(key);
+      }
+    }
+  }
+
+  /** Closes a removed directory watch and every registered descendant. */
+  function removeWatchTree(directoryKey: string): void {
+    const prefix = directoryKey.endsWith(path.sep)
+      ? directoryKey
+      : `${directoryKey}${path.sep}`;
+    for (const [key, entry] of watchers) {
+      if (key !== directoryKey && !key.startsWith(prefix)) continue;
+      entry.watcher.close();
+      watchers.delete(key);
+    }
+  }
 
   addDirectory(root);
 
   return () => {
     closed = true;
-    for (const watcher of watchers.values()) {
-      watcher.close();
+    if (rootRecoveryTimer) clearTimeout(rootRecoveryTimer);
+    rootRecoveryTimer = undefined;
+    pendingReconciliations.clear();
+    for (const entry of watchers.values()) {
+      entry.watcher.close();
     }
     watchers.clear();
   };
 }
 
+/** Resolves a watch path when possible while retaining a usable missing path. */
 function canonicalWatchPath(directory: string): string {
   const resolved = path.resolve(directory);
 
@@ -197,10 +306,12 @@ function canonicalWatchPath(directory: string): string {
   }
 }
 
+/** Produces a path key that follows the host platform's case rules. */
 function canonicalDirectoryKey(directory: string): string {
   return process.platform === 'win32' ? directory.toLowerCase() : directory;
 }
 
+/** Normalizes native separators for ignore rules and scan notifications. */
 function normalizeRelativePath(value: string): string {
   return value.replaceAll('\\', '/');
 }

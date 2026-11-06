@@ -11,10 +11,8 @@ describe('security doctor hardening', () => {
     try {
       await writeFile(path.join(root, 'package.json'), '{}');
 
-      await writeFile(
-        path.join(root, 'index.ts'),
-        'const token = "npm_123456789012345678901234567890";'
-      );
+      const token = `npm_${'1'.repeat(28)}`;
+      await writeFile(path.join(root, 'index.ts'), `const token = "${token}";`);
 
       const result = await runSecurityDoctor(root);
 
@@ -47,8 +45,7 @@ export function sum(a: number, b: number) {
 
       const criticalOrHigh = result.findings.filter(
         (finding) =>
-          finding.severity === 'critical' ||
-          finding.severity === 'high'
+          finding.severity === 'critical' || finding.severity === 'high'
       );
 
       expect(criticalOrHigh.length).toBe(0);

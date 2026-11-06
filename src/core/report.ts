@@ -1,5 +1,6 @@
 import type { AnalysisCoverage, AnalysisState } from '../contracts/analysis.js';
 import type { Finding, FindingSeverity } from '../contracts/finding.js';
+import { redactSensitiveText, sanitizeOutput } from './safe-output.js';
 
 export type SerializedFinding = {
   id: string;
@@ -42,21 +43,26 @@ export type ToolipReport = {
   };
 };
 
+/** Serializes a finding through the legacy, secret-safe report contract. */
 export function serializeFinding(finding: Finding): SerializedFinding {
-  return {
+  return sanitizeOutput({
     id: finding.id,
     title: finding.title,
     severity: finding.severity,
     category: finding.category,
-    message: finding.message,
-    recommendation:
+    message: redactSensitiveText(finding.message),
+    recommendation: redactSensitiveText(
       finding.remediation?.summary ??
-      'Review this finding and apply an appropriate mitigation.',
+        'Review this finding and apply an appropriate mitigation.'
+    ),
     file: finding.location?.file,
     evidence: finding.evidence?.[0]?.summary
-  };
+      ? redactSensitiveText(finding.evidence[0].summary)
+      : undefined
+  });
 }
 
+/** Builds a sanitized report for every downstream output format. */
 export function createReport(input: {
   version: string;
   command: string;
@@ -64,7 +70,7 @@ export function createReport(input: {
   findings: Finding[];
   analysis?: ToolipReport['analysis'];
 }): ToolipReport {
-  return {
+  return sanitizeOutput({
     tool: 'toolip',
     version: input.version,
     command: input.command,
@@ -73,9 +79,10 @@ export function createReport(input: {
     summary: summarizeFindings(input.findings),
     findings: input.findings.map(serializeFinding),
     ...(input.analysis ? { analysis: input.analysis } : {})
-  };
+  });
 }
 
+/** Counts findings by canonical severity for the report summary. */
 export function summarizeFindings(
   findings: Pick<Finding, 'severity'>[]
 ): ToolipReport['summary'] {

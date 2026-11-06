@@ -1,9 +1,6 @@
 import ts from 'typescript';
 import type { Finding } from '../../contracts/finding.js';
-import {
-  astSecurityRules,
-  type AstSecurityRule
-} from './rules.js';
+import { astSecurityRules, type AstSecurityRule } from './rules.js';
 
 type ChildProcessBindings = {
   namespaceImports: Set<string>;
@@ -11,6 +8,7 @@ type ChildProcessBindings = {
   execSyncImports: Set<string>;
 };
 
+/** Selects the TypeScript parser mode from a source filename extension. */
 function scriptKind(filePath: string): ts.ScriptKind {
   if (filePath.endsWith('.tsx')) return ts.ScriptKind.TSX;
   if (filePath.endsWith('.jsx')) return ts.ScriptKind.JSX;
@@ -20,10 +18,12 @@ function scriptKind(filePath: string): ts.ScriptKind {
   return ts.ScriptKind.TS;
 }
 
+/** Recognizes Node's built-in child-process module specifiers. */
 function isChildProcessModule(value: string): boolean {
   return value === 'child_process' || value === 'node:child_process';
 }
 
+/** Returns a literal module specifier from an import declaration. */
 function moduleNameFromImport(
   declaration: ts.ImportDeclaration
 ): string | undefined {
@@ -32,6 +32,7 @@ function moduleNameFromImport(
     : undefined;
 }
 
+/** Returns a literal module specifier from a single-argument require call. */
 function requireModuleName(
   expression: ts.Expression | undefined
 ): string | undefined {
@@ -47,14 +48,11 @@ function requireModuleName(
 
   const [argument] = expression.arguments;
 
-  return argument && ts.isStringLiteral(argument)
-    ? argument.text
-    : undefined;
+  return argument && ts.isStringLiteral(argument) ? argument.text : undefined;
 }
 
-function collectBindings(
-  sourceFile: ts.SourceFile
-): ChildProcessBindings {
+/** Collects imported and required child-process function aliases from a file. */
+function collectBindings(sourceFile: ts.SourceFile): ChildProcessBindings {
   const bindings: ChildProcessBindings = {
     namespaceImports: new Set(),
     execImports: new Set(),
@@ -83,8 +81,7 @@ function collectBindings(
 
       if (bindingsClause && ts.isNamedImports(bindingsClause)) {
         for (const element of bindingsClause.elements) {
-          const importedName =
-            element.propertyName?.text ?? element.name.text;
+          const importedName = element.propertyName?.text ?? element.name.text;
           const localName = element.name.text;
 
           if (importedName === 'exec') {
@@ -125,8 +122,7 @@ function collectBindings(
           }
 
           const importedName =
-            element.propertyName &&
-            ts.isIdentifier(element.propertyName)
+            element.propertyName && ts.isIdentifier(element.propertyName)
               ? element.propertyName.text
               : element.name.text;
 
@@ -150,9 +146,7 @@ function collectBindings(
       ) {
         const [argument] = initializer.expression.arguments;
         const requiredModule =
-          argument && ts.isStringLiteral(argument)
-            ? argument.text
-            : undefined;
+          argument && ts.isStringLiteral(argument) ? argument.text : undefined;
 
         if (
           requiredModule &&
@@ -174,6 +168,7 @@ function collectBindings(
   return bindings;
 }
 
+/** Maps an AST node to a one-based source location. */
 function findingLocation(
   sourceFile: ts.SourceFile,
   node: ts.Node
@@ -181,9 +176,7 @@ function findingLocation(
   const start = sourceFile.getLineAndCharacterOfPosition(
     node.getStart(sourceFile)
   );
-  const end = sourceFile.getLineAndCharacterOfPosition(
-    node.getEnd()
-  );
+  const end = sourceFile.getLineAndCharacterOfPosition(node.getEnd());
 
   return {
     file: sourceFile.fileName,
@@ -194,20 +187,7 @@ function findingLocation(
   };
 }
 
-function evidenceExcerpt(
-  sourceFile: ts.SourceFile,
-  node: ts.Node
-): string {
-  const text = node
-    .getText(sourceFile)
-    .replaceAll(/\s+/g, ' ')
-    .trim();
-
-  return text.length <= 180
-    ? text
-    : `${text.slice(0, 177)}...`;
-}
-
+/** Builds an AST finding without retaining the matched source expression. */
 function createFinding(
   sourceFile: ts.SourceFile,
   node: ts.Node,
@@ -230,7 +210,8 @@ function createFinding(
     location,
     evidence: [
       {
-        summary: evidenceExcerpt(sourceFile, node),
+        // Source excerpts can contain credentials no detector recognizes.
+        summary: `[source expression redacted; ${ts.SyntaxKind[node.kind]}]`,
         fingerprint
       }
     ],
@@ -243,6 +224,7 @@ function createFinding(
   };
 }
 
+/** Resolves an imported child-process call to its matching security rule. */
 function childProcessRuleForCall(
   call: ts.CallExpression,
   bindings: ChildProcessBindings
@@ -283,10 +265,8 @@ function childProcessRuleForCall(
   return undefined;
 }
 
-export function analyzeAstSource(
-  filePath: string,
-  content: string
-): Finding[] {
+/** Analyzes supported source text for dangerous AST constructs. */
+export function analyzeAstSource(filePath: string, content: string): Finding[] {
   const sourceFile = ts.createSourceFile(
     filePath,
     content,
@@ -304,13 +284,7 @@ export function analyzeAstSource(
       ts.isIdentifier(node.expression) &&
       node.expression.text === 'eval'
     ) {
-      findings.push(
-        createFinding(
-          sourceFile,
-          node,
-          astSecurityRules.eval
-        )
-      );
+      findings.push(createFinding(sourceFile, node, astSecurityRules.eval));
     }
 
     if (
@@ -319,28 +293,15 @@ export function analyzeAstSource(
       node.expression.text === 'Function'
     ) {
       findings.push(
-        createFinding(
-          sourceFile,
-          node,
-          astSecurityRules.functionConstructor
-        )
+        createFinding(sourceFile, node, astSecurityRules.functionConstructor)
       );
     }
 
     if (ts.isCallExpression(node)) {
-      const childProcessRule = childProcessRuleForCall(
-        node,
-        bindings
-      );
+      const childProcessRule = childProcessRuleForCall(node, bindings);
 
       if (childProcessRule) {
-        findings.push(
-          createFinding(
-            sourceFile,
-            node,
-            childProcessRule
-          )
-        );
+        findings.push(createFinding(sourceFile, node, childProcessRule));
       }
     }
 
