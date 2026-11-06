@@ -6,6 +6,11 @@ import {
   runSecurityDoctor,
   shouldScanSecrets
 } from '../src/core/security-doctor.js';
+import {
+  createFixtureSuppressionIndex,
+  findSecretMatches
+} from '../src/core/secret-utils.js';
+import { secretPatterns } from '../src/core/security-patterns.js';
 
 describe('secret detection hardening', () => {
   it('excludes common font assets before text reads', () => {
@@ -17,6 +22,68 @@ describe('secret detection hardening', () => {
       'font.woff2'
     ]) {
       expect(shouldScanSecrets(font, path.extname(font).slice(1))).toBe(false);
+    }
+  });
+
+  it('rejects empty fixture suppression expiries', () => {
+    const index = createFixtureSuppressionIndex([
+      {
+        id: 'empty-expiry',
+        ruleId: 'TOOLIP-SECRET-GITHUB-TOKEN',
+        filePath: 'tests/fixture.test.ts',
+        owner: 'security team',
+        justification: 'synthetic fixture',
+        expiresAt: ''
+      }
+    ]);
+
+    expect(index.size).toBe(0);
+  });
+
+  it('reports npm credentials on their source line after blank lines', () => {
+    const pattern = secretPatterns.find(
+      (item) => item.id === 'TOOLIP-SECRET-NPM-AUTH'
+    );
+    expect(pattern).toBeDefined();
+    if (!pattern) throw new Error('The npm auth pattern is not registered.');
+    const syntheticToken = 'a'.repeat(18);
+    const matches = findSecretMatches(
+      `\n\n_authToken=${syntheticToken}\n`,
+      pattern.regex
+    );
+
+    expect(matches).toHaveLength(1);
+    expect(matches[0]?.line).toBe(3);
+  });
+
+  it('excludes content-confirmed binary assets but keeps credential names in coverage', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-secret-binary-'));
+    const bytes = Buffer.from([
+      0,
+      ...Buffer.from('ghp_555555555555555555555555555555555555')
+    ]);
+
+    try {
+      await writeFile(path.join(root, 'asset.unknown'), bytes);
+      const assetResult = await runSecurityDoctor(root);
+      expect(assetResult.coverage.state).toBe('complete');
+      expect(assetResult.summary).toMatchObject({
+        filesEligible: 0,
+        filesScanned: 0,
+        filesSkipped: 0
+      });
+
+      await rm(path.join(root, 'asset.unknown'));
+      await writeFile(path.join(root, 'credentials.txt'), bytes);
+      const credentialResult = await runSecurityDoctor(root);
+      expect(credentialResult.coverage.state).toBe('failed');
+      expect(credentialResult.summary).toMatchObject({
+        filesEligible: 1,
+        filesScanned: 0,
+        filesSkipped: 1
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 

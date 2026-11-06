@@ -116,6 +116,14 @@ export async function runSecurityDoctor(
     }
 
     if (read.status !== 'ok') {
+      if (
+        read.status === 'binary' &&
+        !isCredentialNamedFile(file.relativePath) &&
+        !secretScanExtensions.has(file.extension)
+      ) {
+        filesEligible -= 1;
+        continue;
+      }
       filesSkipped += 1;
       if (read.status === 'failed') {
         readFailures += 1;
@@ -207,13 +215,7 @@ export function shouldScanSecrets(
   if (relativePath.startsWith('dist/')) return false;
   if (relativePath.endsWith('.env')) return true;
   if (relativePath.includes('.env.')) return true;
-  const basename = relativePath.split('/').at(-1)?.toLowerCase() ?? '';
-  if (
-    /^(\.npmrc|\.pypirc|\.netrc|\.env(?:\..*)?|credentials(?:\..*)?|secrets?(?:\..*)?)$/.test(
-      basename
-    )
-  )
-    return true;
+  if (isCredentialNamedFile(relativePath)) return true;
   const binaryExtensions = new Set([
     '7z',
     'a',
@@ -249,6 +251,14 @@ export function shouldScanSecrets(
   ]);
   return (
     secretScanExtensions.has(extension) || !binaryExtensions.has(extension)
+  );
+}
+
+/** Identifies credential-named files that remain in coverage even when unreadable. */
+function isCredentialNamedFile(relativePath: string): boolean {
+  const basename = relativePath.split('/').at(-1)?.toLowerCase() ?? '';
+  return /^(\.npmrc|\.pypirc|\.netrc|\.env(?:\..*)?|credentials(?:\..*)?|secrets?(?:\..*)?)$/.test(
+    basename
   );
 }
 

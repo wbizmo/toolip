@@ -35,7 +35,9 @@ export function createFixtureSuppressionIndex(
   for (const item of suppressions) {
     if (!item.id.trim() || !item.owner.trim() || !item.justification.trim())
       continue;
-    if (item.expiresAt && !(Date.parse(item.expiresAt) > now)) continue;
+    if (item.expiresAt !== undefined && !(Date.parse(item.expiresAt) > now)) {
+      continue;
+    }
     const key = JSON.stringify([item.ruleId, item.filePath]);
     if (!index.has(key)) index.set(key, item);
   }
