@@ -228,11 +228,8 @@ function watchDirectoryTree(
     } catch (error) {
       onError(error);
     }
-    const prefix = directoryKey.endsWith(path.sep)
-      ? directoryKey
-      : `${directoryKey}${path.sep}`;
     for (const [key, entry] of watchers) {
-      if (key !== directoryKey && !key.startsWith(prefix)) continue;
+      if (key !== directoryKey && path.dirname(key) !== directoryKey) continue;
       try {
         const current = statSync(key, { bigint: true });
         if (

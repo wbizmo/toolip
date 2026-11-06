@@ -80,7 +80,11 @@ export function sanitizeOutput<T>(
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value).map(([key, item]) => {
-        if ((key === 'id' || key === 'ruleId') && typeof item === 'string') {
+        if (
+          !sensitiveContext &&
+          (key === 'id' || key === 'ruleId') &&
+          typeof item === 'string'
+        ) {
           return [key, redactIdentifier(item)];
         }
         if (/fingerprint/i.test(key)) {

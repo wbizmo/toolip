@@ -2,6 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { sanitizeOutput } from '../src/core/safe-output.js';
 
 describe('safe output boundaries', () => {
+  it('redacts identifier fields nested under sensitive keys', () => {
+    expect(sanitizeOutput({ password: { id: 'plain-secret-value' } })).toEqual({
+      password: { id: '[redacted]' }
+    });
+  });
+
   it('redacts nested values, token URLs, environment assignments and error messages', () => {
     const credential = `ghp_${'a'.repeat(36)}`;
     const result = sanitizeOutput({

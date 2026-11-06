@@ -124,6 +124,29 @@ describe('secret detection hardening', () => {
     }
   });
 
+  it('ignores quoted environment references but still detects hardcoded passwords', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-password-env-'));
+    try {
+      await writeFile(
+        path.join(root, 'settings.yml'),
+        `password: "\${DB_PASSWORD}"\n`
+      );
+      await writeFile(
+        path.join(root, 'settings.sh'),
+        'password="$DB_PASSWORD"\npassword="quoted-hardcoded-password"\n'
+      );
+      const result = await runSecurityDoctor(root);
+      const passwordFindings = result.findings.filter(
+        (finding) => finding.ruleId === 'TOOLIP-SECRET-HARDCODED-PASSWORD'
+      );
+      expect(passwordFindings.map((finding) => finding.location?.file)).toEqual(
+        ['settings.sh']
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('does not lower a real credential merely because it is in a test file', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-secret-test-severity-')

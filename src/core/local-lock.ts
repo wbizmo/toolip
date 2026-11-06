@@ -129,9 +129,9 @@ export async function withLocalStateLock<T>(
       (await ownsMarker(ownerPath, token)) &&
       (await ownsLockDirectory(lockPath, acquiredIdentity))
     ) {
-      await unlink(ownerPath).catch((error: unknown) => {
-        if (lockErrorCode(error) !== 'ENOENT') throw error;
-      });
+      // Marker cleanup is best-effort; a failed unlink must not strand the
+      // actual lease. Any leftover marker is eligible for stale cleanup.
+      await unlink(ownerPath).catch(() => undefined);
       await release();
     }
   }

@@ -114,6 +114,20 @@ describe('pre-commit fails closed on incomplete scans (issue #27)', () => {
     });
   }, 30_000);
 
+  it('skips oversized known binary assets before staged blob reads', async () => {
+    const root = makeRepo();
+    for (const name of ['clip.mov', 'disk.iso']) {
+      write(root, name, oversized());
+    }
+    git(root, 'add', '-A');
+
+    const result = await runPreCommit(root);
+    expect(result.passed).toBe(true);
+    expect(result.blockedByIncompleteScan).toBe(false);
+    expect(result.coverage.state).toBe('complete');
+    expect(result.coverage.eligible).toBe(0);
+  }, 30_000);
+
   it('cannot opt eligible staged files out of fail-closed coverage', async () => {
     const root = makeRepo();
     write(root, 'ok.ts', CLEAN);
