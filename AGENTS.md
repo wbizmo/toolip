@@ -40,9 +40,15 @@ PRs must pass locked dependency install, TypeScript typechecking, compiler-backe
 
 Do not auto-merge; report CI failures and fix before merging. The owner authorizes the final release separately.
 
-## Local completion before GitHub updates
+## Mandatory push and CI cost policy
 
-- Complete each batch entirely in the local checkout: inspect scope and reviews, implement the full batch, run all applicable verification, review the entire diff, and resolve findings before pushing.
-- Make one consolidated push per completed batch. Do not push unfinished work, use CI to debug local failures, or push speculative/intermediate corrections. If external CI or review surfaces a new defect, collect all findings, fix them together locally, rerun the full applicable suite, then make one consolidated correction push.
-- If local verification is unavailable, leave the work unpushed.
-- Never bypass required reviews or branch protections. Merge only after required checks and independent approvals pass.
+- **NO INTERMEDIATE, INCREMENTAL OR CHECKPOINT PUSHES.** Finish the entire batch locally before pushing. Default to exactly one implementation push per completed batch or explicitly authorized combined-batch PR. Local edits and commits are allowed; progress, speculative fixes and partial implementations must never be pushed.
+- **Read scope before coding.** Review every linked issue, acceptance criterion, existing review finding and affected path. Include security, edge cases, documentation, platform behavior and regression tests in the local implementation.
+- **Run all local checks before pushing.** Complete `npm ci --ignore-scripts`, `npm run verify`, `npm run release:check`, tests, coverage, formatting, lint, typechecks, build, dependency and runtime audits, registry signature audits, Gitleaks and packed-package verification as applicable. Correct failures locally and rerun the relevant checks. Never claim a check passed unless it ran.
+- **Push only the final locally verified changeset.** Consolidate all batch changes and push once. Let GitHub Actions, CodeQL, CodeRabbit and the Node 22/24 Linux/macOS/Windows matrix evaluate the completed PR. Do not use remote CI as a local debugging loop.
+- **Consolidate corrections from each external review cycle.** Collect and validate all CodeRabbit, CI and independent-review findings, including locally discoverable issues. Fix valid findings together locally, add regression coverage and rerun the applicable full local verification. A single consolidated corrective push is permitted when genuinely necessary, **even if the review cycle contains only one valid finding**. Do not push separately for each comment. Repeat only for new, verified blockers.
+- **Never sacrifice correctness to reduce cost.** Do not skip tests, lower coverage, hide findings, dismiss valid review comments, or bypass branch protection. Do not push unverifiable changes. Resolve review threads only after verifying their underlying corrections.
+- **Always squash merge.** Normally use one branch and one PR per batch unless the owner explicitly authorizes combining batches. After required CI, review resolution and independent approval, squash merge into `main`; never use a normal merge commit, rebase merge or direct push to `main`. GitHub may automatically close issues referenced by `Closes #N` at merge; verify the squash commit before any manual issue closure or epic #88 update.
+- **Never publish intermediate work.** No npm publication, version tag or GitHub release is permitted during routine v3.2.1 batches. The exception in `RELEASING.md` permits an urgent compatible v2.2.x security hotfix before v3.2.1 only with separate explicit release approval, the required release guards and a deliberate version/tag. Routine PR merges do not authorize publication; final v3.2.1 publication also requires explicit owner approval.
+
+**Cost objective:** one implementation push per completed batch or approved combined PR, plus at most one consolidated corrective push per completed external review cycle when required. Preserve all security and quality gates.
