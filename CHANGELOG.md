@@ -1,16 +1,14 @@
 # Changelog
 
-## Unreleased
-
-- Redact arbitrary source expressions, install-script commands, nested analyzer output and error text before reports or MCP output; remove low-entropy secret hashes from public finding summaries and identities.
-- Scan bounded readable text files including credential dotfiles such as `.npmrc`; source comments no longer suppress secret findings, and fixture suppression requires caller-owned policy with optional expiry.
-- Serialize vault and history mutations across processes, reject unsafe local-state symlinks and foreign-owned POSIX paths, and atomically flush replacements with crash recovery.
-
 All notable changes to Toolip are documented in this file.
 
 The format follows Keep a Changelog principles, and Toolip uses semantic versioning.
 
 ## Unreleased
+
+- Avoid copying source expressions into AST evidence, omit install-script command text, and redact supported credential patterns in analyzer output, errors, reports and MCP output; remove low-entropy secret hashes from public finding summaries and identities.
+- Scan bounded readable text files including credential dotfiles such as `.npmrc`; source comments no longer suppress secret findings, and fixture suppression requires caller-owned policy with optional expiry.
+- Serialize vault and history mutations across processes, reject unsafe local-state symlinks and foreign-owned POSIX paths, and atomically flush replacements with crash recovery.
 
 ### Security
 

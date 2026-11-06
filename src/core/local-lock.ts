@@ -1,6 +1,14 @@
 import crypto from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  open,
+  readFile,
+  rename,
+  rm,
+  unlink,
+  writeFile
+} from 'node:fs/promises';
 import path from 'node:path';
 import lockfile from 'proper-lockfile';
 
@@ -18,9 +26,9 @@ export async function withLocalStateLock<T>(
 ): Promise<T> {
   const resource = path.resolve(resourcePath);
   const lockPath = `${resource}.lock`;
-  const ownerPath = `${lockPath}.owner`;
   const token = crypto.randomUUID();
-  const temporaryOwnerPath = `${ownerPath}.${token}.tmp`;
+  const ownerPath = path.join(lockPath, `.owner.${token}`);
+  const temporaryOwnerPath = path.join(lockPath, `.owner.${token}.tmp`);
   let compromised: Error | undefined;
   let markerInstalled = false;
 
@@ -33,7 +41,7 @@ export async function withLocalStateLock<T>(
       retries: {
         retries: Math.max(1, Math.ceil(timeoutMs / 50)),
         factor: 1,
-        minTimeout: 25,
+        minTimeout: 50,
         maxTimeout: 50,
         randomize: false
       },
@@ -118,6 +126,9 @@ export async function withLocalStateLock<T>(
       (await ownsMarker(ownerPath, token)) &&
       (await ownsLockDirectory(lockPath, acquiredIdentity))
     ) {
+      await unlink(ownerPath).catch((error: unknown) => {
+        if (lockErrorCode(error) !== 'ENOENT') throw error;
+      });
       await release();
     }
   }

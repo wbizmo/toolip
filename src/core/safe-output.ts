@@ -1,16 +1,28 @@
+import { createHmac, randomBytes } from 'node:crypto';
+
+const fingerprintKey = randomBytes(32);
+
 /** Redacts common credential forms before untrusted text crosses an output boundary. */
 export function redactSensitiveText(value: string): string {
   return value
-    .replace(
-      /(https?:\/\/)(?=[^\s/?#]*:[^\s/?#]*@)[^\s/?#]*@/gi,
-      '$1[redacted]@'
-    )
+    .replace(/(https?:\/\/)(?=[^\s/?#]*@)[^\s/?#]*@/gi, '$1[redacted]@')
     .replace(
       /([?&](?:token|access_token|refresh_token|api[_-]?key|password|secret|signature|sig)=)[^&#\s]+/gi,
       '$1[redacted]'
     )
-    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi, '$1[redacted]')
-    .replace(/\b(Basic\s+)[A-Za-z0-9+/]+=*/gi, '$1[redacted]')
+    .replace(
+      /(authorization\s*:\s*Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi,
+      '$1[redacted]'
+    )
+    .replace(/(authorization\s*:\s*Basic\s+)[A-Za-z0-9+/]+=*/gi, '$1[redacted]')
+    .replace(
+      /((?:-H|--header)\s+["']?authorization:\s*Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi,
+      '$1[redacted]'
+    )
+    .replace(
+      /((?:-H|--header)\s+["']?authorization:\s*Basic\s+)[A-Za-z0-9+/]+=*/gi,
+      '$1[redacted]'
+    )
     .replace(
       /\b((?:NPM|GITHUB|GITLAB|AWS|AZURE|API|ACCESS|AUTH|JWT)[A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD)|(?:token|api[_-]?key|password|passphrase|passwd|pwd|client_secret|secret))\s*([=:])\s*(["'])(.*?)\3/gi,
       '$1$2[redacted]'
@@ -52,8 +64,14 @@ export function sanitizeOutput<T>(
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value).map(([key, item]) => {
-        if (/fingerprint|hash/i.test(key))
-          return [key, '[redacted-fingerprint]'];
+        if (/fingerprint/i.test(key)) {
+          const fingerprint =
+            typeof item === 'string' && /^[a-f0-9]{64}$/i.test(item)
+              ? createHmac('sha256', fingerprintKey).update(item).digest('hex')
+              : '[redacted-fingerprint]';
+          return [key, fingerprint];
+        }
+        if (/hash/i.test(key)) return [key, '[redacted-fingerprint]'];
         const sensitiveKey =
           /password|passphrase|passwd|credential|authorization|secret|token|api[_-]?key/i.test(
             key

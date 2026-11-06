@@ -46,6 +46,14 @@ describe('safe output boundaries', () => {
     expect(serialized).not.toContain('correct horse battery staple');
     expect(serialized).not.toContain('ghp_');
     expect(serialized).toContain('https://[redacted]@example.test/path?ok=1');
+    expect(
+      sanitizeOutput({ url: `https://${'a'.repeat(32)}@example.test` }).url
+    ).toBe('https://[redacted]@example.test');
+    expect(
+      sanitizeOutput({
+        url: 'https://example.test/path?next=a@b'
+      }).url
+    ).toBe('https://example.test/path?next=a@b');
   });
 
   it('redacts credentials embedded in nested metadata keys', () => {
@@ -60,6 +68,19 @@ describe('safe output boundaries', () => {
     });
   });
 
+  it('pseudonymizes fingerprints while preserving secret-specific correlation', () => {
+    const first = 'a'.repeat(64);
+    const second = 'b'.repeat(64);
+    const firstOutput = sanitizeOutput({ fingerprint: first }).fingerprint;
+    const repeatedOutput = sanitizeOutput({ fingerprint: first }).fingerprint;
+    const secondOutput = sanitizeOutput({ fingerprint: second }).fingerprint;
+
+    expect(firstOutput).toMatch(/^[a-f0-9]{64}$/);
+    expect(firstOutput).toBe(repeatedOutput);
+    expect(firstOutput).not.toBe(secondOutput);
+    expect(firstOutput).not.toBe(first);
+  });
+
   it('redacts unquoted passphrase and passwd assignments in error output', () => {
     const result = sanitizeOutput(
       new Error('unlock failed: passphrase=first-secret passwd=second-secret')
@@ -70,5 +91,21 @@ describe('safe output boundaries', () => {
     expect(serialized).not.toContain('second-secret');
     expect(serialized).toContain('passphrase=[redacted]');
     expect(serialized).toContain('passwd=[redacted]');
+  });
+
+  it('redacts Bearer and Basic credentials only in Authorization headers', () => {
+    const bearer = `Bearer ${'b'.repeat(32)}`;
+    const basic = `Basic ${Buffer.from('user:password').toString('base64')}`;
+    const result = sanitizeOutput({
+      headers: `Authorization: ${bearer}; authorization: ${basic}`,
+      curl: `curl -H 'Authorization: ${bearer}'`,
+      ordinary: `The words ${bearer} and ${basic} are examples.`
+    });
+
+    expect(result.headers).toContain('Bearer [redacted]');
+    expect(result.headers).toContain('Basic [redacted]');
+    expect(result.curl).toContain('Authorization: Bearer [redacted]');
+    expect(result.ordinary).toContain(bearer);
+    expect(result.ordinary).toContain(basic);
   });
 });

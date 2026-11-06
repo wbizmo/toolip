@@ -224,6 +224,7 @@ export function shouldScanSecrets(
     'dll',
     'dylib',
     'exe',
+    'eot',
     'gif',
     'gz',
     'ico',
@@ -238,7 +239,11 @@ export function shouldScanSecrets(
     'so',
     'sqlite',
     'tar',
+    'otf',
+    'ttf',
     'wasm',
+    'woff',
+    'woff2',
     'webp',
     'zip'
   ]);
@@ -251,9 +256,14 @@ export function shouldScanSecrets(
 function scanSecretContent(relativePath: string, content: string): Finding[] {
   const findings: Finding[] = [];
   const testFile = isTestFile(relativePath);
+  const codeFile = /\.(?:[cm]?[jt]sx?|vue|svelte)$/.test(relativePath);
 
   for (const pattern of secretPatterns) {
-    for (const match of findSecretMatches(content, pattern.regex)) {
+    const regex =
+      pattern.id === 'TOOLIP-SECRET-HARDCODED-PASSWORD' && codeFile
+        ? /\b(password|passwd|pwd)\s*[:=]\s*(?:"[^"\n]{8,}"|'[^'\n]{8,}')/gi
+        : pattern.regex;
+    for (const match of findSecretMatches(content, regex)) {
       const evidence = secretEvidence(match.value);
       findings.push({
         id: `${pattern.id}:${relativePath}:${match.line}:${match.column}`,

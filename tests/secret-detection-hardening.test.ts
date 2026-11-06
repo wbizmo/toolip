@@ -2,9 +2,24 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { runSecurityDoctor } from '../src/core/security-doctor.js';
+import {
+  runSecurityDoctor,
+  shouldScanSecrets
+} from '../src/core/security-doctor.js';
 
 describe('secret detection hardening', () => {
+  it('excludes common font assets before text reads', () => {
+    for (const font of [
+      'font.eot',
+      'font.otf',
+      'font.ttf',
+      'font.woff',
+      'font.woff2'
+    ]) {
+      expect(shouldScanSecrets(font, path.extname(font).slice(1))).toBe(false);
+    }
+  });
+
   it('reports every same-rule occurrence with unique locations and no secret fragments', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-secret-occurrences-')
@@ -217,16 +232,35 @@ describe('secret detection hardening', () => {
         'password = process.env.DB_PASSWORD\n' +
           'passwd = $' +
           '{DB_PASSWORD}\n' +
-          'pwd = getPassword(cfg)\n'
+          'pwd = getPassword(cfg)\n' +
+          'database = https://deploy:$' +
+          '{DB_PASSWORD}@db.example.test\n' +
+          'databaseAlias = https://deploy:$DB_PASSWORD@db.example.test\n' +
+          'databaseEnv = https://deploy:env.DB_PASSWORD@db.example.test\n'
+      );
+      await writeFile(
+        path.join(root, 'settings.ts'),
+        'const config = { password: DB_PASSWORD };\n' +
+          'const explicit = { password: "quoted-test-password-value" };\n'
       );
       const result = await runSecurityDoctor(root);
       expect(
         result.findings.some(
           (finding) =>
             finding.ruleId === 'TOOLIP-SECRET-NPM-AUTH' ||
-            finding.ruleId === 'TOOLIP-SECRET-HARDCODED-PASSWORD'
+            finding.ruleId === 'TOOLIP-SECRET-HARDCODED-PASSWORD' ||
+            finding.ruleId === 'TOOLIP-SECRET-URL-CREDENTIALS'
         )
-      ).toBe(false);
+      ).toBe(true);
+      expect(
+        result.findings
+          .filter(
+            (finding) =>
+              finding.ruleId === 'TOOLIP-SECRET-HARDCODED-PASSWORD' ||
+              finding.ruleId === 'TOOLIP-SECRET-URL-CREDENTIALS'
+          )
+          .map((finding) => finding.location?.file)
+      ).toEqual(['settings.ts']);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

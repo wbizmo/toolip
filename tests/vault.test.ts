@@ -8,6 +8,7 @@ import {
   mkdir,
   mkdtemp,
   readdir,
+  readFile,
   rm,
   stat,
   symlink,
@@ -243,13 +244,18 @@ describe('Toolip Vault', () => {
       );
       await waitForFile(readyPath);
       const lockPath = `${vaultPath}.lock`;
-      const ownerPath = `${lockPath}.owner`;
-      const [lockInfo, owner] = await Promise.all([
+      const [lockInfo, ownerFiles] = await Promise.all([
         stat(lockPath),
-        import('node:fs/promises').then(({ readFile }) =>
-          readFile(ownerPath, 'utf8')
-        )
+        readdir(lockPath)
       ]);
+      const ownerFile = ownerFiles.find((file) =>
+        /^\.owner\.[0-9a-f-]{36}$/i.test(file)
+      );
+      expect(ownerFile).toBeDefined();
+      const owner = await readFile(
+        path.join(lockPath, ownerFile ?? ''),
+        'utf8'
+      );
       expect(lockInfo.isDirectory()).toBe(true);
       expect(owner.trim()).toMatch(/^[0-9a-f-]{36}$/i);
       if (process.platform !== 'win32') {

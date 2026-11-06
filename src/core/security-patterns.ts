@@ -64,7 +64,8 @@ export const secretPatterns: SecurityPattern[] = [
     title: 'Credential-bearing URL detected',
     category: 'secrets',
     severity: 'high',
-    regex: /\bhttps?:\/\/[^\s/:@?#]+:[^\s/@?#]+@[^\s/?#]+/gi,
+    regex:
+      /\bhttps?:\/\/[^\s/:@?#]+:(?!\$\{[^}]+\}|\$[A-Za-z_]\w*\b|(?:process\.)?env\.[A-Za-z_$][\w$]*)[^\s/@?#]+@[^\s/?#]+/gi,
     message: 'A URL containing user credentials was found.',
     recommendation: 'Rotate the credential and remove it from the URL.'
   },

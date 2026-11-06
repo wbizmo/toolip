@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
+import { sanitizeOutput } from '../../src/core/safe-output.js';
 import { describe, expect, it } from 'vitest';
 import { GitHistorySecretAnalyzer } from '../../src/analyzers/git-history/analyzer.js';
 
@@ -79,6 +80,14 @@ describe('GitHistorySecretAnalyzer', () => {
       expect(findings).toHaveLength(2);
       expect(findings.map((finding) => finding.location?.line)).toEqual([1, 2]);
       expect(new Set(findings.map((finding) => finding.id)).size).toBe(2);
+      const safeFindings = sanitizeOutput(findings);
+      const safeFingerprints = safeFindings.map(
+        (finding) => finding.evidence?.[0]?.fingerprint
+      );
+      expect(new Set(safeFingerprints).size).toBe(2);
+      expect(
+        safeFingerprints.every((value) => /^[a-f0-9]{64}$/.test(value ?? ''))
+      ).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
