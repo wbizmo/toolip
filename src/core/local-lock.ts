@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, type Dir } from 'node:fs';
 import {
   lstat,
+  opendir,
   open,
   readFile,
   rename,
@@ -14,6 +15,7 @@ import lockfile from 'proper-lockfile';
 
 const staleMs = 30_000;
 const updateMs = 10_000;
+const staleMarkerCleanupLimit = 256;
 
 export type LockGuard = () => Promise<void>;
 
@@ -27,8 +29,8 @@ export async function withLocalStateLock<T>(
   const resource = path.resolve(resourcePath);
   const lockPath = `${resource}.lock`;
   const token = crypto.randomUUID();
-  const ownerPath = path.join(lockPath, `.owner.${token}`);
-  const temporaryOwnerPath = path.join(lockPath, `.owner.${token}.tmp`);
+  const ownerPath = `${lockPath}.owner.${token}`;
+  const temporaryOwnerPath = `${ownerPath}.tmp`;
   let compromised: Error | undefined;
   let markerInstalled = false;
 
@@ -72,6 +74,7 @@ export async function withLocalStateLock<T>(
     });
     await rename(temporaryOwnerPath, ownerPath);
     markerInstalled = true;
+    await removeStaleOwnerMarkers(lockPath, ownerPath);
     await restrictLockDirectory(lockPath);
 
     const assertOwned: LockGuard = async () => {
@@ -131,6 +134,31 @@ export async function withLocalStateLock<T>(
       });
       await release();
     }
+  }
+}
+
+/** Removes bounded orphaned per-lease markers after exclusive lock acquisition. */
+async function removeStaleOwnerMarkers(
+  lockPath: string,
+  currentOwnerPath: string
+): Promise<void> {
+  const directory = path.dirname(lockPath);
+  const prefix = `${path.basename(lockPath)}.owner.`;
+  let directoryHandle: Dir;
+  try {
+    directoryHandle = await opendir(directory);
+  } catch {
+    return;
+  }
+  let inspected = 0;
+  for await (const entry of directoryHandle) {
+    if (inspected++ >= staleMarkerCleanupLimit) break;
+    if (!entry.name.startsWith(prefix)) continue;
+    const staleOwnerPath = path.join(directory, entry.name);
+    if (staleOwnerPath === currentOwnerPath) continue;
+    await unlink(staleOwnerPath).catch((error: unknown) => {
+      if (lockErrorCode(error) !== 'ENOENT') throw error;
+    });
   }
 }
 

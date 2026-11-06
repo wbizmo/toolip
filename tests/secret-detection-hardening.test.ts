@@ -243,6 +243,18 @@ describe('secret detection hardening', () => {
         'const config = { password: DB_PASSWORD };\n' +
           'const explicit = { password: "quoted-test-password-value" };\n'
       );
+      await writeFile(
+        path.join(root, 'settings.py'),
+        'password = config.password\npassword = DB_PASSWORD\n'
+      );
+      await writeFile(
+        path.join(root, 'settings.RB'),
+        'password = config.password\npassword = DB_PASSWORD\n'
+      );
+      await writeFile(
+        path.join(root, 'settings.js'),
+        'const usage = this._authToken = options.authToken;\n'
+      );
       const result = await runSecurityDoctor(root);
       expect(
         result.findings.some(
@@ -261,6 +273,22 @@ describe('secret detection hardening', () => {
           )
           .map((finding) => finding.location?.file)
       ).toEqual(['settings.ts']);
+      expect(
+        result.findings.some(
+          (finding) =>
+            finding.ruleId === 'TOOLIP-SECRET-HARDCODED-PASSWORD' &&
+            ['settings.py', 'settings.RB'].includes(
+              finding.location?.file ?? ''
+            )
+        )
+      ).toBe(false);
+      expect(
+        result.findings.some(
+          (finding) =>
+            finding.ruleId === 'TOOLIP-SECRET-NPM-AUTH' &&
+            finding.location?.file === 'settings.js'
+        )
+      ).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -256,7 +256,10 @@ export function shouldScanSecrets(
 function scanSecretContent(relativePath: string, content: string): Finding[] {
   const findings: Finding[] = [];
   const testFile = isTestFile(relativePath);
-  const codeFile = /\.(?:[cm]?[jt]sx?|vue|svelte)$/.test(relativePath);
+  const codeFile =
+    /\.(?:[cm]?[jt]sx?|vue|svelte|py|rb|go|rs|java|kt|kts|php|c|h|cc|cpp|cxx|hpp|cs|swift|scala|sh|bash|zsh)$/i.test(
+      relativePath
+    );
 
   for (const pattern of secretPatterns) {
     const regex =

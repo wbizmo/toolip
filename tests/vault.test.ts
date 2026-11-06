@@ -20,6 +20,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 import type { ToolipError } from '../src/errors/toolip-error.js';
+import { withLocalStateLock } from '../src/core/local-lock.js';
 import {
   deleteSecret,
   exportEnv,
@@ -246,16 +247,13 @@ describe('Toolip Vault', () => {
       const lockPath = `${vaultPath}.lock`;
       const [lockInfo, ownerFiles] = await Promise.all([
         stat(lockPath),
-        readdir(lockPath)
+        readdir(root)
       ]);
       const ownerFile = ownerFiles.find((file) =>
-        /^\.owner\.[0-9a-f-]{36}$/i.test(file)
+        /^vault\.json\.lock\.owner\.[0-9a-f-]{36}$/i.test(file)
       );
       expect(ownerFile).toBeDefined();
-      const owner = await readFile(
-        path.join(lockPath, ownerFile ?? ''),
-        'utf8'
-      );
+      const owner = await readFile(path.join(root, ownerFile ?? ''), 'utf8');
       expect(lockInfo.isDirectory()).toBe(true);
       expect(owner.trim()).toMatch(/^[0-9a-f-]{36}$/i);
       if (process.platform !== 'win32') {
@@ -273,6 +271,55 @@ describe('Toolip Vault', () => {
       await holderExit;
       await expect(lstat(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('reclaims a stale lock left by a terminated owner process', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-vault-stale-owner-')
+    );
+    const resource = path.join(root, 'state');
+    const readyPath = path.join(root, 'ready');
+    const staleMs = 1_500;
+    let holder: ReturnType<typeof spawn> | undefined;
+    try {
+      holder = spawn(
+        process.execPath,
+        [
+          '--import',
+          'tsx',
+          workerPath,
+          'hold-lock',
+          resource,
+          'unused',
+          '10000',
+          readyPath,
+          String(staleMs)
+        ],
+        { cwd: process.cwd(), stdio: 'ignore' }
+      );
+      await waitForFile(readyPath);
+      const markerPrefix = `${path.basename(`${resource}.lock`)}.owner.`;
+      expect(
+        (await readdir(root)).some((entry) => entry.startsWith(markerPrefix))
+      ).toBe(true);
+      const holderExit = new Promise<void>((resolve, reject) => {
+        holder?.once('error', reject);
+        holder?.once('exit', () => resolve());
+      });
+      holder.kill('SIGKILL');
+      await holderExit;
+      await delay(staleMs + 250);
+
+      await expect(
+        withLocalStateLock(resource, async () => 'recovered', 4_000, staleMs)
+      ).resolves.toBe('recovered');
+      expect(
+        (await readdir(root)).some((entry) => entry.startsWith(markerPrefix))
+      ).toBe(false);
+    } finally {
+      holder?.kill('SIGKILL');
       await rm(root, { recursive: true, force: true });
     }
   }, 30_000);

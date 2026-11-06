@@ -66,7 +66,7 @@ export function sanitizeOutput<T>(
       Object.entries(value).map(([key, item]) => {
         if (/fingerprint/i.test(key)) {
           const fingerprint =
-            typeof item === 'string' && /^[a-f0-9]{64}$/i.test(item)
+            typeof item === 'string'
               ? createHmac('sha256', fingerprintKey).update(item).digest('hex')
               : '[redacted-fingerprint]';
           return [key, fingerprint];

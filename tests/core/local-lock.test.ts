@@ -4,6 +4,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  rename,
   rm,
   stat,
   writeFile
@@ -54,7 +55,7 @@ describe('cross-process local-state lock ownership', () => {
     try {
       await expect(
         withLocalStateLock(resource, async (assertOwned) => {
-          await rm(lockPath, { recursive: true });
+          await rename(lockPath, `${lockPath}.old`);
           await mkdir(lockPath, { mode: 0o700 });
           await writeFile(ownerPath, 'replacement-owner\n', 'utf8');
           await expect(assertOwned()).rejects.toMatchObject({
@@ -74,17 +75,21 @@ describe('cross-process local-state lock ownership', () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-lock-cleanup-'));
     const resource = path.join(root, 'state');
     const lockPath = `${resource}.lock`;
+    const ownerPrefix = `${path.basename(lockPath)}.owner.`;
     try {
       await withLocalStateLock(resource, async () => {
-        const marker = (await readdir(lockPath)).find((name) =>
-          name.startsWith('.owner.')
+        const marker = (await readdir(root)).find((name) =>
+          name.startsWith(ownerPrefix)
         );
-        expect(marker).toMatch(/^\.owner\.[0-9a-f-]{36}$/);
-        expect((await lstat(path.join(lockPath, marker ?? ''))).isFile()).toBe(
+        expect(marker).toMatch(/\.lock\.owner\.[0-9a-f-]{36}$/);
+        expect((await lstat(path.join(root, marker ?? ''))).isFile()).toBe(
           true
         );
       });
       await expect(lstat(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(
+        (await readdir(root)).some((name) => name.startsWith(ownerPrefix))
+      ).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

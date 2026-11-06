@@ -4,7 +4,7 @@ import { appendHistory, clearHistory } from '../../src/core/history/store.js';
 import { withLocalStateLock } from '../../src/core/local-lock.js';
 import { setSecret } from '../../src/core/vault.js';
 
-const [mode, location, id, value, readyPath] = process.argv.slice(2);
+const [mode, location, id, value, readyPath, staleMs] = process.argv.slice(2);
 
 if (mode === 'vault') {
   if (!location || !id || value === undefined)
@@ -23,11 +23,16 @@ if (mode === 'vault') {
   await clearHistory(location);
 } else if (mode === 'hold-lock') {
   if (!location || !readyPath) throw new Error('Invalid worker arguments.');
-  await withLocalStateLock(location, async (assertOwned) => {
-    await writeFile(readyPath, 'ready', 'utf8');
-    await delay(Number(value ?? 1_000));
-    await assertOwned();
-  });
+  await withLocalStateLock(
+    location,
+    async (assertOwned) => {
+      await writeFile(readyPath, 'ready', 'utf8');
+      await delay(Number(value ?? 1_000));
+      await assertOwned();
+    },
+    5_000,
+    Number(staleMs ?? 30_000)
+  );
 } else {
   throw new Error('Unknown local-state worker mode.');
 }

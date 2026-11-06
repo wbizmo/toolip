@@ -22,8 +22,8 @@ describe('safe output boundaries', () => {
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain(credential);
     expect(serialized).toContain('[redacted]');
-    expect(serialized).toContain('[redacted-fingerprint]');
     expect(serialized).not.toContain('sha256-value');
+    expect(result.finding.fingerprint).toMatch(/^[a-f0-9]{64}$/);
     expect(serialized).not.toContain('correct horse battery staple');
     expect(serialized).not.toContain(
       Buffer.from('user:pass').toString('base64')
@@ -71,14 +71,28 @@ describe('safe output boundaries', () => {
   it('pseudonymizes fingerprints while preserving secret-specific correlation', () => {
     const first = 'a'.repeat(64);
     const second = 'b'.repeat(64);
+    const nonHexFirst = 'sha256-value';
+    const nonHexSecond = 'fingerprint-value';
     const firstOutput = sanitizeOutput({ fingerprint: first }).fingerprint;
     const repeatedOutput = sanitizeOutput({ fingerprint: first }).fingerprint;
     const secondOutput = sanitizeOutput({ fingerprint: second }).fingerprint;
+    const nonHexFirstOutput = sanitizeOutput({
+      fingerprint: nonHexFirst
+    }).fingerprint;
+    const repeatedNonHexOutput = sanitizeOutput({
+      fingerprint: nonHexFirst
+    }).fingerprint;
+    const nonHexSecondOutput = sanitizeOutput({
+      fingerprint: nonHexSecond
+    }).fingerprint;
 
     expect(firstOutput).toMatch(/^[a-f0-9]{64}$/);
     expect(firstOutput).toBe(repeatedOutput);
     expect(firstOutput).not.toBe(secondOutput);
     expect(firstOutput).not.toBe(first);
+    expect(nonHexFirstOutput).toBe(repeatedNonHexOutput);
+    expect(nonHexFirstOutput).not.toBe(nonHexSecondOutput);
+    expect(nonHexFirstOutput).not.toBe(nonHexFirst);
   });
 
   it('redacts unquoted passphrase and passwd assignments in error output', () => {
