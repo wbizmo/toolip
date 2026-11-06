@@ -13,6 +13,11 @@ export type McpServerOptions = {
   allowedRoots?: readonly string[];
 };
 
+/** Serializes MCP tool output after applying the shared secret redactor. */
+export function serializeMcpOutput(value: unknown): string {
+  return JSON.stringify(sanitizeOutput(value), null, 2);
+}
+
 /** Starts local MCP tools with approved workspace boundaries and safe output. */
 export async function startMcpServer(
   options: McpServerOptions = {}
@@ -48,7 +53,7 @@ export async function startMcpServer(
         content: [
           {
             type: 'text',
-            text: JSON.stringify(sanitizeOutput(report), null, 2)
+            text: serializeMcpOutput(report)
           }
         ]
       };
@@ -73,7 +78,7 @@ export async function startMcpServer(
         content: [
           {
             type: 'text',
-            text: JSON.stringify(sanitizeOutput(report), null, 2)
+            text: serializeMcpOutput(report)
           }
         ]
       };
@@ -100,7 +105,7 @@ export async function startMcpServer(
           content: [
             {
               type: 'text',
-              text: JSON.stringify(sanitizeOutput(result), null, 2)
+              text: serializeMcpOutput(result)
             }
           ]
         };

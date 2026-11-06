@@ -75,9 +75,10 @@ export function watchProject(
     }, debounceMs);
   };
 
-  const closeWatcher = process.platform === 'win32'
-    ? watchDirectoryTree(absoluteRoot, schedule, ignored, reportError)
-    : watchRecursively(absoluteRoot, schedule, reportError);
+  const closeWatcher =
+    process.platform === 'win32'
+      ? watchDirectoryTree(absoluteRoot, schedule, ignored, reportError)
+      : watchRecursively(absoluteRoot, schedule, reportError);
 
   return () => {
     closed = true;
@@ -138,7 +139,10 @@ function watchDirectoryTree(
             return;
           }
 
-          const absolutePath = path.join(canonicalDirectory, filename.toString());
+          const absolutePath = path.join(
+            canonicalDirectory,
+            filename.toString()
+          );
           const relativePath = path.relative(root, absolutePath);
           onChange(relativePath);
 
@@ -160,7 +164,9 @@ function watchDirectoryTree(
     });
 
     try {
-      for (const entry of readdirSync(canonicalDirectory, { withFileTypes: true })) {
+      for (const entry of readdirSync(canonicalDirectory, {
+        withFileTypes: true
+      })) {
         if (!entry.isDirectory()) continue;
         addDirectory(path.join(canonicalDirectory, entry.name));
       }
