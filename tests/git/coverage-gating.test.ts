@@ -94,6 +94,26 @@ describe('pre-commit fails closed on incomplete scans (issue #27)', () => {
     expect(result.blockedByIncompleteScan).toBe(true);
   });
 
+  it('does not block staged binary assets that the content reader confirms as binary', async () => {
+    const root = makeRepo();
+    const binary = Buffer.from([0, 0x42, 0x5a, 0x68, 0x00]);
+    for (const name of ['archive.bz2', 'clip.mov', 'bundle.xz']) {
+      writeFileSync(path.join(root, name), binary);
+    }
+    git(root, 'add', '-A');
+
+    const result = await runPreCommit(root);
+
+    expect(result.passed).toBe(true);
+    expect(result.blockedByIncompleteScan).toBe(false);
+    expect(result.coverage).toMatchObject({
+      state: 'complete',
+      eligible: 0,
+      scanned: 0,
+      skipped: 0
+    });
+  });
+
   it('cannot opt eligible staged files out of fail-closed coverage', async () => {
     const root = makeRepo();
     write(root, 'ok.ts', CLEAN);
