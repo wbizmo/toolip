@@ -76,9 +76,9 @@ export function watchProject(
   };
 
   const closeWatcher =
-    process.platform === 'win32'
-      ? watchDirectoryTree(absoluteRoot, schedule, ignored, reportError)
-      : watchRecursively(absoluteRoot, schedule, reportError);
+    process.platform === 'linux'
+      ? watchRecursively(absoluteRoot, schedule, reportError)
+      : watchDirectoryTree(absoluteRoot, schedule, ignored, reportError);
 
   return () => {
     closed = true;
