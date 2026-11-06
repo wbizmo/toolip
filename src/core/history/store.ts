@@ -15,6 +15,7 @@ import { withLocalStateLock, type LockGuard } from '../local-lock.js';
 
 const schemaVersion = '1.0' as const;
 
+/** Returns the canonical history file path for a project root. */
 export function historyFilePath(root: string): string {
   return path.join(root, '.toolip', 'history.json');
 }
@@ -92,6 +93,7 @@ export async function clearHistory(root: string): Promise<void> {
   );
 }
 
+/** Parses and validates the supported history schema. */
 function parseHistory(raw: string): HistoryStore {
   let parsed: unknown;
   try {
@@ -114,6 +116,7 @@ function parseHistory(raw: string): HistoryStore {
   return parsed as HistoryStore;
 }
 
+/** Writes a history snapshot through a private same-directory temporary file. */
 async function writeHistoryAtomically(
   filePath: string,
   store: HistoryStore,
@@ -147,6 +150,7 @@ async function writeHistoryAtomically(
   }
 }
 
+/** Confirms that the store directory still has its validated filesystem identity. */
 async function assertStoreDirectory(
   directory: string,
   identity: DirectoryIdentity
@@ -154,6 +158,7 @@ async function assertStoreDirectory(
   await assertDirectoryIdentity(directory, identity);
 }
 
+/** Returns a Node filesystem error code when one is present. */
 function errorCode(error: unknown): string | undefined {
   return error && typeof error === 'object' && 'code' in error
     ? String((error as { code?: unknown }).code)

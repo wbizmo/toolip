@@ -123,6 +123,7 @@ export async function withLocalStateLock<T>(
   }
 }
 
+/** Restricts lock-directory permissions after validating the opened directory identity. */
 async function restrictLockDirectory(lockPath: string): Promise<void> {
   if (process.platform === 'win32') return;
   const handle = await open(
@@ -150,6 +151,7 @@ async function restrictLockDirectory(lockPath: string): Promise<void> {
   }
 }
 
+/** Checks whether a lock path still names the directory acquired by this owner. */
 async function ownsLockDirectory(
   lockPath: string,
   expected: { dev: number; ino: number } | undefined
@@ -168,6 +170,7 @@ async function ownsLockDirectory(
   }
 }
 
+/** Checks that the lock owner marker still contains this process's lease token. */
 async function ownsMarker(ownerPath: string, token: string): Promise<boolean> {
   try {
     return (await readFile(ownerPath, 'utf8')).trim() === token;
@@ -176,12 +179,14 @@ async function ownsMarker(ownerPath: string, token: string): Promise<boolean> {
   }
 }
 
+/** Extracts a Node error code from an unknown thrown value. */
 function lockErrorCode(error: unknown): string | undefined {
   return error && typeof error === 'object' && 'code' in error
     ? String((error as { code?: unknown }).code)
     : undefined;
 }
 
+/** Creates the stable timeout error returned when a lease cannot be acquired. */
 function localLockTimeout(): Error & { code: string } {
   return Object.assign(
     new Error(
@@ -191,6 +196,7 @@ function localLockTimeout(): Error & { code: string } {
   );
 }
 
+/** Creates the stable ownership-compromise error and preserves its cause. */
 function localLockCompromised(cause: unknown): Error & { code: string } {
   const error = Object.assign(
     new Error('Local state lock ownership changed during a mutation.'),

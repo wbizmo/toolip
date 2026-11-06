@@ -45,7 +45,7 @@ export type ToolipReport = {
 
 /** Serializes a finding through the legacy, secret-safe report contract. */
 export function serializeFinding(finding: Finding): SerializedFinding {
-  return {
+  return sanitizeOutput({
     id: finding.id,
     title: finding.title,
     severity: finding.severity,
@@ -59,7 +59,7 @@ export function serializeFinding(finding: Finding): SerializedFinding {
     evidence: finding.evidence?.[0]?.summary
       ? redactSensitiveText(finding.evidence[0].summary)
       : undefined
-  };
+  });
 }
 
 /** Builds a sanitized report for every downstream output format. */

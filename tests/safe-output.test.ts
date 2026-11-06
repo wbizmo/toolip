@@ -40,10 +40,35 @@ describe('safe output boundaries', () => {
       })
     });
     const serialized = JSON.stringify(result);
+    expect(result.command).toBe('--password [redacted]');
     expect(serialized).not.toContain('part1');
     expect(serialized).not.toContain('part2@');
     expect(serialized).not.toContain('correct horse battery staple');
     expect(serialized).not.toContain('ghp_');
     expect(serialized).toContain('https://[redacted]@example.test/path?ok=1');
+  });
+
+  it('redacts credentials embedded in nested metadata keys', () => {
+    const credential = `ghp_${'c'.repeat(36)}`;
+    const result = sanitizeOutput({
+      metadata: { nested: { [credential]: 'untrusted value' } }
+    });
+
+    expect(JSON.stringify(result)).not.toContain(credential);
+    expect(result).toEqual({
+      metadata: { nested: { '[redacted-token]': 'untrusted value' } }
+    });
+  });
+
+  it('redacts unquoted passphrase and passwd assignments in error output', () => {
+    const result = sanitizeOutput(
+      new Error('unlock failed: passphrase=first-secret passwd=second-secret')
+    );
+    const serialized = JSON.stringify(result);
+
+    expect(serialized).not.toContain('first-secret');
+    expect(serialized).not.toContain('second-secret');
+    expect(serialized).toContain('passphrase=[redacted]');
+    expect(serialized).toContain('passwd=[redacted]');
   });
 });

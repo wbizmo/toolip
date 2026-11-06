@@ -16,11 +16,11 @@ export function redactSensitiveText(value: string): string {
       '$1$2[redacted]'
     )
     .replace(
-      /(--?(?:token|password|secret|api[-_]?key|auth)(?:=|\s+))(?:"[^"]*"|'[^']*'|[^\s]+)/gi,
-      '$1[redacted]'
+      /(^|\s)(--?(?:token|password|secret|api[-_]?key|auth)(?:=|\s+))(?:"[^"]*"|'[^']*'|[^\s]+)/gim,
+      '$1$2[redacted]'
     )
     .replace(
-      /\b((?:NPM|GITHUB|GITLAB|AWS|AZURE|API|ACCESS|AUTH|JWT)[A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD)|(?:token|api[_-]?key|password|client_secret|secret))\s*([=:])\s*(['"]?)[^\s,;"']+\3/gi,
+      /\b((?:NPM|GITHUB|GITLAB|AWS|AZURE|API|ACCESS|AUTH|JWT)[A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD)|(?:token|api[_-]?key|password|passphrase|passwd|pwd|client_secret|secret))\s*([=:])\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
       '$1$2[redacted]'
     )
     .replace(
@@ -59,7 +59,7 @@ export function sanitizeOutput<T>(
             key
           );
         return [
-          key,
+          redactSensitiveText(key),
           sanitizeOutput(item, depth + 1, sensitiveContext || sensitiveKey)
         ];
       })

@@ -42,6 +42,7 @@ export function createFixtureSuppressionIndex(
   return index;
 }
 
+/** Identifies test-source paths without treating them as trusted suppressions. */
 export function isTestFile(relativePath?: string): boolean {
   if (!relativePath) return false;
 
@@ -65,6 +66,7 @@ export function secretFingerprint(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+/** Returns a redacted summary and sensitive internal fingerprint for a match. */
 export function secretEvidence(value: string): {
   summary: string;
   fingerprint: string;
@@ -103,6 +105,7 @@ export function findSecretMatches(
   return matches;
 }
 
+/** Converts a source string offset into one-based line and column coordinates. */
 export function lineAndColumn(
   content: string,
   index: number

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Finding } from '../src/contracts/finding.js';
-import { createReport } from '../src/core/report.js';
+import { createReport, serializeFinding } from '../src/core/report.js';
+import { renderHtmlReport } from '../src/core/publish/html.js';
 import {
   detectReportFormat,
   renderMarkdownReport
@@ -89,6 +90,21 @@ describe('report', () => {
     });
     expect(JSON.stringify(report)).not.toContain(credential);
     expect(JSON.stringify(report)).toContain('[redacted]');
+  });
+
+  it('redacts credentials from serialized findings rendered as HTML', () => {
+    const credential = `ghp_${'d'.repeat(36)}`;
+    const serialized = serializeFinding(
+      finding('credential', 'high', `rotate ${credential}`)
+    );
+    const html = renderHtmlReport({
+      project: '/project',
+      generatedAt: '2026-01-01T00:00:00.000Z',
+      findings: [serialized]
+    });
+
+    expect(html).not.toContain(credential);
+    expect(html).toContain('rotate [redacted-token]');
   });
 
   it('sanitizes analysis reasons and nested finding metadata for the whole report', () => {

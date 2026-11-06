@@ -91,7 +91,11 @@ export async function validatePrivateDirectory(
 /** Opens a regular local-state file without following a symlink and repairs mode through its handle. */
 export async function openPrivateFile(filePath: string): Promise<string> {
   const resolved = path.resolve(filePath);
-  const handle = await open(resolved, constants.O_RDONLY | noFollow);
+  const nonBlocking = process.platform === 'win32' ? 0 : constants.O_NONBLOCK;
+  const handle = await open(
+    resolved,
+    constants.O_RDONLY | noFollow | nonBlocking
+  );
   try {
     const opened = await handle.stat();
     const namedAfter = await lstat(resolved);
@@ -164,6 +168,7 @@ export async function syncDirectory(directoryPath: string): Promise<void> {
   }
 }
 
+/** Rejects local-state files or directories owned by another user. */
 function assertCurrentOwner(uid: number, filePath: string): void {
   if (typeof process.geteuid === 'function' && uid !== process.geteuid()) {
     throw localStatePathError(
@@ -172,6 +177,7 @@ function assertCurrentOwner(uid: number, filePath: string): void {
   }
 }
 
+/** Compares filesystem device and inode values for a named/opened pair. */
 function sameIdentity(
   left: { dev: number; ino: number },
   right: { dev: number; ino: number }
@@ -179,16 +185,19 @@ function sameIdentity(
   return left.dev === right.dev && left.ino === right.ino;
 }
 
+/** Extracts the stable identity used to revalidate a local-state directory. */
 function identity(value: { dev: number; ino: number }): DirectoryIdentity {
   return { dev: value.dev, ino: value.ino };
 }
 
+/** Extracts a Node filesystem error code from an unknown thrown value. */
 function errorCode(error: unknown): string | undefined {
   return error && typeof error === 'object' && 'code' in error
     ? String((error as { code?: unknown }).code)
     : undefined;
 }
 
+/** Creates a stable error for unsafe local-state filesystem paths. */
 function localStatePathError(message: string): Error & { code: string } {
   return Object.assign(new Error(message), { code: 'UNSAFE_LOCAL_STATE_PATH' });
 }

@@ -8,6 +8,7 @@ type ChildProcessBindings = {
   execSyncImports: Set<string>;
 };
 
+/** Selects the TypeScript parser mode from a source filename extension. */
 function scriptKind(filePath: string): ts.ScriptKind {
   if (filePath.endsWith('.tsx')) return ts.ScriptKind.TSX;
   if (filePath.endsWith('.jsx')) return ts.ScriptKind.JSX;
@@ -17,10 +18,12 @@ function scriptKind(filePath: string): ts.ScriptKind {
   return ts.ScriptKind.TS;
 }
 
+/** Recognizes Node's built-in child-process module specifiers. */
 function isChildProcessModule(value: string): boolean {
   return value === 'child_process' || value === 'node:child_process';
 }
 
+/** Returns a literal module specifier from an import declaration. */
 function moduleNameFromImport(
   declaration: ts.ImportDeclaration
 ): string | undefined {
@@ -29,6 +32,7 @@ function moduleNameFromImport(
     : undefined;
 }
 
+/** Returns a literal module specifier from a single-argument require call. */
 function requireModuleName(
   expression: ts.Expression | undefined
 ): string | undefined {
@@ -47,6 +51,7 @@ function requireModuleName(
   return argument && ts.isStringLiteral(argument) ? argument.text : undefined;
 }
 
+/** Collects imported and required child-process function aliases from a file. */
 function collectBindings(sourceFile: ts.SourceFile): ChildProcessBindings {
   const bindings: ChildProcessBindings = {
     namespaceImports: new Set(),
@@ -163,6 +168,7 @@ function collectBindings(sourceFile: ts.SourceFile): ChildProcessBindings {
   return bindings;
 }
 
+/** Maps an AST node to a one-based source location. */
 function findingLocation(
   sourceFile: ts.SourceFile,
   node: ts.Node
@@ -218,6 +224,7 @@ function createFinding(
   };
 }
 
+/** Resolves an imported child-process call to its matching security rule. */
 function childProcessRuleForCall(
   call: ts.CallExpression,
   bindings: ChildProcessBindings
