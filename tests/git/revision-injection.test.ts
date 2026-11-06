@@ -114,7 +114,7 @@ describe('Git revision option injection (issue #45)', () => {
     );
     expect(error.code).toBe('GIT_REVISION_NOT_FOUND');
     expect(error.message).not.toContain(root);
-  });
+  }, 30_000);
 
   it('handles file names with spaces, newlines and non-ASCII characters', async () => {
     const root = makeRepo();

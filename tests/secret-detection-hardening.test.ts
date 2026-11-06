@@ -1,3 +1,4 @@
+import { Worker } from 'node:worker_threads';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -153,6 +154,19 @@ describe('secret detection hardening', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it('bounds matching for unterminated multiline passwords with long indentation', async () => {
+    const pattern = secretPatterns.find(
+      (item) => item.id === 'TOOLIP-SECRET-HARDCODED-PASSWORD'
+    );
+    expect(pattern).toBeDefined();
+    if (!pattern) throw new Error('The password pattern is not registered.');
+
+    const input = `password: "safe-value\n${' '.repeat(10_000)}x`;
+    await expect(testRegexInWorker(pattern.regex, input, 1_000)).resolves.toBe(
+      false
+    );
   });
 
   it('does not lower a real credential merely because it is in a test file', async () => {
@@ -392,3 +406,37 @@ describe('secret detection hardening', () => {
     }
   });
 });
+
+function testRegexInWorker(
+  pattern: RegExp,
+  input: string,
+  timeoutMs: number
+): Promise<boolean> {
+  const worker = new Worker(
+    `const { parentPort, workerData } = require('node:worker_threads');
+     const pattern = new RegExp(workerData.source, workerData.flags);
+     parentPort.once('message', input => parentPort.postMessage(pattern.test(input)));`,
+    {
+      eval: true,
+      workerData: { source: pattern.source, flags: pattern.flags }
+    }
+  );
+
+  return new Promise<boolean>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      void worker.terminate();
+      reject(new Error('Password pattern exceeded its matching time budget.'));
+    }, timeoutMs);
+    worker.once('message', (result: boolean) => {
+      clearTimeout(timer);
+      resolve(result);
+    });
+    worker.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    worker.postMessage(input);
+  }).finally(() => {
+    void worker.terminate();
+  });
+}
