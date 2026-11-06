@@ -52,7 +52,10 @@ export async function validatePrivateDirectory(
   // against the name before changing permissions or using its identity.
   let handle: Awaited<ReturnType<typeof open>>;
   try {
-    handle = await open(resolved, constants.O_RDONLY | directoryOnly | noFollow);
+    handle = await open(
+      resolved,
+      constants.O_RDONLY | directoryOnly | noFollow
+    );
   } catch (error) {
     if (errorCode(error) === 'ENOENT') return undefined;
     if (errorCode(error) === 'ELOOP' || errorCode(error) === 'ENOTDIR') {

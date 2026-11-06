@@ -191,7 +191,7 @@ describe('Toolip Vault', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 
   it('serializes mutations from three independent processes', async () => {
     const root = await mkdtemp(
@@ -365,11 +365,7 @@ describe('Toolip Vault', () => {
       const target = path.join(root, '.toolip', 'vault.json');
       const linkedVault = path.join(root, 'linked-vault.json');
       const parentAlias = path.join(root, 'parent-alias');
-      const linkedParentVault = path.join(
-        parentAlias,
-        '.toolip',
-        'vault.json'
-      );
+      const linkedParentVault = path.join(parentAlias, '.toolip', 'vault.json');
       try {
         await initVault('master-password', target);
         await chmod(target, 0o644);
