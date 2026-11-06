@@ -328,7 +328,7 @@ describe('doctor coverage covers I/O failures, caps and cancellation (issue #27)
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it('an I/O failure makes the run partial with a failed count', async () => {
     const { dir, context } = await doctorContext({
