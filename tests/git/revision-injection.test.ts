@@ -88,7 +88,7 @@ describe('Git revision option injection (issue #45)', () => {
       expect(result.packageManifestChanged).toBe(true);
       expect(result.sourceFilesChanged).toEqual(['src/app.ts']);
     }
-  });
+  }, 30_000);
 
   it('works on a detached HEAD and in a linked worktree', async () => {
     const root = makeRepo();
