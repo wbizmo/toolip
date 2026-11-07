@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createScannerContext } from '../src/core/scanner-context.js';
+import { createProjectSnapshot } from '../src/application/project-snapshot.js';
 import { runSecurityDoctor } from '../src/core/security-doctor.js';
 
 describe('runSecurityDoctor', () => {
@@ -134,6 +135,35 @@ exec(userInput);
         }
       });
       expect(() => JSON.stringify(finding)).not.toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('uses captured project bytes without falling back to changed worktree files', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-doctor-immutable-snapshot-')
+    );
+    const source = path.join(root, 'app.ts');
+    const captured = 'eval(untrusted);';
+    try {
+      await writeFile(source, captured);
+      const snapshot = await createProjectSnapshot(root);
+      await writeFile(source, 'const nowHarmless = true;');
+      await writeFile(path.join(root, 'added.ts'), 'eval(addedAfterSnapshot);');
+
+      const result = await runSecurityDoctor(root, { snapshot });
+
+      const finding = result.findings.find(
+        (item) => item.location?.file === 'app.ts'
+      );
+      expect(finding?.ruleId).toBe('TLP-AST-001');
+      expect(finding?.metadata?.sourceProvenance).toMatchObject({
+        sha256: createHash('sha256').update(captured).digest('hex')
+      });
+      expect(
+        result.findings.some((item) => item.location?.file === 'added.ts')
+      ).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -8,9 +8,41 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 
 - Avoid copying source expressions into AST evidence, omit install-script command text, and redact supported credential patterns in analyzer output, errors, reports and MCP output; remove low-entropy secret hashes from public finding summaries and identities.
 - Scan bounded readable text files including credential dotfiles such as `.npmrc`; source comments no longer suppress secret findings, and fixture suppression requires caller-owned policy with optional expiry.
+- Trace Stage A GitHub Actions block-form commands and working directories into exact npm/pnpm/Yarn workspace manifests and package-relative script targets; follow VS Code automatic task dependencies, reject malformed run scalars, and mark unresolved workspace/task references incomplete.
 - Serialize vault and history mutations across processes, reject unsafe local-state symlinks and foreign-owned POSIX paths with actionable vault-read errors, atomically flush replacements, and reclaim lock leases left by terminated owners after lease expiry.
 - Reconcile security-watch directories after filename-less events and directory replacement so recreated subtrees remain monitored; keep the recursive watcher on Linux and use reconciled per-directory watches on macOS and Windows.
 - Set the package homepage metadata to `https://www.zivoralabs.xyz/open-source/toolip/`.
+- Add signed declarative literal-rule packs to `doctor` and `scan`, with explicit unsigned local override, redacted evidence, expiry and bounded output; executable third-party plugins remain disabled pending OS-level isolation.
+- Add an opt-in read-only GitHub App runner with signed webhooks, delivery deduplication, allowlisted schedules, and single-repository `checks:write` status publication.
+- Require explicit `--allow-project-tests` authorization before an upgrade worktree runs repository-defined test commands; dependency installs continue to skip lifecycle scripts.
+- Add deterministic randomized line-location fuzzing and full offline scorecard benchmarks at 1k, 10k and 50k generated repository files; retain the 1m release run for final release validation.
+- Generate detached DSSE/in-toto signatures for CycloneDX/SPDX SBOMs and verify exact canonical subjects, trusted key/project identities, signatures and freshness; signed reports and SBOM attestations bind a bounded digest of package metadata and the complete runtime module tree, with optional `--scanner-artifact-sha256` enforcement.
+- Revalidate the live pull request base/head/merge identity before workflow-run CI begins, rejecting stale Stage A results after branch updates or force-pushes.
+- Apply current-maintainer-reviewed Stage A exceptions to exact-tree npm artifact findings and coverage reasons while retaining mandatory artifact-count and signature-audit verification.
+- Freeze the canonical MCP workspace boundary and allowlist so caller mutation cannot change the roots trusted by a running server.
+- Bind Stage A tarball inspection to exact npm lockfile artifact identity, including aliased package names; a valid digest cannot mask a mismatched embedded name or version.
+- Require exact-tree maintainer review for changes to the Stage A scanner, artifact verifiers, runtime/workflow trust checks, CODEOWNERS and gated workflows before the new implementation can reach Stage B.
+- Persist GitHub App delivery replay IDs and installation suspension state in a bounded private journal, and abort queued/active scans when an installation is suspended.
+- Report request-derived shell command flows through `exec`/`execSync` and explicit `shell: true` APIs, while keeping default argument-array execution distinct and flagging dynamic child-process method selection as uncertain.
+- Track sensitive credential data to bounded filesystem, browser-storage, IndexedDB and database write sinks; storage candidates remain medium severity and low confidence, with source names and values redacted.
+- Extend same-handler BOLA candidates through request-parameter and authenticated tenant aliases, shorthand and nested ownership predicates, while excluding ambiguous shadowed/reassigned identities and preserving low-confidence review status.
+- Propagate MCP cancellation through CycloneDX/SPDX serialization and prevent queued handlers from starting after an immediate client abort; large SBOM lists yield to the event loop and stop when cancelled or timed out.
+- Compare exact base/head dependency package instances for PR lockfile changes, and keep the diff result incomplete until advisory impacts are recalculated by a full scan.
+- Generate bounded safe inline review records for introduced PR findings on changed lines, without embedding source, evidence or provider text.
+- Add an opt-in bounded offline scorecard soak runner for snapshot invalidation, cache reuse, coverage and RSS ceilings; retain the million-file benchmark for final release validation.
+- Add explicit opt-in Code Scanning SARIF upload to the composite GitHub Action with an immutable uploader pin and fork-PR guard.
+- Follow bounded project-relative pip requirement/constraint includes; constraints alone no longer create installed dependency identities.
+- Resolve supported Python dependency specifiers only to unique exact lockfile instances, preserving the range as edge metadata rather than treating it as an installed version.
+- Propagate custom or unverified pip index configuration across included requirements files, keep their hashes from implying public PyPI provenance, and withhold those identities from public OSV lookups.
+- Follow common Node, Python, Ruby, Perl, PHP, shell, PowerShell and Windows command-launcher references in bounded malicious-content chains, including disguised target suffixes; refresh the trusted Stage A scanner digest.
+- Key cached AST findings by each file's resolved transitive import closure, so helper edits invalidate dependent files while unrelated source and data files retain reusable results.
+- Keep Go `go.mod` requirements unknown until Minimal Version Selection is resolved; add explicit bounded Go-tool resolution against captured metadata with fresh checksum-database verification for scan and SBOM.
+- Scan captured local Terraform modules and report remote, dynamic, missing, or escaping module sources as incomplete infrastructure coverage.
+- Omit matched Dockerfile instruction text from findings entirely; secret values no longer depend on a name-based evidence redactor.
+- Keep signature-verified WASM analyzer bytes in module-private storage so callers cannot mutate executable code after verification.
+- Preserve a pushed upgrade branch when `gh pr create` fails ambiguously; delete it only after GitHub confirms no pull request references that head.
+- Keep Composer branch labels such as `dev-main` in the graph with unknown resolution confidence instead of treating them as exact released versions.
+- Omit matched Dockerfile instruction text from findings entirely; secret values no longer depend on a name-based evidence redactor.
 
 ### Security
 

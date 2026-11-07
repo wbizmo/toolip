@@ -1,0 +1,8 @@
+# Exact historical synthetic fixtures retained only in the original scanner tests.
+# See security/GITLEAKS-HISTORICAL-FIXTURES.md for classification evidence.
+46eb4dfaaf6581606468191487c0eb6ec7f25790:tests/analyzers/git-history.test.ts:github-pat:40
+54844de9763f0b7f1b08b20f70a0c6ad8c9c01bf:tests/analyzers/git-history.test.ts:github-pat:91
+09f871ced881e376a1061a899c39f4cdc204b3fe:tests/analyzers/git-history.test.ts:github-pat:48
+99daadeead92cc2fc9b2ffbb628dd1f762495143:tests/security-doctor.test.ts:github-pat:25
+54185d96c94024fd759fde94bf42859417b97b9e:tests/security-doctor-fixtures.test.ts:generic-api-key:16
+43022955aa32dc8d6b3fa4a2369e59e7268ff9a3:tests/security-doctor.test.ts:generic-api-key:17

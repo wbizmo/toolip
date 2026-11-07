@@ -23,6 +23,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage --exclude tests/core/watch.test.ts",
+    "benchmark:scale": "node --import tsx scripts/benchmark-dependency-graph.ts",
+    "soak:analysis": "node --import tsx scripts/soak-analysis.ts",
     "typecheck": "tsc --noEmit",
     "quality": "tsc -p tsconfig.quality.json --noEmit",
     "audit:runtime": "npm audit --omit=dev --audit-level=low",
@@ -81,19 +83,26 @@
     "pacote": "^22.0.1",
     "proper-lockfile": "4.1.2",
     "semver": "^7.7.3",
+    "smol-toml": "^1.9.1",
     "typescript": "^5.8.2",
+    "yaml": "^2.9.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.5",
+    "@cyclonedx/cyclonedx-library": "^10.4.0",
     "@types/node": "^22.13.10",
     "@types/proper-lockfile": "4.1.4",
     "@types/semver": "^7.7.1",
     "@vitest/coverage-v8": "^5.1.0",
+    "ajv": "^8.20.0",
+    "ajv-draft-04": "^1.0.0",
+    "ajv-formats": "^3.0.1",
+    "ajv-formats-draft2019": "^1.6.1",
+    "packageurl-js": "^2.0.1",
     "prettier": "3.9.10",
     "tsx": "^4.19.3",
-    "vitest": "^5.1.0",
-    "yaml": "2.9.1"
+    "vitest": "^5.1.0"
   },
   "overrides": {
     "glob": "^14.0.3",

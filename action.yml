@@ -1,0 +1,91 @@
+name: Toolip Security Policy
+description: Run a bounded Toolip policy scan and write redacted SARIF 2.1.0.
+inputs:
+  repository-path:
+    description: Project directory to scan.
+    required: false
+    default: .
+  policy-file:
+    description: Versioned policy file relative to the project directory.
+    required: false
+    default: .toolip/policy.yaml
+  sarif-output:
+    description: SARIF output path relative to the workflow workspace.
+    required: false
+    default: toolip.sarif
+  fail-on:
+    description: Optional severity threshold override.
+    required: false
+    default: high
+  offline:
+    description: Disable registry and advisory network requests.
+    required: false
+    default: 'true'
+  timeout-ms:
+    description: Total scorecard timeout, from 1000 to 600000 milliseconds.
+    required: false
+    default: '120000'
+  node-version:
+    description: Supported Node.js major version (22 or 24).
+    required: false
+    default: '24'
+  upload-sarif:
+    description: 'Upload redacted SARIF to GitHub Code Scanning (requires security-events: write; skipped for fork pull requests).'
+    required: false
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ inputs.node-version }}
+        check-latest: true
+    - name: Install the pinned Toolip action dependencies without lifecycle scripts
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        npm_config_registry: https://registry.npmjs.org/
+        npm_config_userconfig: /dev/null
+        npm_config_globalconfig: /dev/null
+        npm_config_ignore_scripts: 'true'
+      run: npm ci --ignore-scripts --no-audit --no-fund
+    - name: Verify Toolip dependency signatures
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        npm_config_registry: https://registry.npmjs.org/
+        npm_config_userconfig: /dev/null
+        npm_config_globalconfig: /dev/null
+        npm_config_ignore_scripts: 'true'
+      run: npm audit signatures --ignore-scripts
+    - name: Build the pinned Toolip action
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm run build
+    - name: Evaluate policy and write SARIF
+      shell: bash
+      env:
+        INPUT_REPOSITORY_PATH: ${{ inputs.repository-path }}
+        INPUT_POLICY_FILE: ${{ inputs.policy-file }}
+        INPUT_SARIF_OUTPUT: ${{ inputs.sarif-output }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_OFFLINE: ${{ inputs.offline }}
+        INPUT_TIMEOUT_MS: ${{ inputs.timeout-ms }}
+        GITHUB_ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        args=(policy check --path "$INPUT_REPOSITORY_PATH" --file "$INPUT_POLICY_FILE" --sarif "$INPUT_SARIF_OUTPUT" --fail-on "$INPUT_FAIL_ON" --timeout-ms "$INPUT_TIMEOUT_MS")
+        if [[ "$INPUT_OFFLINE" == "true" ]]; then
+          args+=(--offline)
+        elif [[ "$INPUT_OFFLINE" != "false" ]]; then
+          echo "offline must be true or false" >&2
+          exit 1
+        fi
+        node "$GITHUB_ACTION_PATH/dist/src/index.js" "${args[@]}"
+    - name: Upload SARIF to GitHub Code Scanning
+      if: ${{ always() && !cancelled() && inputs.upload-sarif == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false) }}
+      uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+      with:
+        sarif_file: ${{ inputs.sarif-output }}
+        category: toolip

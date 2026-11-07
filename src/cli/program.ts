@@ -12,9 +12,11 @@ import { registerDockerScanCommand } from '../commands/docker-scan.js';
 import { registerDoctorCommand } from '../commands/doctor.js';
 import { registerGitAuditCommand } from '../commands/git-audit.js';
 import { registerGitHistoryCommand } from '../commands/git-history.js';
+import { registerGitHubAppCommand } from '../commands/github-app.js';
 import { registerHistoryCommand } from '../commands/history.js';
 import { registerHookCommand } from '../commands/hook.js';
 import { registerInspectCommand } from '../commands/inspect.js';
+import { registerIntelligenceCommand } from '../commands/intelligence.js';
 import { registerInstallScriptsCommand } from '../commands/install-scripts.js';
 import { registerLearnCommand } from '../commands/learn.js';
 import { registerLicensesCommand } from '../commands/licenses.js';
@@ -22,8 +24,11 @@ import { registerMcpCommand } from '../commands/mcp.js';
 import { registerMonorepoCommand } from '../commands/monorepo.js';
 import { registerPackageHealthCommand } from '../commands/package-health.js';
 import { registerPreCommitCommand } from '../commands/pre-commit.js';
+import { registerPolicyCommand } from '../commands/policy.js';
+import { registerPrScanCommand } from '../commands/pr-scan.js';
 import { registerProfileCommand } from '../commands/profile.js';
 import { registerPublishCommand } from '../commands/publish.js';
+import { registerReportCommand } from '../commands/report.js';
 import { registerReachabilityCommand } from '../commands/reachability.js';
 import { registerSbomCommand } from '../commands/sbom.js';
 import { registerScanCommand } from '../commands/scan.js';
@@ -33,11 +38,9 @@ import { registerTreeCommand } from '../commands/tree.js';
 import { registerUpgradePrCommand } from '../commands/upgrade-pr.js';
 import { registerVaultCommand } from '../commands/vault.js';
 import { registerVulnerabilitiesCommand } from '../commands/vulnerabilities.js';
+import { registerVexCommand } from '../commands/vex.js';
 import { registerWatchCommand } from '../commands/watch.js';
-import {
-  TOOLIP_AUTHOR,
-  TOOLIP_VERSION
-} from '../config/version.js';
+import { TOOLIP_AUTHOR, TOOLIP_VERSION } from '../config/version.js';
 
 const registrations: Array<(program: Command) => void> = [
   registerSelfTestCommand,
@@ -46,6 +49,7 @@ const registrations: Array<(program: Command) => void> = [
   registerDoctorCommand,
   registerScoreCommand,
   registerInspectCommand,
+  registerIntelligenceCommand,
   registerCompareCommand,
   registerLicensesCommand,
   registerAlternativesCommand,
@@ -56,21 +60,26 @@ const registrations: Array<(program: Command) => void> = [
   registerHookCommand,
   registerLearnCommand,
   registerVulnerabilitiesCommand,
+  registerVexCommand,
   registerAstScanCommand,
   registerReachabilityCommand,
   registerInstallScriptsCommand,
   registerSbomCommand,
   registerHistoryCommand,
   registerConfigCommand,
+  registerPolicyCommand,
   registerPackageHealthCommand,
   registerDependencyConfusionCommand,
   registerGitHistoryCommand,
+  registerGitHubAppCommand,
   registerDockerScanCommand,
   registerMonorepoCommand,
   registerAuditRepoCommand,
   registerUpgradePrCommand,
   registerDiffCommand,
+  registerPrScanCommand,
   registerPublishCommand,
+  registerReportCommand,
   registerWatchCommand,
   registerAnnounceCommand,
   registerMcpCommand

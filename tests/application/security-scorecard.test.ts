@@ -1,12 +1,20 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Analyzer } from '../../src/contracts/analyzer.js';
 import type { Finding } from '../../src/contracts/finding.js';
 import { buildSecurityScorecard } from '../../src/application/security-scorecard.js';
 import { createReport } from '../../src/core/report.js';
 import { renderMarkdownReport } from '../../src/core/report-writer.js';
+import * as fileWalker from '../../src/core/file-walker.js';
+import { createScannerContext } from '../../src/core/scanner-context.js';
+import { createProjectSnapshot } from '../../src/application/project-snapshot.js';
+import { AnalysisResultCache } from '../../src/application/task-scheduler.js';
+import { runSecurityDoctor } from '../../src/core/security-doctor.js';
+import { coverageOf } from '../../src/contracts/analysis.js';
+import type { DependencyIdentity } from '../../src/core/dependencies/inventory.js';
+import type { PackageHealthAnalysis } from '../../src/core/package-health-analysis.js';
 
 const cleanSummary = {
   totalDependencies: 1,
@@ -79,6 +87,67 @@ const cleanGit = async () => ({
 });
 
 describe('buildSecurityScorecard', () => {
+  it('runs cold and warm analyses over one immutable snapshot with identical findings', async () => {
+    const root = await fixture();
+    await writeFile(path.join(root, 'src.ts'), 'export const stable = true;\n');
+    const scannerContext = await createScannerContext(root);
+    const projectSnapshot = await createProjectSnapshot(root, {
+      discoveredFiles: scannerContext.files
+    });
+    const analysisCache = new AnalysisResultCache();
+    const analyzer: Analyzer = {
+      id: 'test-vulns',
+      version: '1',
+      analyze: async () => ({
+        analyzer: 'test-vulns',
+        durationMs: 0,
+        findings: [vulnerability()],
+        coverage: {
+          state: 'complete',
+          eligible: 1,
+          scanned: 1,
+          skipped: 0,
+          failed: 0
+        }
+      })
+    };
+    const services = {
+      dependencyScan: async () => ({
+        packages: [packageHealth],
+        findings: [],
+        failures: [],
+        coverage: {
+          state: 'complete' as const,
+          eligible: 1,
+          scanned: 1,
+          skipped: 0,
+          failed: 0
+        },
+        summary: cleanSummary
+      }),
+      doctor: runSecurityDoctor,
+      gitAudit: cleanGit,
+      vulnerabilityAnalyzer: analyzer
+    };
+    const options = {
+      scannerContext,
+      projectSnapshot,
+      analysisCache
+    };
+
+    try {
+      const cold = await buildSecurityScorecard(root, services, options);
+      const warm = await buildSecurityScorecard(root, services, options);
+      expect(cold.snapshotId).toBe(projectSnapshot.id);
+      expect(warm.snapshotId).toBe(projectSnapshot.id);
+      expect(cold.findings).toEqual(warm.findings);
+      expect(cold.cacheMetrics.misses).toBeGreaterThan(0);
+      expect(warm.cacheMetrics.hits).toBeGreaterThan(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('backs dependency health with an actual vulnerability result', async () => {
     const root = await fixture();
     const analyzer: Analyzer = {
@@ -340,6 +409,42 @@ describe('buildSecurityScorecard', () => {
     }
   });
 
+  it('reuses the command scanner context instead of walking the project again', async () => {
+    const root = await fixture();
+    try {
+      const scannerContext = await createScannerContext(root);
+      const walkSpy = vi.spyOn(fileWalker, 'walkProjectFiles');
+      const result = await buildSecurityScorecard(
+        root,
+        {
+          dependencyScan: async () => ({
+            packages: [packageHealth],
+            findings: [],
+            summary: cleanSummary
+          }),
+          doctor: cleanDoctor as never,
+          gitAudit: cleanGit as never,
+          vulnerabilityAnalyzer: {
+            id: 'test-vulns',
+            version: '1',
+            analyze: async () => ({
+              analyzer: 'test-vulns',
+              durationMs: 0,
+              findings: []
+            })
+          }
+        },
+        { scannerContext }
+      );
+
+      expect(result.score.complete).toBe(true);
+      expect(walkSpy).not.toHaveBeenCalled();
+      walkSpy.mockRestore();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('round-trips coverage through scorecard and reports', async () => {
     const root = await fixture();
     try {
@@ -412,6 +517,125 @@ describe('buildSecurityScorecard', () => {
       expect(markdown).toContain('- Skipped: 2');
       expect(markdown).toContain('- Failed: 0');
       expect(markdown).toContain('- Excluded: 0');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('joins opt-in package-history signals to exact instances in the shared scorecard', async () => {
+    const root = await fixture();
+    const identity: DependencyIdentity = {
+      ecosystem: 'npm',
+      name: 'safe-package',
+      version: '1.2.3',
+      installPath: 'node_modules/safe-package',
+      registry: 'https://registry.npmjs.org',
+      development: false
+    };
+    const reviewSignal: Finding = {
+      ...vulnerability(),
+      id: 'TLP-NPM-HEALTH-RELEASE-BURST:instance',
+      ruleId: 'TLP-NPM-HEALTH-RELEASE-BURST',
+      title: 'Unusual package release burst',
+      category: 'supply-chain',
+      severity: 'medium',
+      source: 'npm-package-health'
+    };
+    const health: PackageHealthAnalysis = {
+      coverage: coverageOf({
+        eligible: 1,
+        scanned: 1,
+        skipped: 0,
+        failed: 0
+      }),
+      observations: [],
+      findings: [reviewSignal],
+      warnings: []
+    };
+    const inspect = vi.fn(async (identities: DependencyIdentity[]) => {
+      expect(identities).toEqual([identity]);
+      return health;
+    });
+
+    try {
+      const result = await buildSecurityScorecard(
+        root,
+        {
+          dependencyScan: async () => ({
+            identities: [identity],
+            packages: [packageHealth],
+            findings: [],
+            failures: [],
+            coverage: coverageOf({
+              eligible: 1,
+              scanned: 1,
+              skipped: 0,
+              failed: 0
+            }),
+            summary: cleanSummary
+          }),
+          doctor: cleanDoctor as never,
+          gitAudit: cleanGit as never,
+          vulnerabilityAnalyzer: {
+            id: 'clean-vulns',
+            version: '1',
+            analyze: async () => ({
+              analyzer: 'clean-vulns',
+              durationMs: 0,
+              findings: []
+            })
+          },
+          packageHealth: inspect
+        },
+        { includePackageHealth: true }
+      );
+
+      expect(inspect).toHaveBeenCalledTimes(1);
+      expect(result.packageHealth).toEqual(health);
+      expect(result.findings).toContainEqual(reviewSignal);
+      expect(result.analysis.state).toBe('complete');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not run registry-history review unless explicitly enabled', async () => {
+    const root = await fixture();
+    const inspect = vi.fn();
+    try {
+      const result = await buildSecurityScorecard(
+        root,
+        {
+          dependencyScan: async () => ({
+            identities: [],
+            packages: [],
+            findings: [],
+            failures: [],
+            coverage: coverageOf({
+              eligible: 0,
+              scanned: 0,
+              skipped: 0,
+              failed: 0
+            }),
+            summary: { ...cleanSummary, totalDependencies: 0 }
+          }),
+          doctor: cleanDoctor as never,
+          gitAudit: cleanGit as never,
+          vulnerabilityAnalyzer: {
+            id: 'clean-vulns',
+            version: '1',
+            analyze: async () => ({
+              analyzer: 'clean-vulns',
+              durationMs: 0,
+              findings: []
+            })
+          },
+          packageHealth: inspect
+        }
+      );
+
+      expect(inspect).not.toHaveBeenCalled();
+      expect(result.packageHealth).toBeUndefined();
     } finally {
       await rm(root, { recursive: true, force: true });
     }

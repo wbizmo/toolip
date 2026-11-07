@@ -1,26 +1,58 @@
 name: CodeQL
 
-# One workflow and job for PRs, main and the weekly re-scan. Code scanning
-# identifies a configuration by workflow path and job, so PR results can only be
-# compared against main's baseline when both come from this same job. (When PR
-# analysis ran from pr-quality.yml, GitHub reported "1 configuration not found"
-# and could not attribute new alerts to the PR.)
+# One workflow and job for approved PR merge objects, main and the weekly
+# re-scan. Code scanning identifies a configuration by workflow path and job,
+# so PR results can be compared against main's baseline when both come from
+# this same job. PR analysis waits for Stage A and uses build-mode none so the
+# exact merge tree is analyzed without executing its scripts.
 on:
-  pull_request:
-    branches: [main]
   push:
+    branches: [main]
+  workflow_run:
+    workflows: [Stage A Trusted Pre-execution Gate]
+    types: [completed]
     branches: [main]
   schedule:
     - cron: '17 4 * * 1'
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
+  stage-a-result:
+    name: Verify trusted Stage A result
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      merge_sha: ${{ steps.verify.outputs.merge_sha }}
+    steps:
+      - name: Checkout trusted default-branch verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Download metadata from the completed Stage A run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: stage-a-${{ github.event.workflow_run.id }}
+          path: ${{ runner.temp }}/stage-a
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+      - name: Validate approval identity and immutable commits
+        id: verify
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/verify-stage-a-artifact.mjs "${{ runner.temp }}/stage-a/stage-a-approval.json"
+
   analyze:
     name: CodeQL JavaScript/TypeScript security analysis
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    needs: stage-a-result
+    if: always() && (needs.stage-a-result.result == 'success' || github.event_name != 'workflow_run')
     permissions:
       contents: read
       security-events: write
@@ -29,6 +61,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_run' && needs.stage-a-result.outputs.merge_sha || github.ref }}
       - name: Initialize CodeQL
         uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:

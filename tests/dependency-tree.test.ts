@@ -55,9 +55,106 @@ describe('buildDependencyTree', () => {
           version: '2.0.0'
         })
       ]);
-      expect(tree.dependencies.find(
-        (dependency) => dependency.name === 'typescript'
-      )?.type).toBe('devDependency');
+      expect(
+        tree.dependencies.find((dependency) => dependency.name === 'typescript')
+          ?.type
+      ).toBe('devDependency');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds converging graphs and cycles without expanding every dependency path', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-tree-converging-')
+    );
+    try {
+      const layers = 12;
+      const lockPackages: Record<string, unknown> = {
+        '': {
+          dependencies: {
+            'layer-0-a': '1.0.0',
+            'layer-0-b': '1.0.0'
+          }
+        }
+      };
+      for (let layer = 0; layer < layers; layer++) {
+        for (const side of ['a', 'b']) {
+          const name = `layer-${layer}-${side}`;
+          lockPackages[`node_modules/${name}`] = {
+            version: '1.0.0',
+            ...(layer + 1 < layers
+              ? {
+                  dependencies: {
+                    [`layer-${layer + 1}-a`]: '1.0.0',
+                    [`layer-${layer + 1}-b`]: '1.0.0'
+                  }
+                }
+              : { dependencies: { 'layer-0-a': '1.0.0' } })
+          };
+        }
+      }
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({ lockfileVersion: 3, packages: lockPackages })
+      );
+
+      const tree = await buildDependencyTree(root);
+      let count = 0;
+      const stack = [...tree.dependencies];
+      let sawReference = false;
+      while (stack.length) {
+        const item = stack.pop();
+        if (!item) continue;
+        count++;
+        sawReference ||= item.referenceOnly === true;
+        stack.push(...item.children);
+      }
+      expect(tree.summary).toMatchObject({ direct: 2, maxDepth: layers });
+      expect(tree.summary.transitive).toBe(layers * 2 - 2);
+      expect(count).toBeLessThanOrEqual(layers * 2 + 48);
+      expect(sawReference).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves longest dependency depth on converging acyclic graphs', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-tree-converging-dag-')
+    );
+    try {
+      const size = 20;
+      const lockPackages: Record<string, unknown> = {
+        '': {
+          dependencies: {
+            'node-0': '1.0.0',
+            'node-1': '1.0.0'
+          }
+        }
+      };
+      for (let index = 0; index < size; index += 1) {
+        const dependencies: Record<string, string> = {};
+        for (const offset of [1, 2]) {
+          const child = index + offset;
+          if (child < size) dependencies[`node-${child}`] = '1.0.0';
+        }
+        lockPackages[`node_modules/node-${index}`] = {
+          version: '1.0.0',
+          ...(Object.keys(dependencies).length > 0 ? { dependencies } : {})
+        };
+      }
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({ lockfileVersion: 3, packages: lockPackages })
+      );
+
+      const tree = await buildDependencyTree(root);
+      expect(tree.summary).toEqual({
+        direct: 2,
+        transitive: size - 2,
+        maxDepth: size
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

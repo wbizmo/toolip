@@ -1,5 +1,5 @@
 export type OsvQuery = {
-  package: { ecosystem: 'npm'; name: string };
+  package: { ecosystem: 'npm' | 'PyPI' | 'Go' | 'crates.io' | 'Maven' | 'Packagist'; name: string };
   version: string;
 };
 

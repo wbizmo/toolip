@@ -20,6 +20,8 @@ export type ProjectProfile = {
   version: string;
   description: string;
   packageManager: PackageManager;
+  hasPHP: boolean;
+  hasLaravel: boolean;
   hasTypeScript: boolean;
   hasJavaScript: boolean;
   hasReact: boolean;
@@ -50,8 +52,15 @@ async function fileExists(filePath: string): Promise<boolean> {
 /** Reads the root manifest through the bounded, snapshot-checked reader. */
 async function readPackageJson(
   root: string,
-  files: readonly ProjectFile[]
+  files: readonly ProjectFile[],
+  snapshotContents?: ReadonlyMap<string, string>
 ): Promise<Record<string, unknown>> {
+  if (snapshotContents) {
+    const snapshotManifest = snapshotContents.get('package.json');
+    return snapshotManifest === undefined
+      ? {}
+      : (JSON.parse(snapshotManifest) as Record<string, unknown>);
+  }
   let manifest = files.find((file) => file.relativePath === 'package.json');
   if (!manifest) {
     const absolutePath = path.join(root, 'package.json');
@@ -100,6 +109,61 @@ async function readPackageJson(
   return JSON.parse(result.content) as Record<string, unknown>;
 }
 
+async function readComposerJson(
+  root: string,
+  files: readonly ProjectFile[],
+  snapshotContents?: ReadonlyMap<string, string>
+): Promise<Record<string, unknown>> {
+  if (snapshotContents) {
+    const content = snapshotContents.get('composer.json');
+    return content === undefined
+      ? {}
+      : (JSON.parse(content) as Record<string, unknown>);
+  }
+  let manifest = files.find((file) => file.relativePath === 'composer.json');
+  if (!manifest) {
+    const absolutePath = path.join(root, 'composer.json');
+    try {
+      const stat = await lstat(absolutePath, { bigint: true });
+      if (!stat.isFile()) {
+        throw new ToolipError(
+          'Composer manifest changed or could not be read safely.',
+          { code: 'SCAN_DISCOVERY_INCOMPLETE' }
+        );
+      }
+      manifest = {
+        absolutePath,
+        relativePath: 'composer.json',
+        extension: 'json',
+        snapshot: snapshotOf(stat)
+      };
+    } catch (error) {
+      if (
+        error !== null &&
+        typeof error === 'object' &&
+        'code' in error &&
+        error.code === 'ENOENT'
+      )
+        return {};
+      if (error instanceof ToolipError) throw error;
+      throw new ToolipError('Composer manifest could not be inspected safely.', {
+        code: 'SCAN_DISCOVERY_INCOMPLETE'
+      });
+    }
+  }
+  const result = await new TextFileReader(manifestBudget, { root }).read(
+    manifest.absolutePath,
+    undefined,
+    manifest.snapshot
+  );
+  if (result.status !== 'ok')
+    throw new ToolipError(
+      'Composer manifest changed or could not be read safely.',
+      { code: 'SCAN_DISCOVERY_INCOMPLETE' }
+    );
+  return JSON.parse(result.content) as Record<string, unknown>;
+}
+
 /** Lists declared production and development dependency names. */
 function dependencyNames(packageJson: Record<string, unknown>): string[] {
   const dependencies = packageJson.dependencies as
@@ -135,7 +199,8 @@ function summarizeLanguages(
     css: 'CSS',
     html: 'HTML',
     env: 'Environment',
-    dockerfile: 'Docker'
+    dockerfile: 'Docker',
+    php: 'PHP'
   };
 
   return files.reduce<Record<string, number>>((summary, file) => {
@@ -150,14 +215,53 @@ function summarizeLanguages(
 /** Builds the project summary used to select and configure analyzers. */
 export async function profileProject(
   root: string,
-  discoveredFiles?: readonly ProjectFile[]
+  discoveredFiles?: readonly ProjectFile[],
+  options: { snapshotContents?: ReadonlyMap<string, string> } = {}
 ): Promise<ProjectProfile> {
   const absoluteRoot = path.resolve(root);
   const files = discoveredFiles ?? (await walkProjectFiles(absoluteRoot));
-  const packageJson = await readPackageJson(absoluteRoot, files);
+  const packageJson = await readPackageJson(
+    absoluteRoot,
+    files,
+    options.snapshotContents
+  );
+  const composerJson = await readComposerJson(
+    absoluteRoot,
+    files,
+    options.snapshotContents
+  );
   const deps = dependencyNames(packageJson);
+  const composerDependencies = new Set([
+    ...Object.keys(
+      (composerJson.require as Record<string, unknown> | undefined) ?? {}
+    ),
+    ...Object.keys(
+      (composerJson['require-dev'] as Record<string, unknown> | undefined) ?? {}
+    )
+  ].map((name) => name.toLowerCase()));
   const scripts = packageScripts(packageJson);
-  const packageManager = await detectPackageManager(absoluteRoot);
+  const snapshotPaths = options.snapshotContents
+    ? new Set(files.map((file) => file.relativePath))
+    : undefined;
+  const hasFile = async (relativePath: string): Promise<boolean> =>
+    snapshotPaths
+      ? snapshotPaths.has(relativePath)
+      : fileExists(path.join(absoluteRoot, relativePath));
+  let packageManager: PackageManager;
+  if (snapshotPaths) {
+    const managers: Array<[PackageManager, string]> = [
+      ['pnpm', 'pnpm-lock.yaml'],
+      ['yarn', 'yarn.lock'],
+      ['npm', 'package-lock.json']
+    ];
+    const detected = managers.filter(([, lockfile]) =>
+      snapshotPaths.has(lockfile)
+    );
+    packageManager =
+      detected.length === 1 ? (detected[0]?.[0] ?? 'unknown') : 'unknown';
+  } else {
+    packageManager = await detectPackageManager(absoluteRoot);
+  }
 
   const profile: ProjectProfile = {
     root: absoluteRoot,
@@ -169,30 +273,38 @@ export async function profileProject(
         ? packageJson.description
         : '',
     packageManager,
+    hasPHP:
+      files.some((file) => file.extension === 'php') ||
+      (await hasFile('composer.json')) ||
+      (await hasFile('composer.lock')),
+    hasLaravel:
+      composerDependencies.has('laravel/framework') ||
+      ((await hasFile('artisan')) &&
+        (await hasFile('bootstrap/app.php'))),
     hasTypeScript:
-      deps.includes('typescript') ||
-      (await fileExists(path.join(absoluteRoot, 'tsconfig.json'))),
+      deps.includes('typescript') || (await hasFile('tsconfig.json')),
     hasJavaScript: files.some((file) => ['js', 'jsx'].includes(file.extension)),
     hasReact: deps.includes('react'),
     hasExpress: deps.includes('express'),
     hasFastify: deps.includes('fastify'),
     hasPrisma: deps.includes('prisma') || deps.includes('@prisma/client'),
     hasDocker:
-      (await fileExists(path.join(absoluteRoot, 'Dockerfile'))) ||
-      (await fileExists(path.join(absoluteRoot, 'docker-compose.yml'))),
+      (await hasFile('Dockerfile')) || (await hasFile('docker-compose.yml')),
     hasVitest: deps.includes('vitest'),
     hasJest: deps.includes('jest'),
     hasESLint: deps.includes('eslint'),
     hasPrettier: deps.includes('prettier'),
-    hasGitHubActions: await fileExists(
-      path.join(absoluteRoot, '.github', 'workflows')
-    ),
+    hasGitHubActions: snapshotPaths
+      ? [...snapshotPaths].some((name) => name.startsWith('.github/workflows/'))
+      : await fileExists(path.join(absoluteRoot, '.github', 'workflows')),
     detected: [],
     languages: summarizeLanguages(files),
     packageScripts: scripts
   };
 
   if (profile.hasTypeScript) profile.detected.push('TypeScript');
+  if (profile.hasPHP) profile.detected.push('PHP');
+  if (profile.hasLaravel) profile.detected.push('Laravel');
   if (profile.hasJavaScript) profile.detected.push('JavaScript');
   if (profile.hasReact) profile.detected.push('React');
   if (profile.hasExpress) profile.detected.push('Express');

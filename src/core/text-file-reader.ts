@@ -29,9 +29,14 @@ export type TextFileReadResult =
       snapshot?: FileSnapshot;
     }
   | {
-      status:
-        'oversized' | 'binary' | 'budget-exceeded' | 'cancelled' | 'changed';
+      status: 'oversized' | 'budget-exceeded' | 'cancelled' | 'changed';
       bytes: number;
+    }
+  | {
+      status: 'binary';
+      bytes: number;
+      sha256?: string;
+      snapshot?: FileSnapshot;
     }
   | { status: 'failed'; bytes: 0; error: string };
 
@@ -226,7 +231,14 @@ export class TextFileReader {
           return { status: 'changed', bytes: offset };
       }
       if (buffer.subarray(0, Math.min(buffer.length, 8 * 1024)).includes(0)) {
-        return { status: 'binary', bytes: offset };
+        this.filesRead += 1;
+        reservedBytes = 0;
+        return {
+          status: 'binary',
+          bytes: offset,
+          sha256: createHash('sha256').update(buffer).digest('hex'),
+          snapshot: before
+        };
       }
 
       this.filesRead += 1;

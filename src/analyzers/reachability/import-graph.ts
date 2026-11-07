@@ -2,6 +2,7 @@ import ts from 'typescript';
 
 export type ImportReference = {
   packageName: string;
+  specifier: string;
   importedSymbols: string[];
   localSymbols: string[];
   kind:
@@ -10,7 +11,9 @@ export type ImportReference = {
     | 'namespace'
     | 'side-effect'
     | 'require'
-    | 'dynamic-import';
+    | 're-export'
+    | 'dynamic-import'
+    | 'dynamic-require';
   line: number;
   column: number;
 };
@@ -73,14 +76,23 @@ export function extractPackageImports(
       ts.isImportDeclaration(node) &&
       ts.isStringLiteral(node.moduleSpecifier)
     ) {
+      const clause = node.importClause;
+      if (
+        clause?.isTypeOnly ||
+        (clause?.namedBindings &&
+          ts.isNamedImports(clause.namedBindings) &&
+          !clause.name &&
+          clause.namedBindings.elements.every((element) => element.isTypeOnly))
+      ) {
+        ts.forEachChild(node, visit);
+        return;
+      }
       const root = packageRoot(node.moduleSpecifier.text);
 
       if (root) {
         const importedSymbols: string[] = [];
         const localSymbols: string[] = [];
         let kind: ImportReference['kind'] = 'side-effect';
-
-        const clause = node.importClause;
 
         if (clause?.name) {
           kind = 'default';
@@ -92,16 +104,14 @@ export function extractPackageImports(
           if (ts.isNamespaceImport(clause.namedBindings)) {
             kind = 'namespace';
             importedSymbols.push('*');
-            localSymbols.push(
-              clause.namedBindings.name.text
-            );
+            localSymbols.push(clause.namedBindings.name.text);
           } else {
             kind = 'named';
 
             for (const element of clause.namedBindings.elements) {
+              if (element.isTypeOnly) continue;
               importedSymbols.push(
-                element.propertyName?.text ??
-                  element.name.text
+                element.propertyName?.text ?? element.name.text
               );
               localSymbols.push(element.name.text);
             }
@@ -110,6 +120,7 @@ export function extractPackageImports(
 
         references.push({
           packageName: root,
+          specifier: node.moduleSpecifier.text,
           importedSymbols,
           localSymbols,
           kind,
@@ -119,10 +130,55 @@ export function extractPackageImports(
     }
 
     if (
+      ts.isExportDeclaration(node) &&
+      !node.isTypeOnly &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
+      const root = packageRoot(node.moduleSpecifier.text);
+      if (root) {
+        const importedSymbols =
+          node.exportClause && ts.isNamedExports(node.exportClause)
+            ? node.exportClause.elements.map(
+                (element) => element.propertyName?.text ?? element.name.text
+              )
+            : ['*'];
+        references.push({
+          packageName: root,
+          specifier: node.moduleSpecifier.text,
+          importedSymbols,
+          localSymbols: [],
+          kind: 're-export',
+          ...location(sourceFile, node)
+        });
+      }
+    }
+
+    if (
+      ts.isImportEqualsDeclaration(node) &&
+      ts.isExternalModuleReference(node.moduleReference) &&
+      node.moduleReference.expression &&
+      ts.isStringLiteral(node.moduleReference.expression)
+    ) {
+      const specifier = node.moduleReference.expression.text;
+      const root = packageRoot(specifier);
+      if (root) {
+        references.push({
+          packageName: root,
+          specifier,
+          importedSymbols: ['*'],
+          localSymbols: [node.name.text],
+          kind: 'require',
+          ...location(sourceFile, node)
+        });
+      }
+    }
+
+    if (
       ts.isCallExpression(node) &&
       ts.isIdentifier(node.expression) &&
       node.expression.text === 'require' &&
-      node.arguments.length === 1
+      node.arguments.length >= 1
     ) {
       const [argument] = node.arguments;
 
@@ -132,19 +188,29 @@ export function extractPackageImports(
         if (root) {
           references.push({
             packageName: root,
+            specifier: argument.text,
             importedSymbols: ['*'],
             localSymbols: [],
             kind: 'require',
             ...location(sourceFile, node)
           });
         }
+      } else if (node.arguments.length >= 1) {
+        references.push({
+          packageName: '*',
+          specifier: '',
+          importedSymbols: ['*'],
+          localSymbols: [],
+          kind: 'dynamic-require',
+          ...location(sourceFile, node)
+        });
       }
     }
 
     if (
       ts.isCallExpression(node) &&
       node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-      node.arguments.length === 1
+      node.arguments.length >= 1
     ) {
       const [argument] = node.arguments;
 
@@ -154,12 +220,22 @@ export function extractPackageImports(
         if (root) {
           references.push({
             packageName: root,
+            specifier: argument.text,
             importedSymbols: ['*'],
             localSymbols: [],
             kind: 'dynamic-import',
             ...location(sourceFile, node)
           });
         }
+      } else {
+        references.push({
+          packageName: '*',
+          specifier: '',
+          importedSymbols: ['*'],
+          localSymbols: [],
+          kind: 'dynamic-import',
+          ...location(sourceFile, node)
+        });
       }
     }
 

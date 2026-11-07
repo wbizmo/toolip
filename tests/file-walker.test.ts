@@ -8,6 +8,7 @@ import {
   symlink,
   writeFile
 } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -76,6 +77,82 @@ describe('walkProjectFiles', () => {
           }
         })
       ).resolves.toEqual([]);
+      expect(inspected).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('includes present index-tracked files hidden by local ignore rules when requested', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-walk-tracked-'));
+    try {
+      await writeFile(path.join(root, '.toolipignore'), 'ignored-loader.orc\n');
+      await writeFile(path.join(root, 'ignored-loader.orc'), 'eval(atob(x));');
+      await writeFile(path.join(root, 'visible.ts'), 'export {};');
+      const git = (args: string[]) =>
+        execFileSync('git', ['-C', root, ...args], { stdio: 'ignore' });
+      git(['init', '-q']);
+      git(['config', 'user.name', 'Toolip Test']);
+      git(['config', 'user.email', 'toolip-test@example.invalid']);
+      git(['add', '.toolipignore', 'visible.ts']);
+      git(['add', '-f', 'ignored-loader.orc']);
+      git(['commit', '-qm', 'fixture']);
+
+      await expect(walkProjectFiles(root)).resolves.not.toContainEqual(
+        expect.objectContaining({ relativePath: 'ignored-loader.orc' })
+      );
+      await expect(
+        walkProjectFiles(root, { includeTrackedIgnored: true })
+      ).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ relativePath: 'ignored-loader.orc' })
+        ])
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('stops streaming entries at the file budget before metadata reads', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-walk-budget-'));
+    let inspected = 0;
+    try {
+      await Promise.all(
+        Array.from({ length: 8 }, (_, index) =>
+          writeFile(path.join(root, `file-${index}.txt`), 'fixture')
+        )
+      );
+      await expect(
+        walkProjectFiles(root, {
+          maxFiles: 2,
+          lstatEntry: async (entry, options) => {
+            inspected += 1;
+            return lstat(entry, options);
+          }
+        })
+      ).rejects.toMatchObject({ code: 'SCAN_FILE_LIMIT_EXCEEDED' });
+      expect(inspected).toBe(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('cancels discovery before starting metadata work', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-walk-cancel-'));
+    const controller = new AbortController();
+    let inspected = false;
+    controller.abort();
+    try {
+      await expect(
+        walkProjectFiles(root, {
+          signal: controller.signal,
+          findEntries: async () => ['file.ts'],
+          lstatEntry: async (entry, options) => {
+            inspected = true;
+            return lstat(entry, options);
+          }
+        })
+      ).rejects.toMatchObject({ code: 'SCAN_CANCELLED' });
       expect(inspected).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });

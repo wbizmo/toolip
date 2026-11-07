@@ -29,9 +29,9 @@ async function fixture(): Promise<{
 
 afterEach(async () => {
   await Promise.all(
-    temporaryRoots.splice(0).map((root) =>
-      rm(root, { recursive: true, force: true })
-    )
+    temporaryRoots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true }))
   );
 });
 
@@ -39,6 +39,9 @@ describe('MCP workspace boundary', () => {
   it('allows the approved root and real nested paths', async () => {
     const { allowed, nested } = await fixture();
     const boundary = await createWorkspaceBoundary([allowed]);
+
+    expect(Object.isFrozen(boundary)).toBe(true);
+    expect(Object.isFrozen(boundary.allowedRoots)).toBe(true);
 
     await expect(boundary.resolve(allowed)).resolves.toBe(
       await realpath(allowed)
@@ -63,7 +66,11 @@ describe('MCP workspace boundary', () => {
   it('denies symlinks that resolve outside the approved workspace', async () => {
     const { allowed, outside } = await fixture();
     const link = path.join(allowed, 'escape');
-    await symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
+    await symlink(
+      outside,
+      link,
+      process.platform === 'win32' ? 'junction' : 'dir'
+    );
 
     const boundary = await createWorkspaceBoundary([allowed]);
 

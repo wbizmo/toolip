@@ -126,7 +126,10 @@ try {
       );
       const { tools } = await client.listTools();
       const names = tools.map((tool) => tool.name).sort();
-      if (names.join(',') !== 'toolip_diff,toolip_doctor,toolip_sbom') {
+      if (
+        names.join(',') !==
+        'toolip_diff,toolip_doctor,toolip_policy_check,toolip_sbom'
+      ) {
         throw new Error(`Unexpected packed MCP tools: ${names.join(', ')}`);
       }
     } finally {

@@ -89,7 +89,16 @@ export async function validatePrivateDirectory(
 }
 
 /** Opens a regular local-state file without following a symlink and repairs mode through its handle. */
-export async function openPrivateFile(filePath: string): Promise<string> {
+export async function openPrivateFile(
+  filePath: string,
+  maximumBytes = 64 * 1024 * 1024
+): Promise<string> {
+  if (
+    !Number.isSafeInteger(maximumBytes) ||
+    maximumBytes < 1 ||
+    maximumBytes > 512 * 1024 * 1024
+  )
+    throw new RangeError('Private local-state read limit is outside its budget.');
   const resolved = path.resolve(filePath);
   const nonBlocking = process.platform === 'win32' ? 0 : constants.O_NONBLOCK;
   const handle = await open(
@@ -97,22 +106,71 @@ export async function openPrivateFile(filePath: string): Promise<string> {
     constants.O_RDONLY | noFollow | nonBlocking
   );
   try {
-    const opened = await handle.stat();
-    const namedAfter = await lstat(resolved);
+    const opened = await handle.stat({ bigint: true });
+    const namedAfter = await lstat(resolved, { bigint: true });
     if (
       namedAfter.isSymbolicLink() ||
       !namedAfter.isFile() ||
-      !sameIdentity(opened, namedAfter)
+      opened.dev !== namedAfter.dev ||
+      opened.ino !== namedAfter.ino
     ) {
       throw localStatePathError(
         'Local state file changed while it was being opened.'
       );
     }
+    if (!opened.isFile() || opened.size > BigInt(maximumBytes))
+      throw localStatePathError('Local state file exceeds its byte budget.');
     if (process.platform !== 'win32') {
-      assertCurrentOwner(opened.uid, resolved);
+      assertCurrentOwner(Number(opened.uid), resolved);
       await handle.chmod(0o600);
     }
-    return await handle.readFile('utf8');
+    // chmod updates ctime on POSIX. Take the stable metadata snapshot only
+    // after repairing permissions, then confirm the name still points at the
+    // opened file before reading it.
+    const baseline = await handle.stat({ bigint: true });
+    const namedAfterModeRepair = await lstat(resolved, { bigint: true });
+    if (
+      !baseline.isFile() ||
+      baseline.size > BigInt(maximumBytes) ||
+      baseline.dev !== opened.dev ||
+      baseline.ino !== opened.ino ||
+      namedAfterModeRepair.isSymbolicLink() ||
+      !namedAfterModeRepair.isFile() ||
+      namedAfterModeRepair.dev !== baseline.dev ||
+      namedAfterModeRepair.ino !== baseline.ino
+    ) {
+      throw localStatePathError(
+        'Local state file changed while its permissions were repaired.'
+      );
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    while (total <= maximumBytes) {
+      const buffer = Buffer.alloc(Math.min(64 * 1024, maximumBytes + 1 - total));
+      const result = await handle.read(buffer, 0, buffer.length, total);
+      if (result.bytesRead === 0) break;
+      total += result.bytesRead;
+      if (total > maximumBytes)
+        throw localStatePathError('Local state file exceeds its byte budget.');
+      chunks.push(buffer.subarray(0, result.bytesRead));
+    }
+    const after = await handle.stat({ bigint: true });
+    const namedAfterRead = await lstat(resolved, { bigint: true });
+    if (
+      after.dev !== baseline.dev ||
+      after.ino !== baseline.ino ||
+      after.size !== baseline.size ||
+      after.mtimeNs !== baseline.mtimeNs ||
+      after.ctimeNs !== baseline.ctimeNs ||
+      namedAfterRead.isSymbolicLink() ||
+      !namedAfterRead.isFile() ||
+      namedAfterRead.dev !== baseline.dev ||
+      namedAfterRead.ino !== baseline.ino
+    )
+      throw localStatePathError('Local state file changed while it was read.');
+    return new TextDecoder('utf-8', { fatal: true }).decode(
+      Buffer.concat(chunks, total)
+    );
   } finally {
     await handle.close();
   }

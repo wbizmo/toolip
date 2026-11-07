@@ -8,6 +8,45 @@ import {
 } from '../src/core/dependencies/inventory.js';
 
 describe('npm dependency inventory', () => {
+  it('rejects range-shaped lock versions and removes credentials from resolved URLs', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-inventory-origin-'));
+    try {
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': { dependencies: { ranged: '^1.0.0', private: '2.0.0' } },
+            'node_modules/ranged': { version: '^1.0.0' },
+            'node_modules/private': {
+              version: '2.0.0',
+              resolved:
+                'https://alice:secret@registry.private.example/private/-/private-2.0.0.tgz?token=secret'
+            }
+          }
+        })
+      );
+
+      const graph = await readNpmDependencyGraph(root);
+      const privatePackage = graph.packages.find(
+        (item) => item.name === 'private'
+      );
+
+      expect(graph.packages.map((item) => item.name)).toEqual(['private']);
+      expect(privatePackage).toMatchObject({
+        version: '2.0.0',
+        resolved:
+          'https://registry.private.example/private/-/private-2.0.0.tgz'
+      });
+      expect(privatePackage?.registry).toBeUndefined();
+      expect(graph.warnings).toContain('npm-lockfile-version-unresolved');
+      expect(JSON.stringify(graph)).not.toContain('secret');
+      expect(graph.complete).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('derives directness and edges from lock metadata rather than hoisting', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-inventory-'));
     try {

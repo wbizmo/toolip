@@ -1,10 +1,18 @@
 import { readdirSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { lstat } from 'node:fs/promises';
+import semver from 'semver';
+import { ToolipError } from '../../errors/toolip-error.js';
+import {
+  readBoundedDependencyText,
+  readPnpmDependencyGraph,
+  readYarnDependencyGraph
+} from './lockfile-resolvers.js';
 
 export type DependencyIdentity = {
   id: string;
-  ecosystem: 'npm';
+  ecosystem: 'npm' | 'PyPI' | 'Go' | 'crates.io' | 'Maven' | 'Packagist';
+  manager?: 'npm' | 'pnpm' | 'yarn';
   name: string;
   version: string;
   direct: boolean;
@@ -15,23 +23,61 @@ export type DependencyIdentity = {
   os?: string[];
   cpu?: string[];
   libc?: string[];
-  source: 'package-lock';
+  source: string;
+  /** Distinguishes lock-resolved instances from exact declarations without install evidence. */
+  resolutionConfidence?: 'lockfile' | 'declared-pin' | 'workspace' | 'unknown';
   installPath: string;
+  integrity?: string;
+  resolved?: string;
+  registry?: string;
+  workspace?: string;
+  /** Maven artifact classifier and extension/type from resolved graphs. */
+  classifier?: string;
+  packageType?: string;
+  /** Resolver-specific platform/extra context retained for lock variants. */
+  resolutionContext?: string;
+  /** Feature names declared in a first-party Cargo manifest, not active resolution. */
+  declaredFeatures?: string[];
 };
 
 export type DependencyEdge = {
   from: 'root' | string;
   to: string;
   name: string;
+  /** Manifest dependency key when it differs from the resolved package name. */
+  alias?: string;
   requirement: string;
   section:
     'dependency' | 'devDependency' | 'optionalDependency' | 'peerDependency';
+  marker?: string;
+  extras?: string[];
+  /** Rust/Cargo requested feature flags when declared by a workspace manifest. */
+  requestedFeatures?: string[];
+  /** Rust/Cargo target cfg expression for a manifest dependency declaration. */
+  target?: string;
 };
 
+export type UnresolvedDependencyEdge = {
+  from: 'root' | string;
+  name: string;
+  requirement: string;
+  section: DependencyEdge['section'];
+};
+
+export type DependencyFileSource = Readonly<{
+  files: readonly string[];
+  hasFile: (relativePath: string) => boolean;
+  readText: (relativePath: string) => string | undefined;
+}>;
+
 export type NpmDependencyGraph = {
+  manager?: 'npm' | 'pnpm' | 'yarn';
   packages: DependencyIdentity[];
   edges: DependencyEdge[];
+  unresolvedDependencies: UnresolvedDependencyEdge[];
   rootDependencies: string[];
+  complete: boolean;
+  warnings: string[];
 };
 
 type PackageLockEntry = {
@@ -44,6 +90,7 @@ type PackageLockEntry = {
   libc?: string[];
   link?: boolean;
   resolved?: string;
+  integrity?: string;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   optionalDependencies?: Record<string, string>;
@@ -54,6 +101,27 @@ type PackageLockV2 = {
   lockfileVersion?: number;
   packages?: Record<string, PackageLockEntry>;
 };
+
+function readCapturedDependencyText(
+  fileSource: DependencyFileSource,
+  relativePath: string
+): string {
+  if (!fileSource.hasFile(relativePath)) {
+    const error = new Error(
+      `Dependency snapshot does not contain ${relativePath}.`
+    );
+    Object.assign(error, { code: 'ENOENT' });
+    throw error;
+  }
+  const text = fileSource.readText(relativePath);
+  if (text === undefined) {
+    throw new ToolipError(
+      `Dependency snapshot has no text for ${relativePath}.`,
+      { code: 'DEPENDENCY_SNAPSHOT_CONTENT_UNAVAILABLE' }
+    );
+  }
+  return text;
+}
 
 function packageNameFromLockPath(lockPath: string): string | undefined {
   const marker = 'node_modules/';
@@ -68,6 +136,30 @@ function identityId(
   version: string
 ): string {
   return `npm:${installPath}:${name}@${version}`;
+}
+
+function sanitizedNpmResolution(value: unknown): {
+  resolved?: string;
+  registry?: string;
+} {
+  if (typeof value !== 'string' || value.length > 2_048) return {};
+  const gitPrefix = value.startsWith('git+') ? 'git+' : '';
+  const candidate = gitPrefix ? value.slice(gitPrefix.length) : value;
+  try {
+    const url = new URL(candidate);
+    if (!['https:', 'http:', 'ssh:'].includes(url.protocol)) return {};
+    const resolved = `${gitPrefix}${url.protocol}//${url.host}${url.pathname}`;
+    if (
+      gitPrefix ||
+      url.username ||
+      url.password ||
+      !['https:', 'http:'].includes(url.protocol)
+    )
+      return { resolved };
+    return { resolved, registry: url.origin };
+  } catch {
+    return {};
+  }
 }
 
 function parentPackagePath(lockPath: string): string {
@@ -155,23 +247,84 @@ function requirements(
 }
 
 export async function readNpmDependencyGraph(
-  root: string
+  root: string,
+  fileSource?: DependencyFileSource
 ): Promise<NpmDependencyGraph> {
-  const raw = await readFile(path.join(root, 'package-lock.json'), 'utf8');
+  const lockfiles = [
+    ['package-lock.json', 'npm'],
+    ['pnpm-lock.yaml', 'pnpm'],
+    ['yarn.lock', 'yarn']
+  ] as const;
+  const detected: Array<(typeof lockfiles)[number]> = [];
+  if (fileSource) {
+    detected.push(...lockfiles.filter(([file]) => fileSource.hasFile(file)));
+  } else {
+    for (const candidate of lockfiles) {
+      const metadata = await lstat(path.join(root, candidate[0])).catch(
+        (error: unknown) => {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+            return undefined;
+          throw error;
+        }
+      );
+      if (metadata) {
+        if (!metadata.isFile() || metadata.isSymbolicLink()) {
+          throw new ToolipError(
+            `Dependency lockfile ${candidate[0]} is not a regular file.`,
+            { code: 'DEPENDENCY_LOCKFILE_INVALID' }
+          );
+        }
+        detected.push(candidate);
+      }
+    }
+  }
+  if (detected.length > 1) {
+    throw new ToolipError(
+      `Multiple npm package-manager lockfiles are present (${detected.map(([name]) => name).join(', ')}); dependency identity is ambiguous.`,
+      { code: 'DEPENDENCY_LOCKFILE_AMBIGUOUS' }
+    );
+  }
+  const selected = detected[0]?.[1];
+  if (selected === 'pnpm') return readPnpmDependencyGraph(root, fileSource);
+  if (selected === 'yarn') return readYarnDependencyGraph(root, fileSource);
+
+  const raw = fileSource
+    ? readCapturedDependencyText(fileSource, 'package-lock.json')
+    : await readBoundedDependencyText(path.join(root, 'package-lock.json'));
   const lockfile = JSON.parse(raw) as PackageLockV2;
 
-  if (!lockfile.packages) {
+  if (
+    ![2, 3].includes(lockfile.lockfileVersion ?? 0) ||
+    !lockfile.packages ||
+    Array.isArray(lockfile.packages)
+  ) {
     throw new Error(
-      'Toolip requires package-lock.json lockfileVersion 2 or newer.'
+      'Toolip requires a package-lock.json lockfileVersion 2 or 3.'
     );
   }
 
   const identitiesByPath = new Map<string, DependencyIdentity>();
+  const warnings: string[] = [];
 
   for (const [installPath, entry] of Object.entries(lockfile.packages)) {
     if (installPath === '' || !entry.version) continue;
+    if (
+      path.posix.isAbsolute(installPath) ||
+      /^[A-Za-z]:/u.test(installPath) ||
+      installPath.includes('\\') ||
+      installPath.includes('\0') ||
+      installPath.split('/').includes('..')
+    ) {
+      warnings.push('npm-lockfile-install-path-invalid');
+      continue;
+    }
+    if (!semver.valid(entry.version)) {
+      warnings.push('npm-lockfile-version-unresolved');
+      continue;
+    }
     const name = entry.name ?? packageNameFromLockPath(installPath);
     if (!name) continue;
+    const resolution = sanitizedNpmResolution(entry.resolved);
 
     identitiesByPath.set(installPath, {
       id: identityId(installPath, name, entry.version),
@@ -185,14 +338,22 @@ export async function readNpmDependencyGraph(
       cpu: Array.isArray(entry.cpu) ? entry.cpu.map(String) : undefined,
       libc: Array.isArray(entry.libc) ? entry.libc.map(String) : undefined,
       source: 'package-lock',
-      installPath
+      resolutionConfidence: 'lockfile',
+      installPath,
+      workspace: !installPath.startsWith('node_modules/')
+        ? installPath
+        : undefined,
+      manager: 'npm',
+      integrity: entry.integrity,
+      ...(resolution.resolved ? { resolved: resolution.resolved } : {}),
+      ...(resolution.registry ? { registry: resolution.registry } : {})
     });
   }
 
   const edges: DependencyEdge[] = [];
+  const unresolvedDependencies: UnresolvedDependencyEdge[] = [];
   const rootTargets = new Set<string>();
   const seenEdges = new Set<string>();
-
   for (const [fromPath, entry] of Object.entries(lockfile.packages)) {
     const fromIdentity =
       fromPath === '' ? undefined : identitiesByPath.get(fromPath);
@@ -205,10 +366,32 @@ export async function readNpmDependencyGraph(
         fromPath,
         requirement.name
       );
-      if (!targetPath) continue;
+      if (!targetPath) {
+        unresolvedDependencies.push({
+          from: fromIdentity?.id ?? 'root',
+          name: requirement.name,
+          requirement: requirement.requirement,
+          section: requirement.section
+        });
+        warnings.push(
+          `unresolved npm dependency ${requirement.name}@${requirement.requirement} from ${fromPath || 'root'}`
+        );
+        continue;
+      }
 
       const target = identitiesByPath.get(targetPath);
-      if (!target) continue;
+      if (!target) {
+        unresolvedDependencies.push({
+          from: fromIdentity?.id ?? 'root',
+          name: requirement.name,
+          requirement: requirement.requirement,
+          section: requirement.section
+        });
+        warnings.push(
+          `unresolved npm package identity ${requirement.name}@${requirement.requirement} from ${fromPath || 'root'}`
+        );
+        continue;
+      }
 
       const from = fromIdentity?.id ?? 'root';
       const key = `${from}:${target.id}:${requirement.section}`;
@@ -239,18 +422,30 @@ export async function readNpmDependencyGraph(
     );
 
   return {
+    manager: 'npm',
     packages,
     edges: edges.sort((a, b) =>
       `${a.from}:${a.name}:${a.to}`.localeCompare(`${b.from}:${b.name}:${b.to}`)
     ),
-    rootDependencies: [...rootTargets].sort()
+    unresolvedDependencies,
+    rootDependencies: [...rootTargets].sort(),
+    complete: warnings.length === 0,
+    warnings: [...new Set(warnings)].sort()
   };
 }
 
 export async function readNpmDependencyInventory(
-  root: string
+  root: string,
+  fileSource?: DependencyFileSource
 ): Promise<DependencyIdentity[]> {
-  return (await readNpmDependencyGraph(root)).packages;
+  const graph = await readNpmDependencyGraph(root, fileSource);
+  if (!graph.complete) {
+    throw new ToolipError(
+      `Dependency inventory is incomplete: ${graph.warnings.slice(0, 5).join('; ')}`,
+      { code: 'DEPENDENCY_INVENTORY_INCOMPLETE' }
+    );
+  }
+  return graph.packages;
 }
 
 function allowedBy(constraint: string[] | undefined, current: string): boolean {

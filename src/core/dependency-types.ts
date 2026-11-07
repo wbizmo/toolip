@@ -1,7 +1,9 @@
 export type DependencyInfo = {
   name: string;
   version: string;
-  type: 'dependency' | 'devDependency';
+  registry?: string;
+  type:
+    'dependency' | 'devDependency' | 'optionalDependency' | 'peerDependency';
 };
 
 export type PackageHealth = {

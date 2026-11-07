@@ -53,6 +53,48 @@ describe('pre-commit scans the staged blob, not the worktree (issue #26)', () =>
     ).toEqual([]);
   }, 30_000);
 
+  it('traces staged entrypoints through unchanged targets using index blobs', async () => {
+    const root = makeRepo();
+    write(
+      root,
+      'package.json',
+      JSON.stringify({ name: 'fixture', scripts: {} })
+    );
+    write(
+      root,
+      'init',
+      `eval(Buffer.from('cGF5bG9hZA==', 'base64').toString());\n`
+    );
+    git(root, 'add', '-A');
+    git(
+      root,
+      'commit',
+      '-q',
+      '-m',
+      'safe base with unreferenced payload fixture'
+    );
+
+    write(
+      root,
+      'package.json',
+      JSON.stringify({ name: 'fixture', scripts: { prepare: 'node init' } })
+    );
+    git(root, 'add', 'package.json');
+    write(root, 'init', CLEAN); // the index still contains the base blob
+
+    const result = await runPreCommit(root);
+
+    expect(blocked(result, 'package.json')).toBe(true);
+    expect(
+      result.findings.some(
+        (finding) =>
+          finding.category === 'malicious-content' &&
+          Array.isArray(finding.metadata?.trace) &&
+          (finding.metadata.trace as string[]).includes('init')
+      )
+    ).toBe(true);
+  });
+
   it('handles partial staging: scans exactly what would be committed', async () => {
     const root = makeRepo();
     write(root, 'mixed.ts', `${CLEAN}${fakeSecretLine('partial')}`);
@@ -213,16 +255,12 @@ describe('pre-commit scans the staged blob, not the worktree (issue #26)', () =>
     expect(blocked(full, 'wt-only.ts')).toBe(true);
   });
 
-  it('honors .toolipignore for staged paths', async () => {
+  it('does not let .toolipignore suppress staged security inputs', async () => {
     const root = makeRepo();
     write(root, '.toolipignore', 'fixtures\n');
     write(root, 'fixtures/sample.ts', fakeSecretLine('fixture'));
     git(root, 'add', '-A');
-    expect(
-      (await runPreCommit(root)).findings.some(
-        (f) => f.location?.file === 'fixtures/sample.ts'
-      )
-    ).toBe(false);
+    expect(blocked(await runPreCommit(root), 'fixtures/sample.ts')).toBe(true);
   });
 });
 

@@ -1,5 +1,6 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -35,6 +36,7 @@ describe('MCP stdio server (issue #50)', () => {
     expect(tools.map((t) => t.name).sort()).toEqual([
       'toolip_diff',
       'toolip_doctor',
+      'toolip_policy_check',
       'toolip_sbom'
     ]);
 
@@ -67,7 +69,42 @@ describe('MCP stdio server (issue #50)', () => {
     expect(bad.isError).toBe(true);
 
     const still = await client.listTools();
-    expect(still.tools.length).toBe(3);
+    expect(still.tools.length).toBe(4);
+  }, 60_000);
+
+  it('evaluates versioned policy from the same bounded snapshot with offline defaults', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-mcp-policy-'));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    await mkdir(path.join(root, '.toolip'));
+    await writeFile(
+      path.join(root, '.toolip/policy.yaml'),
+      'version: 1\nminimumSeverity: high\nminimumCoverage: 1\n'
+    );
+    await writeFile(
+      path.join(root, 'package.json'),
+      '{"name":"mcp-policy-fixture","version":"1.0.0"}\n'
+    );
+    await writeFile(path.join(root, '.gitignore'), '.env\n.env.*\n');
+    execFileSync('git', ['init', '-q'], { cwd: root });
+    execFileSync('git', ['config', 'user.name', 'Toolip Test'], { cwd: root });
+    execFileSync('git', ['config', 'user.email', 'toolip@example.test'], {
+      cwd: root
+    });
+    execFileSync('git', ['add', '.'], { cwd: root });
+    execFileSync('git', ['commit', '-qm', 'policy fixture'], { cwd: root });
+    const client = await connect(root);
+    const result = (await client.callTool({
+      name: 'toolip_policy_check',
+      arguments: { root, policyFile: '.toolip/policy.yaml' }
+    })) as { isError?: boolean; content: Array<{ text: string }> };
+
+    expect(result.isError).not.toBe(true);
+    const output = JSON.parse(result.content[0]?.text ?? '{}');
+    expect(output).toMatchObject({
+      decision: 'pass',
+      policy: { version: 1, trusted: false },
+      analysis: { state: 'complete' }
+    });
   }, 60_000);
 
   it('returns structured errors for hostile Git revisions and writes nothing (issue #45)', async () => {

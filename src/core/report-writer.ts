@@ -1,6 +1,9 @@
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { ToolipReport } from './report.js';
+import { createSarifReport } from './sarif.js';
+import type { Finding } from '../contracts/finding.js';
+import type { AnalysisState } from '../contracts/analysis.js';
 
 export type ReportFormat = 'json' | 'md';
 
@@ -26,6 +29,24 @@ export async function writeReport(
   }
 
   await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+}
+
+/** Writes a SARIF 2.1.0 view of the same sanitized findings and coverage state. */
+export async function writeSarifReport(
+  outputPath: string,
+  input: {
+    findings: readonly Finding[];
+    analysisState: AnalysisState;
+    toolVersion: string;
+    policy?: {
+      decision: string;
+      policySha256: string;
+      reasons?: readonly string[];
+    };
+  }
+): Promise<void> {
+  const sarif = createSarifReport(input);
+  await writeFile(outputPath, `${JSON.stringify(sarif, null, 2)}\n`, 'utf8');
 }
 
 export function renderMarkdownReport(report: ToolipReport): string {

@@ -319,51 +319,42 @@ describe('scanDependencies and the scorecard under a budget (issue #48)', () => 
     return dir;
   }
 
-  it('records timed-out and failed lookups, keeps the good ones, and reports partial coverage', async () => {
+  it('does not query manifest ranges as if they were installed identities', async () => {
     const root = project({ good: '1.0.0', slow: '1.0.0', broken: '1.0.0' });
-    vi.spyOn(pacote, 'manifest').mockImplementation(async (name: string) => {
-      if (name === 'good') return { name, version: '1.0.0' };
-      if (name === 'slow') return new Promise(() => undefined);
-      throw httpError(404);
-    });
+    const registry = vi.spyOn(pacote, 'manifest');
 
     const result = await scanDependencies(root, {
       budget: budget({ requestTimeoutMs: 60 })
     });
 
-    expect(result.packages.map((p) => p.name)).toEqual(['good']);
+    expect(result.packages).toEqual([]);
+    expect(registry).not.toHaveBeenCalled();
     expect(result.failures.map((f) => [f.name, f.kind]).sort()).toEqual([
-      ['broken', 'failed'],
-      ['slow', 'timed_out']
+      ['broken', 'unresolved'],
+      ['good', 'unresolved'],
+      ['slow', 'unresolved']
     ]);
     expect(result.coverage).toMatchObject({
-      state: 'partial',
+      state: 'failed',
       eligible: 3,
-      scanned: 1
+      scanned: 0
     });
   });
 
-  it('limits concurrent provider requests to the budget', async () => {
+  it('marks manifest-only packages unresolved without querying the provider', async () => {
     const names = Object.fromEntries(
       Array.from({ length: 12 }, (_, i) => [`pkg-${i}`, '1.0.0'])
     );
     const root = project(names);
-    let active = 0;
-    let peak = 0;
-    vi.spyOn(pacote, 'manifest').mockImplementation(async (name: string) => {
-      active += 1;
-      peak = Math.max(peak, active);
-      await new Promise((resolve) => setTimeout(resolve, 15));
-      active -= 1;
-      return { name, version: '1.0.0' };
-    });
+    const registry = vi.spyOn(pacote, 'manifest');
 
     const result = await scanDependencies(root, {
       budget: budget({ maxConcurrentRequests: 3 })
     });
 
-    expect(peak).toBeLessThanOrEqual(3);
-    expect(result.coverage.state).toBe('complete');
+    expect(registry).not.toHaveBeenCalled();
+    expect(result.failures).toHaveLength(12);
+    expect(result.coverage.state).toBe('failed');
   });
 
   it('the scorecard returns within its deadline, marks dependency health unmeasured and the run partial', async () => {
@@ -394,6 +385,6 @@ describe('scanDependencies and the scorecard under a budget (issue #48)', () => 
     expect(scorecard.score.dependencyHealth).toBeNull();
     expect(scorecard.analysis.state).toBe('partial');
     expect(scorecard.analysis.reasons.join(' ')).toContain('dependency health');
-    expect(scorecard.warnings.join(' ')).toContain('slow@1.0.0');
+    expect(scorecard.warnings.join(' ')).toContain('slow@1.0.0: unresolved');
   });
 });

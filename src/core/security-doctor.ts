@@ -1,4 +1,14 @@
-import { analyzeAstSource } from '../analyzers/ast/source-analysis.js';
+import path from 'node:path';
+import { realpath } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import type { AnalysisResultCache } from '../application/task-scheduler.js';
+import { analyzeAstProjectInWorker } from '../analyzers/ast/project-analysis-worker-client.js';
+import { InfrastructureAnalyzer } from '../analyzers/iac/analyzer.js';
+import { DockerfileAnalyzer } from '../analyzers/docker/analyzer.js';
+import {
+  scanMaliciousContent,
+  shouldInspectMaliciousContent
+} from '../analyzers/malicious-content/analyzer.js';
 import { type AnalysisCoverage, coverageOf } from '../contracts/analysis.js';
 import type { Finding } from '../contracts/finding.js';
 import {
@@ -6,11 +16,22 @@ import {
   type ScannerContext
 } from './scanner-context.js';
 import {
+  createProjectSnapshot,
+  isScannerContextFromSnapshot,
+  scannerContextFromSnapshot,
+  snapshotContentProvider,
+  type ProjectSnapshot
+} from '../application/project-snapshot.js';
+import {
   TextFileReader,
   type TextFileBudget,
   type TextFileReadResult
 } from './text-file-reader.js';
 import { bindSourceProvenance } from './source-provenance.js';
+import {
+  runWasmAnalyzerPlugin,
+  type WasmAnalyzerPlugin
+} from './analyzer-plugin.js';
 import {
   configSecurityPatterns,
   secretPatterns,
@@ -18,7 +39,14 @@ import {
   type SecurityPattern
 } from './security-patterns.js';
 import {
+  analyzeRulePacks,
+  assertRulePackScanLimits,
+  rulePackFindingBudget,
+  type VerifiedRulePack
+} from './rule-packs.js';
+import {
   findSecretMatches,
+  createLineLocator,
   isTestFile,
   secretEvidence,
   secretFingerprint,
@@ -42,14 +70,34 @@ export type SecurityDoctorResult = {
     bytesScanned: number;
     secrets: number;
     dangerousCode: number;
+    maliciousContent: number;
     configuration: number;
     headers: number;
   };
+  maliciousContent: {
+    coverage: AnalysisCoverage;
+    filesScanned: number;
+    bytesScanned: number;
+  };
+  infrastructure: { coverage: AnalysisCoverage; findings: number };
+  docker: { coverage: AnalysisCoverage; findings: number; files: number };
+  cacheMetrics: { hits: number; misses: number };
+  analyzerPlugins: Array<{
+    id: string;
+    sha256: string;
+    keyId: string;
+    coverage: AnalysisCoverage;
+    findings: number;
+  }>;
 };
 
 export type SecurityDoctorOptions = {
   budget?: TextFileBudget;
   signal?: AbortSignal;
+  /** Reuse exactly the immutable snapshot captured by the caller. */
+  snapshot?: ProjectSnapshot;
+  /** Caller-owned cache; unchanged path/content/rule inputs reuse file findings. */
+  analysisCache?: AnalysisResultCache;
   /**
    * Supplies file content instead of reading the worktree. Pre-commit uses this
    * to scan the exact staged blobs, never the (possibly different) working copy.
@@ -57,8 +105,15 @@ export type SecurityDoctorOptions = {
   contentProvider?: (
     file: ScannerContext['files'][number]
   ) => Promise<TextFileReadResult>;
+  /** Exact index-tree files used only to resolve staged execution chains. */
+  maliciousContentFiles?: readonly ScannerContext['files'][number][];
   /** Trusted caller-owned fixture policy; comments in scanned content never grant suppression. */
   trustedFixtureSuppressions?: readonly TrustedFixtureSuppression[];
+  /** Optional already-verified declarative rule packs. */
+  rulePacks?: readonly VerifiedRulePack[];
+  /** Signed, no-import WASM plugins require an explicit independent opt-in. */
+  analyzerPlugins?: readonly WasmAnalyzerPlugin[];
+  enableExecutablePlugins?: boolean;
 };
 
 const secretScanExtensions = new Set([
@@ -84,22 +139,166 @@ export async function runSecurityDoctor(
   rootOrContext: string | ScannerContext,
   options: SecurityDoctorOptions = {}
 ): Promise<SecurityDoctorResult> {
-  const context =
-    typeof rootOrContext === 'string'
+  const suppliedContext =
+    typeof rootOrContext === 'string' ? undefined : rootOrContext;
+  let snapshot = options.snapshot;
+  const captureSuppliedContext =
+    !suppliedContext || (!options.contentProvider && !options.signal);
+  if (!snapshot && captureSuppliedContext) {
+    try {
+      snapshot = await createProjectSnapshot(
+        suppliedContext?.root ?? (rootOrContext as string),
+        {
+          signal: options.signal,
+          maxFiles: options.budget?.maxFiles,
+          maxFileBytes: options.budget?.maxFileBytes,
+          maxTotalBytes: options.budget?.maxTotalBytes,
+          ...(suppliedContext ? { discoveredFiles: suppliedContext.files } : {})
+        }
+      );
+    } catch (error) {
+      // Preserve the established incomplete-scan behavior when a caller
+      // supplies a context whose files changed after discovery. The ordinary
+      // bounded readers below will report those files as skipped; AST analysis
+      // remains unavailable rather than reading a different source revision.
+      if (
+        !suppliedContext ||
+        !(error instanceof Error) ||
+        !error.message.startsWith('snapshot incomplete for ')
+      )
+        throw error;
+    }
+  }
+  const context = snapshot
+    ? typeof rootOrContext !== 'string' &&
+      isScannerContextFromSnapshot(rootOrContext, snapshot)
+      ? rootOrContext
+      : await scannerContextFromSnapshot(snapshot)
+    : typeof rootOrContext === 'string'
       ? await createScannerContext(rootOrContext)
       : rootOrContext;
+  if (
+    snapshot &&
+    (await realpath(
+      path.resolve(
+        typeof rootOrContext === 'string' ? rootOrContext : rootOrContext.root
+      )
+    ).catch(() => undefined)) !== snapshot.root
+  ) {
+    throw new Error('project snapshot root does not match the scan root');
+  }
+  const contentProvider =
+    options.contentProvider ??
+    (snapshot ? snapshotContentProvider(snapshot) : undefined);
+  assertRulePackScanLimits(options.rulePacks ?? []);
+  if (
+    options.analyzerPlugins?.length &&
+    options.enableExecutablePlugins !== true
+  )
+    throw new Error(
+      'Executable analyzer plugins require explicit operator opt-in.'
+    );
   const reader = new TextFileReader(options.budget, { root: context.root });
   const findings: Finding[] = [];
+  const knownContent = new Map<string, string>();
+  const knownBinaryPaths = new Set(
+    snapshot?.files.filter((file) => file.binary).map((file) => file.path) ?? []
+  );
   const warnings: string[] = [];
+  let astFindingsByPath: ReadonlyMap<string, readonly Finding[]> | undefined;
+  let astDependencyDigests: ReadonlyMap<string, string> | undefined;
+  let astAnalysisIncomplete = false;
+  let astProjectDigest: string | undefined;
+  if (snapshot) {
+    const astFiles = snapshot.files.filter(
+      (file) =>
+        codeExtensions.has(path.extname(file.path).slice(1).toLowerCase()) &&
+        !file.path.endsWith('.d.ts') &&
+        !file.path.endsWith('.map') &&
+        !file.path.startsWith('dist/')
+    );
+    const astInputs = astFiles.flatMap((file) =>
+      !file.binary && file.content !== undefined
+        ? [
+            {
+              filePath: file.path,
+              absolutePath: path.resolve(context.root, file.path),
+              content: file.content
+            }
+          ]
+        : []
+    );
+    astProjectDigest = createHash('sha256')
+      .update(
+        JSON.stringify(
+          astFiles
+            .map((file) => [file.path, file.sha256])
+            .sort(([left], [right]) =>
+              String(left).localeCompare(String(right))
+            )
+        )
+      )
+      .digest('hex');
+    astAnalysisIncomplete = astInputs.length !== astFiles.length;
+    try {
+      if (astInputs.length > 0)
+        ({
+          findingsByPath: astFindingsByPath,
+          dependencyDigests: astDependencyDigests
+        } = await analyzeAstProjectInWorker(astInputs, {
+          signal: options.signal
+        }));
+    } catch {
+      astFindingsByPath = undefined;
+      astAnalysisIncomplete = true;
+    }
+    if (astAnalysisIncomplete)
+      warnings.push(
+        'cross-file TypeScript taint analysis is incomplete for this project snapshot'
+      );
+  }
   let filesEligible = 0;
   let filesScanned = 0;
   let filesSkipped = 0;
   let readFailures = 0;
   let providerBytes = 0;
   const suppressedFixtureIds: string[] = [];
+  let rulePackFindings = 0;
+  let rulePackCoverageIncomplete = false;
   const fixturePolicy = createFixtureSuppressionIndex(
     options.trustedFixtureSuppressions
   );
+  const cacheScope = createHash('sha256')
+    .update(
+      JSON.stringify({
+        root: context.root,
+        // Rules and trusted configuration are inputs too. The per-file
+        // content key below keeps unrelated source edits incremental, while
+        // a policy/rule configuration change invalidates prior conclusions.
+        configDigest: options.snapshot?.configDigest ?? null,
+        analyzerVersion: 'security-doctor-source-v2',
+        fixtureSuppressions: [...(options.trustedFixtureSuppressions ?? [])]
+          .map((item) => ({
+            id: item.id,
+            ruleId: item.ruleId,
+            filePath: item.filePath,
+            owner: item.owner,
+            justification: item.justification,
+            expiresAt: item.expiresAt
+          }))
+          .sort((left, right) => left.id.localeCompare(right.id)),
+        rulePacks: [...(options.rulePacks ?? [])]
+          .map((pack) => ({
+            sha256: pack.sha256,
+            trust: pack.trust,
+            keyId: pack.keyId
+          }))
+          .sort((left, right) => left.sha256.localeCompare(right.sha256))
+      })
+    )
+    .digest('hex');
+  let cacheHits = 0;
+  let cacheMisses = 0;
 
   const eligibleFiles = context.files.filter((file) =>
     shouldScanSecrets(file.relativePath, file.extension)
@@ -108,10 +307,10 @@ export async function runSecurityDoctor(
   let cancelled = false;
 
   for (const [index, file] of eligibleFiles.entries()) {
-    const read = options.contentProvider
-      ? await options.contentProvider(file)
+    const read = contentProvider
+      ? await contentProvider(file)
       : await reader.read(file.absolutePath, options.signal, file.snapshot);
-    if (options.contentProvider && read.status === 'ok') {
+    if (contentProvider && read.status === 'ok') {
       providerBytes += read.bytes;
     }
 
@@ -143,25 +342,95 @@ export async function runSecurityDoctor(
     }
 
     filesScanned += 1;
-    const fileFindings = scanSecretContent(file.relativePath, read.content);
-    const allowedFindings = fileFindings.filter((finding) => {
-      const policy = trustedSuppressionFor(
-        fixturePolicy,
-        finding.ruleId,
-        file.relativePath
+    knownContent.set(file.relativePath, read.content);
+    const sourceDependencyDigest = codeExtensions.has(file.extension)
+      ? (astDependencyDigests?.get(file.relativePath) ??
+        astProjectDigest ??
+        'ast-project-unavailable')
+      : '';
+    const taskId = createHash('sha256')
+      .update(
+        `${file.relativePath}\0${read.sha256 ?? read.content}\0${sourceDependencyDigest}`
+      )
+      .digest('hex');
+    let cachedAnalysis = options.analysisCache?.get<{
+      findings: Finding[];
+      suppressedFixtureIds: string[];
+    }>(cacheScope, taskId, 'security-doctor-source-v3');
+    if (cachedAnalysis) {
+      cacheHits++;
+      suppressedFixtureIds.push(...cachedAnalysis.suppressedFixtureIds);
+      const customFindings = cachedAnalysis.findings.filter((finding) =>
+        finding.source.startsWith('signed-rule-pack:')
       );
-      if (!policy) return true;
-      suppressedFixtureIds.push(policy.id);
-      return false;
-    });
+      const remaining = Math.max(0, rulePackFindingBudget - rulePackFindings);
+      if (customFindings.length > remaining) {
+        cachedAnalysis = {
+          ...cachedAnalysis,
+          findings: [
+            ...cachedAnalysis.findings.filter(
+              (finding) => !finding.source.startsWith('signed-rule-pack:')
+            ),
+            ...customFindings.slice(0, remaining)
+          ]
+        };
+        rulePackFindings = rulePackFindingBudget;
+        rulePackCoverageIncomplete = true;
+      } else {
+        rulePackFindings += customFindings.length;
+      }
+      if (rulePackFindings >= rulePackFindingBudget) {
+        rulePackCoverageIncomplete = true;
+        warnings.push('declarative rule-pack output budget exhausted');
+      }
+    } else {
+      cacheMisses++;
+      const suppressedForFile: string[] = [];
+      const fileFindings = scanSecretContent(file.relativePath, read.content);
+      const filteredFindings = fileFindings.filter((finding) => {
+        const policy = trustedSuppressionFor(
+          fixturePolicy,
+          finding.ruleId,
+          file.relativePath
+        );
+        if (!policy) return true;
+        suppressedForFile.push(policy.id);
+        return false;
+      });
 
-    if (codeExtensions.has(file.extension)) {
-      allowedFindings.push(
-        ...analyzeAstSource(file.relativePath, read.content),
-        ...scanConfigurationContent(file.relativePath, read.content)
+      if (codeExtensions.has(file.extension)) {
+        filteredFindings.push(
+          ...(astFindingsByPath?.get(file.relativePath) ?? []),
+          ...scanConfigurationContent(file.relativePath, read.content)
+        );
+      }
+      if (!rulePackCoverageIncomplete && options.rulePacks?.length) {
+        const customFindings = analyzeRulePacks(
+          options.rulePacks,
+          file.relativePath,
+          read.content,
+          rulePackFindingBudget - rulePackFindings
+        );
+        filteredFindings.push(...customFindings);
+        rulePackFindings += customFindings.length;
+        if (rulePackFindings >= rulePackFindingBudget) {
+          rulePackCoverageIncomplete = true;
+          warnings.push('declarative rule-pack output budget exhausted');
+        }
+      }
+      cachedAnalysis = {
+        findings: filteredFindings,
+        suppressedFixtureIds: suppressedForFile
+      };
+      options.analysisCache?.set(
+        cacheScope,
+        taskId,
+        'security-doctor-source-v3',
+        cachedAnalysis
       );
+      suppressedFixtureIds.push(...suppressedForFile);
     }
-    findings.push(...bindSourceProvenance(allowedFindings, file, read));
+    findings.push(...bindSourceProvenance(cachedAnalysis.findings, file, read));
   }
 
   findings.push(
@@ -170,16 +439,160 @@ export async function runSecurityDoctor(
     )
   );
 
+  if (contentProvider) {
+    for (const file of options.maliciousContentFiles ?? context.files) {
+      if (
+        knownContent.has(file.relativePath) ||
+        !shouldInspectMaliciousContent(file.relativePath, file.extension)
+      )
+        continue;
+      try {
+        const read = await contentProvider(file);
+        if (read.status === 'ok') {
+          knownContent.set(file.relativePath, read.content);
+          providerBytes += read.bytes;
+        } else if (read.status === 'binary') {
+          knownBinaryPaths.add(file.relativePath);
+        }
+      } catch {
+        // Missing staged blobs remain explicitly unexamined in the malicious
+        // content coverage result below; never fall back to worktree bytes.
+      }
+    }
+  }
+
+  let maliciousContent: SecurityDoctorResult['maliciousContent'];
+  try {
+    const result = await scanMaliciousContent(
+      context.root,
+      options.signal,
+      options.maliciousContentFiles ?? context.files,
+      knownContent,
+      contentProvider === undefined,
+      knownBinaryPaths
+    );
+    findings.push(...result.findings);
+    maliciousContent = {
+      coverage: result.coverage,
+      filesScanned: result.filesScanned,
+      bytesScanned: result.bytesScanned
+    };
+  } catch {
+    warnings.push(
+      'malicious-content analysis failed before complete discovery'
+    );
+    maliciousContent = {
+      coverage: coverageOf({ eligible: 1, scanned: 0, skipped: 0, failed: 1 }),
+      filesScanned: 0,
+      bytesScanned: 0
+    };
+  }
+
+  const infrastructure = await new InfrastructureAnalyzer().analyze({
+    root: context.root,
+    signal: options.signal,
+    options: { scannerContext: context, contentProvider }
+  });
+  findings.push(...infrastructure.findings);
+  const docker = await new DockerfileAnalyzer().analyze({
+    root: context.root,
+    signal: options.signal,
+    options: {
+      scannerContext: context,
+      snapshot,
+      contentProvider
+    }
+  });
+  findings.push(...docker.findings);
+
+  const pluginFiles = snapshot
+    ? snapshot.files
+        .filter((file) => !file.binary && file.content !== undefined)
+        .map((file) => ({ path: file.path, content: file.content as string }))
+    : [...knownContent].map(([filePath, content]) => ({
+        path: filePath,
+        content
+      }));
+  const analyzerPlugins: SecurityDoctorResult['analyzerPlugins'] = [];
+  let pluginAnalysisIncomplete = false;
+  for (const plugin of options.analyzerPlugins ?? []) {
+    const result = await runWasmAnalyzerPlugin(
+      plugin,
+      pluginFiles,
+      options.signal
+    );
+    findings.push(...result.findings);
+    warnings.push(...result.warnings);
+    analyzerPlugins.push({
+      id: plugin.id,
+      sha256: plugin.moduleSha256,
+      keyId: plugin.keyId,
+      coverage: result.coverage,
+      findings: result.findings.length
+    });
+    if (result.coverage.state !== 'complete') pluginAnalysisIncomplete = true;
+  }
+
+  const secretCoverage = coverageOf({
+    eligible: filesEligible,
+    scanned: filesScanned,
+    skipped: filesSkipped - readFailures,
+    failed: readFailures,
+    excluded: context.files.length - filesEligible,
+    cancelled
+  });
+  const infrastructureCoverage =
+    infrastructure.coverage ??
+    coverageOf({ eligible: 0, scanned: 0, skipped: 0, failed: 0 });
+  const dockerCoverage =
+    docker.coverage ??
+    coverageOf({ eligible: 0, scanned: 0, skipped: 0, failed: 0 });
+  const states = [
+    secretCoverage.state,
+    maliciousContent.coverage.state,
+    infrastructureCoverage.state,
+    dockerCoverage.state,
+    ...analyzerPlugins.map((plugin) => plugin.coverage.state)
+  ];
+  const state = states.includes('failed')
+    ? 'failed'
+    : states.includes('partial') ||
+        rulePackCoverageIncomplete ||
+        pluginAnalysisIncomplete ||
+        astAnalysisIncomplete
+      ? 'partial'
+      : 'complete';
+  const coverage: AnalysisCoverage = {
+    ...secretCoverage,
+    state,
+    ...(state === 'complete'
+      ? {}
+      : {
+          reason:
+            [
+              secretCoverage.reason,
+              maliciousContent.coverage.reason,
+              infrastructureCoverage.reason,
+              dockerCoverage.reason,
+              ...analyzerPlugins
+                .filter((plugin) => plugin.coverage.reason)
+                .map((plugin) => `${plugin.id}: ${plugin.coverage.reason}`),
+              rulePackCoverageIncomplete
+                ? 'declarative rule-pack output was truncated'
+                : undefined,
+              astAnalysisIncomplete
+                ? 'cross-file TypeScript taint coverage was incomplete'
+                : undefined
+            ]
+              .filter((reason): reason is string => Boolean(reason))
+              .join('; ') ||
+            'one or more security analysis passes were incomplete'
+        })
+  };
+
   return {
     findings,
-    coverage: coverageOf({
-      eligible: filesEligible,
-      scanned: filesScanned,
-      skipped: filesSkipped - readFailures,
-      failed: readFailures,
-      excluded: context.files.length - filesEligible,
-      cancelled
-    }),
+    coverage,
     warnings: warnings.length > 0 ? warnings : undefined,
     suppressedFixtures: {
       count: suppressedFixtureIds.length,
@@ -194,9 +607,22 @@ export async function runSecurityDoctor(
       bytesScanned: reader.usage.bytesRead + providerBytes,
       secrets: countCategory(findings, 'secrets'),
       dangerousCode: countCategory(findings, 'dangerous-code'),
+      maliciousContent: countCategory(findings, 'malicious-content'),
       configuration: countCategory(findings, 'configuration'),
       headers: countCategory(findings, 'security-headers')
-    }
+    },
+    maliciousContent,
+    infrastructure: {
+      coverage: infrastructureCoverage,
+      findings: infrastructure.findings.length
+    },
+    docker: {
+      coverage: dockerCoverage,
+      findings: docker.findings.length,
+      files: Number(docker.metadata?.dockerfiles ?? 0)
+    },
+    cacheMetrics: { hits: cacheHits, misses: cacheMisses },
+    analyzerPlugins
   };
 }
 
@@ -271,7 +697,10 @@ function isCredentialNamedFile(relativePath: string): boolean {
 }
 
 /** Produces secret findings from a single already-read source file. */
-function scanSecretContent(relativePath: string, content: string): Finding[] {
+export function scanSecretContent(
+  relativePath: string,
+  content: string
+): Finding[] {
   const findings: Finding[] = [];
   const testFile = isTestFile(relativePath);
   const codeFile =
@@ -318,19 +747,18 @@ function scanSecretContent(relativePath: string, content: string): Finding[] {
 }
 
 /** Inspects configuration text for unsafe security settings. */
-function scanConfigurationContent(
+export function scanConfigurationContent(
   relativePath: string,
   content: string
 ): Finding[] {
   const findings: Finding[] = [];
+  const locate = createLineLocator(content);
 
   for (const pattern of configSecurityPatterns) {
     const regex = globalRegex(pattern.regex);
     for (const match of content.matchAll(regex)) {
       const index = match.index ?? 0;
-      const before = content.slice(0, index);
-      const line = before.split('\n').length;
-      const column = index - before.lastIndexOf('\n');
+      const { line, column } = locate(index);
       const fingerprint = secretFingerprint(
         `${pattern.id}:${relativePath}:${line}:${column}`
       );

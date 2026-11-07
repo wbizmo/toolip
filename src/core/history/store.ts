@@ -14,6 +14,9 @@ import {
 import { withLocalStateLock, type LockGuard } from '../local-lock.js';
 
 const schemaVersion = '1.0' as const;
+const defaultMaxEntries = 500;
+const maximumHistoryEntries = 5_000;
+const maximumHistoryBytes = 32 * 1024 * 1024;
 
 /** Returns the canonical history file path for a project root. */
 export function historyFilePath(root: string): string {
@@ -28,7 +31,7 @@ export async function readHistory(root: string): Promise<HistoryStore> {
   if (!identity) return { schemaVersion, entries: [] };
 
   try {
-    const raw = await openPrivateFile(filePath);
+    const raw = await openPrivateFile(filePath, maximumHistoryBytes);
     await assertDirectoryIdentity(directory, identity);
     return parseHistory(raw);
   } catch (error) {
@@ -43,8 +46,18 @@ export async function readHistory(root: string): Promise<HistoryStore> {
 export async function appendHistory(
   root: string,
   entry: HistoryEntry,
-  maxEntries = 500
+  maxEntries = defaultMaxEntries
 ): Promise<void> {
+  await appendHistoryTransaction(root, () => entry, maxEntries);
+}
+
+/** Computes and appends an entry against the locked latest history snapshot. */
+export async function appendHistoryTransaction(
+  root: string,
+  createEntry: (current: HistoryStore) => HistoryEntry | Promise<HistoryEntry>,
+  maxEntries = defaultMaxEntries
+): Promise<void> {
+  const retentionLimit = normalizeRetentionLimit(maxEntries);
   const filePath = historyFilePath(root);
   const directory = path.dirname(filePath);
   const identity = await ensurePrivateDirectory(directory);
@@ -54,11 +67,10 @@ export async function appendHistory(
     async (assertOwned) => {
       await assertStoreDirectory(directory, identity);
       const current = await readHistory(root);
+      const entry = await createEntry(current);
       if (current.entries.some((stored) => stored.id === entry.id)) return;
 
-      const entries = [...current.entries, entry].slice(
-        -Math.max(1, Math.floor(maxEntries))
-      );
+      const entries = [...current.entries, entry].slice(-retentionLimit);
       await writeHistoryAtomically(
         filePath,
         { schemaVersion, entries },
@@ -112,8 +124,22 @@ function parseHistory(raw: string): HistoryStore {
   ) {
     throw new Error('Unsupported Toolip history schema.');
   }
+  if (parsed.entries.length > maximumHistoryEntries)
+    throw new Error('Toolip history exceeds its entry budget.');
 
   return parsed as HistoryStore;
+}
+
+function normalizeRetentionLimit(value: number): number {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 1 ||
+    value > maximumHistoryEntries
+  )
+    throw new RangeError(
+      `History retention must be between 1 and ${maximumHistoryEntries} entries.`
+    );
+  return value;
 }
 
 /** Writes a history snapshot through a private same-directory temporary file. */
@@ -126,6 +152,8 @@ async function writeHistoryAtomically(
 ): Promise<void> {
   const temporary = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
   const serialized = `${JSON.stringify(store, null, 2)}\n`;
+  if (Buffer.byteLength(serialized, 'utf8') > maximumHistoryBytes)
+    throw new Error('Toolip history exceeds its byte budget.');
   let handle: Awaited<ReturnType<typeof open>> | undefined;
 
   try {

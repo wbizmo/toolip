@@ -57,7 +57,7 @@ describe('secret detection hardening', () => {
     expect(matches[0]?.line).toBe(3);
   });
 
-  it('excludes content-confirmed binary assets but keeps credential names in coverage', async () => {
+  it('excludes binary assets from secret matching but keeps unknown binary coverage incomplete', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-secret-binary-'));
     const bytes = Buffer.from([
       0,
@@ -67,7 +67,13 @@ describe('secret detection hardening', () => {
     try {
       await writeFile(path.join(root, 'asset.unknown'), bytes);
       const assetResult = await runSecurityDoctor(root);
-      expect(assetResult.coverage.state).toBe('complete');
+      expect(assetResult.coverage.state).toBe('failed');
+      expect(assetResult.maliciousContent.coverage).toMatchObject({
+        state: 'failed',
+        eligible: 1,
+        scanned: 0,
+        skipped: 1
+      });
       expect(assetResult.summary).toMatchObject({
         filesEligible: 0,
         filesScanned: 0,

@@ -1,0 +1,412 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { buildDependencyTree } from '../src/core/dependency-tree.js';
+import { walkProjectFiles } from '../src/core/file-walker.js';
+import { TextFileReader } from '../src/core/text-file-reader.js';
+import {
+  createProjectSnapshot,
+  type ProjectSnapshot
+} from '../src/application/project-snapshot.js';
+import { AnalysisResultCache } from '../src/application/task-scheduler.js';
+import { createScannerContext } from '../src/core/scanner-context.js';
+import { buildSecurityScorecard } from '../src/application/security-scorecard.js';
+import { runGitChecked } from '../src/core/git/safe-git.js';
+import {
+  findSecretMatches,
+  secretFingerprint
+} from '../src/core/secret-utils.js';
+
+const defaultSizes = [1_000, 10_000, 50_000];
+const requestedSizes = process.argv.slice(2).map(Number);
+const sizes = requestedSizes.length > 0 ? requestedSizes : defaultSizes;
+if (
+  sizes.some((size) => !Number.isSafeInteger(size) || size < 1 || size > 50_000)
+) {
+  throw new Error('benchmark sizes must be safe integers between 1 and 50,000');
+}
+
+type Measurement<T> = {
+  wallMs: number;
+  userCpuMs: number;
+  systemCpuMs: number;
+  heapDeltaBytes: number;
+  heapPeakBytes: number;
+  rssDeltaBytes: number;
+  rssPeakBytes: number;
+  result: T;
+};
+
+async function measure<T>(
+  operation: () => Promise<T>
+): Promise<Measurement<T>> {
+  const before = process.memoryUsage();
+  const cpuBefore = process.cpuUsage();
+  let heapPeakBytes = before.heapUsed;
+  let rssPeakBytes = before.rss;
+  const sample = (): void => {
+    const usage = process.memoryUsage();
+    heapPeakBytes = Math.max(heapPeakBytes, usage.heapUsed);
+    rssPeakBytes = Math.max(rssPeakBytes, usage.rss);
+  };
+  const timer = setInterval(sample, 5);
+  timer.unref();
+  const started = performance.now();
+  try {
+    const result = await operation();
+    sample();
+    const elapsed = performance.now() - started;
+    const cpu = process.cpuUsage(cpuBefore);
+    const after = process.memoryUsage();
+    return {
+      wallMs: Math.round(elapsed * 100) / 100,
+      userCpuMs: Math.round((cpu.user / 1_000) * 100) / 100,
+      systemCpuMs: Math.round((cpu.system / 1_000) * 100) / 100,
+      heapDeltaBytes: after.heapUsed - before.heapUsed,
+      heapPeakBytes,
+      rssDeltaBytes: after.rss - before.rss,
+      rssPeakBytes,
+      result
+    };
+  } finally {
+    clearInterval(timer);
+  }
+}
+
+function emit(
+  fixture: string,
+  size: number,
+  pass: string,
+  data: unknown
+): void {
+  process.stdout.write(
+    `${JSON.stringify({
+      schemaVersion: 1,
+      fixture,
+      size,
+      pass,
+      platform: process.platform,
+      node: process.version,
+      gitSha: process.env.GIT_COMMIT ?? 'working-tree',
+      providerRequests: 0,
+      ...data
+    })}\n`
+  );
+}
+
+async function benchmarkLockfile(
+  size: number,
+  shape: 'wide' | 'converging'
+): Promise<void> {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-graph-benchmark-'));
+  try {
+    const packages: Record<
+      string,
+      {
+        name: string;
+        version: string;
+        dependencies?: Record<string, string>;
+      }
+    > = {};
+    const rootDependencies: Record<string, string> = {};
+    for (let index = 0; index < size; index += 1) {
+      const name = `fixture-${index.toString().padStart(6, '0')}`;
+      if (shape === 'wide') rootDependencies[name] = `1.${index % 100}.0`;
+      const dependencies: Record<string, string> = {};
+      if (shape === 'converging') {
+        for (const offset of [1, 2]) {
+          const child = index + offset;
+          if (child < size) {
+            dependencies[`fixture-${child.toString().padStart(6, '0')}`] =
+              `1.${child % 100}.0`;
+          }
+        }
+      }
+      packages[`node_modules/${name}`] = {
+        name,
+        version: `1.${index % 100}.0`,
+        ...(Object.keys(dependencies).length > 0 ? { dependencies } : {})
+      };
+    }
+    if (shape === 'converging') {
+      for (const index of [0, 1]) {
+        rootDependencies[`fixture-${index.toString().padStart(6, '0')}`] =
+          `1.${index % 100}.0`;
+      }
+    }
+    packages[''] = {
+      name: 'benchmark-fixture',
+      version: '1.0.0',
+      dependencies: rootDependencies
+    };
+    const lockfile = {
+      name: 'benchmark-fixture',
+      lockfileVersion: 3,
+      packages
+    };
+    await writeFile(
+      path.join(root, 'package-lock.json'),
+      JSON.stringify(lockfile)
+    );
+
+    for (const pass of ['cold', 'warm'] as const) {
+      const measurement = await measure(() => buildDependencyTree(root));
+      const expectedDirect = shape === 'wide' ? size : Math.min(size, 2);
+      const expectedReachable = size;
+      if (
+        measurement.result.summary.direct !== expectedDirect ||
+        measurement.result.summary.transitive !==
+          expectedReachable - expectedDirect ||
+        (shape === 'converging' &&
+          measurement.result.summary.maxDepth !== Math.max(1, size))
+      ) {
+        throw new Error(`unexpected ${shape} graph summary at size ${size}`);
+      }
+      emit(`npm-lock-${shape}`, size, pass, {
+        ...measurement,
+        result: measurement.result.summary,
+        filesOpened: 1,
+        graphEdges: shape === 'wide' ? size : Math.max(0, (size - 1) * 2)
+      });
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function createSourceFixture(root: string, size: number): Promise<void> {
+  const body = 'export const fixtureValue = "bounded-source-fixture";\n';
+  const batchSize = 128;
+  for (let offset = 0; offset < size; offset += batchSize) {
+    const end = Math.min(size, offset + batchSize);
+    await Promise.all(
+      Array.from({ length: end - offset }, (_, relative) => {
+        const index = offset + relative;
+        const name = `source-${index.toString().padStart(6, '0')}.ts`;
+        return writeFile(path.join(root, name), body);
+      })
+    );
+  }
+}
+
+async function readFixture(
+  root: string,
+  files: Awaited<ReturnType<typeof walkProjectFiles>>
+) {
+  const bodyBytes = 57;
+  const reader = new TextFileReader(
+    {
+      maxFiles: files.length,
+      maxFileBytes: 4_096,
+      maxTotalBytes: Math.max(1, files.length * bodyBytes * 2)
+    },
+    { root }
+  );
+  const batchSize = 128;
+  for (let offset = 0; offset < files.length; offset += batchSize) {
+    const batch = files.slice(offset, offset + batchSize);
+    const results = await Promise.all(
+      batch.map((file) =>
+        reader.read(file.absolutePath, undefined, file.snapshot)
+      )
+    );
+    if (results.some((result) => result.status !== 'ok')) {
+      throw new Error(`source-tree read was incomplete at ${offset}`);
+    }
+  }
+  return reader.usage;
+}
+
+async function benchmarkSourceTree(size: number): Promise<void> {
+  const root = await mkdtemp(
+    path.join(os.tmpdir(), 'toolip-source-benchmark-')
+  );
+  try {
+    await createSourceFixture(root, size);
+    let files: Awaited<ReturnType<typeof walkProjectFiles>> = [];
+    for (const pass of ['cold', 'warm'] as const) {
+      const measurement = await measure(async () => {
+        files = await walkProjectFiles(root, { maxFiles: size });
+        if (files.length !== size)
+          throw new Error(`expected ${size} files, discovered ${files.length}`);
+        return readFixture(root, files);
+      });
+      emit('source-tree-walk-and-bounded-read', size, pass, {
+        ...measurement,
+        result: measurement.result,
+        filesDiscovered: files.length,
+        filesOpened: measurement.result.filesRead,
+        bytesRead: measurement.result.bytesRead
+      });
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+/** Full bounded doctor pass over a generated repository tree, cold and warm. */
+async function benchmarkRepositoryScan(size: number): Promise<void> {
+  const root = await mkdtemp(
+    path.join(os.tmpdir(), 'toolip-repository-benchmark-')
+  );
+  const expectedFiles = size + 3;
+  const maximumTotalBytes = Math.max(1, expectedFiles * 4_096);
+  const analysisCache = new AnalysisResultCache(Math.max(1, size * 2));
+  let previousSnapshot: ProjectSnapshot | undefined;
+  try {
+    await createSourceFixture(root, size);
+    await writeFile(
+      path.join(root, 'package.json'),
+      JSON.stringify({ name: 'toolip-benchmark-fixture', version: '1.0.0' })
+    );
+    await writeFile(
+      path.join(root, 'package-lock.json'),
+      JSON.stringify({
+        name: 'toolip-benchmark-fixture',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        requires: true,
+        packages: {
+          '': { name: 'toolip-benchmark-fixture', version: '1.0.0' }
+        }
+      })
+    );
+    await writeFile(
+      path.join(root, '.gitignore'),
+      '.env*\n*.pem\n*.key\nnode_modules/\n'
+    );
+    await runGitChecked(['init'], { cwd: root });
+    await runGitChecked(['add', '-A'], { cwd: root });
+    for (const pass of ['cold', 'warm'] as const) {
+      const measurement = await measure(async () => {
+        const context = await createScannerContext(root, {
+          maxFiles: expectedFiles
+        });
+        const snapshot = await createProjectSnapshot(root, {
+          discoveredFiles: context.files,
+          previous: previousSnapshot,
+          maxFiles: expectedFiles,
+          maxFileBytes: 4_096,
+          maxTotalBytes: maximumTotalBytes
+        });
+        const scorecard = await buildSecurityScorecard(
+          root,
+          {},
+          {
+            scannerContext: context,
+            snapshot,
+            projectSnapshot: snapshot,
+            analysisCache,
+            offline: true,
+            budget: {
+              maxFiles: expectedFiles,
+              maxFileBytes: 4_096,
+              maxTotalBytes: maximumTotalBytes
+            }
+          }
+        );
+        if (
+          scorecard.analysis.state !== 'complete' ||
+          scorecard.coverage.state !== 'complete' ||
+          context.summary.totalFiles !== expectedFiles
+        ) {
+          throw new Error(
+            `full repository scan was incomplete at ${size} source files: ${JSON.stringify(scorecard.analysis)}`
+          );
+        }
+        previousSnapshot = snapshot;
+        return {
+          snapshotReads: snapshot.metrics.filesRead,
+          snapshotBytesRead: snapshot.metrics.bytesRead,
+          snapshotFilesReused: snapshot.metrics.filesReused,
+          cacheHits: scorecard.cacheMetrics.hits,
+          cacheMisses: scorecard.cacheMetrics.misses,
+          findings: scorecard.findings.length,
+          filesDiscovered: context.summary.totalFiles,
+          scorecardState: scorecard.analysis.state,
+          coverage: scorecard.coverage
+        };
+      });
+      emit('repository-security-scorecard-full-pass', size, pass, {
+        ...measurement,
+        result: measurement.result,
+        filesOpened: measurement.result.snapshotReads,
+        bytesRead: measurement.result.snapshotBytesRead,
+        cacheHits: measurement.result.cacheHits,
+        cacheMisses: measurement.result.cacheMisses
+      });
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+function benchmarkText(size: number): {
+  content: string;
+  pattern: RegExp;
+} {
+  const content = Array.from({ length: size }, (_, index) =>
+    index % 5 === 0 ? `TOKEN_${index}\n` : `line_${index}\n`
+  ).join('');
+  return { content, pattern: /TOKEN_\d+/g };
+}
+
+async function benchmarkSecretLocations(size: number): Promise<void> {
+  const { content, pattern } = benchmarkText(size);
+  const optimized = await measure(async () => {
+    const matches = findSecretMatches(content, pattern);
+    return {
+      matches: matches.length,
+      locationChecksum: matches.reduce(
+        (sum, match) =>
+          sum + match.line + match.column + match.fingerprint.charCodeAt(0),
+        0
+      )
+    };
+  });
+  emit('secret-locations-optimized', size, 'single-pass', {
+    ...optimized,
+    result: optimized.result,
+    sourceBytes: Buffer.byteLength(content)
+  });
+
+  // This reference reproduces the previous prefix split per match. Keep its
+  // scale bounded because its purpose is to expose the old quadratic growth.
+  if (size <= 10_000) {
+    const legacy = await measure(async () => {
+      let matches = 0;
+      let locationChecksum = 0;
+      for (const match of content.matchAll(pattern)) {
+        const value = match[0];
+        const index = match.index ?? 0;
+        const before = content.slice(0, index);
+        const lastNewline = before.lastIndexOf('\n');
+        const line = before.split('\n').length;
+        const column = index - lastNewline;
+        locationChecksum +=
+          line + column + secretFingerprint(value).charCodeAt(0);
+        matches += 1;
+      }
+      return { matches, locationChecksum };
+    });
+    emit('secret-locations-legacy-prefix-split-reference', size, 'baseline', {
+      ...legacy,
+      result: legacy.result,
+      sourceBytes: Buffer.byteLength(content),
+      baselineRevision: 'cf94e2103e7d2ced05a0acf68251bcc8fd7ab125'
+    });
+  } else {
+    emit('secret-locations-legacy-prefix-split-reference', size, 'skipped', {
+      reason: 'legacy O(n*m) reference is capped at 10,000 lines',
+      baselineRevision: 'cf94e2103e7d2ced05a0acf68251bcc8fd7ab125'
+    });
+  }
+}
+
+for (const size of sizes) {
+  await benchmarkSecretLocations(size);
+  await benchmarkSourceTree(size);
+  await benchmarkRepositoryScan(size);
+  await benchmarkLockfile(size, 'wide');
+  await benchmarkLockfile(size, 'converging');
+}

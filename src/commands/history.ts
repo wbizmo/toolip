@@ -1,8 +1,13 @@
 import type { Command } from 'commander';
+import { clearHistory, readHistory } from '../core/history/store.js';
 import {
-  clearHistory,
-  readHistory
-} from '../core/history/store.js';
+  compareHistoryEntries,
+  remediationSla
+} from '../core/history/baseline.js';
+import {
+  renderHistoryDelta,
+  type HistoryDeltaFormat
+} from '../core/history/report.js';
 
 type HistoryOptions = {
   path: string;
@@ -10,34 +15,19 @@ type HistoryOptions = {
   limit: string;
 };
 
-export function registerHistoryCommand(
-  program: Command
-): void {
+export function registerHistoryCommand(program: Command): void {
   const command = program
     .command('history')
-    .description(
-      'Inspect locally stored Toolip scan history.'
-    );
+    .description('Inspect locally stored Toolip scan history.');
 
   command
     .command('list')
-    .option(
-      '-p, --path <path>',
-      'Project path.',
-      process.cwd()
-    )
-    .option(
-      '-l, --limit <number>',
-      'Maximum entries.',
-      '20'
-    )
+    .option('-p, --path <path>', 'Project path.', process.cwd())
+    .option('-l, --limit <number>', 'Maximum entries.', '20')
     .option('--json', 'Print JSON.')
     .action(async (options: HistoryOptions) => {
       const history = await readHistory(options.path);
-      const limit = Math.max(
-        1,
-        Number.parseInt(options.limit, 10) || 20
-      );
+      const limit = Math.max(1, Number.parseInt(options.limit, 10) || 20);
 
       const entries = history.entries.slice(-limit);
 
@@ -45,8 +35,7 @@ export function registerHistoryCommand(
         console.log(
           JSON.stringify(
             {
-              schemaVersion:
-                history.schemaVersion,
+              schemaVersion: history.schemaVersion,
               entries
             },
             null,
@@ -60,9 +49,7 @@ export function registerHistoryCommand(
       console.log('');
 
       if (entries.length === 0) {
-        console.log(
-          'No historical scan entries are available.'
-        );
+        console.log('No historical scan entries are available.');
         return;
       }
 
@@ -73,10 +60,7 @@ export function registerHistoryCommand(
             `findings=${entry.summary.total}`
         );
 
-        if (
-          entry.git?.branch ||
-          entry.git?.commit
-        ) {
+        if (entry.git?.branch || entry.git?.commit) {
           console.log(
             `  ${entry.git.branch ?? 'detached'} ` +
               `${entry.git.commit?.slice(0, 12) ?? ''}`
@@ -87,62 +71,169 @@ export function registerHistoryCommand(
 
   command
     .command('trend')
-    .option(
-      '-p, --path <path>',
-      'Project path.',
-      process.cwd()
-    )
-    .option(
-      '-l, --limit <number>',
-      'Maximum entries.',
-      '10'
-    )
+    .option('-p, --path <path>', 'Project path.', process.cwd())
+    .option('-l, --limit <number>', 'Maximum entries.', '10')
     .action(async (options: HistoryOptions) => {
       const history = await readHistory(options.path);
-      const limit = Math.max(
-        2,
-        Number.parseInt(options.limit, 10) || 10
-      );
+      const limit = Math.max(2, Number.parseInt(options.limit, 10) || 10);
 
       const entries = history.entries
-        .filter(
-          (entry) => entry.score !== undefined
-        )
+        .filter((entry) => entry.score !== undefined)
         .slice(-limit);
 
       console.log('Toolip Security Trend');
       console.log('');
 
       if (entries.length < 2) {
-        console.log(
-          'At least two scored history entries are required.'
-        );
+        console.log('At least two scored history entries are required.');
         return;
       }
 
       const first = entries[0];
       const last = entries[entries.length - 1];
 
-      console.log(
-        `Score: ${first?.score} → ${last?.score}`
-      );
-      console.log(
-        `Change: ${(last?.score ?? 0) - (first?.score ?? 0)}`
-      );
-      console.log(
-        `Findings: ${first?.summary.total} → ${last?.summary.total}`
-      );
+      console.log(`Score: ${first?.score} → ${last?.score}`);
+      console.log(`Change: ${(last?.score ?? 0) - (first?.score ?? 0)}`);
+      console.log(`Findings: ${first?.summary.total} → ${last?.summary.total}`);
     });
 
   command
-    .command('clear')
+    .command('diff')
+    .description('Compare the latest scan with a complete historical baseline.')
+    .option('-p, --path <path>', 'Project path.', process.cwd())
     .option(
-      '-p, --path <path>',
-      'Project path.',
-      process.cwd()
+      '--base <entry-id>',
+      'Baseline history entry ID; defaults to previous scan.'
     )
+    .option('--json', 'Print the fingerprint delta as JSON.')
+    .option(
+      '--format <format>',
+      'Output json, markdown, html or sarif.',
+      'json'
+    )
+    .action(
+      async (options: {
+        path: string;
+        base?: string;
+        json?: boolean;
+        format?: string;
+      }) => {
+        const history = await readHistory(options.path);
+        const current = history.entries.at(-1);
+        if (!current) {
+          console.log('No scan history is available.');
+          return;
+        }
+        const baseline = options.base
+          ? history.entries.find((entry) => entry.id === options.base)
+          : history.entries.at(-2);
+        if (!baseline) {
+          throw new Error(
+            options.base
+              ? 'Requested history baseline was not found.'
+              : 'At least two history entries are required for a baseline comparison.'
+          );
+        }
+        const delta = compareHistoryEntries(current, baseline);
+        const format = options.json ? 'json' : (options.format ?? 'json');
+        if (!['json', 'markdown', 'html', 'sarif'].includes(format)) {
+          throw new Error(
+            'History format must be json, markdown, html or sarif.'
+          );
+        }
+        process.stdout.write(
+          renderHistoryDelta({
+            delta,
+            current,
+            baseline,
+            format: format as HistoryDeltaFormat
+          })
+        );
+      }
+    );
+
+  command
+    .command('sla')
+    .description('Report finding remediation deadlines from local history.')
+    .option('-p, --path <path>', 'Project path.', process.cwd())
+    .option('--critical-days <days>', 'Critical finding remediation SLA.', '1')
+    .option('--high-days <days>', 'High finding remediation SLA.', '7')
+    .option('--medium-days <days>', 'Medium finding remediation SLA.', '30')
+    .option('--low-days <days>', 'Low finding remediation SLA.', '90')
+    .option(
+      '--info-days <days>',
+      'Informational finding remediation SLA.',
+      '180'
+    )
+    .option('--json', 'Print JSON.')
+    .action(
+      async (options: {
+        path: string;
+        criticalDays: string;
+        highDays: string;
+        mediumDays: string;
+        lowDays: string;
+        infoDays: string;
+        json?: boolean;
+      }) => {
+        const history = await readHistory(options.path);
+        const latest = history.entries.at(-1);
+        if (!latest) {
+          console.log('No scan history is available.');
+          return;
+        }
+        const policy = {
+          critical: parseSlaDays(options.criticalDays),
+          high: parseSlaDays(options.highDays),
+          medium: parseSlaDays(options.mediumDays),
+          low: parseSlaDays(options.lowDays),
+          info: parseSlaDays(options.infoDays)
+        };
+        const entries = remediationSla(latest, policy);
+        if (options.json) {
+          console.log(
+            JSON.stringify(
+              {
+                coverage: latest.coverage,
+                entries,
+                overdue: entries.filter((entry) => entry.overdue).length
+              },
+              null,
+              2
+            )
+          );
+          return;
+        }
+        console.log('Toolip Remediation SLA');
+        console.log(`Open findings: ${entries.length}`);
+        console.log(
+          `Overdue: ${entries.filter((entry) => entry.overdue).length}`
+        );
+        if (latest.coverage?.state !== 'complete') {
+          console.log(
+            'Latest scan coverage is incomplete; this report does not imply unobserved findings were resolved.'
+          );
+        }
+        for (const entry of entries) {
+          console.log(
+            `${entry.severity.toUpperCase()} ${entry.ruleId}: due ${entry.dueAt}${entry.overdue ? ' (overdue)' : ''}`
+          );
+        }
+      }
+    );
+
+  command
+    .command('clear')
+    .option('-p, --path <path>', 'Project path.', process.cwd())
     .action(async (options: { path: string }) => {
       await clearHistory(options.path);
       console.log('Toolip history cleared.');
     });
+}
+
+function parseSlaDays(value: string): number {
+  const days = Number(value);
+  if (!Number.isFinite(days) || days < 0 || days > 3650)
+    throw new Error('SLA values must be between 0 and 3,650 days.');
+  return days;
 }

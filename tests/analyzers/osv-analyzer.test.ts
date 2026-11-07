@@ -1,32 +1,133 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { OsvVulnerabilityAnalyzer } from '../../src/analyzers/vulnerability/osv-analyzer.js';
 import { OsvClient } from '../../src/providers/osv/client.js';
+import { ExploitIntelClient } from '../../src/providers/exploit-intel/client.js';
+import { AdvisorySnapshotCache } from '../../src/providers/intelligence/snapshot-cache.js';
 import { MemoryCache } from '../../src/storage/memory-cache.js';
 
+function publicNpmSource(name: string, version: string) {
+  const tail = name.split('/').at(-1) ?? name;
+  return {
+    resolved: `https://registry.npmjs.org/${name}/-/${tail}-${version}.tgz`
+  };
+}
+
 describe('OsvVulnerabilityAnalyzer', () => {
+  it('marks manifest-only npm requirements unresolved rather than reporting a clean advisory scan', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-manifest-'));
+    let queryCount = 0;
+    try {
+      await writeFile(
+        path.join(root, 'package.json'),
+        JSON.stringify({ dependencies: { example: '^1.0.0' } })
+      );
+      const client = new OsvClient({
+        fetchImplementation: async () => {
+          queryCount += 1;
+          return new Response(JSON.stringify({ results: [] }), { status: 200 });
+        }
+      });
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({
+        root
+      });
+      expect(queryCount).toBe(0);
+      expect(result.findings).toEqual([]);
+      expect(result.coverage?.state).toBe('failed');
+      expect(result.warnings).toContainEqual(
+        expect.stringContaining('npm-lockfile-missing')
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('queries resolvable exact instances but marks incomplete lock graphs partial', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-partial-'));
+    let queryCount = 0;
+    try {
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': {
+              name: 'fixture',
+              version: '1.0.0',
+              dependencies: { resolved: '1.2.3', missing: '^2.0.0' }
+            },
+            'node_modules/resolved': {
+              version: '1.2.3',
+              ...publicNpmSource('resolved', '1.2.3')
+            }
+          }
+        })
+      );
+      const client = new OsvClient({
+        fetchImplementation: async (_input, init) => {
+          const body = JSON.parse(String(init?.body)) as { queries: unknown[] };
+          queryCount += body.queries.length;
+          return new Response(
+            JSON.stringify({
+              results: body.queries.map(() => ({ vulns: [] }))
+            }),
+            { status: 200 }
+          );
+        }
+      });
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({
+        root
+      });
+      expect(queryCount).toBe(1);
+      expect(result.metadata?.dependenciesChecked).toBe(1);
+      expect(result.coverage?.state).toBe('partial');
+      expect(result.warnings).toContainEqual(
+        expect.stringContaining('unresolved npm dependency missing')
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('creates normalized findings', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-'));
     try {
-      await writeFile(path.join(root, 'package-lock.json'), JSON.stringify({
-        lockfileVersion: 3,
-        packages: {
-          '': { name: 'fixture', version: '1.0.0' },
-          'node_modules/example-package': { version: '1.0.0' }
-        }
-      }));
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': { name: 'fixture', version: '1.0.0' },
+            'node_modules/example-package': {
+              version: '1.0.0',
+              ...publicNpmSource('example-package', '1.0.0')
+            }
+          }
+        })
+      );
 
       const client = new OsvClient({
-        fetchImplementation: async () => new Response(JSON.stringify({
-          results: [{ vulns: [{
-            id: 'GHSA-test-0001',
-            summary: 'Test vulnerability',
-            database_specific: { severity: 'HIGH' },
-            affected: [{ ranges: [{ events: [{ fixed: '1.0.1' }] }] }]
-          }] }]
-        }), { status: 200 })
+        fetchImplementation: async () =>
+          new Response(
+            JSON.stringify({
+              results: [
+                {
+                  vulns: [
+                    {
+                      id: 'GHSA-test-0001',
+                      summary: 'Test vulnerability',
+                      database_specific: { severity: 'HIGH' },
+                      affected: [{ ranges: [{ events: [{ fixed: '1.0.1' }] }] }]
+                    }
+                  ]
+                }
+              ]
+            }),
+            { status: 200 }
+          )
       });
 
       const result = await new OsvVulnerabilityAnalyzer(client).analyze({
@@ -37,6 +138,25 @@ describe('OsvVulnerabilityAnalyzer', () => {
       expect(result.findings).toHaveLength(1);
       expect(result.findings[0]?.severity).toBe('high');
       expect(result.findings[0]?.remediation?.fixedVersion).toBe('1.0.1');
+      expect(result.findings[0]?.metadata?.remediationPath).toMatchObject({
+        target: {
+          package: 'example-package',
+          installedVersion: '1.0.0',
+          installPath: 'node_modules/example-package'
+        },
+        dependencyPath: [
+          {
+            package: 'example-package',
+            version: '1.0.0',
+            installPath: 'node_modules/example-package'
+          }
+        ],
+        fixedVersions: ['1.0.1'],
+        verificationSteps: expect.arrayContaining([
+          expect.stringContaining('frozen install'),
+          expect.stringContaining('tests')
+        ])
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -47,37 +167,984 @@ describe('OsvVulnerabilityAnalyzer', () => {
     let queryCount = 0;
 
     try {
-      await writeFile(path.join(root, 'package-lock.json'), JSON.stringify({
-        lockfileVersion: 3,
-        packages: {
-          '': { name: 'fixture', version: '1.0.0' },
-          'node_modules/example-package': { version: '1.0.0' },
-          'node_modules/parent/node_modules/example-package': { version: '1.0.0' }
-        }
-      }));
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': { name: 'fixture', version: '1.0.0' },
+            'node_modules/example-package': {
+              version: '1.0.0',
+              ...publicNpmSource('example-package', '1.0.0')
+            },
+            'node_modules/parent/node_modules/example-package': {
+              version: '1.0.0',
+              ...publicNpmSource('example-package', '1.0.0')
+            }
+          }
+        })
+      );
 
       const client = new OsvClient({
         fetchImplementation: async (_input, init) => {
           const body = JSON.parse(String(init?.body)) as { queries: unknown[] };
           queryCount += body.queries.length;
-          return new Response(JSON.stringify({
-            results: body.queries.map(() => ({
-              vulns: [{
-                id: 'GHSA-test-0001',
-                summary: 'Test vulnerability',
-                database_specific: { severity: 'HIGH' }
-              }]
-            }))
-          }), { status: 200 });
+          return new Response(
+            JSON.stringify({
+              results: body.queries.map(() => ({
+                vulns: [
+                  {
+                    id: 'GHSA-test-0001',
+                    summary: 'Test vulnerability',
+                    database_specific: { severity: 'HIGH' }
+                  }
+                ]
+              }))
+            }),
+            { status: 200 }
+          );
+        }
+      });
+
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({
+        root
+      });
+
+      expect(queryCount).toBe(1);
+      expect(result.findings).toHaveLength(2);
+      expect(new Set(result.findings.map((finding) => finding.id)).size).toBe(
+        2
+      );
+      expect(result.metadata?.uniqueVersionsQueried).toBe(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('joins vulnerability priority to the exact resolved package reachability instance', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-osv-reachability-')
+    );
+    try {
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': {
+              name: 'fixture',
+              version: '1.0.0',
+              dependencies: { 'example-package': '1.0.0' }
+            },
+            'node_modules/example-package': {
+              version: '1.0.0',
+              ...publicNpmSource('example-package', '1.0.0')
+            }
+          }
+        })
+      );
+      await writeFile(
+        path.join(root, 'app.ts'),
+        "import { run } from 'example-package';\nrun();\n"
+      );
+      const packageDirectory = path.join(
+        root,
+        'node_modules',
+        'example-package'
+      );
+      await import('node:fs/promises').then(({ mkdir }) =>
+        mkdir(packageDirectory, { recursive: true })
+      );
+      await writeFile(
+        path.join(packageDirectory, 'package.json'),
+        JSON.stringify({
+          name: 'example-package',
+          version: '1.0.0',
+          main: 'index.js'
+        })
+      );
+      await writeFile(
+        path.join(packageDirectory, 'index.js'),
+        'exports.run = () => {};'
+      );
+      const client = new OsvClient({
+        fetchImplementation: async () =>
+          new Response(
+            JSON.stringify({
+              results: [
+                {
+                  vulns: [
+                    {
+                      id: 'GHSA-test-reachability',
+                      summary: 'Reachable vulnerable package',
+                      database_specific: { severity: 'HIGH' }
+                    }
+                  ]
+                }
+              ]
+            }),
+            { status: 200 }
+          )
+      });
+
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({
+        root
+      });
+      expect(result.findings[0]?.metadata?.reachability).toBe('reachable');
+      expect(result.findings[0]?.metadata?.riskPriority).toMatchObject({
+        reachability: 'reachable',
+        factors: expect.arrayContaining(['reachability:reachable'])
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('queries exact non-npm lockfile identities using their OSV ecosystems', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-'));
+    let queries: Array<{
+      package: { ecosystem: string; name: string };
+      version: string;
+    }> = [];
+    try {
+      await writeFile(
+        path.join(root, 'Cargo.lock'),
+        'version = 3\n\n[[package]]\nname = "serde"\nversion = "1.0.188"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n'
+      );
+      const client = new OsvClient({
+        fetchImplementation: async (_input, init) => {
+          const body = JSON.parse(String(init?.body)) as {
+            queries: typeof queries;
+          };
+          queries = body.queries;
+          return new Response(
+            JSON.stringify({ results: queries.map(() => ({ vulns: [] })) }),
+            { status: 200 }
+          );
+        }
+      });
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({
+        root
+      });
+      expect(result.metadata?.dependenciesChecked).toBe(1);
+      expect(queries).toEqual([
+        {
+          package: { ecosystem: 'crates.io', name: 'serde' },
+          version: '1.0.188'
+        }
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('withholds public advisory requests when an npm lock entry has no registry origin', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-origin-'));
+    let queryCount = 0;
+    try {
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': {
+              name: 'fixture',
+              version: '1.0.0',
+              dependencies: { privateLib: '2.0.0' }
+            },
+            'node_modules/privateLib': { version: '2.0.0' }
+          }
+        })
+      );
+      const client = new OsvClient({
+        fetchImplementation: async () => {
+          queryCount++;
+          return new Response(JSON.stringify({ results: [] }), { status: 200 });
         }
       });
 
       const result = await new OsvVulnerabilityAnalyzer(client).analyze({ root });
 
-      expect(queryCount).toBe(1);
-      expect(result.findings).toHaveLength(2);
-      expect(new Set(result.findings.map((finding) => finding.id)).size).toBe(2);
+      expect(queryCount).toBe(0);
+      expect(result.coverage?.state).not.toBe('complete');
+      expect(result.warnings).toContain('osv-public-query-withheld:1');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('withholds public PyPI advisory requests for hashed requirements inherited from a custom index', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-python-source-'));
+    let queryCount = 0;
+    try {
+      await mkdir(path.join(root, 'requirements'), { recursive: true });
+      await writeFile(
+        path.join(root, 'requirements.txt'),
+        '--index-url https://packages.example.test/simple\n-r requirements/locked.txt\n'
+      );
+      await writeFile(
+        path.join(root, 'requirements/locked.txt'),
+        `internal-pkg==1.2.3 --hash=sha256:${'f'.repeat(64)}\n`
+      );
+      const client = new OsvClient({
+        fetchImplementation: async () => {
+          queryCount++;
+          return new Response(JSON.stringify({ results: [] }), { status: 200 });
+        }
+      });
+
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({ root });
+
+      expect(queryCount).toBe(0);
+      expect(result.coverage?.state).not.toBe('complete');
+      expect(result.warnings).toContain(
+        'dependency-graph:dependency-resolution-provenance-unknown:PyPI'
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('withholds OSV queries for Cargo path and git packages and reports partial coverage', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-cargo-provenance-'));
+    let queries: Array<{ package: { ecosystem: string; name: string }; version: string }> = [];
+    try {
+      await writeFile(
+        path.join(root, 'Cargo.lock'),
+        [
+          'version = 3',
+          '',
+          '[[package]]',
+          'name = "local-helper"',
+          'version = "1.0.0"',
+          '',
+          '[[package]]',
+          'name = "private-git"',
+          'version = "2.0.0"',
+          'source = "git+https://user:token@git.example.test/private/repo?access_token=secret#rev"',
+          '',
+          '[[package]]',
+          'name = "serde"',
+          'version = "1.0.188"',
+          'source = "registry+https://github.com/rust-lang/crates.io-index"',
+          `checksum = "${'a'.repeat(64)}"`
+        ].join('\n')
+      );
+      const client = new OsvClient({
+        fetchImplementation: async (_input, init) => {
+          const body = JSON.parse(String(init?.body)) as { queries: typeof queries };
+          queries = body.queries;
+          return new Response(
+            JSON.stringify({ results: queries.map(() => ({ vulns: [] })) }),
+            { status: 200 }
+          );
+        }
+      });
+
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({ root });
+
+      expect(queries).toEqual([
+        {
+          package: { ecosystem: 'crates.io', name: 'serde' },
+          version: '1.0.188'
+        }
+      ]);
+      expect(result.metadata?.dependenciesChecked).toBe(1);
       expect(result.metadata?.uniqueVersionsQueried).toBe(1);
+      expect(result.coverage?.state).toBe('partial');
+      expect(result.warnings).toContain(
+        'dependency-graph:cargo-path-or-workspace-provenance-unverified'
+      );
+      expect(result.warnings).toContain(
+        'dependency-graph:cargo-git-provenance-unverified'
+      );
+      expect(JSON.stringify(result)).not.toMatch(
+        /user:token|access_token|secret|git\.example\.test/iu
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('attaches EPSS and KEV provenance and orders known exploitation above severity alone', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-intel-'));
+    try {
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': { name: 'fixture', version: '1.0.0' },
+            'node_modules/example-package': {
+              version: '1.0.0',
+              ...publicNpmSource('example-package', '1.0.0')
+            }
+          }
+        })
+      );
+      const osv = new OsvClient({
+        fetchImplementation: async () =>
+          new Response(
+            JSON.stringify({
+              results: [
+                {
+                  vulns: [
+                    {
+                      id: 'GHSA-test-0002',
+                      aliases: ['CVE-2026-12345'],
+                      summary: 'Low-severity exploited issue',
+                      database_specific: { severity: 'LOW' }
+                    }
+                  ]
+                }
+              ]
+            }),
+            { status: 200 }
+          )
+      });
+      const intel = new ExploitIntelClient({
+        now: () => new Date('2026-11-06T12:00:00.000Z'),
+        fetchImplementation: async (input) =>
+          new Response(
+            JSON.stringify(
+              String(input).includes('first.org')
+                ? {
+                    status: 'OK',
+                    data: [
+                      {
+                        cve: 'CVE-2026-12345',
+                        epss: '0.8',
+                        percentile: '0.99',
+                        date: '2026-11-06'
+                      }
+                    ]
+                  }
+                : {
+                    catalogVersion: '1.0',
+                    dateReleased: '2026-11-06T00:00:00.000Z',
+                    vulnerabilities: [
+                      {
+                        cveID: 'CVE-2026-12345',
+                        dateAdded: '2026-11-06'
+                      }
+                    ]
+                  }
+            ),
+            { status: 200 }
+          )
+      });
+
+      const result = await new OsvVulnerabilityAnalyzer(osv, intel).analyze({
+        root
+      });
+      const finding = result.findings[0];
+      expect(finding?.severity).toBe('low');
+      expect(finding?.metadata?.exploitIntel).toMatchObject({
+        status: 'available',
+        knownExploited: true,
+        epss: { probability: 0.8, percentile: 0.99 }
+      });
+      expect(finding?.metadata?.riskPriority).toMatchObject({
+        knownExploited: true,
+        epssProbability: 0.8
+      });
+      expect(
+        Number(
+          (finding?.metadata?.riskPriority as { score: number } | undefined)
+            ?.score
+        )
+      ).toBeGreaterThan(60);
+      expect(result.metadata?.exploitIntel).toMatchObject({
+        status: 'available',
+        cvesChecked: 1
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('combines multiple CVE aliases without losing the strongest EPSS or KEV evidence', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-aliases-'));
+    try {
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': { name: 'fixture', version: '1.0.0' },
+            'node_modules/example-package': {
+              version: '1.0.0',
+              ...publicNpmSource('example-package', '1.0.0')
+            }
+          }
+        })
+      );
+      const osv = new OsvClient({
+        fetchImplementation: async () =>
+          new Response(
+            JSON.stringify({
+              results: [
+                {
+                  vulns: [
+                    {
+                      id: 'GHSA-test-0003',
+                      aliases: ['CVE-2026-12345', 'CVE-2026-23456'],
+                      summary: 'Multi-alias issue',
+                      database_specific: { severity: 'LOW' }
+                    }
+                  ]
+                }
+              ]
+            }),
+            { status: 200 }
+          )
+      });
+      const intel = new ExploitIntelClient({
+        now: () => new Date('2026-11-06T12:00:00.000Z'),
+        fetchImplementation: async (input) =>
+          new Response(
+            JSON.stringify(
+              String(input).includes('first.org')
+                ? {
+                    status: 'OK',
+                    data: [
+                      {
+                        cve: 'CVE-2026-12345',
+                        epss: '0.4',
+                        percentile: '0.8',
+                        date: '2026-11-06'
+                      },
+                      {
+                        cve: 'CVE-2026-23456',
+                        epss: '0.9',
+                        percentile: '0.99',
+                        date: '2026-11-06'
+                      }
+                    ]
+                  }
+                : {
+                    catalogVersion: '1.0',
+                    dateReleased: '2026-11-06T00:00:00.000Z',
+                    vulnerabilities: [
+                      {
+                        cveID: 'CVE-2026-23456',
+                        dateAdded: '2026-11-06'
+                      }
+                    ]
+                  }
+            ),
+            { status: 200 }
+          )
+      });
+
+      const result = await new OsvVulnerabilityAnalyzer(osv, intel).analyze({
+        root
+      });
+      expect(result.findings[0]?.metadata?.exploitIntel).toMatchObject({
+        status: 'available',
+        matchedCves: ['CVE-2026-12345', 'CVE-2026-23456'],
+        knownExploited: true,
+        epss: { probability: 0.9 },
+        kev: { source: 'CISA KEV', added: '2026-11-06' }
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('uses an offline OSV snapshot without network access and reports missing records as incomplete', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-offline-'));
+    const snapshotRoot = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-osv-snap-')
+    );
+    try {
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': { name: 'fixture', version: '1.0.0' },
+            'node_modules/example-package': {
+              version: '1.0.0',
+              ...publicNpmSource('example-package', '1.0.0')
+            }
+          }
+        })
+      );
+      let requests = 0;
+      const client = new OsvClient({
+        fetchImplementation: async () => {
+          requests++;
+          throw new Error('offline lookup attempted network access');
+        }
+      });
+      const keys = generateKeyPairSync('ed25519');
+      const privateKey = keys.privateKey
+        .export({ type: 'pkcs8', format: 'pem' })
+        .toString();
+      const publicKey = keys.publicKey
+        .export({ type: 'spki', format: 'pem' })
+        .toString();
+      const snapshot = await AdvisorySnapshotCache.open(
+        path.join(snapshotRoot, 'advisories.json'),
+        {
+          now: () => new Date('2026-11-06T12:00:00.000Z'),
+          signingPrivateKeyPem: privateKey,
+          signingKeyId: 'test-key'
+        }
+      );
+      await snapshot.set('osv:v1:npm:example-package@1.0.0', {
+        query: {
+          package: { ecosystem: 'npm', name: 'example-package' },
+          version: '1.0.0'
+        },
+        vulnerabilities: []
+      });
+      await snapshot.flush();
+      const verifiedSnapshot = await AdvisorySnapshotCache.open(
+        snapshot.filePath,
+        {
+          now: () => new Date('2026-11-06T12:00:00.000Z'),
+          trustedPublicKeyPem: publicKey,
+          requireSignature: true
+        }
+      );
+
+      const analyzer = new OsvVulnerabilityAnalyzer(client);
+      const complete = await analyzer.analyze({
+        root,
+        cache: verifiedSnapshot,
+        options: { offline: true }
+      });
+      expect(requests).toBe(0);
+      expect(complete.coverage?.state).toBe('partial');
+      expect(complete.warnings).toContainEqual(
+        expect.stringContaining('dependency-install-location-unavailable')
+      );
+      expect(complete.metadata?.advisoryData).toMatchObject({
+        mode: 'offline',
+        missingRecords: 0
+      });
+
+      const missing = await new OsvVulnerabilityAnalyzer(client).analyze({
+        root,
+        options: { offline: true }
+      });
+      expect(requests).toBe(0);
+      expect(missing.coverage?.state).toBe('failed');
+      expect(missing.warnings).toContain('osv-snapshot-missing:1');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(snapshotRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('marks stale offline OSV records incomplete rather than as current coverage', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-stale-'));
+    const snapshotRoot = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-osv-stale-snap-')
+    );
+    try {
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': { name: 'fixture', version: '1.0.0' },
+            'node_modules/example-package': {
+              version: '1.0.0',
+              ...publicNpmSource('example-package', '1.0.0')
+            }
+          }
+        })
+      );
+      const snapshotPath = path.join(snapshotRoot, 'advisories.json');
+      const keys = generateKeyPairSync('ed25519');
+      const privateKey = keys.privateKey
+        .export({ type: 'pkcs8', format: 'pem' })
+        .toString();
+      const publicKey = keys.publicKey
+        .export({ type: 'spki', format: 'pem' })
+        .toString();
+      const writer = await AdvisorySnapshotCache.open(snapshotPath, {
+        now: () => new Date('2026-01-01T00:00:00.000Z'),
+        signingPrivateKeyPem: privateKey,
+        signingKeyId: 'test-key'
+      });
+      await writer.set('osv:v1:npm:example-package@1.0.0', {
+        query: {
+          package: { ecosystem: 'npm', name: 'example-package' },
+          version: '1.0.0'
+        },
+        vulnerabilities: []
+      });
+      await writer.flush();
+      const snapshot = await AdvisorySnapshotCache.open(snapshotPath, {
+        now: () => new Date('2026-11-06T12:00:00.000Z'),
+        trustedPublicKeyPem: publicKey,
+        requireSignature: true
+      });
+
+      const result = await new OsvVulnerabilityAnalyzer().analyze({
+        root,
+        cache: snapshot,
+        options: {
+          offline: true,
+          maxAdvisoryAgeMs: 24 * 60 * 60 * 1000
+        }
+      });
+      expect(result.coverage?.state).toBe('partial');
+      expect(result.warnings).toContain('osv-snapshot-stale:1');
+      expect(Date.parse(snapshot.generatedAt ?? '')).toBe(
+        Date.parse('2026-01-01T00:00:00.000Z')
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(snapshotRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not trust a hash-only offline snapshot as a vulnerability all-clear', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-untrusted-'));
+    const snapshotRoot = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-osv-untrusted-snapshot-')
+    );
+    try {
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': { name: 'fixture', version: '1.0.0' },
+            'node_modules/example-package': {
+              version: '1.0.0',
+              ...publicNpmSource('example-package', '1.0.0')
+            }
+          }
+        })
+      );
+      const snapshotPath = path.join(snapshotRoot, 'advisories.json');
+      const writer = await AdvisorySnapshotCache.open(snapshotPath);
+      await writer.set('osv:v1:npm:example-package@1.0.0', {
+        query: {
+          package: { ecosystem: 'npm', name: 'example-package' },
+          version: '1.0.0'
+        },
+        vulnerabilities: []
+      });
+      await writer.flush();
+      const snapshot = await AdvisorySnapshotCache.open(snapshotPath);
+      const result = await new OsvVulnerabilityAnalyzer().analyze({
+        root,
+        cache: snapshot,
+        options: { offline: true }
+      });
+
+      expect(result.coverage?.state).toBe('failed');
+      expect(result.warnings).toContain(
+        'advisory-snapshot-signature-unverified:1'
+      );
+      expect(result.warnings).toContain('osv-snapshot-missing:1');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(snapshotRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('withholds scoped and custom-registry npm identifiers from OSV without explicit consent', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-private-'));
+    let requests = 0;
+    try {
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': {
+              name: 'fixture',
+              version: '1.0.0',
+              dependencies: {
+                '@private/secret': '1.0.0',
+                'custom-library': '2.0.0'
+              }
+            },
+            'node_modules/@private/secret': { version: '1.0.0' },
+            'node_modules/custom-library': {
+              version: '2.0.0',
+              resolved:
+                'https://packages.example.test/custom-library/-/custom-library-2.0.0.tgz'
+            }
+          }
+        })
+      );
+      const client = new OsvClient({
+        fetchImplementation: async () => {
+          requests += 1;
+          return new Response(JSON.stringify({ results: [] }), {
+            status: 200
+          });
+        }
+      });
+
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({
+        root
+      });
+
+      expect(requests).toBe(0);
+      expect(result.coverage?.state).toBe('failed');
+      expect(result.warnings).toContain('osv-public-query-withheld:2');
+      expect(result.metadata?.advisoryData).toMatchObject({
+        privacyRestrictedRecords: 2
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('queries a public scoped package only after explicit consent', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-osv-public-scope-')
+    );
+    let queriedNames: string[] = [];
+    try {
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': {
+              name: 'fixture',
+              version: '1.0.0',
+              dependencies: { '@public/library': '^1.0.0' }
+            },
+            'node_modules/@public/library': {
+              version: '1.0.0',
+              resolved:
+                'https://registry.npmjs.org/@public%2flibrary/-/library-1.0.0.tgz'
+            }
+          }
+        })
+      );
+      const client = new OsvClient({
+        fetchImplementation: async (_input, init) => {
+          const body = JSON.parse(String(init?.body)) as {
+            queries: Array<{ package: { name: string } }>;
+          };
+          queriedNames = body.queries.map((query) => query.package.name);
+          return new Response(
+            JSON.stringify({
+              results: body.queries.map(() => ({ vulns: [] }))
+            }),
+            { status: 200 }
+          );
+        }
+      });
+
+      await new OsvVulnerabilityAnalyzer(client).analyze({
+        root,
+        options: { allowPublicScope: true }
+      });
+
+      expect(queriedNames).toEqual(['@public/library']);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('queries exact Python, Go, Cargo, Maven and Packagist identities through OSV', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-ecosystems-'));
+    const queried = new Map<string, string[]>();
+    try {
+      await writeFile(
+        path.join(root, 'requirements.txt'),
+        'requests==2.31.0\nignored>=99.0\n'
+      );
+      await writeFile(
+        path.join(root, 'go.mod'),
+        'module example.test/app\nrequire example.test/lib v1.2.3\n'
+      );
+      await writeFile(
+        path.join(root, 'go.sum'),
+        'example.test/lib v1.2.3 h1:YWJjZA==\n'
+      );
+      await writeFile(
+        path.join(root, 'Cargo.lock'),
+        `version = 3\n\n[[package]]\nname = "serde"\nversion = "1.0.188"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "${'a'.repeat(64)}"\n`
+      );
+      await writeFile(
+        path.join(root, 'maven-dependency-tree.txt'),
+        '[INFO] app:service:jar:1.0.0\n[INFO] +- org.example:core:jar:4.2.0:compile\n'
+      );
+      await writeFile(
+        path.join(root, 'composer.lock'),
+        JSON.stringify({
+          packages: [
+            { name: 'vendor/library', version: '1.2.0' },
+            { name: 'vendor/branch', version: 'dev-main' }
+          ]
+        })
+      );
+      await writeFile(
+        path.join(root, 'composer.json'),
+        JSON.stringify({
+          require: {
+            'vendor/library': '^1.0',
+            'vendor/branch': 'dev-main'
+          }
+        })
+      );
+      const client = new OsvClient({
+        fetchImplementation: async (_input, init) => {
+          const body = JSON.parse(String(init?.body)) as {
+            queries: Array<{ package: { ecosystem: string; name: string }; version: string }>;
+          };
+          for (const query of body.queries) {
+            const versions = queried.get(query.package.ecosystem) ?? [];
+            versions.push(`${query.package.name}@${query.version}`);
+            queried.set(query.package.ecosystem, versions);
+          }
+          return new Response(
+            JSON.stringify({
+              results: body.queries.map((query) => ({
+                vulns:
+                  (query.package.ecosystem === 'PyPI' &&
+                    query.package.name === 'requests') ||
+                  (query.package.ecosystem === 'Go' &&
+                    query.package.name === 'example.test/lib')
+                    ? [
+                        {
+                          id: 'PYSEC-2024-1',
+                          summary: 'Test Python advisory',
+                          database_specific: { severity: 'HIGH' }
+                        }
+                      ]
+                    : []
+              }))
+            }),
+            { status: 200 }
+          );
+        }
+      });
+
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({ root });
+
+      expect(result.coverage?.state).toBe('partial');
+      expect(result.warnings).toContain(
+        'dependency-graph:python-requirements-are-declared-pins:requirements.txt'
+      );
+      expect(queried.get('PyPI')).toContain('requests@2.31.0');
+      expect(queried.has('PyPI') && queried.get('PyPI')?.some((value) => value.startsWith('ignored@'))).toBe(false);
+      expect(
+        queried.get('Go')?.includes('example.test/lib@v1.2.3') ?? false
+      ).toBe(false);
+      expect(queried.get('crates.io')).toContain('serde@1.0.188');
+      expect(queried.get('Maven')).toContain('org.example:core@4.2.0');
+      expect(queried.get('Packagist')).toContain('vendor/library@1.2.0');
+      expect(queried.get('Packagist')).not.toContain('vendor/branch@dev-main');
+      expect(result.warnings).toContain(
+        'dependency-graph:composer-branch-version-unverified:vendor/branch'
+      );
+      const declaredPinFinding = result.findings.find(
+        (finding) => finding.metadata?.package === 'requests'
+      );
+      expect(declaredPinFinding?.metadata).toMatchObject({
+        resolutionConfidence: 'declared-pin',
+        declaredVersion: '2.31.0'
+      });
+      expect(declaredPinFinding?.metadata).not.toHaveProperty('installedVersion');
+      const goFinding = result.findings.find(
+        (finding) => finding.metadata?.package === 'example.test/lib'
+      );
+      expect(goFinding).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('queries the MVS-selected Go version only through explicit tool execution', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-go-mvs-'));
+    const goModSum = `h1:${Buffer.alloc(32, 5).toString('base64')}`;
+    const files = {
+      'package.json': JSON.stringify({ name: 'app', version: '1.0.0' }),
+      'go.mod': [
+        'module example.test/app',
+        'go 1.24.0',
+        'require example.test/lib v1.2.0'
+      ].join('\n'),
+      'go.sum': `example.test/lib v1.3.0/go.mod ${goModSum}\n`
+    };
+    const fileSource = {
+      files: Object.keys(files),
+      hasFile: (relativePath: string) => relativePath in files,
+      readText: (relativePath: string) => files[relativePath as keyof typeof files]
+    };
+    const queried: string[] = [];
+    const runner = async (input: {
+      cwd: string;
+      args: readonly string[];
+    }): Promise<string> => {
+      if (input.args[0] === 'version') return 'go version go1.24.1 linux/amd64';
+      if (input.args[0] === 'list') {
+        await writeFile(
+          path.join(input.cwd, 'go.sum'),
+          `example.test/lib v1.3.0/go.mod ${goModSum}\n`
+        );
+        return [
+          JSON.stringify({ Path: 'example.test/app', Main: true }),
+          JSON.stringify({
+            Path: 'example.test/lib',
+            Version: 'v1.3.0',
+            GoModSum: goModSum
+          })
+        ].join('\n');
+      }
+      return 'example.test/app example.test/lib@v1.3.0\n';
+    };
+    const client = new OsvClient({
+      fetchImplementation: async (_input, init) => {
+        const request = JSON.parse(String(init?.body)) as {
+          queries: Array<{
+            package: { ecosystem: string; name: string };
+            version: string;
+          }>;
+        };
+        queried.push(
+          ...request.queries.map(
+            (query) =>
+              `${query.package.ecosystem}:${query.package.name}@${query.version}`
+          )
+        );
+        return new Response(
+          JSON.stringify({
+            results: request.queries.map(() => ({
+              vulns: [
+                {
+                  id: 'GO-2026-1000',
+                  summary: 'Selected Go module advisory',
+                  database_specific: { severity: 'HIGH' }
+                }
+              ]
+            }))
+          }),
+          { status: 200 }
+        );
+      }
+    });
+    try {
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({
+        root,
+        options: {
+          dependencyFileSource: fileSource,
+          allowGoToolExecution: true,
+          goCommandRunner: runner
+        }
+      });
+      expect(queried).toContain('Go:example.test/lib@v1.3.0');
+      expect(result.findings[0]?.metadata).toMatchObject({
+        package: 'example.test/lib',
+        installedVersion: 'v1.3.0',
+        resolutionConfidence: 'lockfile'
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

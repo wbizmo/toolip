@@ -23,6 +23,69 @@ export type StagedSnapshot = {
 };
 
 /**
+ * Enumerates the complete stage-0 index tree by immutable Git object ID.
+ * This is used only when an analysis needs unchanged references reachable from
+ * staged entrypoints; it never reads worktree file contents.
+ */
+export async function listIndexEntries(
+  root: string,
+  signal?: AbortSignal
+): Promise<StagedSnapshot> {
+  const result = await runGit(['ls-files', '--stage', '-z', '--'], {
+    cwd: root,
+    maxBuffer: 64 * 1024 * 1024,
+    signal
+  });
+  if (result.code !== 0)
+    throw new ToolipError('Git could not enumerate the project index.', {
+      code: 'GIT_INDEX_READ_FAILED',
+      exitCode: 1
+    });
+
+  const entries: StagedEntry[] = [];
+  const skipped: StagedSkip[] = [];
+  const unmerged: string[] = [];
+  for (const record of result.stdout.toString('utf8').split('\0')) {
+    if (!record) continue;
+    const separator = record.indexOf('\t');
+    const header = separator < 0 ? '' : record.slice(0, separator);
+    const filePath =
+      separator < 0 ? '' : record.slice(separator + 1).replaceAll('\\', '/');
+    const match = /^(\d{6}) ([0-9a-f]{40,64}) ([0-3])$/u.exec(header);
+    if (!match || !filePath)
+      throw new ToolipError('Git returned a malformed project index.', {
+        code: 'GIT_INDEX_READ_FAILED',
+        exitCode: 1
+      });
+    const [, mode, oid, stage] = match as unknown as [
+      string,
+      string,
+      string,
+      string
+    ];
+    if (stage !== '0') {
+      unmerged.push(filePath);
+      continue;
+    }
+    if (mode === '160000') {
+      skipped.push({ path: filePath, reason: 'submodule (gitlink)' });
+      continue;
+    }
+    if (mode === '120000') {
+      skipped.push({ path: filePath, reason: 'symbolic link' });
+      continue;
+    }
+    entries.push({ path: filePath, mode, oid });
+  }
+  if (unmerged.length > 0)
+    throw new ToolipError(
+      `The index has unmerged paths (${unmerged.slice(0, 5).join(', ')}${unmerged.length > 5 ? ', …' : ''}). Resolve the conflicts before scanning.`,
+      { code: 'PRE_COMMIT_UNMERGED_PATHS', exitCode: 1 }
+    );
+  return { entries, skipped };
+}
+
+/**
  * Enumerates what the index would commit: additions, modifications and type
  * changes against HEAD (deletions need no scan). NUL-delimited raw diff output
  * handles spaces, newlines and non-ASCII names; renames are reported as a

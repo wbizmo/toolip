@@ -115,4 +115,34 @@ describe('profileProject', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('detects PHP and Laravel from a read-only Composer project profile', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-profile-laravel-'));
+    try {
+      await mkdir(path.join(root, 'bootstrap'), { recursive: true });
+      await writeFile(
+        path.join(root, 'composer.json'),
+        JSON.stringify({
+          require: { 'laravel/framework': '^12.0' },
+          scripts: { postInstall: 'php artisan package:discover' }
+        })
+      );
+      await writeFile(path.join(root, 'artisan'), '<?php // inert fixture\n');
+      await writeFile(
+        path.join(root, 'bootstrap/app.php'),
+        '<?php // inert fixture\n'
+      );
+      await writeFile(path.join(root, 'routes.php'), '<?php return [];\n');
+
+      const profile = await profileProject(root);
+
+      expect(profile.hasPHP).toBe(true);
+      expect(profile.hasLaravel).toBe(true);
+      expect(profile.detected).toEqual(expect.arrayContaining(['PHP', 'Laravel']));
+      expect(profile.languages.PHP).toBe(2);
+      expect(profile.packageScripts).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
