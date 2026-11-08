@@ -297,15 +297,99 @@ export async function readPnpmDependencyGraph(
   const instances: LockedInstance[] = [];
   const byNameAndVersion = new Map<string, LockedInstance[]>();
   const byNameVersionAndSuffix = new Map<string, LockedInstance[]>();
-  for (const [locator, raw] of Object.entries(packageMap)) {
-    const entry = record(raw) ?? {};
-    const parsed = parsePnpmLocator(locator);
-    if (!parsed) {
-      warnings.push(
-        `unsupported pnpm package locator ${locator.slice(0, 200)}`
-      );
-      continue;
+  const packageEntries = Object.entries(packageMap).flatMap(
+    ([locator, raw]) => {
+      const parsed = parsePnpmLocator(locator);
+      if (!parsed) {
+        warnings.push(
+          `unsupported pnpm package locator ${locator.slice(0, 200)}`
+        );
+        return [];
+      }
+      const entry = record(raw);
+      if (!entry) {
+        warnings.push(
+          `pnpm package metadata is malformed: ${locator.slice(0, 200)}`
+        );
+        return [];
+      }
+      return [{ locator, entry, parsed }];
     }
+  );
+  const packageEntriesByLocator = new Map(
+    packageEntries.map((item) => [item.locator, item])
+  );
+  const packageEntriesByNameVersion = new Map<string, typeof packageEntries>();
+  const packageEntriesByNameVersionSuffix = new Map<
+    string,
+    typeof packageEntries
+  >();
+  for (const item of packageEntries) {
+    const versionKey = JSON.stringify([item.parsed.name, item.parsed.version]);
+    const versionEntries = packageEntriesByNameVersion.get(versionKey) ?? [];
+    versionEntries.push(item);
+    packageEntriesByNameVersion.set(versionKey, versionEntries);
+    const suffixKey = JSON.stringify([
+      item.parsed.name,
+      item.parsed.version,
+      item.parsed.suffix
+    ]);
+    const suffixEntries =
+      packageEntriesByNameVersionSuffix.get(suffixKey) ?? [];
+    suffixEntries.push(item);
+    packageEntriesByNameVersionSuffix.set(suffixKey, suffixEntries);
+  }
+  const snapshots = record(lock.snapshots) ?? {};
+  const usesSnapshotGraph =
+    Number.parseInt(String(lock.lockfileVersion), 10) >= 9;
+  const installedEntries = usesSnapshotGraph
+    ? Object.entries(snapshots)
+        .map(([locator, snapshot]) => {
+          const parsed = parsePnpmLocator(locator);
+          if (!parsed) {
+            warnings.push(
+              `unsupported pnpm snapshot locator ${locator.slice(0, 200)}`
+            );
+            return undefined;
+          }
+          const snapshotEntry = record(snapshot);
+          if (!snapshotEntry) {
+            warnings.push(
+              `pnpm snapshot record is malformed: ${locator.slice(0, 200)}`
+            );
+            return undefined;
+          }
+          const versionKey = JSON.stringify([parsed.name, parsed.version]);
+          const candidates = packageEntriesByNameVersion.get(versionKey) ?? [];
+          const suffixCandidates =
+            packageEntriesByNameVersionSuffix.get(
+              JSON.stringify([parsed.name, parsed.version, parsed.suffix])
+            ) ?? [];
+          const metadata =
+            packageEntriesByLocator.get(locator) ??
+            (suffixCandidates.length === 1 ? suffixCandidates[0] : undefined) ??
+            (candidates.length === 1 ? candidates[0] : undefined);
+          if (!metadata) {
+            warnings.push(
+              `pnpm snapshot has no unique package metadata: ${locator.slice(0, 200)}`
+            );
+            return undefined;
+          }
+          return {
+            locator,
+            parsed,
+            entry: metadata.entry,
+            snapshot: snapshotEntry
+          };
+        })
+        .filter((item): item is NonNullable<typeof item> => item !== undefined)
+    : packageEntries.map(({ locator, entry, parsed }) => ({
+        locator,
+        entry,
+        parsed,
+        snapshot: entry
+      }));
+  for (const { locator, entry, parsed, snapshot } of installedEntries) {
     const resolution = record(entry.resolution);
     const item: LockedInstance = {
       locator,
@@ -319,9 +403,10 @@ export async function readPnpmDependencyGraph(
       resolved: safeResolved(resolution?.tarball),
       dev: entry.dev === true,
       optional: entry.optional === true,
-      dependencies: record(entry.dependencies),
-      optionalDependencies: record(entry.optionalDependencies),
-      peerDependencies: record(entry.peerDependencies)
+      dependencies: record(snapshot.dependencies) ?? record(entry.dependencies),
+      optionalDependencies:
+        record(snapshot.optionalDependencies) ??
+        record(entry.optionalDependencies)
     };
     instances.push(item);
     const versionKey = JSON.stringify([item.name, item.version]);
@@ -340,7 +425,6 @@ export async function readPnpmDependencyGraph(
       byNameVersionAndSuffix.set(suffixKey, suffixSiblings);
     }
   }
-  const snapshots = record(lock.snapshots) ?? {};
   const edgeSpecs = [] as Parameters<typeof makeGraph>[2];
   const resolve = (
     name: string,
@@ -351,9 +435,10 @@ export async function readPnpmDependencyGraph(
     // target identity before falling back to the requested package name.
     const target = parsePnpmLocator(requirement.replace(/^npm:/u, ''));
     if (target) {
-      const exact = byNameVersionAndSuffix.get(
-        JSON.stringify([target.name, target.version, target.suffix])
-      ) ?? [];
+      const exact =
+        byNameVersionAndSuffix.get(
+          JSON.stringify([target.name, target.version, target.suffix])
+        ) ?? [];
       if (exact.length === 1) return exact[0];
     }
     const parsed = pnpmRequirementKey(requirement.replace(/^npm:/u, ''));
@@ -472,10 +557,8 @@ export async function readPnpmDependencyGraph(
     );
   }
   for (const item of instances) {
-    const snapshot = record(snapshots[item.locator]);
-    const dependencies = snapshot ?? item;
     edgeSpecs.push(
-      ...parseSections(dependencies, resolve, `pnpm:${item.locator}`, false)
+      ...parseSections(item, resolve, `pnpm:${item.locator}`, false)
     );
   }
   return makeGraph(
