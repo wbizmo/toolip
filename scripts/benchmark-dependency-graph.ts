@@ -360,7 +360,12 @@ async function benchmarkRepositoryScan(size: number): Promise<void> {
     );
     await runGitChecked(['init'], { cwd: root });
     await runGitChecked(['add', '-A'], { cwd: root });
-    for (const pass of ['cold', 'warm'] as const) {
+    for (const pass of ['cold', 'warm', 'incremental'] as const) {
+      if (pass === 'incremental')
+        await writeFile(
+          path.join(root, 'source-000000.ts'),
+          'export const fixtureValue = "incremental-source-fixture";\n'
+        );
       const measurement = await measure(async () => {
         const context = await createScannerContext(root, {
           maxFiles: expectedFiles
@@ -423,6 +428,99 @@ async function benchmarkRepositoryScan(size: number): Promise<void> {
         astProjectCacheMisses: measurement.result.astProjectCacheMisses
       });
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+/** Two simultaneous offline scorecards over one immutable repository snapshot. */
+async function benchmarkConcurrentRepositoryScans(size: number): Promise<void> {
+  const root = await mkdtemp(
+    path.join(os.tmpdir(), 'toolip-concurrent-repository-benchmark-')
+  );
+  const expectedFiles = size + 3;
+  const maximumTotalBytes = Math.max(1, expectedFiles * 4_096);
+  try {
+    await createSourceFixture(root, size);
+    await writeFile(
+      path.join(root, 'package.json'),
+      JSON.stringify({
+        name: 'toolip-concurrent-benchmark-fixture',
+        version: '1.0.0'
+      })
+    );
+    await writeFile(
+      path.join(root, 'package-lock.json'),
+      JSON.stringify({
+        name: 'toolip-concurrent-benchmark-fixture',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        requires: true,
+        packages: {
+          '': { name: 'toolip-concurrent-benchmark-fixture', version: '1.0.0' }
+        }
+      })
+    );
+    await writeFile(
+      path.join(root, '.gitignore'),
+      '.env*\n*.pem\n*.key\nnode_modules/\n'
+    );
+    await runGitChecked(['init'], { cwd: root });
+    await runGitChecked(['add', '-A'], { cwd: root });
+    const context = await createScannerContext(root, {
+      maxFiles: expectedFiles
+    });
+    const snapshot = await createProjectSnapshot(root, {
+      discoveredFiles: context.files,
+      maxFiles: expectedFiles,
+      maxFileBytes: 4_096,
+      maxTotalBytes: maximumTotalBytes
+    });
+    const measurement = await measure(async () => {
+      const results = await Promise.all(
+        [0, 1].map(() =>
+          buildSecurityScorecard(
+            root,
+            {},
+            {
+              scannerContext: context,
+              snapshot,
+              projectSnapshot: snapshot,
+              analysisCache: new AnalysisResultCache(Math.max(1, size * 2)),
+              offline: true,
+              budget: {
+                maxFiles: expectedFiles,
+                maxFileBytes: 4_096,
+                maxTotalBytes: maximumTotalBytes
+              }
+            }
+          )
+        )
+      );
+      if (
+        results.some(
+          (scorecard) =>
+            scorecard.analysis.state !== 'complete' ||
+            scorecard.coverage.state !== 'complete' ||
+            scorecard.coverage.scanned !== expectedFiles
+        )
+      )
+        throw new Error(`concurrent scorecard was incomplete at ${size} files`);
+      return results.map((scorecard) => ({
+        findings: scorecard.findings.length,
+        analysis: scorecard.analysis.state,
+        coverage: scorecard.coverage.state,
+        scanned: scorecard.coverage.scanned,
+        astProjectCacheMisses: scorecard.cacheMetrics.astProjectMisses
+      }));
+    });
+    emit('repository-security-scorecard-concurrent-pair', size, 'cold', {
+      ...measurement,
+      result: measurement.result,
+      concurrentScans: 2,
+      filesPerScan: expectedFiles,
+      providerRequests: 0
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -504,6 +602,9 @@ async function runWorker(fixture: string, size: number): Promise<void> {
     case 'repository-scorecard':
       await benchmarkRepositoryScan(size);
       break;
+    case 'repository-scorecard-concurrent':
+      await benchmarkConcurrentRepositoryScans(size);
+      break;
     case 'npm-lock-wide':
       await benchmarkLockfile(size, 'wide');
       break;
@@ -534,6 +635,7 @@ if (workerIndex >= 0) {
       'source-tree',
       'ast-directory-index',
       'repository-scorecard',
+      'repository-scorecard-concurrent',
       'npm-lock-wide',
       'npm-lock-converging'
     ]) {

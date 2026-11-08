@@ -278,3 +278,50 @@ support a hard memory guarantee. The indexed AST directory fixture in this
 run measured 0.88/7.24/40.76 ms at 1k/10k/50k, with 1,002/10,002/50,002 index
 visits. Its scan reference measured 963 ms at 1k and 92.39 s at 10k, then was
 skipped at 50k by the configured quadratic-work cap.
+
+## AST component memory and concurrent scans (2026-11-08)
+
+The AST worker now builds the local import graph and analyzes one weakly
+connected module component at a time. Script files, declaration files, ambient
+modules, and global augmentations retain a project-wide TypeScript Program so
+component splitting does not change their shared symbol environment. The
+immutable snapshot remains capped at 50,000 files and 64 MiB; checker memory is
+bounded by the largest processed component for eligible module-only inputs.
+See [AST security analysis](AST-SECURITY.md) for the limits and fallback.
+
+Linux Node 24.22.1 scorecard measurements use independent generated fixtures
+with 1k/10k/50k TypeScript files. Every cold, warm, and incremental result had
+complete scorecard and coverage states, zero findings, and zero provider
+requests. A concurrent row runs two scorecards at once over the same immutable
+snapshot. A separate three-iteration soak changes one file per scan at 1k.
+Raw output is
+[`toolip-v3.2.1-ast-components-2026-11-08-linux-node24.jsonl`](benchmarks/toolip-v3.2.1-ast-components-2026-11-08-linux-node24.jsonl).
+
+| Source files | Cold / warm / one-file incremental time | Sampled RSS peaks, cold / warm / incremental | Snapshot reads in incremental | Concurrent pair RSS peak |
+| -----------: | --------------------------------------: | -------------------------------------------: | ----------------------------: | -----------------------: |
+|           1k |                0.94 s / 105 ms / 647 ms |                          369 / 349 / 404 MiB |              1 file, 58 bytes |                  492 MiB |
+|          10k |                4.64 s / 531 ms / 1.56 s |                          554 / 543 / 688 MiB |              1 file, 58 bytes |                  842 MiB |
+|          50k |               17.05 s / 2.24 s / 5.22 s |                        867 / 907 / 1,136 MiB |              1 file, 58 bytes |                1,282 MiB |
+
+The 50k incremental run reused 50,002 snapshot files and hit 50,003 ordinary
+analysis-cache entries, but conservatively rebuilt all 3,125 AST project
+chunks because the project cache key covers the whole snapshot. Fine-grained
+AST cache invalidation remains a performance opportunity; no stale AST result
+was reused. The concurrent 50k pair scanned 50,003 files per run and both
+reports remained complete. Compared with the earlier isolated 50k sample
+(1,110 MiB cold and 1,133 MiB warm sampled RSS), this run observed lower cold
+and warm peaks, but each is a single synthetic sample. Incremental and
+concurrent measurements show that peak memory still reaches about 1.1 and 1.3
+GiB respectively. These measurements do not establish a stable threshold,
+release readiness, or cross-platform behavior.
+
+The benchmark artifact is a dirty-tree measurement based on
+`29f4c997d9314555b76011d49c72a298731a0172`. The SHA-256 of the source,
+test, and benchmark-harness diff at measurement time is
+`b2988d9b872bbd51f399df688d09b1c6588ca8ff0ae8d9fc47c247d78d620b14`.
+Sequential runs used
+`TOOLIP_BENCHMARK_ISOLATED=true node --import tsx scripts/benchmark-dependency-graph.ts --worker repository-scorecard SIZE`;
+concurrent runs used the same command with
+`repository-scorecard-concurrent`; the 1k soak used
+`SOAK_ITERATIONS=3 SOAK_FILES=1000 npm run soak:analysis`. The raw rows retain
+their `working-tree` label; this is not a clean commit run.

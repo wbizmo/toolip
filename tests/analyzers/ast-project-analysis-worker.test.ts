@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { analyzeAstProjectInWorker } from '../../src/analyzers/ast/project-analysis-worker-client.js';
 import {
+  analyzeAstProjectByComponents,
   analyzeAstSource,
   createAstProjectAnalysis,
   transitiveImportDigests,
@@ -18,10 +19,56 @@ const inputs: AstProjectInput[] = [
     absolutePath: '/tmp/toolip-ast-worker/src/helper.ts',
     content:
       'import { exec } from "node:child_process"; export function run(input: string | undefined) { exec(input ?? ""); }'
+  },
+  {
+    filePath: 'src/standalone.ts',
+    absolutePath: '/tmp/toolip-ast-worker/src/standalone.ts',
+    content: 'export const safeValue = 42;'
   }
 ];
 
 describe('killable AST project analysis', () => {
+  it('keeps unrelated files out of the same TypeScript Program', () => {
+    const unrelated: AstProjectInput[] = Array.from(
+      { length: 128 },
+      (_, index) => ({
+        filePath: `src/independent-${index}.ts`,
+        absolutePath: `/tmp/toolip-ast-independent/src/independent-${index}.ts`,
+        content: `export const value${index} = ${index};`
+      })
+    );
+    const analysis = analyzeAstProjectByComponents(unrelated);
+
+    expect(analysis.componentCount).toBe(unrelated.length);
+    expect(analysis.largestComponentFiles).toBe(1);
+    expect(analysis.findingsByPath.size).toBe(unrelated.length);
+    expect(analysis.dependencyDigests.size).toBe(unrelated.length);
+  });
+
+  it('keeps ambient declarations in a project-wide symbol environment', () => {
+    const ambientInputs: AstProjectInput[] = [
+      {
+        filePath: 'src/a.ts',
+        absolutePath: '/tmp/toolip-ast-ambient/src/a.ts',
+        content: 'export const a = 1;'
+      },
+      {
+        filePath: 'src/b.ts',
+        absolutePath: '/tmp/toolip-ast-ambient/src/b.ts',
+        content: 'export const b = 2;'
+      },
+      {
+        filePath: 'src/globals.d.ts',
+        absolutePath: '/tmp/toolip-ast-ambient/src/globals.d.ts',
+        content: 'interface GlobalFixture { value: string }'
+      }
+    ];
+    const analysis = analyzeAstProjectByComponents(ambientInputs);
+    expect(analysis.componentCount).toBe(1);
+    expect(analysis.largestComponentFiles).toBe(ambientInputs.length);
+    expect(analysis.findingsByPath.size).toBe(ambientInputs.length);
+  });
+
   it('matches inline findings and dependency digests for the immutable inputs', async () => {
     const inline = createAstProjectAnalysis(inputs);
     const expectedFindings = new Map(
@@ -39,6 +86,22 @@ describe('killable AST project analysis', () => {
       ...inline.dependencyDigests
     ]);
   }, 25_000);
+
+  it('preserves global results when connected and independent components mix', () => {
+    const expected = createAstProjectAnalysis(inputs);
+    const actual = analyzeAstProjectByComponents(inputs);
+    expect([...actual.findingsByPath]).toEqual(
+      inputs.map((input) => [
+        input.filePath,
+        analyzeAstSource(input.filePath, input.content, expected)
+      ])
+    );
+    expect([...actual.dependencyDigests]).toEqual([
+      ...expected.dependencyDigests
+    ]);
+    expect(actual.componentCount).toBe(2);
+    expect(actual.largestComponentFiles).toBe(2);
+  });
 
   it('resolves local imports across many indexed source directories', () => {
     const root = '/tmp/toolip-ast-many-directories';

@@ -1,8 +1,7 @@
 import { isMainThread, Worker } from 'node:worker_threads';
 import type { Finding } from '../../contracts/finding.js';
 import {
-  analyzeAstSource,
-  createAstProjectAnalysis,
+  analyzeAstProjectByComponents,
   type AstProjectInput
 } from './source-analysis.js';
 
@@ -15,8 +14,7 @@ type WorkerMessage =
   | { type: 'started' }
   | {
       type: 'memory';
-      stage:
-        'inputs-received' | 'project-analysis-built' | 'file-analysis-complete';
+      stage: 'inputs-received' | 'component-analysis-complete';
       heapUsedBytes: number;
       externalBytes: number;
       arrayBuffersBytes: number;
@@ -43,15 +41,10 @@ function timeoutError(message: string): Error {
 function analyzeInline(
   inputs: readonly AstProjectInput[]
 ): AstProjectWorkerResult {
-  const project = createAstProjectAnalysis(inputs);
+  const analysis = analyzeAstProjectByComponents(inputs);
   return {
-    findingsByPath: new Map(
-      inputs.map((input) => [
-        input.filePath,
-        analyzeAstSource(input.filePath, input.content, project)
-      ])
-    ),
-    dependencyDigests: project.dependencyDigests
+    findingsByPath: analysis.findingsByPath,
+    dependencyDigests: analysis.dependencyDigests
   };
 }
 

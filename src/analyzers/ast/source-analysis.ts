@@ -1401,6 +1401,257 @@ export function createAstProjectAnalysis(
   };
 }
 
+/**
+ * Analyze an immutable source snapshot while limiting each TypeScript Program
+ * to one weakly connected local-import component. Large repositories commonly
+ * contain many unrelated files; compiling those files in one Program creates
+ * a high transient peak even though no cross-file flow can exist between them.
+ *
+ * Graph traversal is O(F + E). Building the directory index and resolving
+ * imports costs O(FP + ER), where P is the maximum ancestor-directory depth
+ * and R is the bounded candidate work performed by TypeScript resolution.
+ * Auxiliary graph space is O(FP + E). TypeScript's AST/checker peak is bounded
+ * by the largest weak component (plus the immutable input snapshot), rather
+ * than all F files.
+ */
+export function analyzeAstProjectByComponents(
+  inputs: readonly AstProjectInput[]
+): {
+  findingsByPath: Map<string, Finding[]>;
+  dependencyDigests: Map<string, string>;
+  componentCount: number;
+  largestComponentFiles: number;
+} {
+  const totalBytes = inputs.reduce(
+    (total, input) => total + Buffer.byteLength(input.content),
+    0
+  );
+  if (
+    inputs.length > MAX_INTERPROCEDURAL_FILES ||
+    totalBytes > MAX_INTERPROCEDURAL_BYTES
+  )
+    throw new Error('AST interprocedural project input budget exceeded');
+  const inputByAbsolutePath = new Map(
+    inputs.map((input) => [canonicalPath(input.absolutePath), input])
+  );
+  const inputByPath = new Map(inputs.map((input) => [input.filePath, input]));
+  const options: ts.CompilerOptions = {
+    allowJs: true,
+    checkJs: false,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    noEmit: true,
+    skipLibCheck: true,
+    target: ts.ScriptTarget.Latest,
+    types: []
+  };
+  const sourceDirectories = new Set<string>();
+  for (const input of inputs) {
+    let directory = path.dirname(path.resolve(input.absolutePath));
+    while (!sourceDirectories.has(directory)) {
+      sourceDirectories.add(directory);
+      const parent = path.dirname(directory);
+      if (parent === directory) break;
+      directory = parent;
+    }
+  }
+  const sourceDirectoryChildren =
+    indexSourceDirectoryChildren(sourceDirectories);
+  const host = ts.createCompilerHost(options, true);
+  const defaultGetSourceFile = host.getSourceFile.bind(host);
+  const defaultFileExists = host.fileExists.bind(host);
+  const defaultReadFile = host.readFile.bind(host);
+  const defaultDirectoryExists = host.directoryExists?.bind(host);
+  const typeScriptLib = path.resolve(
+    path.dirname(ts.sys.getExecutingFilePath())
+  );
+  const isTypeScriptLib = (filePath: string): boolean =>
+    isPathWithin(typeScriptLib, path.resolve(filePath));
+  host.fileExists = (filePath) =>
+    inputByAbsolutePath.has(canonicalPath(filePath)) ||
+    (isTypeScriptLib(filePath) && defaultFileExists(filePath));
+  host.readFile = (filePath) => {
+    const input = inputByAbsolutePath.get(canonicalPath(filePath));
+    if (input) return input.content;
+    return isTypeScriptLib(filePath) ? defaultReadFile(filePath) : undefined;
+  };
+  host.getSourceFile = (filePath, languageVersionOrOptions, onError, fresh) => {
+    const input = inputByAbsolutePath.get(canonicalPath(filePath));
+    if (input)
+      return ts.createSourceFile(
+        filePath,
+        input.content,
+        languageVersionOrOptions,
+        true,
+        scriptKind(filePath)
+      );
+    if (isTypeScriptLib(filePath))
+      return defaultGetSourceFile(
+        filePath,
+        languageVersionOrOptions,
+        onError,
+        fresh
+      );
+    return undefined;
+  };
+  host.directoryExists = (directoryName) => {
+    const absolute = path.resolve(directoryName);
+    return (
+      sourceDirectories.has(absolute) ||
+      (isTypeScriptLib(absolute) &&
+        (defaultDirectoryExists?.(directoryName) ?? false))
+    );
+  };
+  host.getDirectories = (directoryName) => [
+    ...(sourceDirectoryChildren.get(path.resolve(directoryName)) ?? [])
+  ];
+  host.realpath = (filePath) => path.resolve(filePath);
+  const adjacency = new Map<string, Set<string>>();
+  const reverse = new Map<string, Set<string>>();
+  let requiresProjectWideProgram = false;
+  for (const input of inputs) {
+    const sourceFile = ts.createSourceFile(
+      input.absolutePath,
+      input.content,
+      ts.ScriptTarget.Latest,
+      true,
+      scriptKind(input.absolutePath)
+    );
+    if (
+      !ts.isExternalModule(sourceFile) ||
+      input.absolutePath.endsWith('.d.ts') ||
+      containsProjectWideModuleDeclaration(sourceFile)
+    )
+      requiresProjectWideProgram = true;
+    const dependencies = new Set<string>();
+    for (const specifier of localModuleSpecifiers(sourceFile)) {
+      const resolved = ts.resolveModuleName(
+        specifier,
+        sourceFile.fileName,
+        options,
+        host
+      ).resolvedModule?.resolvedFileName;
+      const dependency = resolved
+        ? inputByAbsolutePath.get(canonicalPath(resolved))?.filePath
+        : undefined;
+      if (dependency) dependencies.add(dependency);
+    }
+    adjacency.set(input.filePath, dependencies);
+    for (const dependency of dependencies) {
+      let parents = reverse.get(dependency);
+      if (!parents) {
+        parents = new Set();
+        reverse.set(dependency, parents);
+      }
+      parents.add(input.filePath);
+    }
+  }
+
+  // Script files, ambient declarations, and global augmentations can affect
+  // files without import edges. Preserve whole-project checker semantics for
+  // those inputs instead of incorrectly splitting their symbol environment.
+  if (requiresProjectWideProgram) {
+    const project = createAstProjectAnalysis(inputs);
+    const findingsByPath = new Map(
+      inputs.map((input) => [
+        input.filePath,
+        analyzeAstSource(input.filePath, input.content, project)
+      ])
+    );
+    return {
+      findingsByPath,
+      dependencyDigests: project.dependencyDigests,
+      componentCount: 1,
+      largestComponentFiles: inputs.length
+    };
+  }
+
+  const findingsByPath = new Map<string, Finding[]>();
+  const visited = new Set<string>();
+  let componentCount = 0;
+  let largestComponentFiles = 0;
+  for (const input of inputs) {
+    if (visited.has(input.filePath)) continue;
+    componentCount++;
+    const componentPaths: string[] = [];
+    const pending = [input.filePath];
+    visited.add(input.filePath);
+    while (pending.length) {
+      const current = pending.pop();
+      if (!current) continue;
+      componentPaths.push(current);
+      for (const neighbor of [
+        ...(adjacency.get(current) ?? []),
+        ...(reverse.get(current) ?? [])
+      ]) {
+        if (visited.has(neighbor)) continue;
+        visited.add(neighbor);
+        pending.push(neighbor);
+      }
+    }
+    largestComponentFiles = Math.max(
+      largestComponentFiles,
+      componentPaths.length
+    );
+    const componentInputs = componentPaths
+      .map((filePath) => inputByPath.get(filePath))
+      .filter(
+        (candidate): candidate is AstProjectInput => candidate !== undefined
+      );
+    if (componentInputs.length === 1) {
+      const only = componentInputs[0];
+      if (only) {
+        findingsByPath.set(
+          only.filePath,
+          analyzeAstSource(only.filePath, only.content)
+        );
+      }
+      continue;
+    }
+    const project = createAstProjectAnalysis(componentInputs);
+    for (const componentInput of componentInputs) {
+      findingsByPath.set(
+        componentInput.filePath,
+        analyzeAstSource(
+          componentInput.filePath,
+          componentInput.content,
+          project
+        )
+      );
+      project.sourceFiles.delete(componentInput.filePath);
+    }
+  }
+  return {
+    findingsByPath: new Map(
+      inputs.flatMap((input) => {
+        const findings = findingsByPath.get(input.filePath);
+        return findings ? [[input.filePath, findings] as const] : [];
+      })
+    ),
+    dependencyDigests: transitiveImportDigests(inputs, adjacency),
+    componentCount,
+    largestComponentFiles
+  };
+}
+
+function containsProjectWideModuleDeclaration(
+  sourceFile: ts.SourceFile
+): boolean {
+  const pending: ts.Node[] = [...sourceFile.statements];
+  while (pending.length) {
+    const node = pending.pop();
+    if (!node) continue;
+    if (
+      ts.isModuleDeclaration(node) &&
+      ((ts.isIdentifier(node.name) && node.name.text === 'global') ||
+        ts.isStringLiteral(node.name))
+    )
+      return true;
+    for (const child of node.getChildren(sourceFile)) pending.push(child);
+  }
+  return false;
+}
+
 function localModuleSpecifiers(sourceFile: ts.SourceFile): string[] {
   const result = new Set<string>();
   const pending: ts.Node[] = [sourceFile];
