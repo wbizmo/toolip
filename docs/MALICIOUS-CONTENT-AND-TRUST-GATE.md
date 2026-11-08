@@ -43,6 +43,9 @@ suspicious execution chains from `TLP-MAL-002` unresolved dynamic references.
 These patterns are indicators for review, not proof that a repository is
 malicious or safe.
 
+A synthetic regression now traces an encoded `eslint.config.js` import to an
+extensionless outbound payload in both the repository analyzer and Stage A; the
+unchanged target is included in the trace and no fixture content is executed.
 The current pass is not a complete implementation of issue #95. It does not yet
 cover all shell/PowerShell semantics, every CI provider, archive-contained
 references, general magic-byte classification, robust parser diagnostics for
