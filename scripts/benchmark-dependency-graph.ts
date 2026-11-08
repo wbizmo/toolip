@@ -328,13 +328,26 @@ async function benchmarkAstDirectoryIndex(size: number): Promise<void> {
 }
 
 /** Full bounded doctor pass over a generated repository tree, cold and warm. */
-async function benchmarkRepositoryScan(size: number): Promise<void> {
+async function benchmarkRepositoryScan(
+  size: number,
+  useAnalysisCache = true,
+  passes: readonly ('cold' | 'warm' | 'incremental')[] = [
+    'cold',
+    'warm',
+    'incremental'
+  ]
+): Promise<void> {
   const root = await mkdtemp(
     path.join(os.tmpdir(), 'toolip-repository-benchmark-')
   );
   const expectedFiles = size + 3;
   const maximumTotalBytes = Math.max(1, expectedFiles * 4_096);
-  const analysisCache = new AnalysisResultCache(Math.max(1, size * 2));
+  const analysisCache = useAnalysisCache
+    ? new AnalysisResultCache(Math.max(1, size * 2))
+    : undefined;
+  const fixtureName = useAnalysisCache
+    ? 'repository-security-scorecard-full-pass'
+    : 'repository-security-scorecard-no-analysis-cache';
   let previousSnapshot: ProjectSnapshot | undefined;
   try {
     await createSourceFixture(root, size);
@@ -360,7 +373,7 @@ async function benchmarkRepositoryScan(size: number): Promise<void> {
     );
     await runGitChecked(['init'], { cwd: root });
     await runGitChecked(['add', '-A'], { cwd: root });
-    for (const pass of ['cold', 'warm', 'incremental'] as const) {
+    for (const pass of passes) {
       if (pass === 'incremental')
         await writeFile(
           path.join(root, 'source-000000.ts'),
@@ -417,7 +430,7 @@ async function benchmarkRepositoryScan(size: number): Promise<void> {
           coverage: scorecard.coverage
         };
       });
-      emit('repository-security-scorecard-full-pass', size, pass, {
+      emit(fixtureName, size, pass, {
         ...measurement,
         result: measurement.result,
         filesOpened: measurement.result.snapshotReads,
@@ -601,6 +614,9 @@ async function runWorker(fixture: string, size: number): Promise<void> {
       break;
     case 'repository-scorecard':
       await benchmarkRepositoryScan(size);
+      break;
+    case 'repository-scorecard-no-cache':
+      await benchmarkRepositoryScan(size, false, ['cold']);
       break;
     case 'repository-scorecard-concurrent':
       await benchmarkConcurrentRepositoryScans(size);

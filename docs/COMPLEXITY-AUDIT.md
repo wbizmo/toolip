@@ -256,3 +256,22 @@ AST plan is currently cloned into a bounded worker and changed components are
 then sent to an analysis worker, so reducing source transfer/worker duplication
 is a candidate for further profiling rather than a proven fix. Raw data:
 `docs/benchmarks/toolip-v3.2.1-concurrent-memory-50k-linux-node24.jsonl`.
+
+### No-cache AST worker path (2026-11-08)
+
+When a caller supplies no `AnalysisResultCache`, `runSecurityDoctor` no longer
+builds a component cache plan and then transfers the same full source set to a
+second worker. It performs one bounded AST analysis worker call; that worker
+already builds the component plan as part of analysis and returns the required
+per-file dependency digests. Cache metrics still report the number of AST
+chunks that would have missed (`ceil(F / 16)`). Cache-enabled calls keep the
+separate planning pass because they need component fingerprints before deciding
+which chunks/components to analyze. This removes one worker startup and one
+full-source structured clone for uncached runs, without changing the analysis
+result.
+
+One-shot Linux Node 24.22.1 uncached synthetic scorecards measured 1.03/4.12/
+17.29 s and 356/584/835 MiB process RSS at 1k/10k/50k. These samples do not
+compare directly with the cache-enabled cold fixture and do not quantify an
+isolated before/after saving. Raw rows are in
+`docs/benchmarks/toolip-v3.2.1-no-cache-scorecard-2026-11-08-linux-node24.jsonl`.

@@ -250,7 +250,9 @@ describe('immutable project snapshots', () => {
         (finding) => finding.location?.file === 'src/z-helper.ts'
       )
     ).toBe(true);
-    const uncached = await runSecurityDoctor(root, { snapshot: changedSnapshot });
+    const uncached = await runSecurityDoctor(root, {
+      snapshot: changedSnapshot
+    });
     expect(changed.findings).toEqual(uncached.findings);
   }, 30_000);
 

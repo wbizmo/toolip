@@ -360,3 +360,24 @@ process. This one-shot synthetic result shows concurrency increases process
 memory materially; it does not establish a general cap or p50/p95 behavior.
 The raw row is in
 [`concurrent 50k JSONL`](benchmarks/toolip-v3.2.1-concurrent-memory-50k-linux-node24.jsonl).
+
+## Scorecard without an analysis cache (2026-11-08)
+
+The default uncached scorecard path analyzes the complete AST input once in its
+bounded worker and skips the separate component-planning worker, avoiding a
+second full-source structured clone when no cache can use that plan. Linux
+Node 24.22.1 synthetic cold runs reported complete coverage and zero provider
+requests at all three sizes.
+
+| Source files | Wall time | Files opened / bytes | Sampled heap / RSS peak |
+| -----------: | --------: | -------------------: | ----------------------: |
+|        1,000 |    1.03 s |        1,003 / 54 KB |            75 / 356 MiB |
+|       10,000 |    4.12 s |      10,003 / 540 KB |           107 / 584 MiB |
+|       50,000 |   17.29 s |     50,003 / 2.70 MB |           245 / 835 MiB |
+
+The raw one-pass measurements are in
+[`no-cache scorecard JSONL`](benchmarks/toolip-v3.2.1-no-cache-scorecard-2026-11-08-linux-node24.jsonl).
+These are single synthetic samples; the earlier cache-enabled cold runs use a
+different path and are not an apples-to-apples before/after comparison. The
+change removes a redundant plan worker by construction, but broader memory,
+concurrency and repeated-run acceptance remains open.
