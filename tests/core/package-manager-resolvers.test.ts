@@ -72,6 +72,40 @@ snapshots:
     );
   });
 
+  it('resolves scoped npm aliases to the target package lock identity', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'pnpm-lock.yaml'),
+      `lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      alias:
+        specifier: npm:@scope/real@^2.0.0
+        version: '@scope/real@2.4.1'
+packages:
+  '@scope/real@2.4.1':
+    resolution:
+      integrity: sha512-c2Njb3BlZA==
+snapshots:
+  '@scope/real@2.4.1': {}
+`
+    );
+
+    const graph = await readNpmDependencyGraph(root);
+    const target = graph.packages.find((item) => item.name === '@scope/real');
+    expect(graph).toMatchObject({ manager: 'pnpm', complete: true });
+    expect(target).toMatchObject({ version: '2.4.1', direct: true });
+    expect(graph.edges).toContainEqual(
+      expect.objectContaining({
+        from: 'root',
+        to: target?.id,
+        name: 'alias',
+        requirement: 'npm:@scope/real@^2.0.0'
+      })
+    );
+  });
+
   it('models pnpm workspace importers and their external dependencies', async () => {
     const root = await fixture();
     await writeFile(

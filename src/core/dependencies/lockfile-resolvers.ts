@@ -346,7 +346,17 @@ export async function readPnpmDependencyGraph(
     name: string,
     requirement: string
   ): LockedInstance | undefined => {
-    const parsed = pnpmRequirementKey(requirement);
+    // pnpm records npm aliases under the target package locator, while the
+    // importer dependency key remains the alias. Resolve the lockfile's exact
+    // target identity before falling back to the requested package name.
+    const target = parsePnpmLocator(requirement.replace(/^npm:/u, ''));
+    if (target) {
+      const exact = byNameVersionAndSuffix.get(
+        JSON.stringify([target.name, target.version, target.suffix])
+      ) ?? [];
+      if (exact.length === 1) return exact[0];
+    }
+    const parsed = pnpmRequirementKey(requirement.replace(/^npm:/u, ''));
     if (parsed.suffix) {
       const matches =
         byNameVersionAndSuffix.get(
