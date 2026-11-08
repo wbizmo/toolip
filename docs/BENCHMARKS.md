@@ -391,11 +391,18 @@ partially populated caches retain the existing plan-and-reuse path. This avoids
 cloning the full source set to a plan worker before sending it to the analysis
 worker on a cold cache-enabled scan.
 
-One isolated Linux Node 24.22.1 50k-file run reported 18.29 s / 899 MiB sampled
-RSS cold, 4.41 s / 1,047 MiB warm, and 4.54 s / 1,260 MiB incremental. All
-50,003 discovered files had complete coverage; the incremental independent
-file edit reused 3,124 of 3,125 AST chunks. The prior cold sample in this
-benchmark family measured 20.51 s / 932 MiB RSS, but these are single samples
-and do not establish a repeatable improvement or bound. The warm and
-incremental RSS observations also remain high. Raw rows:
+An initial isolated Linux Node 24.22.1 50k-file run reported 18.29 s / 899 MiB
+sampled RSS cold, 4.41 s / 1,047 MiB warm, and 4.54 s / 1,260 MiB incremental.
+All 50,003 discovered files had complete coverage; the incremental independent
+file edit reused 3,124 of 3,125 AST chunks. A subsequent five-process cold-only
+repeat measured a median 18.85 s and 869 MiB sampled RSS (wall-time range
+18.06–19.07 s, RSS range 861–899 MiB); all five runs had complete coverage.
+This establishes a small repeat sample for this fixture, not a causal before /
+after comparison, p95, production memory bound or cross-platform result. The
+prior cold sample in this benchmark family was 20.51 s / 932 MiB RSS. Warm and
+incremental RSS observations also remain high. A separate memory-instrumented
+warm/incremental run once returned incomplete coverage after a clean cold pass;
+a subsequent uninstrumented full cold/warm/incremental rerun completed. That
+anomaly remains unexplained and needs follow-up. Raw rows:
 [`cache-enabled cold worker JSONL`](benchmarks/toolip-v3.2.1-ast-cache-cold-worker-2026-11-08-linux-node24.jsonl).
+[`five-run cold-only JSONL`](benchmarks/toolip-v3.2.1-ast-cold-repeat-2026-11-08-linux-node24.jsonl).

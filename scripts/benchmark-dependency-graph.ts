@@ -615,6 +615,9 @@ async function runWorker(fixture: string, size: number): Promise<void> {
     case 'repository-scorecard':
       await benchmarkRepositoryScan(size);
       break;
+    case 'repository-scorecard-cold-cache':
+      await benchmarkRepositoryScan(size, true, ['cold']);
+      break;
     case 'repository-scorecard-no-cache':
       await benchmarkRepositoryScan(size, false, ['cold']);
       break;

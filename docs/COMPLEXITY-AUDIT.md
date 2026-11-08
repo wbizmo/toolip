@@ -289,3 +289,12 @@ peak space across retained parent inputs, worker state, findings and digests.
 Warm or partially populated caches still require a planning pass before cache
 selection. The 50k sample is recorded in `docs/BENCHMARKS.md`; peak RSS remains
 high, and repeated, concurrent and cross-platform profiling remains open.
+
+Five isolated 50k cache-enabled cold-only runs completed with full coverage at
+a median 18.85 s / 869 MiB sampled RSS (ranges 18.06–19.07 s / 861–899 MiB).
+This adds within-host sample variance but does not establish p95, a stable
+memory bound or a causal speedup over the previous single baseline. One
+memory-instrumented pass had incomplete coverage in a later warm pass after a
+complete cold pass; an uninstrumented full rerun completed, so the transient
+failure still needs diagnosis. Raw repeated rows are in
+`docs/benchmarks/toolip-v3.2.1-ast-cold-repeat-2026-11-08-linux-node24.jsonl`.
