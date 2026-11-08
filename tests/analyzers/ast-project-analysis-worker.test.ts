@@ -104,6 +104,9 @@ describe('killable AST project analysis', () => {
       timeoutMs: 20_000
     });
     expect([...workerResult.findingsByPath]).toEqual([...expectedFindings]);
+    expect([...workerResult.componentDigests]).toEqual([
+      ...planAstProjectComponents(inputs).componentDigests
+    ]);
     expect([...workerResult.dependencyDigests]).toEqual([
       ...inline.dependencyDigests
     ]);

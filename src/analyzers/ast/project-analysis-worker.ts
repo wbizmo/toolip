@@ -54,6 +54,7 @@ if (planOnly) {
   parentPort.postMessage({
     type: 'complete',
     findingsByPath: [...analysis.findingsByPath],
+    componentDigests: [...analysis.componentDigests],
     dependencyDigests: [...analysis.dependencyDigests]
   });
   parentPort.close();

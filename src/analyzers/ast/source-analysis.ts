@@ -1621,6 +1621,7 @@ export function analyzeAstProjectByComponents(
   inputs: readonly AstProjectInput[]
 ): {
   findingsByPath: Map<string, Finding[]>;
+  componentDigests: Map<string, string>;
   dependencyDigests: Map<string, string>;
   componentCount: number;
   largestComponentFiles: number;
@@ -1659,6 +1660,7 @@ export function analyzeAstProjectByComponents(
         return findings ? [[input.filePath, findings] as const] : [];
       })
     ),
+    componentDigests: plan.componentDigests,
     dependencyDigests: plan.dependencyDigests,
     componentCount: plan.components.length,
     largestComponentFiles

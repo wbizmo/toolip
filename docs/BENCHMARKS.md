@@ -381,3 +381,21 @@ These are single synthetic samples; the earlier cache-enabled cold runs use a
 different path and are not an apples-to-apples before/after comparison. The
 change removes a redundant plan worker by construction, but broader memory,
 concurrency and repeated-run acceptance remains open.
+
+### Cache-enabled cold scan now analyzes once (2026-11-08)
+
+When the AnalysisResultCache contains no AST chunks for the scan, the AST worker
+now returns findings plus component and dependency digests in one pass. Security
+Doctor uses those results to seed the normal path-stable chunks. Warm and
+partially populated caches retain the existing plan-and-reuse path. This avoids
+cloning the full source set to a plan worker before sending it to the analysis
+worker on a cold cache-enabled scan.
+
+One isolated Linux Node 24.22.1 50k-file run reported 18.29 s / 899 MiB sampled
+RSS cold, 4.41 s / 1,047 MiB warm, and 4.54 s / 1,260 MiB incremental. All
+50,003 discovered files had complete coverage; the incremental independent
+file edit reused 3,124 of 3,125 AST chunks. The prior cold sample in this
+benchmark family measured 20.51 s / 932 MiB RSS, but these are single samples
+and do not establish a repeatable improvement or bound. The warm and
+incremental RSS observations also remain high. Raw rows:
+[`cache-enabled cold worker JSONL`](benchmarks/toolip-v3.2.1-ast-cache-cold-worker-2026-11-08-linux-node24.jsonl).

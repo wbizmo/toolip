@@ -275,3 +275,17 @@ One-shot Linux Node 24.22.1 uncached synthetic scorecards measured 1.03/4.12/
 compare directly with the cache-enabled cold fixture and do not quantify an
 isolated before/after saving. Raw rows are in
 `docs/benchmarks/toolip-v3.2.1-no-cache-scorecard-2026-11-08-linux-node24.jsonl`.
+
+### Cache-enabled cold AST worker path (2026-11-08)
+
+On an empty cache, the AST analysis worker now returns component digests along
+with findings and dependency digests. Security Doctor can therefore seed cache
+chunks directly without first cloning all source inputs into a separate plan
+worker. This reduces one worker startup and one full-source structured-clone
+pass on cold cache-enabled scans; it does not change the asymptotic bound. With
+`B` source bytes, `N` AST nodes, `V` files and `E` import edges, graph planning
+and analysis remain expected `O(B + N + V + E)` time and `O(B + N + V + E)`
+peak space across retained parent inputs, worker state, findings and digests.
+Warm or partially populated caches still require a planning pass before cache
+selection. The 50k sample is recorded in `docs/BENCHMARKS.md`; peak RSS remains
+high, and repeated, concurrent and cross-platform profiling remains open.

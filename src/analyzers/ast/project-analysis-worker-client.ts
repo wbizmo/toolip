@@ -9,6 +9,7 @@ import {
 
 export type AstProjectWorkerResult = Readonly<{
   findingsByPath: ReadonlyMap<string, readonly Finding[]>;
+  componentDigests: ReadonlyMap<string, string>;
   dependencyDigests: ReadonlyMap<string, string>;
 }>;
 
@@ -35,6 +36,7 @@ type WorkerMessage =
   | {
       type: 'complete';
       findingsByPath: Array<[string, Finding[]]>;
+      componentDigests: Array<[string, string]>;
       dependencyDigests: Array<[string, string]>;
     };
 
@@ -56,6 +58,7 @@ function analyzeInline(
   const analysis = analyzeAstProjectByComponents(inputs);
   return {
     findingsByPath: analysis.findingsByPath,
+    componentDigests: analysis.componentDigests,
     dependencyDigests: analysis.dependencyDigests
   };
 }
@@ -70,6 +73,7 @@ function isCompleteMessage(
   return (
     message.type === 'complete' &&
     Array.isArray(message.findingsByPath) &&
+    Array.isArray(message.componentDigests) &&
     Array.isArray(message.dependencyDigests)
   );
 }
@@ -353,6 +357,24 @@ export async function analyzeAstProjectInWorker(
         findingsByPath.set(entry[0], entry[1]);
       }
       const dependencyDigests = new Map<string, string>();
+      const componentDigests = new Map<string, string>();
+      for (const entry of message.componentDigests) {
+        if (
+          !Array.isArray(entry) ||
+          entry.length !== 2 ||
+          typeof entry[0] !== 'string' ||
+          !expectedPaths.has(entry[0]) ||
+          componentDigests.has(entry[0]) ||
+          typeof entry[1] !== 'string' ||
+          !/^[a-f0-9]{64}$/u.test(entry[1])
+        ) {
+          stop(
+            new Error('AST project worker returned invalid component digests.')
+          );
+          return;
+        }
+        componentDigests.set(entry[0], entry[1]);
+      }
       for (const entry of message.dependencyDigests) {
         if (
           !Array.isArray(entry) ||
@@ -371,6 +393,7 @@ export async function analyzeAstProjectInWorker(
       }
       if (
         findingsByPath.size !== expectedPaths.size ||
+        componentDigests.size !== expectedPaths.size ||
         dependencyDigests.size !== expectedPaths.size
       ) {
         stop(new Error('AST project worker omitted files from its result.'));
@@ -378,7 +401,7 @@ export async function analyzeAstProjectInWorker(
       }
       settled = true;
       cleanup();
-      resolve({ findingsByPath, dependencyDigests });
+      resolve({ findingsByPath, componentDigests, dependencyDigests });
     });
     worker.once('error', (error) => stop(error));
     worker.once('exit', (code) => {

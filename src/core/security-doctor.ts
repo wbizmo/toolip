@@ -6,6 +6,7 @@ import {
   analyzeAstProjectInWorker,
   planAstProjectInWorker
 } from '../analyzers/ast/project-analysis-worker-client.js';
+import type { AstProjectInput } from '../analyzers/ast/source-analysis.js';
 import { InfrastructureAnalyzer } from '../analyzers/iac/analyzer.js';
 import { DockerfileAnalyzer } from '../analyzers/docker/analyzer.js';
 import {
@@ -178,6 +179,34 @@ function createAstProjectCacheChunks(
     });
   }
   return chunks;
+}
+
+function createAstProjectFingerprints(
+  inputs: readonly AstProjectInput[],
+  componentDigests: ReadonlyMap<string, string>,
+  dependencyDigests: ReadonlyMap<string, string>
+): Map<string, string> {
+  const fingerprints = new Map<string, string>();
+  for (const input of inputs) {
+    const componentDigest = componentDigests.get(input.filePath);
+    const dependencyDigest = dependencyDigests.get(input.filePath);
+    if (!componentDigest || !dependencyDigest)
+      throw new Error('AST component plan omitted an input digest');
+    fingerprints.set(
+      input.filePath,
+      createHash('sha256')
+        .update('ast-project-file-cache-v2\0')
+        .update(input.filePath)
+        .update('\0')
+        .update(createHash('sha256').update(input.content).digest('hex'))
+        .update('\0')
+        .update(componentDigest)
+        .update('\0')
+        .update(dependencyDigest)
+        .digest('hex')
+    );
+  }
+  return fingerprints;
 }
 
 function readAstProjectCache(
@@ -394,91 +423,107 @@ export async function runSecurityDoctor(
           astDependencyDigests = analyzed.dependencyDigests;
         } else {
           const astCacheScope = `ast-project:${context.root}`;
-          const plan = await planAstProjectInWorker(astInputs, {
-            signal: options.signal
-          });
-          const fingerprints = new Map<string, string>();
-          for (const input of astInputs) {
-            const componentDigest = plan.componentDigests.get(input.filePath);
-            const dependencyDigest = plan.dependencyDigests.get(input.filePath);
-            if (!componentDigest || !dependencyDigest)
-              throw new Error('AST component plan omitted an input digest');
-            fingerprints.set(
-              input.filePath,
-              createHash('sha256')
-                .update('ast-project-file-cache-v2\0')
-                .update(input.filePath)
-                .update('\0')
-                .update(
-                  createHash('sha256').update(input.content).digest('hex')
-                )
-                .update('\0')
-                .update(componentDigest)
-                .update('\0')
-                .update(dependencyDigest)
-                .digest('hex')
-            );
-          }
           const astCacheChunks = createAstProjectCacheChunks(
             astInputs.map((input) => input.filePath)
           );
-          const cachedAst = readAstProjectCache(
-            options.analysisCache,
-            astCacheScope,
-            astCacheChunks,
-            fingerprints,
-            plan.dependencyDigests
+          const cacheIsEmpty = astCacheChunks.every(
+            (chunk) =>
+              !options.analysisCache?.has(
+                astCacheScope,
+                chunk.taskId,
+                astProjectCacheVersion
+              )
           );
-          const componentDigestsToAnalyze = new Set<string>();
-          for (const filePath of cachedAst.uncachedPaths) {
-            const digest = plan.componentDigests.get(filePath);
-            if (digest) componentDigestsToAnalyze.add(digest);
-          }
-          const pathsToAnalyze = new Set<string>();
-          for (const [filePath, digest] of plan.componentDigests)
-            if (componentDigestsToAnalyze.has(digest))
-              pathsToAnalyze.add(filePath);
-
-          const cachedFindingsByPath = new Map(cachedAst.findingsByPath);
-          for (const filePath of pathsToAnalyze)
-            cachedFindingsByPath.delete(filePath);
-          astDependencyDigests = plan.dependencyDigests;
-          astProjectCacheHits = astCacheChunks.filter((chunk) =>
-            chunk.paths.every((filePath) => !pathsToAnalyze.has(filePath))
-          ).length;
-          astProjectCacheMisses = astCacheChunks.length - astProjectCacheHits;
-          if (pathsToAnalyze.size === 0) {
-            astFindingsByPath = cachedFindingsByPath;
-          } else {
-            const analysisInputs = astInputs.filter((input) =>
-              pathsToAnalyze.has(input.filePath)
-            );
-            const analyzed = await analyzeAstProjectInWorker(analysisInputs, {
+          if (cacheIsEmpty) {
+            // A first scan has no previous component data to compare. Let the
+            // analysis worker compute findings and component digests together
+            // instead of cloning the full source tree into a plan worker and
+            // then transferring it again for analysis.
+            const analyzed = await analyzeAstProjectInWorker(astInputs, {
               signal: options.signal
             });
-            for (const input of analysisInputs) {
-              if (
-                !analyzed.findingsByPath.has(input.filePath) ||
-                analyzed.dependencyDigests.get(input.filePath) !==
-                  plan.dependencyDigests.get(input.filePath)
-              )
-                throw new Error(
-                  'AST worker output disagrees with its component plan'
-                );
-            }
-            astFindingsByPath = new Map([
-              ...cachedFindingsByPath,
-              ...analyzed.findingsByPath
-            ]);
+            const fingerprints = createAstProjectFingerprints(
+              astInputs,
+              analyzed.componentDigests,
+              analyzed.dependencyDigests
+            );
+            astFindingsByPath = analyzed.findingsByPath;
+            astDependencyDigests = analyzed.dependencyDigests;
+            astProjectCacheMisses = astCacheChunks.length;
             pendingAstProjectCache = {
               scope: astCacheScope,
-              chunks: astCacheChunks.filter((chunk) =>
-                chunk.paths.some((filePath) => pathsToAnalyze.has(filePath))
-              ),
+              chunks: astCacheChunks,
               fingerprints,
-              findingsByPath: astFindingsByPath,
-              dependencyDigests: plan.dependencyDigests
+              findingsByPath: analyzed.findingsByPath,
+              dependencyDigests: analyzed.dependencyDigests
             };
+          } else {
+            const plan = await planAstProjectInWorker(astInputs, {
+              signal: options.signal
+            });
+            const fingerprints = createAstProjectFingerprints(
+              astInputs,
+              plan.componentDigests,
+              plan.dependencyDigests
+            );
+            const cachedAst = readAstProjectCache(
+              options.analysisCache,
+              astCacheScope,
+              astCacheChunks,
+              fingerprints,
+              plan.dependencyDigests
+            );
+            const componentDigestsToAnalyze = new Set<string>();
+            for (const filePath of cachedAst.uncachedPaths) {
+              const digest = plan.componentDigests.get(filePath);
+              if (digest) componentDigestsToAnalyze.add(digest);
+            }
+            const pathsToAnalyze = new Set<string>();
+            for (const [filePath, digest] of plan.componentDigests)
+              if (componentDigestsToAnalyze.has(digest))
+                pathsToAnalyze.add(filePath);
+
+            const cachedFindingsByPath = new Map(cachedAst.findingsByPath);
+            for (const filePath of pathsToAnalyze)
+              cachedFindingsByPath.delete(filePath);
+            astDependencyDigests = plan.dependencyDigests;
+            astProjectCacheHits = astCacheChunks.filter((chunk) =>
+              chunk.paths.every((filePath) => !pathsToAnalyze.has(filePath))
+            ).length;
+            astProjectCacheMisses = astCacheChunks.length - astProjectCacheHits;
+            if (pathsToAnalyze.size === 0) {
+              astFindingsByPath = cachedFindingsByPath;
+            } else {
+              const analysisInputs = astInputs.filter((input) =>
+                pathsToAnalyze.has(input.filePath)
+              );
+              const analyzed = await analyzeAstProjectInWorker(analysisInputs, {
+                signal: options.signal
+              });
+              for (const input of analysisInputs) {
+                if (
+                  !analyzed.findingsByPath.has(input.filePath) ||
+                  analyzed.dependencyDigests.get(input.filePath) !==
+                    plan.dependencyDigests.get(input.filePath)
+                )
+                  throw new Error(
+                    'AST worker output disagrees with its component plan'
+                  );
+              }
+              astFindingsByPath = new Map([
+                ...cachedFindingsByPath,
+                ...analyzed.findingsByPath
+              ]);
+              pendingAstProjectCache = {
+                scope: astCacheScope,
+                chunks: astCacheChunks.filter((chunk) =>
+                  chunk.paths.some((filePath) => pathsToAnalyze.has(filePath))
+                ),
+                fingerprints,
+                findingsByPath: astFindingsByPath,
+                dependencyDigests: plan.dependencyDigests
+              };
+            }
           }
         }
       } catch {
