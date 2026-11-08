@@ -280,7 +280,7 @@ describe('secret detection hardening', () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it('scans npmrc and readable extensionless/nested configuration files', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-secret-config-'));

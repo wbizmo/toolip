@@ -1401,27 +1401,27 @@ export function createAstProjectAnalysis(
   };
 }
 
-/**
- * Analyze an immutable source snapshot while limiting each TypeScript Program
- * to one weakly connected local-import component. Large repositories commonly
- * contain many unrelated files; compiling those files in one Program creates
- * a high transient peak even though no cross-file flow can exist between them.
- *
- * Graph traversal is O(F + E). Building the directory index and resolving
- * imports costs O(FP + ER), where P is the maximum ancestor-directory depth
- * and R is the bounded candidate work performed by TypeScript resolution.
- * Auxiliary graph space is O(FP + E). TypeScript's AST/checker peak is bounded
- * by the largest weak component (plus the immutable input snapshot), rather
- * than all F files.
- */
-export function analyzeAstProjectByComponents(
-  inputs: readonly AstProjectInput[]
-): {
-  findingsByPath: Map<string, Finding[]>;
+export type AstProjectComponentPlan = {
+  components: string[][];
+  componentDigests: Map<string, string>;
   dependencyDigests: Map<string, string>;
-  componentCount: number;
-  largestComponentFiles: number;
-} {
+  projectWide: boolean;
+};
+
+/**
+ * Resolve the immutable snapshot's local import graph and stable component
+ * identities without constructing TypeScript Programs. This plan lets the
+ * AST cache invalidate an edited component and its importers while retaining
+ * unrelated module components.
+ *
+ * Graph traversal is O(F + E). Directory indexing and resolution costs
+ * O(FP + ER), where P is maximum ancestor-directory depth and R is candidate
+ * lookup work per import. Auxiliary graph space is O(FP + E), excluding the
+ * immutable source strings and TypeScript parser state.
+ */
+export function planAstProjectComponents(
+  inputs: readonly AstProjectInput[]
+): AstProjectComponentPlan {
   const totalBytes = inputs.reduce(
     (total, input) => total + Buffer.byteLength(input.content),
     0
@@ -1547,32 +1547,10 @@ export function analyzeAstProjectByComponents(
     }
   }
 
-  // Script files, ambient declarations, and global augmentations can affect
-  // files without import edges. Preserve whole-project checker semantics for
-  // those inputs instead of incorrectly splitting their symbol environment.
-  if (requiresProjectWideProgram) {
-    const project = createAstProjectAnalysis(inputs);
-    const findingsByPath = new Map(
-      inputs.map((input) => [
-        input.filePath,
-        analyzeAstSource(input.filePath, input.content, project)
-      ])
-    );
-    return {
-      findingsByPath,
-      dependencyDigests: project.dependencyDigests,
-      componentCount: 1,
-      largestComponentFiles: inputs.length
-    };
-  }
-
-  const findingsByPath = new Map<string, Finding[]>();
   const visited = new Set<string>();
-  let componentCount = 0;
-  let largestComponentFiles = 0;
+  const components: string[][] = [];
   for (const input of inputs) {
     if (visited.has(input.filePath)) continue;
-    componentCount++;
     const componentPaths: string[] = [];
     const pending = [input.filePath];
     visited.add(input.filePath);
@@ -1589,36 +1567,89 @@ export function analyzeAstProjectByComponents(
         pending.push(neighbor);
       }
     }
-    largestComponentFiles = Math.max(
-      largestComponentFiles,
-      componentPaths.length
+    components.push(
+      componentPaths.sort((left, right) => left.localeCompare(right))
     );
-    const componentInputs = componentPaths
+  }
+
+  // Script files, ambient declarations, and global augmentations can affect
+  // files without import edges. Preserve project-wide cache invalidation and
+  // checker semantics for those inputs.
+  if (requiresProjectWideProgram)
+    components.splice(0, components.length, [
+      ...inputs
+        .map((input) => input.filePath)
+        .sort((left, right) => left.localeCompare(right))
+    ]);
+
+  const sortedComponents = components.sort((left, right) =>
+    (left[0] ?? '').localeCompare(right[0] ?? '')
+  );
+  const componentDigests = new Map<string, string>();
+  const componentDigestByIndex = sortedComponents.map((component) => {
+    const digest = createHash('sha256').update('ast-component-v1\0');
+    for (const filePath of component) {
+      const input = inputByPath.get(filePath);
+      if (!input) continue;
+      digest.update(filePath).update('\0');
+      digest
+        .update(createHash('sha256').update(input.content).digest('hex'))
+        .update('\0');
+    }
+    return digest.digest('hex');
+  });
+  sortedComponents.forEach((component, index) => {
+    const digest = componentDigestByIndex[index];
+    if (digest)
+      for (const filePath of component) componentDigests.set(filePath, digest);
+  });
+  return {
+    components: sortedComponents,
+    componentDigests,
+    dependencyDigests: transitiveImportDigests(inputs, adjacency),
+    projectWide: requiresProjectWideProgram
+  };
+}
+
+/**
+ * Analyze an immutable source snapshot one weakly connected import component
+ * at a time, preserving a whole-project Program for global declarations.
+ * TypeScript AST/checker peak is bounded by the largest component, except in
+ * the documented project-wide fallback.
+ */
+export function analyzeAstProjectByComponents(
+  inputs: readonly AstProjectInput[]
+): {
+  findingsByPath: Map<string, Finding[]>;
+  dependencyDigests: Map<string, string>;
+  componentCount: number;
+  largestComponentFiles: number;
+} {
+  const plan = planAstProjectComponents(inputs);
+  const inputByPath = new Map(inputs.map((input) => [input.filePath, input]));
+  const findingsByPath = new Map<string, Finding[]>();
+  let largestComponentFiles = 0;
+  for (const component of plan.components) {
+    largestComponentFiles = Math.max(largestComponentFiles, component.length);
+    const componentInputs = component
       .map((filePath) => inputByPath.get(filePath))
-      .filter(
-        (candidate): candidate is AstProjectInput => candidate !== undefined
-      );
-    if (componentInputs.length === 1) {
+      .filter((input): input is AstProjectInput => input !== undefined);
+    if (componentInputs.length === 1 && !plan.projectWide) {
       const only = componentInputs[0];
-      if (only) {
+      if (only)
         findingsByPath.set(
           only.filePath,
           analyzeAstSource(only.filePath, only.content)
         );
-      }
       continue;
     }
     const project = createAstProjectAnalysis(componentInputs);
-    for (const componentInput of componentInputs) {
+    for (const input of componentInputs) {
       findingsByPath.set(
-        componentInput.filePath,
-        analyzeAstSource(
-          componentInput.filePath,
-          componentInput.content,
-          project
-        )
+        input.filePath,
+        analyzeAstSource(input.filePath, input.content, project)
       );
-      project.sourceFiles.delete(componentInput.filePath);
+      project.sourceFiles.delete(input.filePath);
     }
   }
   return {
@@ -1628,8 +1659,8 @@ export function analyzeAstProjectByComponents(
         return findings ? [[input.filePath, findings] as const] : [];
       })
     ),
-    dependencyDigests: transitiveImportDigests(inputs, adjacency),
-    componentCount,
+    dependencyDigests: plan.dependencyDigests,
+    componentCount: plan.components.length,
     largestComponentFiles
   };
 }

@@ -2,7 +2,10 @@ import path from 'node:path';
 import { realpath } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import type { AnalysisResultCache } from '../application/task-scheduler.js';
-import { analyzeAstProjectInWorker } from '../analyzers/ast/project-analysis-worker-client.js';
+import {
+  analyzeAstProjectInWorker,
+  planAstProjectInWorker
+} from '../analyzers/ast/project-analysis-worker-client.js';
 import { InfrastructureAnalyzer } from '../analyzers/iac/analyzer.js';
 import { DockerfileAnalyzer } from '../analyzers/docker/analyzer.js';
 import {
@@ -139,7 +142,7 @@ const secretScanExtensions = new Set([
 
 const codeExtensions = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']);
 const astProjectCacheChunkSize = 16;
-const astProjectCacheVersion = 'security-doctor-ast-project-v1';
+const astProjectCacheVersion = 'security-doctor-ast-project-v2';
 
 type AstProjectCacheChunk = {
   taskId: string;
@@ -148,13 +151,13 @@ type AstProjectCacheChunk = {
 
 type AstProjectCacheValue = {
   paths: string[];
+  fingerprints: Array<[string, string]>;
   findings: Array<[string, Finding[]]>;
   dependencyDigests: Array<[string, string]>;
 };
 
 function createAstProjectCacheChunks(
-  sortedFilePaths: readonly string[],
-  projectDigest: string
+  sortedFilePaths: readonly string[]
 ): AstProjectCacheChunk[] {
   const chunks: AstProjectCacheChunk[] = [];
   for (
@@ -162,10 +165,16 @@ function createAstProjectCacheChunks(
     offset < sortedFilePaths.length;
     offset += astProjectCacheChunkSize
   ) {
-    const index = chunks.length;
+    const paths = sortedFilePaths.slice(
+      offset,
+      offset + astProjectCacheChunkSize
+    );
     chunks.push({
-      taskId: `${projectDigest}:${index}`,
-      paths: sortedFilePaths.slice(offset, offset + astProjectCacheChunkSize)
+      taskId: createHash('sha256')
+        .update('ast-project-cache-paths-v2\0')
+        .update(JSON.stringify(paths))
+        .digest('hex'),
+      paths
     });
   }
   return chunks;
@@ -174,25 +183,19 @@ function createAstProjectCacheChunks(
 function readAstProjectCache(
   cache: AnalysisResultCache | undefined,
   scope: string,
-  chunks: readonly AstProjectCacheChunk[]
-):
-  | {
-      findingsByPath: ReadonlyMap<string, readonly Finding[]>;
-      dependencyDigests: ReadonlyMap<string, string>;
-    }
-  | undefined {
-  if (!cache || chunks.length === 0) return undefined;
-  if (
-    chunks.some(
-      (chunk) => !cache.has(scope, chunk.taskId, astProjectCacheVersion)
-    )
-  )
-    return undefined;
-
+  chunks: readonly AstProjectCacheChunk[],
+  fingerprints: ReadonlyMap<string, string>,
+  expectedDependencyDigests: ReadonlyMap<string, string>
+): {
+  findingsByPath: Map<string, readonly Finding[]>;
+  dependencyDigests: Map<string, string>;
+  uncachedPaths: Set<string>;
+} {
   const findingsByPath = new Map<string, readonly Finding[]>();
   const dependencyDigests = new Map<string, string>();
+  const uncachedPaths = new Set<string>();
   for (const chunk of chunks) {
-    const value = cache.get<AstProjectCacheValue>(
+    const value = cache?.get<AstProjectCacheValue>(
       scope,
       chunk.taskId,
       astProjectCacheVersion
@@ -202,6 +205,16 @@ function readAstProjectCache(
       !Array.isArray(value.paths) ||
       value.paths.length !== chunk.paths.length ||
       value.paths.some((filePath, index) => filePath !== chunk.paths[index]) ||
+      !Array.isArray(value.fingerprints) ||
+      value.fingerprints.length !== chunk.paths.length ||
+      value.fingerprints.some(
+        (entry, index) =>
+          !Array.isArray(entry) ||
+          entry.length !== 2 ||
+          entry[0] !== chunk.paths[index] ||
+          typeof entry[1] !== 'string' ||
+          !/^[a-f0-9]{64}$/u.test(entry[1])
+      ) ||
       !Array.isArray(value.findings) ||
       !Array.isArray(value.dependencyDigests) ||
       value.findings.length !== chunk.paths.length ||
@@ -221,15 +234,35 @@ function readAstProjectCache(
           !/^[a-f0-9]{64}$/u.test(entry[1])
       ) ||
       new Set(value.dependencyDigests.map(([filePath]) => filePath)).size !==
+        chunk.paths.length ||
+      new Set(value.findings.map(([filePath]) => filePath)).size !==
+        chunk.paths.length ||
+      new Set(value.fingerprints.map(([filePath]) => filePath)).size !==
         chunk.paths.length
-    )
-      return undefined;
-    for (const [filePath, fileFindings] of value.findings)
-      findingsByPath.set(filePath, fileFindings);
-    for (const [filePath, digest] of value.dependencyDigests)
-      dependencyDigests.set(filePath, digest);
+    ) {
+      for (const filePath of chunk.paths) uncachedPaths.add(filePath);
+      continue;
+    }
+    for (let index = 0; index < chunk.paths.length; index += 1) {
+      const filePath = chunk.paths[index];
+      const fingerprint = value.fingerprints[index]?.[1];
+      const dependencyDigest = value.dependencyDigests[index]?.[1];
+      const expectedDigest = expectedDependencyDigests.get(filePath);
+      if (
+        !filePath ||
+        fingerprint !== fingerprints.get(filePath) ||
+        !expectedDigest ||
+        dependencyDigest !== expectedDigest
+      ) {
+        if (filePath) uncachedPaths.add(filePath);
+        continue;
+      }
+      const findingEntry = value.findings[index];
+      if (findingEntry) findingsByPath.set(filePath, findingEntry[1]);
+      dependencyDigests.set(filePath, dependencyDigest);
+    }
   }
-  return { findingsByPath, dependencyDigests };
+  return { findingsByPath, dependencyDigests, uncachedPaths };
 }
 
 /** Runs the local security checks and records truthful scan coverage. */
@@ -313,6 +346,7 @@ export async function runSecurityDoctor(
     | {
         scope: string;
         chunks: AstProjectCacheChunk[];
+        fingerprints: ReadonlyMap<string, string>;
         findingsByPath: ReadonlyMap<string, readonly Finding[]>;
         dependencyDigests: ReadonlyMap<string, string>;
       }
@@ -349,37 +383,95 @@ export async function runSecurityDoctor(
     astAnalysisIncomplete = astInputs.length !== astFiles.length;
     if (!astAnalysisIncomplete && astInputs.length > 0) {
       const astCacheScope = `ast-project:${context.root}`;
-      const astCacheChunks = createAstProjectCacheChunks(
-        astInputs.map((input) => input.filePath),
-        astProjectDigest
-      );
-      const cachedAst = readAstProjectCache(
-        options.analysisCache,
-        astCacheScope,
-        astCacheChunks
-      );
-      if (cachedAst) {
-        astFindingsByPath = cachedAst.findingsByPath;
-        astDependencyDigests = cachedAst.dependencyDigests;
-        astProjectCacheHits = astCacheChunks.length;
-      } else {
-        astProjectCacheMisses = astCacheChunks.length;
-        try {
-          const analyzed = await analyzeAstProjectInWorker(astInputs, {
+      try {
+        const plan = await planAstProjectInWorker(astInputs, {
+          signal: options.signal
+        });
+        const fingerprints = new Map<string, string>();
+        for (const input of astInputs) {
+          const componentDigest = plan.componentDigests.get(input.filePath);
+          const dependencyDigest = plan.dependencyDigests.get(input.filePath);
+          if (!componentDigest || !dependencyDigest)
+            throw new Error('AST component plan omitted an input digest');
+          fingerprints.set(
+            input.filePath,
+            createHash('sha256')
+              .update('ast-project-file-cache-v2\0')
+              .update(input.filePath)
+              .update('\0')
+              .update(createHash('sha256').update(input.content).digest('hex'))
+              .update('\0')
+              .update(componentDigest)
+              .update('\0')
+              .update(dependencyDigest)
+              .digest('hex')
+          );
+        }
+        const astCacheChunks = createAstProjectCacheChunks(
+          astInputs.map((input) => input.filePath)
+        );
+        const cachedAst = readAstProjectCache(
+          options.analysisCache,
+          astCacheScope,
+          astCacheChunks,
+          fingerprints,
+          plan.dependencyDigests
+        );
+        const componentDigestsToAnalyze = new Set<string>();
+        for (const filePath of cachedAst.uncachedPaths) {
+          const digest = plan.componentDigests.get(filePath);
+          if (digest) componentDigestsToAnalyze.add(digest);
+        }
+        const pathsToAnalyze = new Set<string>();
+        for (const [filePath, digest] of plan.componentDigests)
+          if (componentDigestsToAnalyze.has(digest))
+            pathsToAnalyze.add(filePath);
+
+        const cachedFindingsByPath = new Map(cachedAst.findingsByPath);
+        for (const filePath of pathsToAnalyze)
+          cachedFindingsByPath.delete(filePath);
+        astDependencyDigests = plan.dependencyDigests;
+        astProjectCacheHits = astCacheChunks.filter((chunk) =>
+          chunk.paths.every((filePath) => !pathsToAnalyze.has(filePath))
+        ).length;
+        astProjectCacheMisses = astCacheChunks.length - astProjectCacheHits;
+        if (pathsToAnalyze.size === 0) {
+          astFindingsByPath = cachedFindingsByPath;
+        } else {
+          const analysisInputs = astInputs.filter((input) =>
+            pathsToAnalyze.has(input.filePath)
+          );
+          const analyzed = await analyzeAstProjectInWorker(analysisInputs, {
             signal: options.signal
           });
-          astFindingsByPath = analyzed.findingsByPath;
-          astDependencyDigests = analyzed.dependencyDigests;
+          for (const input of analysisInputs) {
+            if (
+              !analyzed.findingsByPath.has(input.filePath) ||
+              analyzed.dependencyDigests.get(input.filePath) !==
+                plan.dependencyDigests.get(input.filePath)
+            )
+              throw new Error(
+                'AST worker output disagrees with its component plan'
+              );
+          }
+          astFindingsByPath = new Map([
+            ...cachedFindingsByPath,
+            ...analyzed.findingsByPath
+          ]);
           pendingAstProjectCache = {
             scope: astCacheScope,
-            chunks: astCacheChunks,
-            findingsByPath: analyzed.findingsByPath,
-            dependencyDigests: analyzed.dependencyDigests
+            chunks: astCacheChunks.filter((chunk) =>
+              chunk.paths.some((filePath) => pathsToAnalyze.has(filePath))
+            ),
+            fingerprints,
+            findingsByPath: astFindingsByPath,
+            dependencyDigests: plan.dependencyDigests
           };
-        } catch {
-          astFindingsByPath = undefined;
-          astAnalysisIncomplete = true;
         }
+      } catch {
+        astFindingsByPath = undefined;
+        astDependencyDigests = undefined;
+        astAnalysisIncomplete = true;
       }
     }
     if (astAnalysisIncomplete)
@@ -565,19 +657,34 @@ export async function runSecurityDoctor(
 
   if (pendingAstProjectCache && options.analysisCache) {
     for (const chunk of pendingAstProjectCache.chunks) {
+      const fingerprints = chunk.paths.flatMap(
+        (filePath): Array<[string, string]> => {
+          const fingerprint = pendingAstProjectCache.fingerprints.get(filePath);
+          return fingerprint ? [[filePath, fingerprint]] : [];
+        }
+      );
+      const dependencyDigests = chunk.paths.flatMap(
+        (filePath): Array<[string, string]> => {
+          const digest =
+            pendingAstProjectCache.dependencyDigests.get(filePath);
+          return digest ? [[filePath, digest]] : [];
+        }
+      );
+      // Never persist a partial or placeholder record if an internal plan is
+      // inconsistent. The next run will safely recompute this chunk.
+      if (
+        fingerprints.length !== chunk.paths.length ||
+        dependencyDigests.length !== chunk.paths.length
+      )
+        continue;
       const value: AstProjectCacheValue = {
         paths: chunk.paths,
+        fingerprints,
         findings: chunk.paths.map((filePath): [string, Finding[]] => [
           filePath,
           [...(pendingAstProjectCache.findingsByPath.get(filePath) ?? [])]
         ]),
-        dependencyDigests: chunk.paths.flatMap(
-          (filePath): Array<[string, string]> => {
-            const digest =
-              pendingAstProjectCache.dependencyDigests.get(filePath);
-            return digest === undefined ? [] : [[filePath, digest]];
-          }
-        )
+        dependencyDigests
       };
       options.analysisCache.set(
         pendingAstProjectCache.scope,

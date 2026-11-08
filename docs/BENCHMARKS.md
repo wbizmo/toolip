@@ -325,3 +325,38 @@ concurrent runs used the same command with
 `repository-scorecard-concurrent`; the 1k soak used
 `SOAK_ITERATIONS=3 SOAK_FILES=1000 npm run soak:analysis`. The raw rows retain
 their `working-tree` label; this is not a clean commit run.
+
+## Component-aware AST cache invalidation (2026-11-08)
+
+After the cache invalidation correction, the same synthetic repository
+scorecard now retains unaffected AST chunks when one independent source file
+changes. The incremental run at each size reported one cache miss and exactly
+one AST project-cache miss. It completed with full scan coverage and no
+provider requests.
+
+| Source files | Cold / warm / incremental | AST cache hits / chunks on incremental | Incremental sampled RSS peak |
+| -----------: | ------------------------: | -------------------------------------: | ---------------------------: |
+|        1,000 |      1.43 / 0.61 / 0.94 s |                                62 / 63 |                      451 MiB |
+|       10,000 |      4.78 / 1.39 / 1.75 s |                              624 / 625 |                      675 MiB |
+|       50,000 |     20.51 / 4.52 / 4.57 s |                          3,124 / 3,125 |                    1,210 MiB |
+
+The measurements use one Linux Node 24.22.1 process per size, one cold, warm
+and incremental pass, and process-level sampled memory peaks. The synthetic
+fixture edits one independent file; changes to connected imports rerun that
+weak component and its importers. Script/global-declaration fallback still
+invalidates the project-wide component. The benchmark is one sample per size,
+not a release qualification or memory guarantee. See the raw
+[`AST cache invalidation JSONL`](benchmarks/toolip-v3.2.1-ast-cache-invalidation-2026-11-08-linux-node24.jsonl)
+and [`complexity audit`](COMPLEXITY-AUDIT.md).
+
+## Concurrent 50k scorecards (2026-11-08)
+
+A single Linux Node 24.22.1 process ran two simultaneous offline scorecards on
+the same immutable 50k-file snapshot, each with its own analysis cache. Both
+scans reported complete coverage and zero provider requests. The pair took
+11.73 s, with sampled process peaks of 477 MiB heap and 1,366 MiB RSS. For
+comparison, the single cold pass at this size peaked at 932 MiB RSS in its own
+process. This one-shot synthetic result shows concurrency increases process
+memory materially; it does not establish a general cap or p50/p95 behavior.
+The raw row is in
+[`concurrent 50k JSONL`](benchmarks/toolip-v3.2.1-concurrent-memory-50k-linux-node24.jsonl).

@@ -2,6 +2,8 @@ import { isMainThread, Worker } from 'node:worker_threads';
 import type { Finding } from '../../contracts/finding.js';
 import {
   analyzeAstProjectByComponents,
+  planAstProjectComponents,
+  type AstProjectComponentPlan,
   type AstProjectInput
 } from './source-analysis.js';
 
@@ -13,8 +15,18 @@ export type AstProjectWorkerResult = Readonly<{
 type WorkerMessage =
   | { type: 'started' }
   | {
+      type: 'plan';
+      components: string[][];
+      componentDigests: Array<[string, string]>;
+      dependencyDigests: Array<[string, string]>;
+      projectWide: boolean;
+    }
+  | {
       type: 'memory';
-      stage: 'inputs-received' | 'component-analysis-complete';
+      stage:
+        | 'inputs-received'
+        | 'component-plan-complete'
+        | 'component-analysis-complete';
       heapUsedBytes: number;
       externalBytes: number;
       arrayBuffersBytes: number;
@@ -60,6 +72,171 @@ function isCompleteMessage(
     Array.isArray(message.findingsByPath) &&
     Array.isArray(message.dependencyDigests)
   );
+}
+
+function isPlanMessage(
+  value: unknown
+): value is Extract<WorkerMessage, { type: 'plan' }> {
+  if (!value || typeof value !== 'object') return false;
+  const message = value as Partial<Extract<WorkerMessage, { type: 'plan' }>>;
+  return (
+    message.type === 'plan' &&
+    Array.isArray(message.components) &&
+    Array.isArray(message.componentDigests) &&
+    Array.isArray(message.dependencyDigests) &&
+    typeof message.projectWide === 'boolean'
+  );
+}
+
+/** Build a bounded import-component plan in a killable worker. */
+export async function planAstProjectInWorker(
+  inputs: readonly AstProjectInput[],
+  options: {
+    signal?: AbortSignal;
+    timeoutMs?: number;
+    onWorkerStarted?: () => void;
+  } = {}
+): Promise<AstProjectComponentPlan> {
+  if (options.signal?.aborted)
+    throw abortError('AST project planning was cancelled.');
+  if (!isMainThread) {
+    const plan = planAstProjectComponents(inputs);
+    if (options.signal?.aborted)
+      throw abortError('AST project planning was cancelled.');
+    return plan;
+  }
+  const timeoutMs = options.timeoutMs ?? 60_000;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600_000)
+    throw new RangeError(
+      'AST project worker timeout is outside the supported range.'
+    );
+  const extension = import.meta.url.endsWith('.ts') ? 'ts' : 'js';
+  const worker = new Worker(
+    new URL(
+      extension === 'ts'
+        ? './project-analysis-worker-bootstrap.mjs'
+        : `./project-analysis-worker.${extension}`,
+      import.meta.url
+    ),
+    {
+      workerData: { mode: 'plan', inputs },
+      ...(extension === 'ts' ? { execArgv: [] } : {}),
+      resourceLimits: {
+        maxOldGenerationSizeMb: 1024,
+        maxYoungGenerationSizeMb: 128,
+        stackSizeMb: 16
+      }
+    }
+  );
+  return new Promise<AstProjectComponentPlan>((resolve, reject) => {
+    let settled = false;
+    const timeout = setTimeout(() => {
+      stop(timeoutError('AST project planning exceeded its time budget.'));
+    }, timeoutMs);
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      options.signal?.removeEventListener('abort', onAbort);
+      worker.removeAllListeners();
+    };
+    const stop = (error: Error): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      void worker.terminate().then(
+        () => reject(error),
+        () => reject(error)
+      );
+    };
+    const onAbort = (): void => {
+      stop(abortError('AST project planning was cancelled.'));
+    };
+    worker.on('message', (message: WorkerMessage | unknown) => {
+      if (settled) return;
+      if (
+        message &&
+        typeof message === 'object' &&
+        (message as { type?: unknown }).type === 'started'
+      ) {
+        options.onWorkerStarted?.();
+        return;
+      }
+      if (!isPlanMessage(message)) {
+        stop(
+          new Error('AST project worker returned an invalid component plan.')
+        );
+        return;
+      }
+      const expectedPaths = new Set(inputs.map((input) => input.filePath));
+      const seenPaths = new Set<string>();
+      let valid = true;
+      for (const component of message.components) {
+        if (!Array.isArray(component) || component.length === 0) {
+          valid = false;
+          break;
+        }
+        for (const filePath of component) {
+          if (
+            typeof filePath !== 'string' ||
+            !expectedPaths.has(filePath) ||
+            seenPaths.has(filePath)
+          ) {
+            valid = false;
+            break;
+          }
+          seenPaths.add(filePath);
+        }
+      }
+      const toDigestMap = (
+        entries: Array<[string, string]>
+      ): Map<string, string> | undefined => {
+        const result = new Map<string, string>();
+        for (const entry of entries) {
+          if (
+            !Array.isArray(entry) ||
+            entry.length !== 2 ||
+            typeof entry[0] !== 'string' ||
+            !expectedPaths.has(entry[0]) ||
+            result.has(entry[0]) ||
+            typeof entry[1] !== 'string' ||
+            !/^[a-f0-9]{64}$/u.test(entry[1])
+          )
+            return undefined;
+          result.set(entry[0], entry[1]);
+        }
+        return result.size === expectedPaths.size ? result : undefined;
+      };
+      const componentDigests = toDigestMap(message.componentDigests);
+      const dependencyDigests = toDigestMap(message.dependencyDigests);
+      if (
+        !valid ||
+        seenPaths.size !== expectedPaths.size ||
+        !componentDigests ||
+        !dependencyDigests
+      ) {
+        stop(
+          new Error('AST project worker returned inconsistent component data.')
+        );
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve({
+        components: message.components,
+        componentDigests,
+        dependencyDigests,
+        projectWide: message.projectWide
+      });
+    });
+    worker.once('error', (error) => stop(error));
+    worker.once('exit', (code) => {
+      if (!settled)
+        stop(
+          new Error(`AST project worker exited before planning (code ${code}).`)
+        );
+    });
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+    if (options.signal?.aborted) onAbort();
+  });
 }
 
 /** Run synchronous TypeScript analysis in a killable, memory-bounded worker. */

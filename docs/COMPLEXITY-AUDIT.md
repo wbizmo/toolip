@@ -208,3 +208,51 @@ paths include artifact type/classifier at every depth, while ambiguous edges
 remain unresolved rather than being guessed. This addresses the specific #82
 parser defect, not real Maven export compatibility, BOM/property resolution,
 or Java provider acceptance.
+
+### AST component-aware cache invalidation (2026-11-08)
+
+The AST cache now separates stable cache-chunk identity from analyzed content.
+For `F` files and `E` resolved local imports, the worker parses each source to
+resolve module edges, indexes source directories, and traverses weak components
+in `O(F + E)` graph time after resolver work. Directory indexing/resolution is
+`O(FP + ER)` as described above. Per-component fingerprints hash each member's
+path and content; transitive dependency digests also invalidate importers when
+a dependency changes. A changed component causes fresh AST analysis for the
+whole weak component, conservatively including any source that can share its
+TypeScript Program. Unrelated component chunks remain reusable. Script files,
+declarations and global module declarations force the existing project-wide
+fallback, because those files can change checker semantics without import edges.
+
+The cache read is `O(F)` in path/fingerprint validation plus finding payload
+size, using at most one bounded cache entry at a time; writes remain limited by
+the shared 64 MiB cache and 4 MiB entry caps. Planning and analysis run in
+separate killable workers with 1 GiB old-generation, 128 MiB young-generation
+and 16 MiB stack limits, so cache planning adds worker startup and transient
+source transfer. The analysis worker independently recomputes its plan and its
+per-file dependency digests are compared with the cache plan before results are
+accepted. Malformed plan/cache data fails closed to a fresh analysis or an
+incomplete AST result.
+
+The synthetic scorecard incremental run changed one independent source file.
+On Linux Node 24.22.1 it reused 62/63 chunks at 1k, 624/625 at 10k and
+3,124/3,125 at 50k; the prior implementation reused none. At 50k, cold/warm/
+incremental wall times were 20.51/4.52/4.57 seconds; the process sampled peak
+RSS was 932/1,031/1,210 MiB. The latter is a process-level peak after cache
+retention across passes, not the incremental operation's isolated allocation.
+Raw rows: `docs/benchmarks/toolip-v3.2.1-ast-cache-invalidation-2026-11-08-linux-node24.jsonl`.
+Only one sample per size is available; these results do not establish p50/p95,
+release qualification or lower peak memory. Full concurrent-scan profiling and
+the broader #40/#56/#86 acceptance remain open.
+
+### Two concurrent 50k scorecards (2026-11-08)
+
+The isolated concurrent fixture executes two offline scorecards over one shared
+immutable 50k source snapshot, each with an independent result cache. Both
+completed with full coverage and zero provider requests in 11.73 seconds. The
+process sampled peak RSS was 1,366 MiB and heap was 477 MiB, compared with
+932 MiB RSS on the single-pass cold 50k run in this benchmark family. This
+measures one process and one input shape; it is not a hard memory ceiling. The
+AST plan is currently cloned into a bounded worker and changed components are
+then sent to an analysis worker, so reducing source transfer/worker duplication
+is a candidate for further profiling rather than a proven fix. Raw data:
+`docs/benchmarks/toolip-v3.2.1-concurrent-memory-50k-linux-node24.jsonl`.

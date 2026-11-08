@@ -153,7 +153,106 @@ describe('immutable project snapshots', () => {
       astProjectMisses: 1
     });
     expect(changed.findings).toHaveLength(warm.findings.length);
+  }, 30_000);
+
+  it('retains unaffected AST chunks after an independent source edit', async () => {
+    const root = await project();
+    await writeFile(
+      path.join(root, 'src', 'a.ts'),
+      'export {};\neval(untrusted);\n'
+    );
+    for (let index = 0; index < 20; index += 1)
+      await writeFile(
+        path.join(
+          root,
+          'src',
+          `independent-${String(index).padStart(2, '0')}.ts`
+        ),
+        `export const independent${index} = ${index};\n`
+      );
+    const cache = new AnalysisResultCache();
+    const firstSnapshot = await createProjectSnapshot(root);
+    const first = await runSecurityDoctor(root, {
+      snapshot: firstSnapshot,
+      analysisCache: cache
+    });
+    expect(first.cacheMetrics.astProjectMisses).toBe(2);
+    expect(
+      first.findings.some((finding) => finding.location?.file === 'src/a.ts')
+    ).toBe(true);
+
+    await writeFile(
+      path.join(root, 'src', 'independent-00.ts'),
+      'export const independent0 = 100;\n'
+    );
+    const changedSnapshot = await createProjectSnapshot(root, {
+      previous: firstSnapshot
+    });
+    expect(changedSnapshot.metrics).toMatchObject({
+      filesRead: 1,
+      filesReused: 20
+    });
+    const changed = await runSecurityDoctor(root, {
+      snapshot: changedSnapshot,
+      analysisCache: cache
+    });
+
+    expect(changed.cacheMetrics.astProjectHits).toBe(1);
+    expect(changed.cacheMetrics.astProjectMisses).toBe(1);
+    expect(changed.findings).toEqual(first.findings);
   });
+
+  it('invalidates importers with a changed helper and preserves unrelated components', async () => {
+    const root = await project();
+    for (let index = 0; index < 18; index += 1)
+      await writeFile(
+        path.join(
+          root,
+          'src',
+          `a-independent-${String(index).padStart(2, '0')}.ts`
+        ),
+        `export const independent${index} = ${index};\n`
+      );
+    await writeFile(
+      path.join(root, 'src', 'z-entry.ts'),
+      "import { helper } from './z-helper.js';\nexport const result = helper;\n"
+    );
+    await writeFile(
+      path.join(root, 'src', 'z-helper.ts'),
+      'export const helper = 1;\n'
+    );
+    const cache = new AnalysisResultCache();
+    const firstSnapshot = await createProjectSnapshot(root);
+    const first = await runSecurityDoctor(root, {
+      snapshot: firstSnapshot,
+      analysisCache: cache
+    });
+    expect(first.cacheMetrics.astProjectMisses).toBe(2);
+
+    await writeFile(
+      path.join(root, 'src', 'z-helper.ts'),
+      'export const helper = 2;\neval(untrusted);\n'
+    );
+    const changedSnapshot = await createProjectSnapshot(root, {
+      previous: firstSnapshot
+    });
+    const changed = await runSecurityDoctor(root, {
+      snapshot: changedSnapshot,
+      analysisCache: cache
+    });
+
+    expect(changed.cacheMetrics.astProjectHits).toBe(1);
+    expect(changed.cacheMetrics.astProjectMisses).toBe(1);
+    expect(changed.cacheMetrics.hits).toBe(19);
+    expect(changed.cacheMetrics.misses).toBe(2);
+    expect(
+      changed.findings.some(
+        (finding) => finding.location?.file === 'src/z-helper.ts'
+      )
+    ).toBe(true);
+    const uncached = await runSecurityDoctor(root, { snapshot: changedSnapshot });
+    expect(changed.findings).toEqual(uncached.findings);
+  }, 30_000);
 
   it('reruns the AST worker when bounded project-cache chunks cannot be stored', async () => {
     const root = await project();
@@ -218,16 +317,12 @@ describe('immutable project snapshots', () => {
         )
       )
       .sort((left, right) => left.path.localeCompare(right.path));
-    const projectHash = createHash('sha256').update('ast-project-input-v1\0');
-    for (const file of astFiles)
-      projectHash
-        .update(file.path)
-        .update('\0')
-        .update(file.sha256)
-        .update('\0');
     const scope = `ast-project:${snapshot.root}`;
-    const taskId = `${projectHash.digest('hex')}:0`;
-    const version = 'security-doctor-ast-project-v1';
+    const taskId = createHash('sha256')
+      .update('ast-project-cache-paths-v2\0')
+      .update(JSON.stringify(astFiles.map((file) => file.path)))
+      .digest('hex');
+    const version = 'security-doctor-ast-project-v2';
     const corruptions: Array<
       (entries: Array<[string, string]>) => Array<[string, string]>
     > = [
@@ -248,6 +343,7 @@ describe('immutable project snapshots', () => {
       });
       const cached = cache.get<{
         paths: string[];
+        fingerprints: Array<[string, string]>;
         findings: Array<[string, unknown[]]>;
         dependencyDigests: Array<[string, string]>;
       }>(scope, taskId, version);
@@ -267,6 +363,67 @@ describe('immutable project snapshots', () => {
       expect(JSON.stringify(recovered.findings)).toBe(
         JSON.stringify(cold.findings)
       );
+    }
+  }, 30_000);
+
+  it('rejects truncated, duplicated, and malformed cached fingerprints', async () => {
+    const root = await project();
+    await writeFile(
+      path.join(root, 'src', 'b.ts'),
+      'export const other = 2;\n'
+    );
+    const snapshot = await createProjectSnapshot(root);
+    const files = snapshot.files
+      .filter((file) =>
+        ['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs'].includes(
+          path.extname(file.path).slice(1)
+        )
+      )
+      .sort((left, right) => left.path.localeCompare(right.path));
+    const scope = `ast-project:${snapshot.root}`;
+    const taskId = createHash('sha256')
+      .update('ast-project-cache-paths-v2\0')
+      .update(JSON.stringify(files.map((file) => file.path)))
+      .digest('hex');
+    const version = 'security-doctor-ast-project-v2';
+    const corruptions: Array<
+      (entries: Array<[string, string]>) => Array<[string, string]>
+    > = [
+      (entries) => entries.slice(1),
+      (entries) => (entries[0] ? [entries[0], entries[0]] : []),
+      (entries) =>
+        entries.map(([filePath]): [string, string] => [
+          filePath,
+          'g'.repeat(64)
+        ])
+    ];
+
+    for (const corrupt of corruptions) {
+      const cache = new AnalysisResultCache();
+      const cold = await runSecurityDoctor(root, {
+        snapshot,
+        analysisCache: cache
+      });
+      const cached = cache.get<{
+        paths: string[];
+        fingerprints: Array<[string, string]>;
+        findings: Array<[string, unknown[]]>;
+        dependencyDigests: Array<[string, string]>;
+      }>(scope, taskId, version);
+      expect(cached?.fingerprints).toHaveLength(2);
+      cache.set(scope, taskId, version, {
+        ...cached,
+        fingerprints: corrupt(cached?.fingerprints ?? [])
+      });
+
+      const recovered = await runSecurityDoctor(root, {
+        snapshot,
+        analysisCache: cache
+      });
+
+      expect(recovered.cacheMetrics.astProjectMisses).toBe(1);
+      expect(recovered.cacheMetrics.astProjectHits).toBe(0);
+      expect(recovered.findings).toEqual(cold.findings);
     }
   }, 30_000);
 

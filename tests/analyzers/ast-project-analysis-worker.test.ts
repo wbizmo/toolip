@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { analyzeAstProjectInWorker } from '../../src/analyzers/ast/project-analysis-worker-client.js';
+import {
+  analyzeAstProjectInWorker,
+  planAstProjectInWorker
+} from '../../src/analyzers/ast/project-analysis-worker-client.js';
 import {
   analyzeAstProjectByComponents,
   analyzeAstSource,
   createAstProjectAnalysis,
+  planAstProjectComponents,
   transitiveImportDigests,
   type AstProjectInput
 } from '../../src/analyzers/ast/source-analysis.js';
@@ -69,6 +73,24 @@ describe('killable AST project analysis', () => {
     expect(analysis.findingsByPath.size).toBe(ambientInputs.length);
   });
 
+  it('keeps a single script file inside the project checker fallback', () => {
+    const scriptInput: AstProjectInput = {
+      filePath: 'src/script.ts',
+      absolutePath: '/tmp/toolip-ast-script/src/script.ts',
+      content: 'const value = process.env.INPUT; eval(value);'
+    };
+    const project = createAstProjectAnalysis([scriptInput]);
+    const expected = analyzeAstSource(
+      scriptInput.filePath,
+      scriptInput.content,
+      project
+    );
+    const actual = analyzeAstProjectByComponents([scriptInput]);
+
+    expect(actual.componentCount).toBe(1);
+    expect(actual.findingsByPath.get(scriptInput.filePath)).toEqual(expected);
+  });
+
   it('matches inline findings and dependency digests for the immutable inputs', async () => {
     const inline = createAstProjectAnalysis(inputs);
     const expectedFindings = new Map(
@@ -85,6 +107,22 @@ describe('killable AST project analysis', () => {
     expect([...workerResult.dependencyDigests]).toEqual([
       ...inline.dependencyDigests
     ]);
+  }, 25_000);
+
+  it('matches inline import-component plans in the bounded worker', async () => {
+    const expected = planAstProjectComponents(inputs);
+    const actual = await planAstProjectInWorker(inputs, {
+      timeoutMs: 20_000
+    });
+
+    expect(actual.components).toEqual(expected.components);
+    expect([...actual.componentDigests]).toEqual([
+      ...expected.componentDigests
+    ]);
+    expect([...actual.dependencyDigests]).toEqual([
+      ...expected.dependencyDigests
+    ]);
+    expect(actual.projectWide).toBe(expected.projectWide);
   }, 25_000);
 
   it('preserves global results when connected and independent components mix', () => {
@@ -237,5 +275,31 @@ describe('killable AST project analysis', () => {
 
     await workerStarted;
     await expect(analysis).rejects.toMatchObject({ name: 'AbortError' });
+  }, 25_000);
+
+  it('terminates component planning when its caller aborts', async () => {
+    const controller = new AbortController();
+    let markWorkerStarted!: () => void;
+    const workerStarted = new Promise<void>((resolve) => {
+      markWorkerStarted = resolve;
+    });
+    const largeInput: AstProjectInput[] = [
+      {
+        filePath: 'src/large.ts',
+        absolutePath: '/tmp/toolip-ast-worker/src/large.ts',
+        content: 'export const value = 1;\n'.repeat(100_000)
+      }
+    ];
+    const planning = planAstProjectInWorker(largeInput, {
+      signal: controller.signal,
+      timeoutMs: 20_000,
+      onWorkerStarted: () => {
+        markWorkerStarted();
+        controller.abort();
+      }
+    });
+
+    await workerStarted;
+    await expect(planning).rejects.toMatchObject({ name: 'AbortError' });
   }, 25_000);
 });
