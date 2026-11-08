@@ -80,6 +80,29 @@ on the reachable identity set in both cases.
 The one-million-file release benchmark is reserved for final release
 validation and has not been run.
 
+## Post-audit exact-commit rerun (2026-11-08)
+
+After the Maven parser and AST cache validation correction, the 1k/10k/50k
+synthetic suite was rerun on clean source commit
+`5b4cc7e8b15572b8c014cf8920b2dea208c61d42` with Linux Node 24.22.1. The raw
+36-row result is
+[`toolip-v3.2.1-post-audit-5b4cc7e-linux-node24.jsonl`](benchmarks/toolip-v3.2.1-post-audit-5b4cc7e-linux-node24.jsonl).
+Each size records one cold/warm pair; p50/p95 across repetitions is not
+available. RSS is the isolated fixture process peak, including retained state
+across the cold and warm scorecard passes.
+
+| Offline scorecard   | Source files |      Cold / warm | Cold / warm sampled RSS | Result                                                      |
+| ------------------- | -----------: | ---------------: | ----------------------: | ----------------------------------------------------------- |
+| Linux, Node 24.22.1 |        1,000 |  1.51 s / 106 ms |           441 / 418 MiB | Complete; 0 provider calls                                  |
+| Linux, Node 24.22.1 |       10,000 |  4.86 s / 488 ms |           610 / 601 MiB | Complete; 0 provider calls                                  |
+| Linux, Node 24.22.1 |       50,000 | 20.19 s / 2.26 s |       1,110 / 1,133 MiB | Complete; 0 provider calls; 3,125/3,125 AST chunks hit warm |
+
+At 50k the scan covered 50,003 files and read 2,700,244 bytes. The observed
+process RSS remains high and warm RSS is higher than cold in this sample; this
+does not establish a memory improvement or bound. These results cover the
+exact source commit shown above and are synthetic local measurements, not
+release qualification or cross-platform evidence.
+
 ## Isolated fixture process run (local resolver work)
 
 An additional run was collected at local commit `41a3a9319b19bfb2c2290bafd1bb9fab794ddcd0`
