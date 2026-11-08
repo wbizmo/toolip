@@ -1,4 +1,7 @@
 import { deserialize, serialize } from 'node:v8';
+import { MAX_CONCURRENT_OPERATIONS } from './concurrency.js';
+
+export const MAX_ANALYSIS_TASK_CONCURRENCY = MAX_CONCURRENT_OPERATIONS;
 
 export type AnalysisTask<T> = Readonly<{
   id: string;
@@ -152,10 +155,15 @@ export async function runTaskDag<T>(
   options: { concurrency?: number; signal?: AbortSignal } = {}
 ): Promise<TaskOutcome<T>[]> {
   const requestedConcurrency = options.concurrency ?? 4;
-  const limit = Math.max(
-    1,
-    Number.isFinite(requestedConcurrency) ? Math.floor(requestedConcurrency) : 1
-  );
+  if (
+    !Number.isSafeInteger(requestedConcurrency) ||
+    requestedConcurrency < 1 ||
+    requestedConcurrency > MAX_ANALYSIS_TASK_CONCURRENCY
+  )
+    throw new RangeError(
+      `analysis task concurrency must be an integer from 1 to ${MAX_ANALYSIS_TASK_CONCURRENCY}`
+    );
+  const limit = requestedConcurrency;
   const byId = new Map<string, AnalysisTask<T>>();
   for (const task of tasks) {
     if (!task.id || byId.has(task.id))
@@ -252,9 +260,7 @@ export async function runTaskDag<T>(
                         id,
                         state: 'failed',
                         error:
-                          error instanceof Error
-                            ? error.message
-                            : String(error)
+                          error instanceof Error ? error.message : String(error)
                       }
                 )
             )

@@ -76,7 +76,15 @@ export type GitHubAppWebhookOptions = {
 };
 
 type DeliveryRecord = { state: 'pending' | 'complete'; expiresAt: number };
-type ScheduledServer = { close: () => void; address: () => unknown };
+type ScheduledServer = Pick<
+  Server,
+  | 'close'
+  | 'address'
+  | 'headersTimeout'
+  | 'requestTimeout'
+  | 'maxHeadersCount'
+  | 'maxConnections'
+>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -374,6 +382,13 @@ export class GitHubAppWebhookService {
     this.server = createServer((request, response) => {
       void this.handleRequest(request, response);
     });
+    // Bound unauthenticated connections and time spent waiting for headers or
+    // a complete signed body. Byte limits alone do not stop slow clients from
+    // occupying sockets indefinitely before HMAC verification can run.
+    this.server.headersTimeout = 10_000;
+    this.server.requestTimeout = 30_000;
+    this.server.maxHeadersCount = 100;
+    this.server.maxConnections = 128;
   }
 
   listen(port: number, host = '127.0.0.1'): Promise<ScheduledServer> {

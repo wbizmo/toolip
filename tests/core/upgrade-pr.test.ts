@@ -7,6 +7,7 @@ import {
   readFile,
   realpath,
   rm,
+  symlink,
   writeFile
 } from 'node:fs/promises';
 import os from 'node:os';
@@ -15,6 +16,7 @@ import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import type { Finding } from '../../src/contracts/finding.js';
 import {
+  assertSafePackageManagerConfiguration,
   createUpgradePullRequest,
   installFrozenDependencies,
   type UpgradeSecurityAssessment,
@@ -647,6 +649,111 @@ describe('createUpgradePullRequest', () => {
       ).not.toContain('toolip-upgrade-pr-');
     } finally {
       await rm(fixture.container, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an oversized package manifest before invoking package tools', async () => {
+    const fixture = await createRepositoryFixture();
+    const npmCalls: string[][] = [];
+    try {
+      await writeFile(
+        path.join(fixture.root, 'package.json'),
+        Buffer.alloc(1_048_577, 0x20)
+      );
+      await expect(
+        createUpgradePullRequest(
+          fixture.root,
+          'example-package',
+          '2.0.0',
+          false,
+          createRuntime({ npmCalls }),
+          undefined,
+          { allowProjectTests: true }
+        )
+      ).rejects.toMatchObject({ code: 'UPGRADE_MANIFEST_INVALID' });
+      expect(npmCalls).toEqual([]);
+    } finally {
+      await rm(fixture.container, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a package-manager config symlink before dependency installation', async () => {
+    if (process.platform === 'win32') return;
+    const fixture = await createRepositoryFixture();
+    const npmCalls: string[][] = [];
+    const externalConfig = path.join(fixture.container, 'external.npmrc');
+    try {
+      await writeFile(
+        externalConfig,
+        '//registry.npmjs.org/:_authToken=outside-secret\n'
+      );
+      await symlink(externalConfig, path.join(fixture.root, '.npmrc'));
+      await git(fixture.root, ['add', '.npmrc']);
+      await git(fixture.root, ['commit', '-m', 'add config symlink']);
+      await expect(
+        createUpgradePullRequest(
+          fixture.root,
+          'example-package',
+          '2.0.0',
+          false,
+          createRuntime({ npmCalls }),
+          undefined,
+          { allowProjectTests: true }
+        )
+      ).rejects.toMatchObject({
+        code: 'UPGRADE_PACKAGE_MANAGER_CONFIG_UNSAFE'
+      });
+      expect(npmCalls).toEqual([]);
+    } finally {
+      await rm(fixture.container, { recursive: true, force: true });
+    }
+  });
+
+  it('parses package-manager YAML keys before allowing pnpm or Yarn execution', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-upgrade-config-'));
+    try {
+      await writeFile(
+        path.join(root, 'pnpm-workspace.yaml'),
+        '"pnpmfile": ./untrusted-hook.cjs\n'
+      );
+      await expect(
+        assertSafePackageManagerConfiguration(root, 'pnpm')
+      ).rejects.toMatchObject({ code: 'UPGRADE_PACKAGE_MANAGER_CONFIG_UNSAFE' });
+
+      await rm(path.join(root, 'pnpm-workspace.yaml'));
+      await writeFile(path.join(root, '.yarnrc.yml'), '"plugins": []\n');
+      await expect(
+        assertSafePackageManagerConfiguration(root, 'yarn')
+      ).rejects.toMatchObject({ code: 'UPGRADE_PACKAGE_MANAGER_CONFIG_UNSAFE' });
+
+      await rm(path.join(root, '.yarnrc.yml'));
+      await writeFile(path.join(root, '.yarnrc.yml'), '"npmRegistries": {}\n');
+      await expect(
+        assertSafePackageManagerConfiguration(root, 'yarn')
+      ).rejects.toMatchObject({ code: 'UPGRADE_PACKAGE_MANAGER_CONFIG_UNSAFE' });
+
+      await rm(path.join(root, '.yarnrc.yml'));
+      await writeFile(path.join(root, '.npmrc'), 'config-dependencies=hook\n');
+      await expect(
+        assertSafePackageManagerConfiguration(root, 'pnpm')
+      ).rejects.toMatchObject({ code: 'UPGRADE_PACKAGE_MANAGER_CONFIG_UNSAFE' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed on malformed package-manager YAML configuration', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-upgrade-config-'));
+    try {
+      await writeFile(
+        path.join(root, '.yarnrc.yml'),
+        'plugins: []\nplugins: [{path: ./hook.cjs}]\n'
+      );
+      await expect(
+        assertSafePackageManagerConfiguration(root, 'yarn')
+      ).rejects.toMatchObject({ code: 'UPGRADE_PACKAGE_MANAGER_CONFIG_UNSAFE' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 

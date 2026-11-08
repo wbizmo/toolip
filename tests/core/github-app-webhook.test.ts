@@ -55,6 +55,30 @@ function payload(
 }
 
 describe('read-only GitHub App webhook integration', () => {
+  it('bounds unauthenticated HTTP connection and request resources', async () => {
+    const service = new GitHubAppWebhookService({
+      webhookSecret: secret,
+      repositories: [
+        {
+          name: 'acme/service',
+          installationId: 42,
+          repositoryId: 123,
+          root: '/tmp/acme-service'
+        }
+      ],
+      scan: async () => ({ status: 'complete', findingCount: 0 })
+    });
+    roots.push(() => service.close());
+    const server = await service.listen(0);
+
+    expect(server).toMatchObject({
+      headersTimeout: 10_000,
+      requestTimeout: 30_000,
+      maxHeadersCount: 100,
+      maxConnections: 128
+    });
+  });
+
   it('authenticates raw webhook bytes and deduplicates deliveries before dispatch', async () => {
     let finishScan: (() => void) | undefined;
     const workItems: GitHubAppScanWork[] = [];

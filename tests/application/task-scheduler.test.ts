@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   AnalysisResultCache,
+  MAX_ANALYSIS_TASK_CONCURRENCY,
   runIncrementalTaskDag,
   runTaskDag
 } from '../../src/application/task-scheduler.js';
@@ -31,6 +32,24 @@ describe('analysis DAG scheduler', () => {
       'complete'
     ]);
     expect(peak).toBeLessThanOrEqual(2);
+  });
+
+  it('rejects invalid or unbounded task concurrency requests', async () => {
+    const task = [{ id: 'single', run: async () => true }];
+    for (const concurrency of [
+      0,
+      -1,
+      1.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY
+    ]) {
+      await expect(runTaskDag(task, { concurrency })).rejects.toThrow(
+        'analysis task concurrency must be an integer'
+      );
+    }
+    await expect(
+      runTaskDag(task, { concurrency: MAX_ANALYSIS_TASK_CONCURRENCY + 1 })
+    ).rejects.toThrow(`from 1 to ${MAX_ANALYSIS_TASK_CONCURRENCY}`);
   });
 
   it('blocks dependents after failure and reports cycles', async () => {

@@ -89,6 +89,19 @@ if (process.env.TOOLIP_STAGE_A_SIGNATURE_AUDIT !== expectedSignatureAudit)
   throw new Error(
     'Stage A registry signature audit is missing or inconsistent'
   );
+const complexityEvidence = (body) => {
+  const text = typeof body === 'string' ? body.toLowerCase() : '';
+  return (
+    [
+      '## algorithmic analysis',
+      'previous worst-case time',
+      'new worst-case time',
+      'previous peak space',
+      'new peak space'
+    ].every((section) => text.includes(section)) &&
+    /O\([^)]*\)|N\/A/iu.test(text)
+  );
+};
 const record = {
   version: 5,
   repository,
@@ -107,15 +120,7 @@ const record = {
   registrySignatureAudit: expectedSignatureAudit,
   reasonCodes: scan.reasonCodes,
   status: 'approved',
-  complexityEvidence:
-    [
-      '## Algorithmic analysis',
-      'Previous worst-case time',
-      'New worst-case time',
-      'Previous peak space',
-      'New peak space'
-    ].every((text) => pr.body?.toLowerCase().includes(text.toLowerCase())) &&
-    /O\([^)]*\)|N\/A/iu.test(pr.body ?? '')
+  complexityEvidence: complexityEvidence(pr.body)
 };
 const target = path.join(runnerTemp, 'stage-a-approval.json');
 await writeFile(target, `${JSON.stringify(record)}\n`, {

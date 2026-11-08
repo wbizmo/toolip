@@ -77,6 +77,7 @@ describe('release isolation policy (regression for Batch 00)', () => {
     );
 
     expect(Object.keys(stageA.on)).toEqual(['pull_request_target']);
+    expect(stageA.on.pull_request_target.types).toContain('edited');
     expect(stageA.permissions).toEqual({
       contents: 'read',
       'pull-requests': 'read'
@@ -105,6 +106,17 @@ describe('release isolation policy (regression for Batch 00)', () => {
       expect(
         stageB.jobs['stage-a-result'].steps.some((step) =>
           String(step.run ?? '').includes('verify-stage-a-artifact.mjs')
+        )
+      ).toBe(true);
+      expect(stageB.jobs['stage-a-result'].if).toContain(
+        "github.event_name == 'workflow_run'"
+      );
+      expect(
+        stageB.jobs['stage-a-result'].steps.some(
+          (step) =>
+            String(step.if ?? '').includes(
+              "github.event.workflow_run.conclusion != 'success'"
+            ) && String(step.run ?? '').includes('exit 1')
         )
       ).toBe(true);
       expect(stageB.permissions['pull-requests']).toBe('read');

@@ -7,7 +7,9 @@ import { readPemKeyFile } from '../../src/core/secure-key-file.js';
 const roots: string[] = [];
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  await Promise.all(
+    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
+  );
 });
 
 describe('readPemKeyFile', () => {
@@ -20,6 +22,14 @@ describe('readPemKeyFile', () => {
     const alias = path.join(root, 'alias.pem');
     await symlink(key, alias);
     await expect(readPemKeyFile(alias)).rejects.toThrow('non-symlink');
+  });
+
+  it('rejects files larger than the key byte budget', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-pem-key-'));
+    roots.push(root);
+    const key = path.join(root, 'oversized.pem');
+    await writeFile(key, Buffer.alloc(16 * 1024 + 1, 0x41));
+    await expect(readPemKeyFile(key)).rejects.toThrow('size limit');
   });
 
   it('requires owner-only permissions for private keys on POSIX', async () => {

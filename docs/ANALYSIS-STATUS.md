@@ -28,7 +28,7 @@ A timeout in a single JavaScript thread cannot interrupt synchronous CPU work. A
 
 ## Scan budget for registry lookups
 
-`scorecard` and dependency scans share a budget: overall deadline, `AbortSignal`, per-request timeout and a concurrency cap. Transient failures (429/5xx/network) retry a bounded number of times honouring `Retry-After` with jitter. Malformed registry responses fail closed. Unmeasured dependencies make the dependency dimension "unmeasured" and the run `partial`, never a healthy score.
+`scorecard` and dependency scans share a budget: a 1–600,000 ms overall deadline, `AbortSignal`, a 1–600,000 ms per-request timeout and provider concurrency from 1–32. Transient failures (429/5xx/network) retry at most five times, honouring `Retry-After` with jitter capped at 60 seconds. Invalid caller-supplied budgets or retry settings are rejected. Malformed registry responses fail closed. Unmeasured dependencies make the dependency dimension "unmeasured" and the run `partial`, never a healthy score.
 
 ## Optional dependencies
 

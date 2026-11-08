@@ -3,6 +3,20 @@ import { appendFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+function complexityEvidence(body) {
+  const text = typeof body === 'string' ? body.toLowerCase() : '';
+  return (
+    [
+      '## algorithmic analysis',
+      'previous worst-case time',
+      'new worst-case time',
+      'previous peak space',
+      'new peak space'
+    ].every((section) => text.includes(section)) &&
+    /O\([^)]*\)|N\/A/iu.test(text)
+  );
+}
+
 export function verifyStageAArtifact(record, event, expectedRepository) {
   const run = event?.workflow_run;
   const associatedPrs = Array.isArray(run?.pull_requests)
@@ -193,7 +207,8 @@ export async function verifyCurrentPullRequestIdentity(
     current?.base?.ref !== record.baseRef ||
     current?.base?.sha !== record.baseSha ||
     current?.head?.sha !== record.headSha ||
-    current?.merge_commit_sha !== record.mergeSha
+    current?.merge_commit_sha !== record.mergeSha ||
+    complexityEvidence(current?.body) !== record.complexityEvidence
   )
     throw new Error('Stage A approval is stale after a pull request update');
   return true;

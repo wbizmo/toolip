@@ -1,15 +1,24 @@
+export const MAX_CONCURRENT_OPERATIONS = 32;
+
 export async function mapConcurrent<T, R>(
   items: readonly T[],
   concurrency: number,
   mapper: (item: T, index: number) => Promise<R>,
   signal?: AbortSignal
 ): Promise<R[]> {
+  if (
+    !Number.isSafeInteger(concurrency) ||
+    concurrency < 1 ||
+    concurrency > MAX_CONCURRENT_OPERATIONS
+  )
+    throw new RangeError(
+      `concurrency must be an integer from 1 to ${MAX_CONCURRENT_OPERATIONS}`
+    );
   if (items.length === 0) return [];
   if (signal?.aborted) throw cancellationError(signal);
 
   const results = new Array<R>(items.length);
-  const requested = Number.isFinite(concurrency) ? Math.floor(concurrency) : 1;
-  const limit = Math.max(1, Math.min(requested, items.length));
+  const limit = Math.min(concurrency, items.length);
   let cursor = 0;
 
   const worker = async (): Promise<void> => {

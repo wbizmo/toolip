@@ -110,9 +110,25 @@ function registerEvaluation(command: Command, explain: boolean): void {
           throw new Error(
             '--trust-organization-policy requires --organization-policy'
           );
-        const organization = options.organizationPolicy
-          ? await loadPolicyAsCode(options.organizationPolicy)
-          : undefined;
+        let organization:
+          Awaited<ReturnType<typeof loadPolicyAsCode>> | undefined;
+        if (options.organizationPolicy) {
+          const organizationPath = await realpath(
+            path.resolve(options.organizationPolicy)
+          );
+          const organizationRelative = path.relative(root, organizationPath);
+          if (
+            !path.isAbsolute(organizationRelative) &&
+            (organizationRelative === '' ||
+              (organizationRelative !== '..' &&
+                !organizationRelative.startsWith(`..${path.sep}`)))
+          ) {
+            throw new Error(
+              'organization policy must resolve outside the scanned project root'
+            );
+          }
+          organization = await loadPolicyAsCode(organizationPath);
+        }
         const effective = mergePolicyLayers(
           loaded.policy,
           organization

@@ -18,7 +18,7 @@ concurrency:
 jobs:
   stage-a-result:
     name: Verify trusted Stage A result
-    if: github.event.workflow_run.conclusion == 'success'
+    if: github.event_name == 'workflow_run'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -29,6 +29,11 @@ jobs:
       merge_sha: ${{ steps.verify.outputs.merge_sha }}
       complexity_evidence: ${{ steps.verify.outputs.complexity_evidence }}
     steps:
+      - name: Fail closed when Stage A did not succeed
+        if: github.event.workflow_run.conclusion != 'success'
+        run: |
+          echo 'Stage A did not succeed; downstream checks are blocked.'
+          exit 1
       - name: Checkout trusted default-branch verifier
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

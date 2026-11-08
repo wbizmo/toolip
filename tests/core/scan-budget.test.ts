@@ -45,6 +45,55 @@ const httpError = (statusCode: number, headers?: Record<string, string>) =>
 
 // Issue #48: pacote requests ran outside every deadline and could hang a scan forever.
 describe('scan budget and bounded retries (issue #48)', () => {
+  it('rejects invalid scan duration, request timeout and provider concurrency', () => {
+    for (const totalMs of [0, 600_001, 1.5, Number.NaN, Infinity])
+      expect(() => createScanBudget({ totalMs })).toThrow(
+        'scan duration must be an integer from 1 to 600000 milliseconds'
+      );
+    for (const requestTimeoutMs of [0, 600_001, 1.5, Number.NaN, Infinity])
+      expect(() => createScanBudget({ requestTimeoutMs })).toThrow(
+        'provider request timeout must be an integer from 1 to 600000 milliseconds'
+      );
+    for (const maxConcurrentRequests of [0, -1, 1.5, Number.NaN, Infinity, 33])
+      expect(() => createScanBudget({ maxConcurrentRequests })).toThrow(
+        'provider concurrency must be an integer from 1 to 32'
+      );
+  });
+
+  it('rejects malformed budgets and unbounded retry policy values', async () => {
+    const valid = budget();
+    const malformed = [
+      { ...valid, deadlineAt: Number.POSITIVE_INFINITY },
+      { ...valid, maxConcurrentRequests: 33 },
+      { ...valid, requestTimeoutMs: Number.NaN }
+    ];
+    for (const item of malformed)
+      await expect(
+        withBudget(async () => 'unused', item, { retries: 0 })
+      ).rejects.toThrow('provider scan budget is invalid');
+
+    for (const retries of [-1, 6, 1.5, Number.NaN, Infinity])
+      await expect(
+        withBudget(async () => 'unused', valid, { retries })
+      ).rejects.toThrow('provider retries must be an integer from 0 to 5');
+
+    for (const ms of [-1, 60_001, 1.5, Number.NaN, Infinity])
+      await expect(
+        withBudget(async () => 'unused', valid, { baseMs: ms })
+      ).rejects.toThrow(
+        'provider retry delays must be integers from 0 to 60000 milliseconds'
+      );
+    await expect(
+      withBudget(
+        async () => {
+          throw httpError(503);
+        },
+        valid,
+        { retries: 1, random: () => 2 }
+      )
+    ).rejects.toThrow('provider retry random value must be from 0 to 1');
+  });
+
   it('returns a bounded timed_out result for a hanging provider and aborts the request signal', async () => {
     const b = budget({ requestTimeoutMs: 60, totalMs: 5_000 });
     let observed: AbortSignal | undefined;

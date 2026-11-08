@@ -87,10 +87,15 @@ export async function analyzeAstProjectInWorker(
     );
   const extension = import.meta.url.endsWith('.ts') ? 'ts' : 'js';
   const worker = new Worker(
-    new URL(`./project-analysis-worker.${extension}`, import.meta.url),
+    new URL(
+      extension === 'ts'
+        ? './project-analysis-worker-bootstrap.mjs'
+        : `./project-analysis-worker.${extension}`,
+      import.meta.url
+    ),
     {
       workerData: inputs,
-      ...(extension === 'ts' ? { execArgv: ['--import', 'tsx'] } : {}),
+      ...(extension === 'ts' ? { execArgv: [] } : {}),
       resourceLimits: {
         maxOldGenerationSizeMb: 1024,
         maxYoungGenerationSizeMb: 128,

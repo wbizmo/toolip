@@ -8,6 +8,7 @@ const repository = 'wbizmo/toolip';
 const baseSha = 'a'.repeat(40);
 const headSha = 'b'.repeat(40);
 const mergeSha = 'c'.repeat(40);
+const complexityBody = `## Algorithmic analysis\nPrevious worst-case time: O(n^2)\nNew worst-case time: O(n log n)\nPrevious peak space: O(n)\nNew peak space: O(n)`;
 const record = {
   version: 5,
   repository,
@@ -166,6 +167,7 @@ describe('Stage A artifact identity verification', () => {
     const current = {
       number: 123,
       state: 'open',
+      body: complexityBody,
       base: { repo: { full_name: repository }, ref: 'main', sha: baseSha },
       head: { sha: headSha },
       merge_commit_sha: mergeSha
@@ -193,7 +195,8 @@ describe('Stage A artifact identity verification', () => {
       { ...current, head: { sha: 'd'.repeat(40) } },
       { ...current, base: { ...current.base, sha: 'e'.repeat(40) } },
       { ...current, merge_commit_sha: 'f'.repeat(40) },
-      { ...current, state: 'closed' }
+      { ...current, state: 'closed' },
+      { ...current, body: 'removed complexity disclosure' }
     ]) {
       await expect(
         verifyCurrentPullRequestIdentity(record, repository, {

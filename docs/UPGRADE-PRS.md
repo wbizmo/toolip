@@ -82,4 +82,8 @@ finding-key sets. Two scans keep the asymptotic bounds unchanged; baseline
 findings remain resident while the candidate scorecard runs, so peak memory
 includes both finding lists. The install/test subprocess buffer is capped at
 8 MiB and each child has a five-minute timeout; provider analysis has a
-three-minute deadline per scorecard.
+three-minute deadline per scorecard. The target manifest is capped at 1 MiB,
+package-manager configuration at 32 KiB per file, and verified post-test
+manifest/lockfile hashing at 1 MiB/64 MiB respectively. Those project inputs
+must be regular files within the isolated worktree and remain unchanged during
+the bounded read.

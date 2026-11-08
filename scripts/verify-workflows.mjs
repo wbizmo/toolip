@@ -80,6 +80,11 @@ for (const file of files) {
   const allowed = WRITE_ALLOWED[file] ?? new Set();
   if (file === 'stage-a.yml' && triggers.includes('pull_request_target')) {
     hasStageATrigger = true;
+    if (!(doc.on?.pull_request_target?.types ?? []).includes('edited'))
+      fail(
+        file,
+        'Stage A must rescan edited pull request metadata so stale approval evidence cannot be reused'
+      );
     const scanJob = doc.jobs?.scan;
     const stageASteps = scanJob?.steps ?? [];
     const checkoutSteps = Object.values(doc.jobs ?? {})
@@ -215,6 +220,22 @@ for (const file of files) {
         'Stage B must accept gate runs only for the protected main target'
       );
     const verifier = doc.jobs?.['stage-a-result'];
+    const failClosedStep = (verifier?.steps ?? []).find(
+      (step) =>
+        String(step.if ?? '').includes('workflow_run.conclusion') &&
+        String(step.if ?? '').includes("!= 'success'") &&
+        String(step.run ?? '').includes('exit 1')
+    );
+    if (
+      !String(verifier?.if ?? '').includes(
+        "github.event_name == 'workflow_run'"
+      ) ||
+      !failClosedStep
+    )
+      fail(
+        file,
+        'Stage B must fail visibly when the completed Stage A workflow did not succeed; skipped required jobs can otherwise appear successful'
+      );
     if (
       !(verifier?.steps ?? []).some((step) =>
         String(step.run ?? '').includes('verify-stage-a-artifact.mjs')

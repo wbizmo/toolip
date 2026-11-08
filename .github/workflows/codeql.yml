@@ -22,12 +22,17 @@ permissions:
 jobs:
   stage-a-result:
     name: Verify trusted Stage A result
-    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+    if: github.event_name == 'workflow_run'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       merge_sha: ${{ steps.verify.outputs.merge_sha }}
     steps:
+      - name: Fail closed when Stage A did not succeed
+        if: github.event.workflow_run.conclusion != 'success'
+        run: |
+          echo 'Stage A did not succeed; CodeQL is blocked.'
+          exit 1
       - name: Checkout trusted default-branch verifier
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

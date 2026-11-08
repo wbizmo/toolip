@@ -158,9 +158,15 @@ run, and check out the **same immutable merge SHA** before starting Stage B.
 Their tokens are read-only; no publishing/deployment credentials are provided.
 Before any Stage B checkout or execution, the trusted verifier also queries the
 current PR through GitHub's API and requires its open state, base branch, base
-SHA, head SHA and merge SHA to equal the completed Stage A run. A delayed run
-after a force-push, base update, close or merge is rejected as stale. Each
-Stage B workflow performs that check using only `pull-requests:read`.
+SHA, head SHA and merge SHA to equal the completed Stage A run. It also
+recomputes the required complexity disclosure from the live PR body, so a
+body-only edit cannot reuse stale review evidence. Stage A runs on `edited`
+events, and delayed runs after a force-push, base update, body edit, close or
+merge are rejected as stale. Each Stage B workflow performs that check using
+only `pull-requests:read`. A failed, cancelled or otherwise non-successful
+Stage A run produces an explicit failing Stage B verifier job; it is not
+represented by skipped checks, which GitHub may treat as successful for
+required-check purposes.
 npm install, build, test and audit steps depend on the verified artifact. This
 keeps PR checkout and execution out of the `pull_request_target` workflow.
 
@@ -218,18 +224,33 @@ workflow they listen for is not yet on the default branch. Do not assume the
 old base-branch versions continue to provide checks after this PR changes those
 workflow files. Stage A's local exact-tree fixtures and review are evidence for
 the implementation, but they do not establish that GitHub ran or required
-Stage A for this initial PR. An independently trusted bootstrap check or an
-administrator-reviewed initial merge is required; after the workflow is on
-`main`, the ruleset must require Stage A and Stage B before relying on them for
-later pull requests. This PR must remain unmergeable until that bootstrap has
-been completed and the trusted checks have been observed on its exact head.
+Stage A for this initial PR. The combined PR cannot bootstrap its own trusted
+check. Keep it unmergeable until either an independently administered GitHub
+App check is installed and required by the ruleset, or a separately reviewed
+bootstrap change has introduced Stage A, the complete Stage B `workflow_run`
+consumers and trusted verifiers on `main`. A
+Stage A-only bootstrap is insufficient because GitHub loads `workflow_run`
+listeners from the default branch too. In either case, the trusted scanner
+must inspect this PR's exact commits before any Stage B job runs
+project-controlled code, and the required checks must be observed on this exact
+PR head. A manual merge exception, administrator approval in place of the
+gate, or execution of the proposed workflow from the PR branch does not
+satisfy this requirement.
 
 Before relying on this gate, repository administrators should configure and
 independently verify:
 
 - A [repository ruleset](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets)
-  targeting `main`, requiring the Stage A workflow and Stage B CI/CodeQL status
-  checks, independent approval, and restricted force-push/deletion rights.
+  targeting `main`, requiring the Stage A workflow, each Stage B `Verify
+trusted Stage A result` job, and the downstream CI/PR Quality/CodeQL checks,
+  with independent approval and restricted force-push/deletion rights. The
+  verifier job must itself be required because dependent jobs are skipped when
+  Stage A fails, and GitHub treats skipped jobs as successful.
+- For this first PR, configure and test an independently trusted required
+  check before considering merge. An alternative is a separately reviewed
+  bootstrap change that adds Stage A, the Stage B consumers and their trusted
+  artifact verifiers to `main`; its own validation must not execute the
+  combined PR's code before the gate exists.
 - [CODEOWNERS](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners)
   coverage for `.github/workflows/**`, `scripts/stage-a-gate.mjs`, and its
   artifact verifiers, with code-owner review required by the ruleset.

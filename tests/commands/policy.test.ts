@@ -57,7 +57,10 @@ describe('policy check and explain commands', () => {
       expect(process.exitCode).toBe(3);
       const sarif = JSON.parse(await readFile(sarifPath, 'utf8')) as {
         runs: Array<{
-          invocations: Array<{ executionSuccessful: boolean; properties: Record<string, unknown> }>;
+          invocations: Array<{
+            executionSuccessful: boolean;
+            properties: Record<string, unknown>;
+          }>;
         }>;
       };
       expect(sarif.runs[0]?.invocations[0]?.executionSuccessful).toBe(false);
@@ -99,6 +102,49 @@ describe('policy check and explain commands', () => {
         result.findings.some((finding) => finding.ruleId === 'TLP-MAL-001')
       ).toBe(true);
       expect(process.exitCode).toBe(3);
+    } finally {
+      process.exitCode = previous;
+      write.mockRestore();
+    }
+  });
+
+  it('rejects a repository-owned organization policy even with explicit trust', async () => {
+    const root = await fixture('version: 1\nminimumSeverity: high\n');
+    const output: string[] = [];
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation((chunk) => {
+        output.push(String(chunk));
+        return true;
+      });
+    const previous = process.exitCode;
+    try {
+      const program = new Command();
+      registerPolicyCommand(program);
+      await program.parseAsync(
+        [
+          'policy',
+          'check',
+          '--path',
+          root,
+          '--organization-policy',
+          path.join(root, '.toolip', 'policy.yaml'),
+          '--trust-organization-policy',
+          '--offline'
+        ],
+        { from: 'user' }
+      );
+      const result = JSON.parse(output.join('')) as {
+        decision: string;
+        reasons: string[];
+      };
+      expect(result).toMatchObject({
+        decision: 'misconfigured',
+        reasons: [
+          'organization policy must resolve outside the scanned project root'
+        ]
+      });
+      expect(process.exitCode).toBe(1);
     } finally {
       process.exitCode = previous;
       write.mockRestore();

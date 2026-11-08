@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { constants } from 'node:fs';
 import {
+  open,
   lstat,
   mkdir,
   mkdtemp,
-  readFile,
   realpath,
   rm,
   writeFile
@@ -13,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import semver from 'semver';
+import { parseDocument } from 'yaml';
 import {
   createProjectSnapshot,
   type ProjectSnapshot
@@ -776,7 +778,11 @@ async function hashUpgradeInputs(
 ): Promise<ReadonlyMap<string, string>> {
   const inputs = new Map<string, string>();
   for (const relativePath of [manifestPath, lockfilePath]) {
-    const bytes = await readFile(path.join(root, relativePath));
+    const bytes = await readBoundedRegularFile(
+      path.join(root, relativePath),
+      root,
+      relativePath === manifestPath ? 1_048_576 : 64 * 1024 * 1024
+    );
     inputs.set(relativePath, createHash('sha256').update(bytes).digest('hex'));
   }
   return inputs;
@@ -827,7 +833,11 @@ async function resolveRepositoryRoot(
 
 async function readManifest(manifestPath: string): Promise<PackageManifest> {
   try {
-    return JSON.parse(await readFile(manifestPath, 'utf8')) as PackageManifest;
+    const root = path.dirname(manifestPath);
+    const bytes = await readBoundedRegularFile(manifestPath, root, 1_048_576);
+    return JSON.parse(
+      new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    ) as PackageManifest;
   } catch {
     throw new ToolipError(
       'Unable to read a valid package.json for the upgrade target.',
@@ -836,6 +846,84 @@ async function readManifest(manifestPath: string): Promise<PackageManifest> {
         exitCode: 1
       }
     );
+  }
+}
+
+/** Reads a bounded regular file under a canonical root without following links. */
+async function readBoundedRegularFile(
+  filePath: string,
+  root: string,
+  maximumBytes: number
+): Promise<Buffer> {
+  const canonicalRoot = await realpath(root);
+  const absolute = path.resolve(filePath);
+  const before = await lstat(absolute, { bigint: true });
+  const inside = (candidate: string): boolean => {
+    const relative = path.relative(canonicalRoot, candidate);
+    return (
+      !path.isAbsolute(relative) &&
+      relative !== '..' &&
+      !relative.startsWith(`..${path.sep}`)
+    );
+  };
+  if (
+    !before.isFile() ||
+    before.isSymbolicLink() ||
+    before.size > BigInt(maximumBytes) ||
+    !inside(await realpath(absolute))
+  )
+    throw new Error('project input is not a bounded regular file in the root');
+  const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
+  const nonBlocking = process.platform === 'win32' ? 0 : constants.O_NONBLOCK;
+  const handle = await open(
+    absolute,
+    constants.O_RDONLY | noFollow | nonBlocking
+  );
+  try {
+    const opened = await handle.stat({ bigint: true });
+    const named = await lstat(absolute, { bigint: true });
+    if (
+      !opened.isFile() ||
+      named.isSymbolicLink() ||
+      opened.dev !== before.dev ||
+      opened.ino !== before.ino ||
+      opened.dev !== named.dev ||
+      opened.ino !== named.ino ||
+      opened.size !== before.size ||
+      opened.size > BigInt(maximumBytes)
+    )
+      throw new Error('project input changed while opening');
+    const bytes = Buffer.alloc(Number(opened.size) + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const result = await handle.read(
+        bytes,
+        length,
+        bytes.length - length,
+        null
+      );
+      if (result.bytesRead === 0) break;
+      length += result.bytesRead;
+    }
+    const after = await handle.stat({ bigint: true });
+    const afterPath = await lstat(absolute, { bigint: true });
+    if (
+      length > maximumBytes ||
+      BigInt(length) !== opened.size ||
+      after.dev !== opened.dev ||
+      after.ino !== opened.ino ||
+      after.size !== opened.size ||
+      after.mtimeNs !== opened.mtimeNs ||
+      after.ctimeNs !== opened.ctimeNs ||
+      afterPath.isSymbolicLink() ||
+      afterPath.dev !== opened.dev ||
+      afterPath.ino !== opened.ino ||
+      !inside(await realpath(absolute))
+    )
+      throw new Error('project input changed while reading');
+    return bytes.subarray(0, length);
+  } finally {
+    await handle.close();
   }
 }
 
@@ -1111,7 +1199,8 @@ async function createIsolatedProjectEnvironment(
   return env;
 }
 
-async function assertSafePackageManagerConfiguration(
+/** @internal Reject package-manager configuration that can run code or redirect resolution. */
+export async function assertSafePackageManagerConfiguration(
   root: string,
   manager: Exclude<PackageManager, 'unknown'>
 ): Promise<void> {
@@ -1125,20 +1214,48 @@ async function assertSafePackageManagerConfiguration(
     relativePath: string
   ): Promise<string | undefined> => {
     const file = path.join(root, relativePath);
-    let metadata: Awaited<ReturnType<typeof lstat>>;
     try {
-      metadata = await lstat(file);
+      const bytes = await readBoundedRegularFile(file, root, 32_768);
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     } catch (error) {
       if (isMissingFile(error)) return undefined;
-      throw error;
+      return rejected(`${relativePath} is not a bounded regular file`);
     }
-    if (
-      !metadata.isFile() ||
-      metadata.isSymbolicLink() ||
-      metadata.size > 32_768
-    )
-      rejected(`${relativePath} is not a bounded regular file`);
-    return readFile(file, 'utf8');
+  };
+  const readYamlConfig = async (
+    relativePath: string
+  ): Promise<Record<string, unknown> | undefined> => {
+    const text = await readConfig(relativePath);
+    if (text === undefined) return undefined;
+    try {
+      const document = parseDocument(text, {
+        uniqueKeys: true
+      });
+      if (document.errors.length > 0)
+        rejected(`${relativePath} is malformed YAML`);
+      const value: unknown = document.toJS({ maxAliasCount: 20 });
+      if (value === null) return {};
+      if (!value || typeof value !== 'object' || Array.isArray(value))
+        rejected(`${relativePath} must contain a YAML mapping`);
+      return value as Record<string, unknown>;
+    } catch {
+      return rejected(`${relativePath} is malformed or unsafe YAML`);
+    }
+  };
+  const hasUnsafeYamlKey = (
+    value: unknown,
+    unsafeKey: (key: string) => boolean,
+    depth = 0
+  ): boolean => {
+    if (depth > 32 || !value || typeof value !== 'object') return false;
+    if (Array.isArray(value))
+      return value.some((entry) =>
+        hasUnsafeYamlKey(entry, unsafeKey, depth + 1)
+      );
+    return Object.entries(value).some(
+      ([key, entry]) =>
+        unsafeKey(key) || hasUnsafeYamlKey(entry, unsafeKey, depth + 1)
+    );
   };
   const npmrc = await readConfig('.npmrc');
   if (npmrc) {
@@ -1154,8 +1271,14 @@ async function assertSafePackageManagerConfiguration(
       }
       const key = pair[1]?.trim().toLowerCase() ?? '';
       const value = pair[2]?.trim() ?? '';
-      if (/(?:_auth|token|password|username|cert|key|proxy|cafile)/u.test(key))
-        rejected('.npmrc contains authentication or transport overrides');
+      const normalizedKey = key.replaceAll(/[-_]/gu, '');
+      if (
+        /(?:_auth|token|password|username|cert|key|proxy|cafile)/u.test(key) ||
+        ['configdependencies', 'onloadscript'].includes(normalizedKey)
+      )
+        rejected(
+          '.npmrc contains an executable, authentication or transport override'
+        );
       if (key === 'registry' || key.endsWith(':registry')) {
         if (value !== 'https://registry.npmjs.org/')
           rejected('.npmrc selects a non-public npm registry');
@@ -1164,10 +1287,19 @@ async function assertSafePackageManagerConfiguration(
   }
 
   if (manager === 'pnpm') {
-    const pnpmConfig = await readConfig('pnpm-workspace.yaml');
+    const pnpmConfig = await readYamlConfig('pnpm-workspace.yaml');
     if (
       pnpmConfig &&
-      /^\s*(?:pnpmfile|registry|\w+:registry)\s*:/imu.test(pnpmConfig)
+      hasUnsafeYamlKey(pnpmConfig, (key) => {
+        const normalized = key.toLowerCase().replaceAll(/[-_]/gu, '');
+        return (
+          normalized === 'pnpmfile' ||
+          normalized === 'configdependencies' ||
+          normalized === 'registry' ||
+          normalized === 'registries' ||
+          normalized.endsWith(':registry')
+        );
+      })
     )
       rejected('pnpm-workspace.yaml changes the package hook or registry');
     for (const file of ['.pnpmfile.cjs', '.pnpmfile.js']) {
@@ -1182,12 +1314,19 @@ async function assertSafePackageManagerConfiguration(
       rejected(
         '.yarnrc configures executable shims, authentication or a registry'
       );
-    const modern = await readConfig('.yarnrc.yml');
+    const modern = await readYamlConfig('.yarnrc.yml');
     if (
       modern &&
-      /^(?:\s*)(?:yarnPath|plugins|npmAuth|npmScopes|npmRegistryServer)\s*:/mu.test(
-        modern
-      )
+      hasUnsafeYamlKey(modern, (key) => {
+        const normalized = key.toLowerCase().replaceAll(/[-_]/gu, '');
+        return (
+          normalized === 'yarnpath' ||
+          normalized === 'plugins' ||
+          normalized.startsWith('npmauth') ||
+          normalized === 'npmscopes' ||
+          normalized.startsWith('npmregistr')
+        );
+      })
     )
       rejected('.yarnrc.yml configures plugins, authentication or a registry');
   }
