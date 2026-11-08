@@ -101,7 +101,12 @@ export type SecurityScorecardResult = {
     lockGraphDigest?: string;
     configDigest?: string;
   };
-  cacheMetrics: { hits: number; misses: number };
+  cacheMetrics: {
+    hits: number;
+    misses: number;
+    astProjectHits: number;
+    astProjectMisses: number;
+  };
   analyzerPlugins: Array<{
     id: string;
     sha256: string;
@@ -626,7 +631,15 @@ export async function buildSecurityScorecard(
         (dependencyOutcome.status === 'fulfilled' &&
         dependencyOutcome.value.inventoryCacheHit === false
           ? 1
-          : 0)
+          : 0),
+      astProjectHits:
+        doctorOutcome.status === 'fulfilled'
+          ? (doctorOutcome.value.cacheMetrics?.astProjectHits ?? 0)
+          : 0,
+      astProjectMisses:
+        doctorOutcome.status === 'fulfilled'
+          ? (doctorOutcome.value.cacheMetrics?.astProjectMisses ?? 0)
+          : 0
     }
   };
 }

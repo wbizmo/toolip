@@ -105,7 +105,12 @@ describe('immutable project snapshots', () => {
       snapshot: first,
       analysisCache: cache
     });
-    expect(cold.cacheMetrics).toEqual({ hits: 0, misses: 2 });
+    expect(cold.cacheMetrics).toEqual({
+      hits: 0,
+      misses: 2,
+      astProjectHits: 0,
+      astProjectMisses: 1
+    });
 
     const warmSnapshot = await createProjectSnapshot(root, { previous: first });
     expect(warmSnapshot.metrics).toMatchObject({
@@ -116,7 +121,12 @@ describe('immutable project snapshots', () => {
       snapshot: warmSnapshot,
       analysisCache: cache
     });
-    expect(warm.cacheMetrics).toEqual({ hits: 2, misses: 0 });
+    expect(warm.cacheMetrics).toEqual({
+      hits: 2,
+      misses: 0,
+      astProjectHits: 1,
+      astProjectMisses: 0
+    });
     expect(JSON.stringify(warm.findings)).toBe(JSON.stringify(cold.findings));
 
     await writeFile(
@@ -135,8 +145,36 @@ describe('immutable project snapshots', () => {
       analysisCache: cache
     });
     // With no import edge, only the edited source file needs a fresh result.
-    expect(changed.cacheMetrics).toEqual({ hits: 1, misses: 1 });
+    expect(changed.cacheMetrics).toEqual({
+      hits: 1,
+      misses: 1,
+      astProjectHits: 0,
+      astProjectMisses: 1
+    });
     expect(changed.findings).toHaveLength(warm.findings.length);
+  });
+
+  it('reruns the AST worker when bounded project-cache chunks cannot be stored', async () => {
+    const root = await project();
+    await writeFile(path.join(root, 'src', 'b.ts'), 'eval(untrusted);\n');
+    const cache = new AnalysisResultCache(100, 64, 64);
+    const snapshot = await createProjectSnapshot(root);
+
+    const first = await runSecurityDoctor(root, {
+      snapshot,
+      analysisCache: cache
+    });
+    const second = await runSecurityDoctor(root, {
+      snapshot,
+      analysisCache: cache
+    });
+
+    expect(first.cacheMetrics.astProjectMisses).toBe(1);
+    expect(second.cacheMetrics.astProjectMisses).toBe(1);
+    expect(second.cacheMetrics.astProjectHits).toBe(0);
+    expect(JSON.stringify(second.findings)).toBe(
+      JSON.stringify(first.findings)
+    );
   });
 
   it('invalidates source conclusions when the captured rule configuration changes', async () => {
@@ -160,7 +198,12 @@ describe('immutable project snapshots', () => {
       analysisCache: cache
     });
 
-    expect(changed.cacheMetrics).toEqual({ hits: 0, misses: 2 });
+    expect(changed.cacheMetrics).toEqual({
+      hits: 0,
+      misses: 2,
+      astProjectHits: 1,
+      astProjectMisses: 0
+    });
   });
 
   it('resolves dependency lockfiles from captured snapshot bytes after the worktree changes', async () => {

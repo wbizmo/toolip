@@ -14,6 +14,15 @@ export type AstProjectWorkerResult = Readonly<{
 type WorkerMessage =
   | { type: 'started' }
   | {
+      type: 'memory';
+      stage:
+        'inputs-received' | 'project-analysis-built' | 'file-analysis-complete';
+      heapUsedBytes: number;
+      externalBytes: number;
+      arrayBuffersBytes: number;
+      rssBytes: number;
+    }
+  | {
       type: 'complete';
       findingsByPath: Array<[string, Finding[]]>;
       dependencyDigests: Array<[string, string]>;
@@ -134,6 +143,22 @@ export async function analyzeAstProjectInWorker(
         (message as { type?: unknown }).type === 'started'
       ) {
         options.onWorkerStarted?.();
+        return;
+      }
+      if (
+        message &&
+        typeof message === 'object' &&
+        (message as { type?: unknown }).type === 'memory'
+      ) {
+        const sample = message as Extract<WorkerMessage, { type: 'memory' }>;
+        if (
+          process.env.TOOLIP_BENCHMARK_AST_MEMORY === 'true' &&
+          Number.isSafeInteger(sample.heapUsedBytes) &&
+          Number.isSafeInteger(sample.externalBytes) &&
+          Number.isSafeInteger(sample.arrayBuffersBytes) &&
+          Number.isSafeInteger(sample.rssBytes)
+        )
+          process.stderr.write(`TOOLIP_AST_MEMORY ${JSON.stringify(sample)}\n`);
         return;
       }
       if (!isCompleteMessage(message)) {

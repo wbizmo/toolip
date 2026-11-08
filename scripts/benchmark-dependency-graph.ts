@@ -404,6 +404,8 @@ async function benchmarkRepositoryScan(size: number): Promise<void> {
           snapshotFilesReused: snapshot.metrics.filesReused,
           cacheHits: scorecard.cacheMetrics.hits,
           cacheMisses: scorecard.cacheMetrics.misses,
+          astProjectCacheHits: scorecard.cacheMetrics.astProjectHits,
+          astProjectCacheMisses: scorecard.cacheMetrics.astProjectMisses,
           findings: scorecard.findings.length,
           filesDiscovered: context.summary.totalFiles,
           scorecardState: scorecard.analysis.state,
@@ -416,7 +418,9 @@ async function benchmarkRepositoryScan(size: number): Promise<void> {
         filesOpened: measurement.result.snapshotReads,
         bytesRead: measurement.result.snapshotBytesRead,
         cacheHits: measurement.result.cacheHits,
-        cacheMisses: measurement.result.cacheMisses
+        cacheMisses: measurement.result.cacheMisses,
+        astProjectCacheHits: measurement.result.astProjectCacheHits,
+        astProjectCacheMisses: measurement.result.astProjectCacheMisses
       });
     }
   } finally {

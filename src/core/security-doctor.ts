@@ -81,7 +81,12 @@ export type SecurityDoctorResult = {
   };
   infrastructure: { coverage: AnalysisCoverage; findings: number };
   docker: { coverage: AnalysisCoverage; findings: number; files: number };
-  cacheMetrics: { hits: number; misses: number };
+  cacheMetrics: {
+    hits: number;
+    misses: number;
+    astProjectHits: number;
+    astProjectMisses: number;
+  };
   analyzerPlugins: Array<{
     id: string;
     sha256: string;
@@ -133,6 +138,94 @@ const secretScanExtensions = new Set([
 ]);
 
 const codeExtensions = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs']);
+const astProjectCacheChunkSize = 16;
+const astProjectCacheVersion = 'security-doctor-ast-project-v1';
+
+type AstProjectCacheChunk = {
+  taskId: string;
+  paths: string[];
+};
+
+type AstProjectCacheValue = {
+  paths: string[];
+  findings: Array<[string, Finding[]]>;
+  dependencyDigests: Array<[string, string]>;
+};
+
+function createAstProjectCacheChunks(
+  sortedFilePaths: readonly string[],
+  projectDigest: string
+): AstProjectCacheChunk[] {
+  const chunks: AstProjectCacheChunk[] = [];
+  for (
+    let offset = 0;
+    offset < sortedFilePaths.length;
+    offset += astProjectCacheChunkSize
+  ) {
+    const index = chunks.length;
+    chunks.push({
+      taskId: `${projectDigest}:${index}`,
+      paths: sortedFilePaths.slice(offset, offset + astProjectCacheChunkSize)
+    });
+  }
+  return chunks;
+}
+
+function readAstProjectCache(
+  cache: AnalysisResultCache | undefined,
+  scope: string,
+  chunks: readonly AstProjectCacheChunk[]
+):
+  | {
+      findingsByPath: ReadonlyMap<string, readonly Finding[]>;
+      dependencyDigests: ReadonlyMap<string, string>;
+    }
+  | undefined {
+  if (!cache || chunks.length === 0) return undefined;
+  if (
+    chunks.some(
+      (chunk) => !cache.has(scope, chunk.taskId, astProjectCacheVersion)
+    )
+  )
+    return undefined;
+
+  const findingsByPath = new Map<string, readonly Finding[]>();
+  const dependencyDigests = new Map<string, string>();
+  for (const chunk of chunks) {
+    const value = cache.get<AstProjectCacheValue>(
+      scope,
+      chunk.taskId,
+      astProjectCacheVersion
+    );
+    if (
+      !value ||
+      !Array.isArray(value.paths) ||
+      value.paths.length !== chunk.paths.length ||
+      value.paths.some((filePath, index) => filePath !== chunk.paths[index]) ||
+      !Array.isArray(value.findings) ||
+      !Array.isArray(value.dependencyDigests) ||
+      value.findings.length !== chunk.paths.length ||
+      value.findings.some(
+        (entry, index) =>
+          !Array.isArray(entry) ||
+          entry[0] !== chunk.paths[index] ||
+          !Array.isArray(entry[1])
+      ) ||
+      value.dependencyDigests.some(
+        (entry) =>
+          !Array.isArray(entry) ||
+          !chunk.paths.includes(entry[0]) ||
+          typeof entry[1] !== 'string'
+      )
+    )
+      return undefined;
+    for (const [filePath, fileFindings] of value.findings)
+      findingsByPath.set(filePath, fileFindings);
+    for (const [filePath, digest] of value.dependencyDigests)
+      dependencyDigests.set(filePath, digest);
+  }
+  return { findingsByPath, dependencyDigests };
+}
 
 /** Runs the local security checks and records truthful scan coverage. */
 export async function runSecurityDoctor(
@@ -209,14 +302,26 @@ export async function runSecurityDoctor(
   let astDependencyDigests: ReadonlyMap<string, string> | undefined;
   let astAnalysisIncomplete = false;
   let astProjectDigest: string | undefined;
+  let astProjectCacheHits = 0;
+  let astProjectCacheMisses = 0;
+  let pendingAstProjectCache:
+    | {
+        scope: string;
+        chunks: AstProjectCacheChunk[];
+        findingsByPath: ReadonlyMap<string, readonly Finding[]>;
+        dependencyDigests: ReadonlyMap<string, string>;
+      }
+    | undefined;
   if (snapshot) {
-    const astFiles = snapshot.files.filter(
-      (file) =>
-        codeExtensions.has(path.extname(file.path).slice(1).toLowerCase()) &&
-        !file.path.endsWith('.d.ts') &&
-        !file.path.endsWith('.map') &&
-        !file.path.startsWith('dist/')
-    );
+    const astFiles = snapshot.files
+      .filter(
+        (file) =>
+          codeExtensions.has(path.extname(file.path).slice(1).toLowerCase()) &&
+          !file.path.endsWith('.d.ts') &&
+          !file.path.endsWith('.map') &&
+          !file.path.startsWith('dist/')
+      )
+      .sort((left, right) => left.path.localeCompare(right.path));
     const astInputs = astFiles.flatMap((file) =>
       !file.binary && file.content !== undefined
         ? [
@@ -228,29 +333,49 @@ export async function runSecurityDoctor(
           ]
         : []
     );
-    astProjectDigest = createHash('sha256')
-      .update(
-        JSON.stringify(
-          astFiles
-            .map((file) => [file.path, file.sha256])
-            .sort(([left], [right]) =>
-              String(left).localeCompare(String(right))
-            )
-        )
-      )
-      .digest('hex');
+    const projectHash = createHash('sha256').update('ast-project-input-v1\0');
+    for (const file of astFiles)
+      projectHash
+        .update(file.path)
+        .update('\0')
+        .update(file.sha256)
+        .update('\0');
+    astProjectDigest = projectHash.digest('hex');
     astAnalysisIncomplete = astInputs.length !== astFiles.length;
-    try {
-      if (astInputs.length > 0)
-        ({
-          findingsByPath: astFindingsByPath,
-          dependencyDigests: astDependencyDigests
-        } = await analyzeAstProjectInWorker(astInputs, {
-          signal: options.signal
-        }));
-    } catch {
-      astFindingsByPath = undefined;
-      astAnalysisIncomplete = true;
+    if (!astAnalysisIncomplete && astInputs.length > 0) {
+      const astCacheScope = `ast-project:${context.root}`;
+      const astCacheChunks = createAstProjectCacheChunks(
+        astInputs.map((input) => input.filePath),
+        astProjectDigest
+      );
+      const cachedAst = readAstProjectCache(
+        options.analysisCache,
+        astCacheScope,
+        astCacheChunks
+      );
+      if (cachedAst) {
+        astFindingsByPath = cachedAst.findingsByPath;
+        astDependencyDigests = cachedAst.dependencyDigests;
+        astProjectCacheHits = astCacheChunks.length;
+      } else {
+        astProjectCacheMisses = astCacheChunks.length;
+        try {
+          const analyzed = await analyzeAstProjectInWorker(astInputs, {
+            signal: options.signal
+          });
+          astFindingsByPath = analyzed.findingsByPath;
+          astDependencyDigests = analyzed.dependencyDigests;
+          pendingAstProjectCache = {
+            scope: astCacheScope,
+            chunks: astCacheChunks,
+            findingsByPath: analyzed.findingsByPath,
+            dependencyDigests: analyzed.dependencyDigests
+          };
+        } catch {
+          astFindingsByPath = undefined;
+          astAnalysisIncomplete = true;
+        }
+      }
     }
     if (astAnalysisIncomplete)
       warnings.push(
@@ -431,6 +556,31 @@ export async function runSecurityDoctor(
       suppressedFixtureIds.push(...suppressedForFile);
     }
     findings.push(...bindSourceProvenance(cachedAnalysis.findings, file, read));
+  }
+
+  if (pendingAstProjectCache && options.analysisCache) {
+    for (const chunk of pendingAstProjectCache.chunks) {
+      const value: AstProjectCacheValue = {
+        paths: chunk.paths,
+        findings: chunk.paths.map((filePath): [string, Finding[]] => [
+          filePath,
+          [...(pendingAstProjectCache.findingsByPath.get(filePath) ?? [])]
+        ]),
+        dependencyDigests: chunk.paths.flatMap(
+          (filePath): Array<[string, string]> => {
+            const digest =
+              pendingAstProjectCache.dependencyDigests.get(filePath);
+            return digest === undefined ? [] : [[filePath, digest]];
+          }
+        )
+      };
+      options.analysisCache.set(
+        pendingAstProjectCache.scope,
+        chunk.taskId,
+        astProjectCacheVersion,
+        value
+      );
+    }
   }
 
   findings.push(
@@ -621,7 +771,12 @@ export async function runSecurityDoctor(
       findings: docker.findings.length,
       files: Number(docker.metadata?.dockerfiles ?? 0)
     },
-    cacheMetrics: { hits: cacheHits, misses: cacheMisses },
+    cacheMetrics: {
+      hits: cacheHits,
+      misses: cacheMisses,
+      astProjectHits: astProjectCacheHits,
+      astProjectMisses: astProjectCacheMisses
+    },
     analyzerPlugins
   };
 }

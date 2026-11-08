@@ -112,12 +112,14 @@ memory incremental or prove a general bound.
 
 `docs/BENCHMARKS.md` and `docs/benchmarks/` contain Linux Node 24.22.1
 synthetic 1k/10k/50k runs, including full-scorecard workloads, graph fixtures,
-and an isolated-process run. The latest recorded 50k scorecard reported
-complete fixture coverage, 50,003 files, 2.70 MB read and zero provider
-requests; its warm process peak was 1,188 MiB RSS. These are one fixture and
-machine, not a repository-wide memory proof, cross-platform result, or release
-qualification. The legacy secret-location comparison intentionally stops at
-10k because its prior algorithm is quadratic.
+and an isolated-process run. The latest 50k scorecard reported complete
+fixture coverage, 50,003 files, 2.70 MB read, zero provider requests and
+3,125/3,125 warm AST chunk hits; its warm process peak was 1,117 MiB RSS.
+Repeated 50k runs ranged from 1,116 to 1,143 MiB RSS, so the observed memory
+change is variable. These are one fixture and machine, not a repository-wide
+memory proof, cross-platform result, or release qualification. The legacy
+secret-location comparison intentionally stops at 10k because its prior
+algorithm is quadratic.
 
 The new epic requires independent variation of file count and total bytes,
 graph density, AST/rule counts and concurrency; p50/p95 wall time, files/s,
@@ -146,3 +148,38 @@ qualification, not this batch.
 - Update this document with verified/fixed/retested classifications, raw run
   links and honest limits. Do not mark #40/#56/#86 complete until all their
   acceptance and required phase gates are met.
+
+## AST project reuse memory change (2026-11-08)
+
+`Security Doctor` now reuses AST findings and dependency digests for an
+identical immutable source project. Project digest construction sorts the
+eligible paths and hashes each path/content digest incrementally, using
+`O(F log F)` time for path ordering and `O(F)` references for the ordered
+source list, instead of allocating a second tuple list plus a full JSON
+serialization. Chunking and lookup are `O(F)` time and space. Warm reuse
+deserializes cache chunks in `O(C)` time and temporary space where `C` is the
+serialized AST result size; serialized cache retention is capped by the
+existing 64 MiB aggregate and 4 MiB per-entry limits. Any missing/invalid
+chunk falls back to the worker, preserving correctness. The cache adds up to
+the existing bounded cache capacity, so it does not establish a low total
+process-memory ceiling.
+
+Cold AST construction still runs in the worker with project source text,
+TypeScript nodes, scopes, graph indexes and per-file findings live together;
+its space remains proportional to input bytes plus AST nodes, import graph
+and findings (`O(B + N + V + E + R)`). A 50k Linux Node 24.22.1 synthetic
+scorecard measured 18.87 s cold and 2.39 s warm with complete coverage. Warm
+reuse hit all 3,125 AST chunks. One sample measured 1,116 MiB process RSS and
+423 MiB heap, compared with the preceding sample's 1,188 MiB RSS and 299 MiB
+heap; a repeat measured 1,143 MiB RSS and 440 MiB heap. The variability and
+heap increase mean this is evidence that warm AST rebuilding is avoided, not a
+stable memory guarantee. Raw rows are in
+`docs/benchmarks/toolip-v3.2.1-ast-cache-memory-50k-linux-node24.jsonl`.
+Cold AST-worker RSS remains above 1 GiB and is still an open memory review
+item. The refreshed full 1k/10k/50k run measured 423/612/1,099 MiB cold RSS
+and 398/596/1,117 MiB warm RSS, with AST chunk hits at every warm size. This
+newer sample agrees with faster warm reuse, while repeated 50k runs ranged
+from 1,116 to 1,143 MiB RSS and 307 to 440 MiB heap. The full codebase
+peak-space inventory and multi-scan/concurrency profile remain open; all
+related issues remain Partial. The full 36-row artifact is
+`docs/benchmarks/toolip-v3.2.1-isolated-ast-cache-2026-11-08-linux-node24.jsonl`.

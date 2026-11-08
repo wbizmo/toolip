@@ -203,3 +203,55 @@ files; set `SOAK_ITERATIONS`, `SOAK_FILES`, or `SOAK_MAX_RSS_MB` to adjust the
 run within those limits. It performs no provider requests and does not execute
 repository scripts. This exercises repeated snapshot and scorecard operation;
 it does not replace dedicated Windows/macOS or process-crash testing.
+
+## AST project cache memory investigation
+
+The scorecard rebuilt its TypeScript project on every warm pass even when the
+immutable source snapshot was unchanged. `Security Doctor` now caches the
+whole-project AST findings and dependency digests in 16-path chunks, keyed by
+the root and a digest over every eligible source path and content hash. The
+existing analysis cache still enforces its 64 MiB total and 4 MiB per-entry
+limits. A project result is reused only when every expected chunk is present
+and validates its complete path list; missing, oversized or malformed chunks
+fall back to the worker. Cache space is therefore bounded by the existing
+cache budget, in addition to the snapshot and result data already retained.
+
+An isolated Linux Node 24.22.1 50k scorecard run is recorded in
+[`docs/benchmarks/toolip-v3.2.1-ast-cache-memory-50k-linux-node24.jsonl`](benchmarks/toolip-v3.2.1-ast-cache-memory-50k-linux-node24.jsonl).
+The cold pass analyzed all 50,003 files in 18.87 s, read 2.70 MB, and missed
+all 3,125 AST chunks. The warm pass opened and read no files, reused all 3,125
+AST chunks plus 50,004 per-file cache entries, and took 2.39 s. Both reported
+complete coverage and zero findings/provider requests. Against the preceding
+isolated 50k sample (7.07 s warm, 1,188 MiB sampled RSS and 299 MiB heap), this
+sample's warm pass took 2.39 s with 1,116 MiB RSS and 423 MiB heap. The lower
+sampled RSS and faster warm pass came with higher sampled heap; the cache
+retains serialized results. A second run measured 1,143 MiB RSS and 440 MiB
+heap, so the observed RSS reduction is not stable enough to set a guarantee.
+Worker telemetry during the repeated cold pass recorded 1,041 MiB RSS at
+project build and 1,047 MiB after per-file analysis. The change avoids
+rebuilding that AST project on a cache hit; cold AST construction remains a
+major memory cost. These are synthetic single-machine samples, not release
+qualification or a complete memory bound. The benchmark diff includes the
+AST cache hit/miss counters so a warm pass cannot be mistaken for worker
+reuse.
+
+The refreshed full 1k/10k/50k harness is in
+[`docs/benchmarks/toolip-v3.2.1-isolated-ast-cache-2026-11-08-linux-node24.jsonl`](benchmarks/toolip-v3.2.1-isolated-ast-cache-2026-11-08-linux-node24.jsonl).
+It ran each fixture and size in its own process. Each scorecard reported
+complete coverage, zero findings and zero provider requests; the warm pass
+hit every AST chunk and per-file cache entry.
+
+| Full scorecard   | Cold time / RSS peak | Warm time / RSS peak |       Warm AST cache |
+| ---------------- | -------------------: | -------------------: | -------------------: |
+| 1k source files  |     1.51 s / 423 MiB |     113 ms / 398 MiB |       63 / 63 chunks |
+| 10k source files |     5.38 s / 612 MiB |     507 ms / 596 MiB |     625 / 625 chunks |
+| 50k source files |  19.40 s / 1,099 MiB |   2.17 s / 1,117 MiB | 3,125 / 3,125 chunks |
+
+The 50k sample's warm peak was 71 MiB below the preceding 1,188 MiB sample;
+other repeated cache runs measured 1,116 and 1,143 MiB. Peak heap also varied
+between 307 and 440 MiB. These samples show warm worker reuse and a variable
+RSS reduction, while cache retention increases heap in some runs; they do not
+support a hard memory guarantee. The indexed AST directory fixture in this
+run measured 0.88/7.24/40.76 ms at 1k/10k/50k, with 1,002/10,002/50,002 index
+visits. Its scan reference measured 963 ms at 1k and 92.39 s at 10k, then was
+skipped at 50k by the configured quadratic-work cap.
