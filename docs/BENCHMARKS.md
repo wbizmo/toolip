@@ -401,8 +401,31 @@ This establishes a small repeat sample for this fixture, not a causal before /
 after comparison, p95, production memory bound or cross-platform result. The
 prior cold sample in this benchmark family was 20.51 s / 932 MiB RSS. Warm and
 incremental RSS observations also remain high. A separate memory-instrumented
-warm/incremental run once returned incomplete coverage after a clean cold pass;
-a subsequent uninstrumented full cold/warm/incremental rerun completed. That
-anomaly remains unexplained and needs follow-up. Raw rows:
+warm/incremental run once returned incomplete coverage after a clean cold pass.
+The cause was a test-only protocol bug: the planning worker client treated its
+optional `memory` sample as a plan result. The planner client now accepts those
+messages, and a focused regression verifies this behavior. The instrumented
+full cold/warm/incremental rerun then completed with full coverage. Raw rows:
 [`cache-enabled cold worker JSONL`](benchmarks/toolip-v3.2.1-ast-cache-cold-worker-2026-11-08-linux-node24.jsonl).
 [`five-run cold-only JSONL`](benchmarks/toolip-v3.2.1-ast-cold-repeat-2026-11-08-linux-node24.jsonl).
+
+### Full 50k cache-cycle repeats after cache-hit allocation reduction
+
+The full cache-enabled cold/warm/incremental fixture was run in five fresh
+processes. Median wall time and sampled RSS were 18.09 s / 866 MiB cold,
+4.35 s / 1,006 MiB warm, and 4.65 s / 1,199 MiB incremental. The observed
+wall-time ranges were 17.54–18.69 s, 4.34–4.41 s and 4.48–4.85 s; RSS ranges
+were 821–881 MiB, 950–1,081 MiB and 1,017–1,273 MiB. Every pass reported
+complete coverage and zero provider calls. The independent edit reused
+3,124/3,125 AST chunks.
+
+On a full cache hit, Security Doctor now reuses the validated findings map
+instead of copying all file entries, and no longer builds a second dependency
+digest map that had no consumer. These remove two avoidable `O(F)` map
+allocations from warm cache reuse; incremental scans still make a findings map
+copy when deleting invalidated paths. Total peak space remains `O(B + F + E +
+R)` for source bytes, graph paths/edges and findings, with a smaller constant on
+the warm path. The prior single-run 50k samples were 4.52 s / 1,047 MiB warm
+and 4.57 s / 1,260 MiB incremental. Current five-run ranges overlap those
+single points, so this is not a causal speedup claim or a bound. Raw rows:
+[`full cache-cycle JSONL`](benchmarks/toolip-v3.2.1-ast-cache-cycle-repeat-2026-11-08-linux-node24.jsonl).

@@ -294,7 +294,20 @@ Five isolated 50k cache-enabled cold-only runs completed with full coverage at
 a median 18.85 s / 869 MiB sampled RSS (ranges 18.06–19.07 s / 861–899 MiB).
 This adds within-host sample variance but does not establish p95, a stable
 memory bound or a causal speedup over the previous single baseline. One
-memory-instrumented pass had incomplete coverage in a later warm pass after a
-complete cold pass; an uninstrumented full rerun completed, so the transient
-failure still needs diagnosis. Raw repeated rows are in
+memory-instrumented pass initially had incomplete coverage in a later warm
+pass after a complete cold pass. The cause was the optional `memory` message
+from the plan worker being rejected by the plan client; the client now accepts
+and reports that message, with a focused regression. An instrumented full
+rerun completed. Raw repeated rows are in
 `docs/benchmarks/toolip-v3.2.1-ast-cold-repeat-2026-11-08-linux-node24.jsonl`.
+
+Warm cache handling no longer builds a returned dependency-digest map after
+validating each serialized digest against the current worker plan. It also
+reuses the validated findings map directly when every cache path hits, avoiding
+a second `O(F)` findings-map copy; incremental invalidation still copies that
+map before deleting paths that must be recomputed. This lowers live map space
+on a full hit without changing time complexity. Five complete 50k cache cycles
+measured median wall/RSS of 18.09 s / 866 MiB cold, 4.35 s / 1,006 MiB warm,
+and 4.65 s / 1,199 MiB incremental. Ranges overlap prior single-run samples;
+there is no causal improvement claim or memory bound. Raw data is in
+`docs/benchmarks/toolip-v3.2.1-ast-cache-cycle-repeat-2026-11-08-linux-node24.jsonl`.

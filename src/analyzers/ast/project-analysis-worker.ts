@@ -39,6 +39,7 @@ parentPort.postMessage({ type: 'started' });
 reportMemory('inputs-received');
 if (planOnly) {
   const plan = planAstProjectComponents(inputs);
+  reportMemory('component-plan-complete');
   parentPort.postMessage({
     type: 'plan',
     components: plan.components,
@@ -46,7 +47,6 @@ if (planOnly) {
     dependencyDigests: [...plan.dependencyDigests],
     projectWide: plan.projectWide
   });
-  reportMemory('component-plan-complete');
   parentPort.close();
 } else {
   const analysis = analyzeAstProjectByComponents(inputs);

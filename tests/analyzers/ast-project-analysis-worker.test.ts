@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   analyzeAstProjectInWorker,
   planAstProjectInWorker
@@ -126,6 +126,23 @@ describe('killable AST project analysis', () => {
       ...expected.dependencyDigests
     ]);
     expect(actual.projectWide).toBe(expected.projectWide);
+  }, 25_000);
+
+  it('accepts optional worker memory samples while planning components', async () => {
+    vi.stubEnv('TOOLIP_BENCHMARK_AST_MEMORY', 'true');
+    const stderrWrite = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+    try {
+      const actual = await planAstProjectInWorker(inputs, {
+        timeoutMs: 20_000
+      });
+      expect(actual.components).toEqual(
+        planAstProjectComponents(inputs).components
+      );
+      expect(stderrWrite).toHaveBeenCalled();
+    } finally {
+      stderrWrite.mockRestore();
+      vi.unstubAllEnvs();
+    }
   }, 25_000);
 
   it('preserves global results when connected and independent components mix', () => {

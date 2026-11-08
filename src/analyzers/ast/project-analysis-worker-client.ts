@@ -164,6 +164,22 @@ export async function planAstProjectInWorker(
         options.onWorkerStarted?.();
         return;
       }
+      if (
+        message &&
+        typeof message === 'object' &&
+        (message as { type?: unknown }).type === 'memory'
+      ) {
+        const sample = message as Extract<WorkerMessage, { type: 'memory' }>;
+        if (
+          process.env.TOOLIP_BENCHMARK_AST_MEMORY === 'true' &&
+          Number.isSafeInteger(sample.heapUsedBytes) &&
+          Number.isSafeInteger(sample.externalBytes) &&
+          Number.isSafeInteger(sample.arrayBuffersBytes) &&
+          Number.isSafeInteger(sample.rssBytes)
+        )
+          process.stderr.write(`TOOLIP_AST_MEMORY ${JSON.stringify(sample)}\n`);
+        return;
+      }
       if (!isPlanMessage(message)) {
         stop(
           new Error('AST project worker returned an invalid component plan.')

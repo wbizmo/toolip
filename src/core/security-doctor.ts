@@ -209,6 +209,44 @@ function createAstProjectFingerprints(
   return fingerprints;
 }
 
+function astAnalysisFailureKind(error: unknown): string {
+  if (!(error instanceof Error)) return 'unknown failure';
+  if (error.name === 'TimeoutError') return 'worker timed out';
+  if (error.name === 'AbortError') return 'worker cancelled';
+  if (
+    /worker exited before (?:analysis|planning) \(code \d+\)/u.test(
+      error.message
+    )
+  )
+    return 'worker exited before returning a result';
+  if (/input budget exceeded/u.test(error.message))
+    return 'input budget exceeded';
+  if (/invalid component plan/u.test(error.message))
+    return 'worker returned an invalid component plan';
+  if (/inconsistent component data/u.test(error.message))
+    return 'worker returned inconsistent component or dependency digests';
+  if (/omitted an input digest/u.test(error.message))
+    return 'worker omitted a required component fingerprint';
+  if (/omitted files from its result/u.test(error.message))
+    return 'worker omitted one or more analyzed files';
+  if (/returned an invalid result/u.test(error.message))
+    return 'worker returned an invalid analysis result';
+  if (/dependency digest mismatch/u.test(error.message))
+    return 'worker dependency digests disagreed with the component plan';
+  if (/missing finding/u.test(error.message))
+    return 'worker omitted a file finding';
+  if (
+    /returned (?:an )?(?:invalid|inconsistent)|omitted files|disagrees with/u.test(
+      error.message
+    )
+  )
+    return 'worker result validation failed';
+  const code = (error as Error & { code?: unknown }).code;
+  if (typeof code === 'string' && /^ERR_[A-Z0-9_]{1,64}$/u.test(code))
+    return `worker error ${code}`;
+  return `worker failure (${error.name.replace(/[^A-Za-z0-9]/gu, '').slice(0, 40) || 'Error'})`;
+}
+
 function readAstProjectCache(
   cache: AnalysisResultCache | undefined,
   scope: string,
@@ -217,11 +255,9 @@ function readAstProjectCache(
   expectedDependencyDigests: ReadonlyMap<string, string>
 ): {
   findingsByPath: Map<string, readonly Finding[]>;
-  dependencyDigests: Map<string, string>;
   uncachedPaths: Set<string>;
 } {
   const findingsByPath = new Map<string, readonly Finding[]>();
-  const dependencyDigests = new Map<string, string>();
   const uncachedPaths = new Set<string>();
   for (const chunk of chunks) {
     const value = cache?.get<AstProjectCacheValue>(
@@ -288,10 +324,9 @@ function readAstProjectCache(
       }
       const findingEntry = value.findings[index];
       if (findingEntry) findingsByPath.set(filePath, findingEntry[1]);
-      dependencyDigests.set(filePath, dependencyDigest);
     }
   }
-  return { findingsByPath, dependencyDigests, uncachedPaths };
+  return { findingsByPath, uncachedPaths };
 }
 
 /** Runs the local security checks and records truthful scan coverage. */
@@ -368,6 +403,7 @@ export async function runSecurityDoctor(
   let astFindingsByPath: ReadonlyMap<string, readonly Finding[]> | undefined;
   let astDependencyDigests: ReadonlyMap<string, string> | undefined;
   let astAnalysisIncomplete = false;
+  let astAnalysisFailure: string | undefined;
   let astProjectDigest: string | undefined;
   let astProjectCacheHits = 0;
   let astProjectCacheMisses = 0;
@@ -483,7 +519,10 @@ export async function runSecurityDoctor(
               if (componentDigestsToAnalyze.has(digest))
                 pathsToAnalyze.add(filePath);
 
-            const cachedFindingsByPath = new Map(cachedAst.findingsByPath);
+            const cachedFindingsByPath =
+              pathsToAnalyze.size === 0
+                ? cachedAst.findingsByPath
+                : new Map(cachedAst.findingsByPath);
             for (const filePath of pathsToAnalyze)
               cachedFindingsByPath.delete(filePath);
             astDependencyDigests = plan.dependencyDigests;
@@ -507,7 +546,7 @@ export async function runSecurityDoctor(
                     plan.dependencyDigests.get(input.filePath)
                 )
                   throw new Error(
-                    'AST worker output disagrees with its component plan'
+                    'AST worker output disagrees with its component plan (missing finding or dependency digest mismatch)'
                   );
               }
               astFindingsByPath = new Map([
@@ -526,15 +565,16 @@ export async function runSecurityDoctor(
             }
           }
         }
-      } catch {
+      } catch (error) {
         astFindingsByPath = undefined;
         astDependencyDigests = undefined;
         astAnalysisIncomplete = true;
+        astAnalysisFailure = astAnalysisFailureKind(error);
       }
     }
     if (astAnalysisIncomplete)
       warnings.push(
-        'cross-file TypeScript taint analysis is incomplete for this project snapshot'
+        `cross-file TypeScript taint analysis is incomplete for this project snapshot (${astAnalysisFailure ?? 'unknown failure'})`
       );
   }
   let filesEligible = 0;

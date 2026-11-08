@@ -412,7 +412,7 @@ async function benchmarkRepositoryScan(
           context.summary.totalFiles !== expectedFiles
         ) {
           throw new Error(
-            `full repository scan was incomplete at ${size} source files: ${JSON.stringify(scorecard.analysis)}`
+            `full repository scan was incomplete at ${size} source files: ${JSON.stringify({ analysis: scorecard.analysis, warnings: scorecard.warnings, cache: analysisCache ? { entries: analysisCache.size, bytes: analysisCache.byteSize } : undefined })}`
           );
         }
         previousSnapshot = snapshot;
