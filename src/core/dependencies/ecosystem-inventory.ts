@@ -23,6 +23,7 @@ type LockedPackage = {
   source: string;
   resolutionConfidence?: 'lockfile' | 'declared-pin' | 'workspace' | 'unknown';
   development?: boolean;
+  optional?: boolean;
   integrity?: string;
   direct?: boolean;
   installPath?: string;
@@ -76,6 +77,7 @@ function identity(item: LockedPackage): DependencyIdentity {
     version: item.version,
     direct: item.direct ?? false,
     development: item.development ?? false,
+    ...(item.optional ? { optional: true } : {}),
     source: item.source,
     resolutionConfidence: item.resolutionConfidence ?? 'lockfile',
     installPath,
@@ -943,14 +945,41 @@ function fromMavenDependencyTree(
   const output: LockedPackage[] = [];
   const stack: Array<LockedPackage | undefined> = [];
   for (const line of text.split(/\r?\n/u)) {
-    const info = line.match(/^\s*\[INFO\]\s*(.*)$/u)?.[1];
-    if (!info) continue;
+    const rawInfo = line.match(/^\s*\[INFO\](.*)$/u)?.[1];
+    if (rawInfo === undefined) continue;
+    const info = rawInfo.startsWith(' ') ? rawInfo.slice(1) : rawInfo;
     const marker = info.search(/[+\\]-\s/u);
     if (marker < 0) continue;
     const prefix = info.slice(0, marker);
-    const coordinateText = info.slice(marker + 2).trim();
+    const depth = mavenTreeDepth(prefix);
+    if (depth === undefined) {
+      warnings.push('maven-tree-layout-unresolved');
+      continue;
+    }
+    let coordinateText = info.slice(marker + 2).trim();
+    let optional = false;
+    const annotations: string[] = [];
+    while (coordinateText.endsWith(')')) {
+      const annotationStart = coordinateText.lastIndexOf(' (');
+      if (annotationStart < 0) break;
+      annotations.unshift(coordinateText.slice(annotationStart + 2, -1));
+      coordinateText = coordinateText.slice(0, annotationStart).trimEnd();
+    }
+    let annotationsValid = true;
+    for (const annotation of annotations) {
+      if (annotation.toLowerCase() === 'optional') optional = true;
+      else if (!/^version managed from \S+$/iu.test(annotation))
+        annotationsValid = false;
+    }
     const parts = coordinateText.split(':');
-    if (parts.length < 4 || !parts[0] || !parts[1] || !parts[3]) {
+    if (
+      !annotationsValid ||
+      (parts.length !== 5 && parts.length !== 6) ||
+      !parts[0] ||
+      !parts[1] ||
+      !parts[2] ||
+      !parts[3]
+    ) {
       warnings.push('maven-tree-coordinate-unresolved');
       continue;
     }
@@ -958,14 +987,31 @@ function fromMavenDependencyTree(
       warnings.push('maven-tree-conflict-resolution-unavailable');
       continue;
     }
-    const version = parts[3];
-    if (!exact(version) || /[${}]/u.test(version)) {
+    const hasClassifier = parts.length === 6;
+    const packageType = parts[2];
+    const classifier = hasClassifier ? parts[3] : undefined;
+    const version = hasClassifier ? parts[4] : parts[3];
+    const scope = (hasClassifier ? parts[5] : parts[4])?.toLowerCase();
+    if (
+      !exact(parts[0]) ||
+      !exact(parts[1]) ||
+      !exact(packageType) ||
+      (hasClassifier && !exact(classifier)) ||
+      !exact(version) ||
+      /[${}]/u.test(version) ||
+      !scope ||
+      !['compile', 'provided', 'runtime', 'test', 'system', 'import'].includes(
+        scope
+      )
+    ) {
       warnings.push('maven-tree-version-unresolved');
       continue;
     }
-    const packageType = parts[2] || 'jar';
-    const classifier = parts.length > 5 ? parts[5] : undefined;
-    const depth = 1 + (prefix.match(/\|/gu)?.length ?? 0);
+    const section: DependencyEdge['section'] = optional
+      ? 'optionalDependency'
+      : scope === 'test' || scope === 'provided'
+        ? 'devDependency'
+        : 'dependency';
     const item: LockedPackage = {
       name: `${parts[0]}:${parts[1]}`,
       version,
@@ -973,6 +1019,8 @@ function fromMavenDependencyTree(
       source: 'maven-dependency-tree.txt',
       packageType,
       ...(classifier ? { classifier } : {}),
+      ...(optional ? { optional: true } : {}),
+      development: section === 'devDependency',
       direct: depth === 1,
       dependencies: []
     };
@@ -981,14 +1029,15 @@ function fromMavenDependencyTree(
       warnings.push('maven-tree-parent-edge-unresolved');
       continue;
     }
+    const mavenPathComponent = `${item.name}@${item.version}:${packageType}:${classifier ?? ''}`;
     item.installPath = parent
-      ? `${parent.installPath}/${item.name}@${item.version}`
-      : `maven-tree:${item.name}@${item.version}:${packageType}:${classifier ?? ''}`;
+      ? `${parent.installPath}/${mavenPathComponent}`
+      : `maven-tree:${mavenPathComponent}`;
     if (parent) {
       parent.dependencies?.push({
         name: item.name,
         requirement: item.version,
-        section: 'dependency'
+        section
       });
     }
     stack[depth] = item;
@@ -996,6 +1045,13 @@ function fromMavenDependencyTree(
     output.push(item);
   }
   return output;
+}
+
+function mavenTreeDepth(prefix: string): number | undefined {
+  if (!prefix) return 1;
+  if (prefix.length % 3 !== 0) return undefined;
+  if (!/^(?:(?:\| {2})|(?: {3}))+$/u.test(prefix)) return undefined;
+  return 1 + prefix.length / 3;
 }
 
 /** Parses Maven/Gradle exported resolved graphs without invoking build tooling. */
@@ -3767,7 +3823,11 @@ export async function readOtherEcosystemInventoryDetailed(
       to: dependency.id,
       name: dependency.name,
       requirement: dependency.version,
-      section: dependency.development ? 'devDependency' : 'dependency'
+      section: dependency.optional
+        ? 'optionalDependency'
+        : dependency.development
+          ? 'devDependency'
+          : 'dependency'
     });
   for (const [name, spec] of composerDirect) {
     const target = resolveTarget('Packagist', name, spec.requirement);

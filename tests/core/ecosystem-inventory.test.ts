@@ -1652,6 +1652,124 @@ describe('non-npm lockfile inventory', () => {
     );
   });
 
+  it('parses Maven classifier coordinates and pipe-free nested branches exactly', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'maven-dependency-tree.txt'),
+      [
+        '[INFO] app:service:pom:1.0.0',
+        '[INFO] +- org.example:tests:jar:tests:1.2.3:test',
+        '[INFO] |  +- org.example:runtime:jar:2.0.0:runtime',
+        '[INFO] |     \\- org.example:grandchild:jar:sources:3.0.0:provided',
+        '[INFO] +- org.example:optional:jar:4.0.0:compile (optional)',
+        '[INFO]    \\- org.example:leaf:jar:5.0.0:compile',
+        '[INFO] +- org.example:multi:jar:6.0.0:compile',
+        '[INFO] |  \\- org.example:shared:jar:classes:7.0.0:compile',
+        '[INFO] +- org.example:multi:zip:6.0.0:compile',
+        '[INFO]    \\- org.example:shared:zip:classes:7.0.0:compile'
+      ].join('\n')
+    );
+
+    const graph = await (
+      await import('../../src/core/dependencies/ecosystem-inventory.js')
+    ).readOtherEcosystemInventoryDetailed(root);
+    const tests = graph.packages.find(
+      (item) => item.name === 'org.example:tests'
+    );
+    const grandchild = graph.packages.find(
+      (item) => item.name === 'org.example:grandchild'
+    );
+    const optional = graph.packages.find(
+      (item) => item.name === 'org.example:optional'
+    );
+    const runtime = graph.packages.find(
+      (item) => item.name === 'org.example:runtime'
+    );
+    const shared = graph.packages.filter(
+      (item) => item.name === 'org.example:shared'
+    );
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain(
+      'unresolved-Maven-dependency:org.example:shared:org.example:multi'
+    );
+    expect(tests).toMatchObject({
+      version: '1.2.3',
+      classifier: 'tests',
+      packageType: 'jar',
+      direct: true,
+      development: true
+    });
+    expect(grandchild).toMatchObject({
+      version: '3.0.0',
+      classifier: 'sources',
+      development: true,
+      direct: false
+    });
+    expect(runtime).toMatchObject({ version: '2.0.0', direct: false });
+    expect(shared).toHaveLength(2);
+    expect(new Set(shared.map((item) => item.id)).size).toBe(2);
+    expect(shared.map((item) => item.packageType).sort()).toEqual([
+      'jar',
+      'zip'
+    ]);
+    expect(optional).toMatchObject({
+      version: '4.0.0',
+      direct: true,
+      optional: true
+    });
+    expect(graph.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          from: 'root',
+          to: tests?.id,
+          section: 'devDependency'
+        }),
+        expect.objectContaining({
+          from: tests?.id,
+          to: runtime?.id,
+          section: 'dependency'
+        }),
+        expect.objectContaining({
+          from: 'root',
+          to: optional?.id,
+          section: 'optionalDependency'
+        })
+      ])
+    );
+    expect(
+      graph.edges.some(
+        (edge) => edge.from === runtime?.id && edge.to === grandchild?.id
+      )
+    ).toBe(true);
+  });
+
+  it('fails incomplete on malformed Maven coordinates or ambiguous tree indentation', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'maven-dependency-tree.txt'),
+      [
+        '[INFO] app:service:jar:1.0.0',
+        '[INFO] +- org.example:parent:jar:1.0.0:compile',
+        '[INFO]   +- org.example:bad-indent:jar:2.0.0:compile',
+        '[INFO] |  \\- org.example:bad-coordinate:jar:bad:3.0.0:compile:extra',
+        '[INFO] |  |  \\- org.example:orphan:jar:4.0.0:compile'
+      ].join('\n')
+    );
+
+    const graph = await (
+      await import('../../src/core/dependencies/ecosystem-inventory.js')
+    ).readOtherEcosystemInventoryDetailed(root);
+
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain('maven-tree-layout-unresolved');
+    expect(graph.warnings).toContain('maven-tree-coordinate-unresolved');
+    expect(graph.warnings).toContain('maven-tree-parent-edge-unresolved');
+    expect(graph.packages.map((item) => item.name)).toEqual([
+      'org.example:parent'
+    ]);
+    expect(graph.edges).toHaveLength(1);
+  });
+
   it('imports bounded multi-module Java exports with exact scoped instances and classifiers', async () => {
     const root = await fixture();
     await writeFile(

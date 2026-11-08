@@ -990,7 +990,7 @@ describe('OsvVulnerabilityAnalyzer', () => {
       );
       await writeFile(
         path.join(root, 'maven-dependency-tree.txt'),
-        '[INFO] app:service:jar:1.0.0\n[INFO] +- org.example:core:jar:4.2.0:compile\n'
+        '[INFO] app:service:jar:1.0.0\n[INFO] +- org.example:core:jar:tests:4.2.0:compile\n'
       );
       await writeFile(
         path.join(root, 'composer.lock'),

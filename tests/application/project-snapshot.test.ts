@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -176,6 +177,98 @@ describe('immutable project snapshots', () => {
       JSON.stringify(first.findings)
     );
   });
+
+  it('reruns AST analysis after its cached project chunk is evicted', async () => {
+    const root = await project();
+    await writeFile(
+      path.join(root, 'src', 'b.ts'),
+      'export const other = 2;\n'
+    );
+    const cache = new AnalysisResultCache(1);
+    const snapshot = await createProjectSnapshot(root);
+    const cold = await runSecurityDoctor(root, {
+      snapshot,
+      analysisCache: cache
+    });
+    cache.set('eviction', 'trigger', 'test-v1', { value: true });
+
+    const recovered = await runSecurityDoctor(root, {
+      snapshot,
+      analysisCache: cache
+    });
+
+    expect(recovered.cacheMetrics.astProjectMisses).toBe(1);
+    expect(recovered.cacheMetrics.astProjectHits).toBe(0);
+    expect(JSON.stringify(recovered.findings)).toBe(
+      JSON.stringify(cold.findings)
+    );
+  });
+
+  it('rejects truncated, duplicated, and malformed AST dependency digest chunks', async () => {
+    const root = await project();
+    await writeFile(
+      path.join(root, 'src', 'b.ts'),
+      'export const other = 2;\n'
+    );
+    const snapshot = await createProjectSnapshot(root);
+    const astFiles = snapshot.files
+      .filter((file) =>
+        ['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs'].includes(
+          path.extname(file.path).slice(1)
+        )
+      )
+      .sort((left, right) => left.path.localeCompare(right.path));
+    const projectHash = createHash('sha256').update('ast-project-input-v1\0');
+    for (const file of astFiles)
+      projectHash
+        .update(file.path)
+        .update('\0')
+        .update(file.sha256)
+        .update('\0');
+    const scope = `ast-project:${snapshot.root}`;
+    const taskId = `${projectHash.digest('hex')}:0`;
+    const version = 'security-doctor-ast-project-v1';
+    const corruptions: Array<
+      (entries: Array<[string, string]>) => Array<[string, string]>
+    > = [
+      (entries) => entries.slice(1),
+      (entries) => (entries[0] ? [entries[0], entries[0]] : []),
+      (entries) =>
+        entries.map(([filePath]): [string, string] => [
+          filePath,
+          'g'.repeat(64)
+        ])
+    ];
+
+    for (const corrupt of corruptions) {
+      const cache = new AnalysisResultCache();
+      const cold = await runSecurityDoctor(root, {
+        snapshot,
+        analysisCache: cache
+      });
+      const cached = cache.get<{
+        paths: string[];
+        findings: Array<[string, unknown[]]>;
+        dependencyDigests: Array<[string, string]>;
+      }>(scope, taskId, version);
+      expect(cached?.dependencyDigests).toHaveLength(2);
+      cache.set(scope, taskId, version, {
+        ...cached,
+        dependencyDigests: corrupt(cached?.dependencyDigests ?? [])
+      });
+
+      const recovered = await runSecurityDoctor(root, {
+        snapshot,
+        analysisCache: cache
+      });
+
+      expect(recovered.cacheMetrics.astProjectMisses).toBe(1);
+      expect(recovered.cacheMetrics.astProjectHits).toBe(0);
+      expect(JSON.stringify(recovered.findings)).toBe(
+        JSON.stringify(cold.findings)
+      );
+    }
+  }, 30_000);
 
   it('invalidates source conclusions when the captured rule configuration changes', async () => {
     const root = await project();

@@ -183,3 +183,28 @@ from 1,116 to 1,143 MiB RSS and 307 to 440 MiB heap. The full codebase
 peak-space inventory and multi-scan/concurrency profile remain open; all
 related issues remain Partial. The full 36-row artifact is
 `docs/benchmarks/toolip-v3.2.1-isolated-ast-cache-2026-11-08-linux-node24.jsonl`.
+
+### AST chunk completeness validation (2026-11-08)
+
+For `C` cached paths in one chunk, cache validation now checks exact path order,
+one unique dependency digest per path, and each 64-character lowercase SHA-256
+value. This validation is `O(C)` time and `O(C)` temporary set space, bounded
+by the existing entry-size/cache limits. Any malformed, truncated or duplicate
+digest set causes the AST worker to recompute the result. Regression fixtures
+exercise those corruptions, cache eviction and findings equivalence. This
+validation does not reduce the cold AST worker's source/AST duplication or
+establish an aggregate peak bound across simultaneous scans.
+
+### Maven text tree parsing (2026-11-08)
+
+For `B` bytes of captured Maven dependency-tree output and `D` maximum tree
+depth, line scanning and coordinate validation are `O(B)` time; the current
+text split retains `O(B)` line storage, and package/edge records retain
+`O(V + E)` space. Stack-based parent lookup is `O(1)` per accepted row with
+`O(D)` parent slots. Only documented five-field and six-field coordinates,
+recognized scopes/annotations and three-column indentation are accepted;
+unsupported or malformed layouts mark the inventory incomplete. Instance
+paths include artifact type/classifier at every depth, while ambiguous edges
+remain unresolved rather than being guessed. This addresses the specific #82
+parser defect, not real Maven export compatibility, BOM/property resolution,
+or Java provider acceptance.

@@ -368,6 +368,37 @@ describe('SBOM generation', () => {
     }
   });
 
+  it('emits the exact Maven text-tree classifier PURL', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-sbom-maven-text-')
+    );
+    try {
+      await writeFile(
+        path.join(root, 'maven-dependency-tree.txt'),
+        [
+          '[INFO] app:service:jar:1.0.0',
+          '[INFO] +- org.example:native:zip:linux-x64:2.0.0:runtime',
+          '[INFO]    \\- org.example:helper:jar:3.0.0:compile'
+        ].join('\n')
+      );
+
+      const document = await generateSbom(root, 'cyclonedx');
+      const components = document.components as Array<{
+        name: string;
+        purl: string;
+      }>;
+      expect(components).toContainEqual(
+        expect.objectContaining({
+          name: 'org.example:native',
+          purl: 'pkg:maven/org.example/native@2.0.0?classifier=linux-x64&type=zip'
+        })
+      );
+      await expectValidCycloneDx(document);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('normalizes Python distribution names using PEP 503 in CycloneDX purls', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-sbom-pypi-'));
     try {

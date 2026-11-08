@@ -205,6 +205,7 @@ function readAstProjectCache(
       !Array.isArray(value.findings) ||
       !Array.isArray(value.dependencyDigests) ||
       value.findings.length !== chunk.paths.length ||
+      value.dependencyDigests.length !== chunk.paths.length ||
       value.findings.some(
         (entry, index) =>
           !Array.isArray(entry) ||
@@ -212,11 +213,15 @@ function readAstProjectCache(
           !Array.isArray(entry[1])
       ) ||
       value.dependencyDigests.some(
-        (entry) =>
+        (entry, index) =>
           !Array.isArray(entry) ||
-          !chunk.paths.includes(entry[0]) ||
-          typeof entry[1] !== 'string'
-      )
+          entry.length !== 2 ||
+          entry[0] !== chunk.paths[index] ||
+          typeof entry[1] !== 'string' ||
+          !/^[a-f0-9]{64}$/u.test(entry[1])
+      ) ||
+      new Set(value.dependencyDigests.map(([filePath]) => filePath)).size !==
+        chunk.paths.length
     )
       return undefined;
     for (const [filePath, fileFindings] of value.findings)
