@@ -1495,7 +1495,11 @@ function localReferences(source, sourcePath, packagesByName, texts) {
         labels.push(task);
         byLabel.set(task.label, labels);
       }
-      const queue = tasks.filter((task) => task?.runOn === 'folderOpen');
+      const queue = tasks.filter(
+        (task) =>
+          task?.runOptions?.runOn === 'folderOpen' ||
+          task?.runOn === 'folderOpen'
+      );
       const included = new Set();
       while (queue.length > 0) {
         const task = queue.shift();
@@ -1822,7 +1826,13 @@ function scanText(name, text) {
             typeof task.options !== 'object' ||
             Array.isArray(task.options) ||
             (task.options.cwd !== undefined &&
-              typeof task.options.cwd !== 'string')))
+              typeof task.options.cwd !== 'string'))) ||
+        (task.runOptions !== undefined &&
+          (!task.runOptions ||
+            typeof task.runOptions !== 'object' ||
+            Array.isArray(task.runOptions) ||
+            (task.runOptions.runOn !== undefined &&
+              !['default', 'folderOpen'].includes(task.runOptions.runOn))))
       )
         throw new Error(`Malformed editor task command: ${name}`);
       const command = [
@@ -1833,7 +1843,8 @@ function scanText(name, text) {
         .filter((part) => typeof part === 'string')
         .join(' ');
       if (
-        task.runOn === 'folderOpen' &&
+        (task.runOptions?.runOn === 'folderOpen' ||
+          task.runOn === 'folderOpen') &&
         dangerous.some((pattern) => pattern.test(command))
       )
         findings.push(`${name}#folderOpen`);

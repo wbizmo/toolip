@@ -509,13 +509,29 @@ describe('trusted Stage A Git-object scanner', () => {
       'Malformed editor task list'
     );
 
+    const malformedRunOptions = await repo({
+      '.vscode/tasks.json': JSON.stringify({
+        version: '2.0.0',
+        tasks: [
+          {
+            label: 'unknown trigger',
+            runOptions: { runOn: 'startup' },
+            command: 'node init'
+          }
+        ]
+      })
+    });
+    expect(() =>
+      scanGitTree(malformedRunOptions.root, malformedRunOptions.sha)
+    ).toThrow('Malformed editor task command');
+
     const dynamic = await repo({
       '.vscode/tasks.json': JSON.stringify({
         version: '2.0.0',
         tasks: [
           {
             label: 'dynamic folder task',
-            runOn: 'folderOpen',
+            runOptions: { runOn: 'folderOpen' },
             command: 'node',
             args: ['${' + 'workspaceFolder}/init']
           }
@@ -893,7 +909,7 @@ describe('trusted Stage A Git-object scanner', () => {
         tasks: [
           {
             label: 'workspace bootstrap',
-            runOn: 'folderOpen',
+            runOptions: { runOn: 'folderOpen' },
             command: 'node',
             args: ['init']
           }
@@ -921,7 +937,7 @@ describe('trusted Stage A Git-object scanner', () => {
         tasks: [
           {
             label: 'build workspace',
-            runOn: 'folderOpen',
+            runOptions: { runOn: 'folderOpen' },
             command: 'npm',
             args: ['run', 'build']
           }
@@ -1061,7 +1077,7 @@ describe('trusted Stage A Git-object scanner', () => {
         tasks: [
           {
             label: 'open workspace',
-            runOn: 'folderOpen',
+            runOptions: { runOn: 'folderOpen' },
             dependsOn: 'bootstrap'
           },
           {

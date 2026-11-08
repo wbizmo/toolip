@@ -28,7 +28,12 @@ describe('non-executing malicious content chain analysis', () => {
       {
         path: '.vscode/tasks.json',
         content: JSON.stringify({
-          tasks: [{ runOn: 'folderOpen', command: 'node start' }]
+          tasks: [
+            {
+              runOptions: { runOn: 'folderOpen' },
+              command: 'node start'
+            }
+          ]
         })
       },
       { path: 'start', content: "require('./payload.orc');" },
@@ -90,7 +95,13 @@ describe('non-executing malicious content chain analysis', () => {
       {
         path: 'packages/web/.vscode/tasks.json',
         content: JSON.stringify({
-          tasks: [{ runOn: 'folderOpen', type: 'npm', script: 'prepare' }]
+          tasks: [
+            {
+              runOptions: { runOn: 'folderOpen' },
+              type: 'npm',
+              script: 'prepare'
+            }
+          ]
         })
       },
       {
@@ -357,6 +368,16 @@ describe('non-executing malicious content chain analysis', () => {
     ]);
     expect(result.coverage.state).toBe('failed');
     expect(result.coverage.skipped).toBe(1);
+
+    const unsupportedRunTrigger = analyzeMaliciousContent([
+      {
+        path: '.vscode/tasks.json',
+        content: JSON.stringify({
+          tasks: [{ runOptions: { runOn: 'startup' }, command: 'node init' }]
+        })
+      }
+    ]);
+    expect(unsupportedRunTrigger.coverage.state).toBe('failed');
   });
 
   it('marks input beyond the per-file analysis budget incomplete', () => {

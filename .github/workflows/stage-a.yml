@@ -30,7 +30,7 @@ jobs:
       - name: Verify trusted scanner digest and fetch/scan exact PR Git objects
         id: gate
         env:
-          TOOLIP_STAGE_A_SHA256: a1de826eeda0aa63c56538779176967465ecb712f7a5fdf7f557dc4100c6c754
+          TOOLIP_STAGE_A_SHA256: d95a041a38db357d51614b8f10bfa205e4294906c5bd6ee9061101c5cf2ce41a
           TOOLIP_STAGE_A_PUBLIC_SCOPES: '@babel,@bcoe,@biomejs,@esbuild,@gar,@hono,@isaacs,@jridgewell,@modelcontextprotocol,@nodelib,@npmcli,@oxc-project,@rolldown,@sigstore,@tufjs,@types,@vitest'
           GITHUB_TOKEN: ${{ github.token }}
           STAGE_A_REPOSITORY: ${{ github.repository }}
@@ -78,7 +78,7 @@ jobs:
         run: echo 'TOOLIP_STAGE_A_SIGNATURE_AUDIT=not-applicable' >> "$GITHUB_ENV"
       - name: Write immutable Stage A run metadata
         env:
-          TOOLIP_STAGE_A_SHA256: a1de826eeda0aa63c56538779176967465ecb712f7a5fdf7f557dc4100c6c754
+          TOOLIP_STAGE_A_SHA256: d95a041a38db357d51614b8f10bfa205e4294906c5bd6ee9061101c5cf2ce41a
         run: node scripts/write-stage-a-artifact.mjs
       - name: Publish Stage A approval metadata for gated CI
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

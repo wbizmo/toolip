@@ -247,12 +247,21 @@ function malformedEntrypoint(file: MaliciousContentFile): boolean {
     record.tasks.some((task) => {
       if (!task || typeof task !== 'object' || Array.isArray(task)) return true;
       const value = task as Record<string, unknown>;
+      const runOptions = value.runOptions;
       return (
         (value.command !== undefined && typeof value.command !== 'string') ||
         (value.script !== undefined && typeof value.script !== 'string') ||
         (value.args !== undefined &&
           (!Array.isArray(value.args) ||
-            value.args.some((part) => typeof part !== 'string')))
+            value.args.some((part) => typeof part !== 'string'))) ||
+        (runOptions !== undefined &&
+          (!runOptions ||
+            typeof runOptions !== 'object' ||
+            Array.isArray(runOptions) ||
+            ((runOptions as { runOn?: unknown }).runOn !== undefined &&
+              !['default', 'folderOpen'].includes(
+                String((runOptions as { runOn?: unknown }).runOn)
+              ))))
       );
     })
   );
@@ -343,6 +352,7 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
           if (!task || typeof task !== 'object') continue;
           const object = task as {
             runOn?: unknown;
+            runOptions?: unknown;
             command?: unknown;
             script?: unknown;
             args?: unknown;
@@ -355,7 +365,14 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
           ]
             .filter((v): v is string => typeof v === 'string')
             .join(' ');
-          const automatic = object.runOn === 'folderOpen';
+          const runOptions =
+            object.runOptions &&
+            typeof object.runOptions === 'object' &&
+            !Array.isArray(object.runOptions)
+              ? (object.runOptions as { runOn?: unknown })
+              : undefined;
+          const automatic =
+            object.runOn === 'folderOpen' || runOptions?.runOn === 'folderOpen';
           const refs = new Set<string>();
           addExecutableReferences(source, refs);
           if (object.type === 'npm' && typeof object.script === 'string')
