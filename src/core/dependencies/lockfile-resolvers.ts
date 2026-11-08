@@ -34,6 +34,7 @@ type WorkspaceManifestBudget = { count: number; bytes: number };
 const maximumWorkspaceManifests = 10_000;
 const maximumWorkspaceManifestBytes = 1_048_576;
 const maximumWorkspaceManifestTotalBytes = 32 * 1024 * 1024;
+const maximumYarnResolverCandidateWork = 250_000;
 
 function record(value: unknown): RecordValue | undefined {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -124,14 +125,15 @@ function pnpmStorePath(locator: string, name: string): string {
   return `node_modules/.pnpm/${base}@${version}${peer}/node_modules/${name}`;
 }
 
-function pnpmVersionMatches(locator: string, requested: string): boolean {
-  const parsed = parsePnpmLocator(locator);
-  if (!parsed) return false;
+function pnpmRequirementKey(requested: string): {
+  version: string;
+  suffix: string;
+} {
   const clean = requested.replace(/^v/u, '');
   const marker = clean.search(/[(_]/u);
   const version = marker < 0 ? clean : clean.slice(0, marker);
   const suffix = marker < 0 ? '' : clean.slice(marker);
-  return version === parsed.version && (!suffix || suffix === parsed.suffix);
+  return { version, suffix };
 }
 
 function makeGraph(
@@ -293,7 +295,8 @@ export async function readPnpmDependencyGraph(
     throw new Error('pnpm lockfile version is unsupported');
   const warnings: string[] = [];
   const instances: LockedInstance[] = [];
-  const byName = new Map<string, LockedInstance[]>();
+  const byNameAndVersion = new Map<string, LockedInstance[]>();
+  const byNameVersionAndSuffix = new Map<string, LockedInstance[]>();
   for (const [locator, raw] of Object.entries(packageMap)) {
     const entry = record(raw) ?? {};
     const parsed = parsePnpmLocator(locator);
@@ -321,9 +324,21 @@ export async function readPnpmDependencyGraph(
       peerDependencies: record(entry.peerDependencies)
     };
     instances.push(item);
-    const siblings = byName.get(item.name) ?? [];
-    siblings.push(item);
-    byName.set(item.name, siblings);
+    const versionKey = JSON.stringify([item.name, item.version]);
+    const versionSiblings = byNameAndVersion.get(versionKey) ?? [];
+    versionSiblings.push(item);
+    byNameAndVersion.set(versionKey, versionSiblings);
+    const parsedLocator = parsePnpmLocator(item.locator);
+    if (parsedLocator) {
+      const suffixKey = JSON.stringify([
+        item.name,
+        parsedLocator.version,
+        parsedLocator.suffix
+      ]);
+      const suffixSiblings = byNameVersionAndSuffix.get(suffixKey) ?? [];
+      suffixSiblings.push(item);
+      byNameVersionAndSuffix.set(suffixKey, suffixSiblings);
+    }
   }
   const snapshots = record(lock.snapshots) ?? {};
   const edgeSpecs = [] as Parameters<typeof makeGraph>[2];
@@ -331,11 +346,17 @@ export async function readPnpmDependencyGraph(
     name: string,
     requirement: string
   ): LockedInstance | undefined => {
-    const matches = (byName.get(name) ?? []).filter((item) =>
-      pnpmVersionMatches(item.locator, requirement)
-    );
-    if (matches.length === 1) return matches[0];
-    return undefined;
+    const parsed = pnpmRequirementKey(requirement);
+    if (parsed.suffix) {
+      const matches =
+        byNameVersionAndSuffix.get(
+          JSON.stringify([name, parsed.version, parsed.suffix])
+        ) ?? [];
+      return matches.length === 1 ? matches[0] : undefined;
+    }
+    const matches =
+      byNameAndVersion.get(JSON.stringify([name, parsed.version])) ?? [];
+    return matches.length === 1 ? matches[0] : undefined;
   };
   const importers = record(lock.importers) ?? {};
   const workspaceByPath = new Map<string, LockedInstance>();
@@ -985,6 +1006,19 @@ export async function readYarnDependencyGraph(
     }
   }
   const instances = [...instancesByLocator.values()];
+  const entryCandidatesByName = new Map<
+    string,
+    Array<{ descriptor: string; item: LockedInstance }>
+  >();
+  for (const [descriptor, item] of entryByDescriptor) {
+    const name = yarnDescriptorName(descriptor)?.name;
+    if (!name) continue;
+    const candidates = entryCandidatesByName.get(name) ?? [];
+    candidates.push({ descriptor, item });
+    entryCandidatesByName.set(name, candidates);
+  }
+  let yarnResolverCandidateWork = 0;
+  let yarnResolverCandidateWorkExceeded = false;
   const resolve = (
     name: string,
     requirement: string
@@ -1001,13 +1035,18 @@ export async function readYarnDependencyGraph(
       const exact = entryByDescriptor.get(descriptor);
       if (exact) return exact;
     }
-    const matches = [...entryByDescriptor.entries()]
-      .filter(
-        ([descriptor]) =>
-          yarnDescriptorName(descriptor)?.name === name &&
-          descriptor.endsWith(requirement)
-      )
-      .map(([, item]) => item);
+    if (yarnResolverCandidateWorkExceeded) return undefined;
+    const matches: LockedInstance[] = [];
+    for (const candidate of entryCandidatesByName.get(name) ?? []) {
+      if (yarnResolverCandidateWork >= maximumYarnResolverCandidateWork) {
+        yarnResolverCandidateWorkExceeded = true;
+        warnings.push('Yarn resolver candidate work budget exceeded');
+        return undefined;
+      }
+      yarnResolverCandidateWork += 1;
+      if (candidate.descriptor.endsWith(requirement))
+        matches.push(candidate.item);
+    }
     return matches.length === 1 ? matches[0] : undefined;
   };
   const edgeSpecs = [] as Parameters<typeof makeGraph>[2];

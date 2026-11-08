@@ -58,6 +58,7 @@ const maximumPythonRequirementBytes = 32 * 1024 * 1024;
 const maximumPythonWorkspaceManifests = 5_000;
 const maximumPythonWorkspaceEntries = 50_000;
 const maximumWorkspaceGlobWork = 16_000_000;
+const maximumEcosystemResolutionWork = 250_000;
 
 function asRecord(value: unknown): RecordValue | undefined {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -2892,6 +2893,8 @@ export async function readOtherEcosystemInventoryDetailed(
     file: string;
     declarations: CargoDependencyDeclaration[];
   }> = [];
+  let cargoDeclarationWork = 0;
+  let cargoDeclarationWarningAdded = false;
   const cargoWorkspaceLockCandidates = new Map<string, LockedPackage[]>();
   for (const item of output) {
     if (
@@ -2975,8 +2978,28 @@ export async function readOtherEcosystemInventoryDetailed(
       current.push(declaration);
       declarationsByName.set(declaration.name, current);
     }
-    workspaceItem.dependencies = (workspaceItem.dependencies ?? []).flatMap(
-      (dependency) => {
+    const lockedDependencies = workspaceItem.dependencies ?? [];
+    let workspaceDeclarationWork = 0;
+    for (const dependency of lockedDependencies) {
+      workspaceDeclarationWork +=
+        declarationsByName.get(dependency.name)?.length ?? 0;
+      if (
+        workspaceDeclarationWork + cargoDeclarationWork >
+        maximumEcosystemResolutionWork
+      )
+        break;
+    }
+    if (
+      workspaceDeclarationWork + cargoDeclarationWork >
+      maximumEcosystemResolutionWork
+    ) {
+      if (!cargoDeclarationWarningAdded) {
+        warnings.push('cargo-workspace-declaration-work-budget-exceeded');
+        cargoDeclarationWarningAdded = true;
+      }
+    } else {
+      cargoDeclarationWork += workspaceDeclarationWork;
+      workspaceItem.dependencies = lockedDependencies.flatMap((dependency) => {
         const contexts = (declarationsByName.get(dependency.name) ?? []).filter(
           (context) =>
             cargoRequirementMatches(dependency.requirement, context.requirement)
@@ -2992,8 +3015,8 @@ export async function readOtherEcosystemInventoryDetailed(
             : {}),
           ...(context.alias !== context.name ? { alias: context.alias } : {})
         }));
-      }
-    );
+      });
+    }
     cargoWorkspacePackages.push({ name, version, module, file, declarations });
   }
   if (cargoPatternWork.exceeded)
@@ -3541,6 +3564,23 @@ export async function readOtherEcosystemInventoryDetailed(
     if (workspacePackage) pythonWorkspacePackages.set(module, workspacePackage);
   }
   const edges: DependencyEdge[] = [...goMvsEdges];
+  let ecosystemResolutionWork = 0;
+  let ecosystemResolutionWorkExceeded = false;
+  const filterCandidates = <T>(
+    candidates: readonly T[],
+    predicate: (candidate: T) => boolean
+  ): T[] => {
+    const matches: T[] = [];
+    for (const candidate of candidates) {
+      if (ecosystemResolutionWork >= maximumEcosystemResolutionWork) {
+        ecosystemResolutionWorkExceeded = true;
+        break;
+      }
+      ecosystemResolutionWork += 1;
+      if (predicate(candidate)) matches.push(candidate);
+    }
+    return matches;
+  };
   const resolveTarget = (
     ecosystem: DependencyIdentity['ecosystem'],
     name: string,
@@ -3552,9 +3592,10 @@ export async function readOtherEcosystemInventoryDetailed(
     const index = resolutionByName.get(`${ecosystem}\0${name}`);
     const candidates = index?.candidates ?? [];
     if (ecosystem === 'Packagist') {
-      const matches = candidates.filter((candidate) =>
+      const matches = filterCandidates(candidates, (candidate) =>
         composerRequirementMatches(candidate.version, requirement)
       );
+      if (ecosystemResolutionWorkExceeded) return undefined;
       return matches.length === 1 ? matches[0] : undefined;
     }
     let markerCandidates: DependencyIdentity[] = [];
@@ -3566,41 +3607,57 @@ export async function readOtherEcosystemInventoryDetailed(
     let resolutionCandidates =
       markerCandidates.length > 0 ? markerCandidates : candidates;
     if (extras?.length) {
-      const withExtraContexts = resolutionCandidates.filter((candidate) => {
-        const contextExtras = contextByDependency.get(candidate)?.extras;
-        return (
-          Boolean(contextExtras?.size) &&
-          extras.every((extra) => contextExtras?.has(extra))
-        );
-      });
+      const withExtraContexts = filterCandidates(
+        resolutionCandidates,
+        (candidate) => {
+          const contextExtras = contextByDependency.get(candidate)?.extras;
+          return (
+            Boolean(contextExtras?.size) &&
+            extras.every((extra) => contextExtras?.has(extra))
+          );
+        }
+      );
+      if (ecosystemResolutionWorkExceeded) return undefined;
       if (withExtraContexts.length > 0)
         resolutionCandidates = withExtraContexts;
     }
     if (ecosystem === 'crates.io') {
-      const cargoMatches = resolutionCandidates.filter((candidate) =>
+      const cargoMatches = filterCandidates(resolutionCandidates, (candidate) =>
         cargoRequirementMatches(candidate.version, requirement)
       );
+      if (ecosystemResolutionWorkExceeded) return undefined;
       const moduleMatches = module
-        ? cargoMatches.filter((candidate) => candidate.workspace === module)
+        ? filterCandidates(
+            cargoMatches,
+            (candidate) => candidate.workspace === module
+          )
         : [];
+      if (ecosystemResolutionWorkExceeded) return undefined;
       const matches = moduleMatches.length > 0 ? moduleMatches : cargoMatches;
       return matches.length === 1 ? matches[0] : undefined;
     }
     if (ecosystem === 'PyPI') {
-      const matches = resolutionCandidates.filter((candidate) =>
+      const matches = filterCandidates(resolutionCandidates, (candidate) =>
         pythonRequirementMatches(candidate.version, requirement)
       );
+      if (ecosystemResolutionWorkExceeded) return undefined;
       return matches.length === 1 ? matches[0] : undefined;
     }
     const exactVersion = requirement
       .replace(/^(?:===|==)/u, '')
       .replace(/^v/u, '');
-    const allExact = resolutionCandidates.filter(
+    const allExact = filterCandidates(
+      resolutionCandidates,
       (candidate) => candidate.version.replace(/^v/u, '') === exactVersion
     );
+    if (ecosystemResolutionWorkExceeded) return undefined;
     const moduleExact = module
-      ? allExact.filter((candidate) => candidate.workspace === module)
+      ? filterCandidates(
+          allExact,
+          (candidate) => candidate.workspace === module
+        )
       : [];
+    if (ecosystemResolutionWorkExceeded) return undefined;
     const exact = moduleExact.length > 0 ? moduleExact : allExact;
     if (exact.length === 1) return exact[0];
     if (exact.length > 1) return undefined;
@@ -3608,7 +3665,7 @@ export async function readOtherEcosystemInventoryDetailed(
       ? resolutionCandidates[0]
       : undefined;
   };
-  for (const item of output) {
+  resolution: for (const item of output) {
     const parent = identity(item);
     for (const dependency of item.dependencies ?? []) {
       const target = resolveTarget(
@@ -3620,6 +3677,10 @@ export async function readOtherEcosystemInventoryDetailed(
         dependency.extras
       );
       if (!target) {
+        if (ecosystemResolutionWorkExceeded) {
+          warnings.push('ecosystem-resolution-work-budget-exceeded');
+          break resolution;
+        }
         warnings.push(
           `unresolved-${item.ecosystem}-dependency:${dependency.name}:${item.name}`
         );

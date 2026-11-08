@@ -1,4 +1,5 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { buildDependencyTree } from '../src/core/dependency-tree.js';
@@ -18,7 +19,13 @@ import {
 } from '../src/core/secret-utils.js';
 
 const defaultSizes = [1_000, 10_000, 50_000];
-const requestedSizes = process.argv.slice(2).map(Number);
+const workerIndex = process.argv.indexOf('--worker');
+const workerFixture =
+  workerIndex >= 0 ? process.argv[workerIndex + 1] : undefined;
+const workerSize =
+  workerIndex >= 0 ? Number(process.argv[workerIndex + 2]) : undefined;
+const requestedSizes =
+  workerIndex >= 0 ? [] : process.argv.slice(2).map(Number);
 const sizes = requestedSizes.length > 0 ? requestedSizes : defaultSizes;
 if (
   sizes.some((size) => !Number.isSafeInteger(size) || size < 1 || size > 50_000)
@@ -88,6 +95,10 @@ function emit(
       platform: process.platform,
       node: process.version,
       gitSha: process.env.GIT_COMMIT ?? 'working-tree',
+      measurementScope:
+        process.env.TOOLIP_BENCHMARK_ISOLATED === 'true'
+          ? 'isolated-fixture-process'
+          : 'process',
       providerRequests: 0,
       ...data
     })}\n`
@@ -403,10 +414,67 @@ async function benchmarkSecretLocations(size: number): Promise<void> {
   }
 }
 
-for (const size of sizes) {
-  await benchmarkSecretLocations(size);
-  await benchmarkSourceTree(size);
-  await benchmarkRepositoryScan(size);
-  await benchmarkLockfile(size, 'wide');
-  await benchmarkLockfile(size, 'converging');
+async function runWorker(fixture: string, size: number): Promise<void> {
+  switch (fixture) {
+    case 'secret-locations':
+      await benchmarkSecretLocations(size);
+      break;
+    case 'source-tree':
+      await benchmarkSourceTree(size);
+      break;
+    case 'repository-scorecard':
+      await benchmarkRepositoryScan(size);
+      break;
+    case 'npm-lock-wide':
+      await benchmarkLockfile(size, 'wide');
+      break;
+    case 'npm-lock-converging':
+      await benchmarkLockfile(size, 'converging');
+      break;
+    default:
+      throw new Error(`unknown benchmark worker fixture: ${fixture}`);
+  }
+}
+
+if (workerIndex >= 0) {
+  if (
+    !workerFixture ||
+    !Number.isSafeInteger(workerSize) ||
+    (workerSize ?? 0) < 1 ||
+    (workerSize ?? 0) > 50_000
+  )
+    throw new Error('benchmark worker requires a fixture name and size');
+  await runWorker(workerFixture, workerSize);
+} else {
+  const scriptPath = path.resolve(
+    process.argv[1] ?? 'scripts/benchmark-dependency-graph.ts'
+  );
+  for (const size of sizes) {
+    for (const fixture of [
+      'secret-locations',
+      'source-tree',
+      'repository-scorecard',
+      'npm-lock-wide',
+      'npm-lock-converging'
+    ]) {
+      const child = spawnSync(
+        process.execPath,
+        ['--import', 'tsx', scriptPath, '--worker', fixture, String(size)],
+        {
+          cwd: process.cwd(),
+          encoding: 'utf8',
+          env: { ...process.env, TOOLIP_BENCHMARK_ISOLATED: 'true' },
+          timeout: 600_000,
+          maxBuffer: 8 * 1024 * 1024
+        }
+      );
+      if (child.stdout) process.stdout.write(child.stdout);
+      if (child.stderr) process.stderr.write(child.stderr);
+      if (child.error) throw child.error;
+      if (child.status !== 0)
+        throw new Error(
+          `benchmark worker ${fixture} at ${size} exited with ${String(child.status)}`
+        );
+    }
+  }
 }

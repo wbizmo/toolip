@@ -329,6 +329,107 @@ describe('non-npm lockfile inventory', () => {
     expect(graph.complete).toBe(false);
   });
 
+  it('marks Cargo declaration correlation incomplete when duplicate contexts exhaust its budget', async () => {
+    const root = await fixture();
+    const declarations = Array.from(
+      { length: 100 },
+      (_, index) => `dep-${index} = { package = "shared", version = "1.0.0" }`
+    );
+    const lockedDependencies = Array.from(
+      { length: 100 },
+      () => '"shared 1.0.0"'
+    );
+    const files = new Map<string, string>([
+      ['Cargo.toml', '[workspace]\nmembers = ["packages/*"]\n'],
+      [
+        'Cargo.lock',
+        [
+          'version = 3',
+          '',
+          '[[package]]',
+          'name = "shared"',
+          'version = "1.0.0"',
+          'source = "registry+https://github.com/rust-lang/crates.io-index"',
+          `checksum = "${'a'.repeat(64)}"`,
+          ...Array.from({ length: 30 }, (_, index) => [
+            '',
+            '[[package]]',
+            `name = "workspace-${index}"`,
+            'version = "1.0.0"',
+            'dependencies = [',
+            ...lockedDependencies.map((dependency) => `  ${dependency},`),
+            ']'
+          ]).flat()
+        ].join('\n')
+      ]
+    ]);
+    for (let index = 0; index < 30; index++) {
+      files.set(
+        `packages/workspace-${index}/Cargo.toml`,
+        [
+          '[package]',
+          `name = "workspace-${index}"`,
+          'version = "1.0.0"',
+          '',
+          '[dependencies]',
+          ...declarations
+        ].join('\n')
+      );
+    }
+    const fileSource = {
+      files: [...files.keys()],
+      hasFile: (relativePath: string) => files.has(relativePath),
+      readText: (relativePath: string) => files.get(relativePath)
+    };
+
+    const graph = await readOtherEcosystemInventoryDetailed(root, fileSource);
+
+    expect(graph.warnings).toContain(
+      'cargo-workspace-declaration-work-budget-exceeded'
+    );
+    expect(graph.complete).toBe(false);
+  });
+
+  it('fails closed when duplicate ecosystem candidates exhaust resolver work', async () => {
+    const root = await fixture();
+    const lockedCandidates = Array.from({ length: 1_000 }, (_, index) => ({
+      name: 'vendor/shared',
+      version: `1.${index}.0`
+    }));
+    const files = new Map<string, string>([
+      [
+        'composer.json',
+        JSON.stringify({
+          repositories: [{ type: 'path', url: 'packages/*' }]
+        })
+      ],
+      ['composer.lock', JSON.stringify({ packages: lockedCandidates })]
+    ]);
+    for (let index = 0; index < 300; index++) {
+      const directory = `packages/workspace-${index}`;
+      files.set(
+        `${directory}/composer.json`,
+        JSON.stringify({
+          name: `workspace/package-${index}`,
+          version: '1.0.0',
+          require: { 'vendor/shared': '*' }
+        })
+      );
+    }
+    const fileSource = {
+      files: [...files.keys()],
+      hasFile: (relativePath: string) => files.has(relativePath),
+      readText: (relativePath: string) => files.get(relativePath)
+    };
+
+    const graph = await readOtherEcosystemInventoryDetailed(root, fileSource);
+
+    expect(graph.warnings).toContain(
+      'ecosystem-resolution-work-budget-exceeded'
+    );
+    expect(graph.complete).toBe(false);
+  });
+
   it('keeps Cargo path and git identities but marks their provenance unknown and redacted', async () => {
     const root = await fixture();
     await writeFile(
