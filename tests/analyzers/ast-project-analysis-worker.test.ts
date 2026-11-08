@@ -3,6 +3,7 @@ import { analyzeAstProjectInWorker } from '../../src/analyzers/ast/project-analy
 import {
   analyzeAstSource,
   createAstProjectAnalysis,
+  transitiveImportDigests,
   type AstProjectInput
 } from '../../src/analyzers/ast/source-analysis.js';
 
@@ -38,6 +39,116 @@ describe('killable AST project analysis', () => {
       ...inline.dependencyDigests
     ]);
   }, 25_000);
+
+  it('resolves local imports across many indexed source directories', () => {
+    const root = '/tmp/toolip-ast-many-directories';
+    const directoryCount = 512;
+    const imports = Array.from(
+      { length: directoryCount },
+      (_, index) =>
+        `import { value as value${index} } from './modules/m${index}/helper.js';`
+    ).join('\n');
+    const inputs: AstProjectInput[] = [
+      {
+        filePath: 'src/entry.ts',
+        absolutePath: `${root}/src/entry.ts`,
+        content: imports
+      },
+      ...Array.from({ length: directoryCount }, (_, index) => ({
+        filePath: `src/modules/m${index}/helper.ts`,
+        absolutePath: `${root}/src/modules/m${index}/helper.ts`,
+        content: `export const value = ${index};`
+      }))
+    ];
+
+    const project = createAstProjectAnalysis(inputs);
+    const changedProject = createAstProjectAnalysis(
+      inputs.map((input) =>
+        input.filePath === 'src/modules/m0/helper.ts'
+          ? { ...input, content: 'export const value = 999;' }
+          : input
+      )
+    );
+
+    expect(project.sourceFiles.size).toBe(directoryCount + 1);
+    expect(changedProject.dependencyDigests.get('src/entry.ts')).not.toBe(
+      project.dependencyDigests.get('src/entry.ts')
+    );
+  });
+
+  it('digests deep import graphs with linear visits and no recursive stack', () => {
+    const vertexCount = 20_000;
+    const inputs: AstProjectInput[] = Array.from(
+      { length: vertexCount },
+      (_, index) => ({
+        filePath: `src/file-${String(index).padStart(5, '0')}.ts`,
+        absolutePath: `/tmp/toolip-ast-deep-graph/src/file-${String(index).padStart(5, '0')}.ts`,
+        content: `export const value = ${index};`
+      })
+    );
+    const adjacency = new Map<string, ReadonlySet<string>>(
+      inputs.map((input, index) => [
+        input.filePath,
+        index + 1 < vertexCount
+          ? new Set([inputs[index + 1]?.filePath as string])
+          : new Set<string>()
+      ])
+    );
+    const stats = {
+      vertexVisits: 0,
+      edgeVisits: 0,
+      peakDfsFrames: 0
+    };
+
+    const digests = transitiveImportDigests(inputs, adjacency, stats);
+
+    expect(digests.size).toBe(vertexCount);
+    expect(stats).toEqual({
+      vertexVisits: vertexCount,
+      edgeVisits: vertexCount - 1,
+      peakDfsFrames: vertexCount
+    });
+    expect(digests.get(inputs[0]?.filePath ?? '')).not.toBe(
+      digests.get(inputs.at(-1)?.filePath ?? '')
+    );
+  });
+
+  it('keeps cyclic component digests stable across input ordering', () => {
+    const inputs: AstProjectInput[] = ['a', 'b', 'c', 'd'].map((name) => ({
+      filePath: `src/${name}.ts`,
+      absolutePath: `/tmp/toolip-ast-cycle/src/${name}.ts`,
+      content: `export const value = '${name}';`
+    }));
+    const adjacency = new Map<string, ReadonlySet<string>>([
+      ['src/a.ts', new Set(['src/b.ts'])],
+      ['src/b.ts', new Set(['src/a.ts', 'src/c.ts'])],
+      ['src/c.ts', new Set(['src/d.ts'])],
+      ['src/d.ts', new Set<string>()]
+    ]);
+
+    const forward = transitiveImportDigests(inputs, adjacency);
+    const reversed = transitiveImportDigests(
+      [...inputs].reverse(),
+      new Map([...adjacency].reverse())
+    );
+
+    expect([...forward].sort()).toEqual([...reversed].sort());
+    expect(forward.get('src/a.ts')).not.toBe(forward.get('src/b.ts'));
+  });
+
+  it('fails explicitly on source nesting beyond the AST depth budget', () => {
+    const content = `export const value = ${'('.repeat(600)}1${')'.repeat(600)};`;
+
+    expect(() =>
+      createAstProjectAnalysis([
+        {
+          filePath: 'src/deep.ts',
+          absolutePath: '/tmp/toolip-ast-deep-source/src/deep.ts',
+          content
+        }
+      ])
+    ).toThrow('AST source traversal budget exceeded');
+  });
 
   it('terminates synchronous TypeScript work when its caller aborts', async () => {
     const controller = new AbortController();

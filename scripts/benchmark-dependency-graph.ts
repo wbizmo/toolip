@@ -5,6 +5,7 @@ import path from 'node:path';
 import { buildDependencyTree } from '../src/core/dependency-tree.js';
 import { walkProjectFiles } from '../src/core/file-walker.js';
 import { TextFileReader } from '../src/core/text-file-reader.js';
+import { indexSourceDirectoryChildren } from '../src/analyzers/ast/source-analysis.js';
 import {
   createProjectSnapshot,
   type ProjectSnapshot
@@ -255,6 +256,77 @@ async function benchmarkSourceTree(size: number): Promise<void> {
   }
 }
 
+async function benchmarkAstDirectoryIndex(size: number): Promise<void> {
+  const root = path.resolve(os.tmpdir(), `toolip-ast-directory-${size}`);
+  const directories = new Set<string>([root, path.join(root, 'src')]);
+  for (let index = 0; index < size; index += 1) {
+    directories.add(path.join(root, 'src', `module-${index}`));
+  }
+  const queries = [...directories].slice(1);
+
+  const indexed = await measure(async () => {
+    const childrenByDirectory = indexSourceDirectoryChildren(directories);
+    const returnedChildren = queries.reduce(
+      (total, directory) =>
+        total + (childrenByDirectory.get(directory)?.size ?? 0),
+      0
+    );
+    return {
+      directoryCount: directories.size,
+      queryCount: queries.length,
+      indexVisits: directories.size,
+      returnedChildren
+    };
+  });
+  emit('ast-source-directory-indexed', size, 'indexed', {
+    ...indexed,
+    result: indexed.result,
+    directoriesIndexed: indexed.result.directoryCount,
+    directoryQueries: indexed.result.queryCount
+  });
+
+  if (size <= 10_000) {
+    const legacy = await measure(async () => {
+      let candidateVisits = 0;
+      let returnedChildren = 0;
+      for (const query of queries) {
+        const children = new Set<string>();
+        for (const directory of directories) {
+          candidateVisits += 1;
+          const relative = path.relative(query, directory);
+          if (
+            !relative ||
+            path.isAbsolute(relative) ||
+            relative.startsWith('..')
+          )
+            continue;
+          const first = relative.split(path.sep)[0];
+          if (first) children.add(path.join(query, first));
+        }
+        returnedChildren += children.size;
+      }
+      return {
+        directoryCount: directories.size,
+        queryCount: queries.length,
+        candidateVisits,
+        returnedChildren
+      };
+    });
+    emit('ast-source-directory-full-scan-reference', size, 'baseline', {
+      ...legacy,
+      result: legacy.result,
+      directoriesScanned: legacy.result.directoryCount,
+      directoryQueries: legacy.result.queryCount,
+      baselineRevision: '41a3a9319b19bfb2c2290bafd1bb9fab794ddcd0'
+    });
+  } else {
+    emit('ast-source-directory-full-scan-reference', size, 'skipped', {
+      reason: 'legacy directory scan is quadratic and capped at 10,000 queries',
+      baselineRevision: '41a3a9319b19bfb2c2290bafd1bb9fab794ddcd0'
+    });
+  }
+}
+
 /** Full bounded doctor pass over a generated repository tree, cold and warm. */
 async function benchmarkRepositoryScan(size: number): Promise<void> {
   const root = await mkdtemp(
@@ -422,6 +494,9 @@ async function runWorker(fixture: string, size: number): Promise<void> {
     case 'source-tree':
       await benchmarkSourceTree(size);
       break;
+    case 'ast-directory-index':
+      await benchmarkAstDirectoryIndex(size);
+      break;
     case 'repository-scorecard':
       await benchmarkRepositoryScan(size);
       break;
@@ -453,6 +528,7 @@ if (workerIndex >= 0) {
     for (const fixture of [
       'secret-locations',
       'source-tree',
+      'ast-directory-index',
       'repository-scorecard',
       'npm-lock-wide',
       'npm-lock-converging'

@@ -96,11 +96,19 @@ function scopeKind(node: ts.Node): ScopeKind | undefined {
   return undefined;
 }
 
+const MAX_AST_TRAVERSAL_DEPTH = 512;
+const MAX_AST_TRAVERSAL_NODES = 1_000_000;
+
 function createScopeTree(
   node: ts.Node,
   parent: Scope | undefined,
-  scopes: WeakMap<ts.Node, Scope>
+  scopes: WeakMap<ts.Node, Scope>,
+  budget: { nodes: number } = { nodes: 0 },
+  depth = 0
 ): Scope {
+  budget.nodes += 1;
+  if (depth > MAX_AST_TRAVERSAL_DEPTH || budget.nodes > MAX_AST_TRAVERSAL_NODES)
+    throw new Error('AST source traversal budget exceeded');
   const kind = scopeKind(node);
   const scope = kind
     ? { kind, parent, bindings: new Map<string, BindingKind>() }
@@ -110,7 +118,7 @@ function createScopeTree(
       });
   scopes.set(node, scope);
   ts.forEachChild(node, (child) => {
-    createScopeTree(child, scope, scopes);
+    createScopeTree(child, scope, scopes, budget, depth + 1);
   });
   return scope;
 }
@@ -1184,6 +1192,24 @@ function canonicalPath(filePath: string): string {
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
+/** Build TypeScript host directory entries in one pass over known directories. */
+export function indexSourceDirectoryChildren(
+  directories: ReadonlySet<string>
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const childrenByDirectory = new Map<string, Set<string>>();
+  for (const directory of directories) {
+    const parent = path.dirname(directory);
+    if (parent === directory) continue;
+    let children = childrenByDirectory.get(parent);
+    if (!children) {
+      children = new Set<string>();
+      childrenByDirectory.set(parent, children);
+    }
+    children.add(directory);
+  }
+  return childrenByDirectory;
+}
+
 function isPathWithin(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
   return (
@@ -1225,6 +1251,8 @@ export function createAstProjectAnalysis(
       directory = parent;
     }
   }
+  const sourceDirectoryChildren =
+    indexSourceDirectoryChildren(sourceDirectories);
 
   const options: ts.CompilerOptions = {
     allowJs: true,
@@ -1293,15 +1321,7 @@ export function createAstProjectAnalysis(
   };
   host.getDirectories = (directoryName) => {
     const absolute = path.resolve(directoryName);
-    const children = new Set<string>();
-    for (const directory of sourceDirectories) {
-      const relative = path.relative(absolute, directory);
-      if (!relative || path.isAbsolute(relative) || relative.startsWith('..'))
-        continue;
-      const first = relative.split(path.sep)[0];
-      if (first) children.add(path.join(absolute, first));
-    }
-    return [...children];
+    return [...(sourceDirectoryChildren.get(absolute) ?? [])];
   };
   host.realpath = (filePath) => path.resolve(filePath);
   host.resolveModuleNames = (moduleNames, containingFile) =>
@@ -1333,8 +1353,9 @@ export function createAstProjectAnalysis(
   }
 
   const scopes = new WeakMap<ts.Node, Scope>();
+  const traversalBudget = { nodes: 0 };
   for (const sourceFile of parsedFiles) {
-    createScopeTree(sourceFile, undefined, scopes);
+    createScopeTree(sourceFile, undefined, scopes, traversalBudget);
     collectBindings(sourceFile, scopes);
   }
   const checker = program.getTypeChecker();
@@ -1422,9 +1443,20 @@ function localModuleSpecifiers(sourceFile: ts.SourceFile): string[] {
  * O(V + E) space. Sorting roots, component members, and dependency digests
  * makes results independent of snapshot enumeration order.
  */
-function transitiveImportDigests(
+export type TransitiveImportDigestStats = {
+  vertexVisits: number;
+  edgeVisits: number;
+  peakDfsFrames: number;
+};
+
+/**
+ * Builds deterministic SCC digests without recursion. Traversal is
+ * O(V + E) before stable sorting and uses O(V + E) additional graph state.
+ */
+export function transitiveImportDigests(
   inputs: readonly AstProjectInput[],
-  adjacency: ReadonlyMap<string, ReadonlySet<string>>
+  adjacency: ReadonlyMap<string, ReadonlySet<string>>,
+  stats?: TransitiveImportDigestStats
 ): Map<string, string> {
   const inputByPath = new Map(inputs.map((input) => [input.filePath, input]));
   const indexes = new Map<string, number>();
@@ -1434,48 +1466,85 @@ function transitiveImportDigests(
   const components: string[][] = [];
   let nextIndex = 0;
 
-  const visit = (filePath: string): void => {
+  const discover = (filePath: string): void => {
     const index = nextIndex++;
     indexes.set(filePath, index);
     lowLinks.set(filePath, index);
     stack.push(filePath);
     onStack.add(filePath);
-    for (const dependency of adjacency.get(filePath) ?? []) {
-      if (!indexes.has(dependency)) {
-        visit(dependency);
+    if (stats) stats.vertexVisits += 1;
+  };
+
+  const roots = [...inputs].sort((left, right) =>
+    left.filePath.localeCompare(right.filePath)
+  );
+  for (const input of roots) {
+    if (indexes.has(input.filePath)) continue;
+    discover(input.filePath);
+    const frames: Array<{
+      filePath: string;
+      parent?: string;
+      dependencies: Iterator<string>;
+    }> = [
+      {
+        filePath: input.filePath,
+        dependencies: (adjacency.get(input.filePath) ?? [])[Symbol.iterator]()
+      }
+    ];
+    if (stats) stats.peakDfsFrames = Math.max(stats.peakDfsFrames, 1);
+
+    while (frames.length > 0) {
+      const frame = frames[frames.length - 1];
+      if (!frame) break;
+      const next = frame.dependencies.next();
+      if (!next.done) {
+        const dependency = next.value;
+        if (stats) stats.edgeVisits += 1;
+        if (!indexes.has(dependency)) {
+          discover(dependency);
+          frames.push({
+            filePath: dependency,
+            parent: frame.filePath,
+            dependencies: (adjacency.get(dependency) ?? [])[Symbol.iterator]()
+          });
+          if (stats)
+            stats.peakDfsFrames = Math.max(stats.peakDfsFrames, frames.length);
+        } else if (onStack.has(dependency)) {
+          lowLinks.set(
+            frame.filePath,
+            Math.min(
+              lowLinks.get(frame.filePath) ?? indexes.get(frame.filePath) ?? 0,
+              indexes.get(dependency) ?? 0
+            )
+          );
+        }
+        continue;
+      }
+
+      frames.pop();
+      const filePath = frame.filePath;
+      if (lowLinks.get(filePath) === indexes.get(filePath)) {
+        const component: string[] = [];
+        while (stack.length > 0) {
+          const member = stack.pop();
+          if (member === undefined) break;
+          onStack.delete(member);
+          component.push(member);
+          if (member === filePath) break;
+        }
+        components.push(component.sort());
+      }
+      if (frame.parent) {
         lowLinks.set(
-          filePath,
+          frame.parent,
           Math.min(
-            lowLinks.get(filePath) ?? index,
-            lowLinks.get(dependency) ?? index
-          )
-        );
-      } else if (onStack.has(dependency)) {
-        lowLinks.set(
-          filePath,
-          Math.min(
-            lowLinks.get(filePath) ?? index,
-            indexes.get(dependency) ?? index
+            lowLinks.get(frame.parent) ?? indexes.get(frame.parent) ?? 0,
+            lowLinks.get(filePath) ?? indexes.get(filePath) ?? 0
           )
         );
       }
     }
-    if (lowLinks.get(filePath) !== indexes.get(filePath)) return;
-    const component: string[] = [];
-    while (stack.length > 0) {
-      const member = stack.pop();
-      if (member === undefined) break;
-      onStack.delete(member);
-      component.push(member);
-      if (member === filePath) break;
-    }
-    components.push(component.sort());
-  };
-
-  for (const input of [...inputs].sort((left, right) =>
-    left.filePath.localeCompare(right.filePath)
-  ))
-    if (!indexes.has(input.filePath)) visit(input.filePath);
+  }
 
   const componentByPath = new Map<string, number>();
   components.forEach((component, componentIndex) => {
