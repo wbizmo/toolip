@@ -2,9 +2,42 @@ import { describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { buildDependencyTree } from '../src/core/dependency-tree.js';
+import {
+  buildDependencyTree,
+  graphSummary
+} from '../src/core/dependency-tree.js';
 
 describe('buildDependencyTree', () => {
+  it('enqueues high-fan-in reachable nodes once with a vertex-bounded queue', () => {
+    const sourceCount = 256;
+    const sharedCount = 512;
+    const sources = Array.from(
+      { length: sourceCount },
+      (_, index) => `p${index}`
+    );
+    const shared = Array.from(
+      { length: sharedCount },
+      (_, index) => `s${index}`
+    );
+    const children = new Map<string, readonly string[]>([
+      ['root', sources],
+      ...sources.map((id) => [id, shared] as const)
+    ]);
+    const stats = { enqueuedNodes: 0, peakQueueEntries: 0 };
+
+    const summary = graphSummary(children, stats);
+
+    expect(summary).toEqual({
+      direct: sourceCount,
+      transitive: sharedCount,
+      maxDepth: 2
+    });
+    expect(stats.enqueuedNodes).toBe(sourceCount + sharedCount);
+    expect(stats.peakQueueEntries).toBeLessThanOrEqual(
+      sourceCount + sharedCount
+    );
+  });
+
   it('builds resolved direct and transitive relationships', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-tree-'));
 

@@ -25,9 +25,14 @@ function validatePurls(document: Record<string, unknown>): void {
       ? (document.components as Array<{ purl?: string }>).map(
           (component) => component.purl
         )
-      : (document.packages as Array<{
-          externalRefs?: Array<{ referenceType?: string; referenceLocator?: string }>;
-        }>)
+      : (
+          document.packages as Array<{
+            externalRefs?: Array<{
+              referenceType?: string;
+              referenceLocator?: string;
+            }>;
+          }>
+        )
           .flatMap((pkg) => pkg.externalRefs ?? [])
           .filter((reference) => reference.referenceType === 'purl')
           .map((reference) => reference.referenceLocator);
@@ -193,7 +198,9 @@ describe('SBOM generation', () => {
   });
 
   it('keeps scoped aliases and duplicate installed instances distinct in both formats', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-sbom-instances-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-sbom-instances-')
+    );
     try {
       await writeFile(
         path.join(root, 'package.json'),
@@ -245,7 +252,9 @@ describe('SBOM generation', () => {
         purl: string;
         'bom-ref': string;
       }>;
-      const scoped = components.filter((component) => component.name === '@scope/tool');
+      const scoped = components.filter(
+        (component) => component.name === '@scope/tool'
+      );
       expect(scoped.map((component) => component.version).sort()).toEqual([
         '1.2.0',
         '2.1.0'
@@ -254,7 +263,9 @@ describe('SBOM generation', () => {
         'pkg:npm/%40scope/tool@1.2.0',
         'pkg:npm/%40scope/tool@2.1.0'
       ]);
-      expect(new Set(scoped.map((component) => component['bom-ref'])).size).toBe(2);
+      expect(
+        new Set(scoped.map((component) => component['bom-ref'])).size
+      ).toBe(2);
       expect(components).toContainEqual(
         expect.objectContaining({
           name: 'real-package',
@@ -268,7 +279,10 @@ describe('SBOM generation', () => {
         name: string;
         versionInfo?: string;
         SPDXID: string;
-        externalRefs?: Array<{ referenceType: string; referenceLocator: string }>;
+        externalRefs?: Array<{
+          referenceType: string;
+          referenceLocator: string;
+        }>;
       }>;
       const spdxScoped = packages.filter((pkg) => pkg.name === '@scope/tool');
       expect(spdxScoped).toHaveLength(2);
@@ -445,7 +459,11 @@ describe('SBOM generation', () => {
         ],
         [
           'package-lock.json',
-          JSON.stringify({ name: 'cancel-fixture', lockfileVersion: 3, packages })
+          JSON.stringify({
+            name: 'cancel-fixture',
+            lockfileVersion: 3,
+            packages
+          })
         ]
       ]);
       const controller = new AbortController();
@@ -473,7 +491,10 @@ describe('SBOM generation', () => {
     const goModSum = `h1:${Buffer.alloc(32, 4).toString('base64')}`;
     const sourceFiles = new Map([
       ['package.json', await readFile(path.join(root, 'package.json'), 'utf8')],
-      ['package-lock.json', await readFile(path.join(root, 'package-lock.json'), 'utf8')],
+      [
+        'package-lock.json',
+        await readFile(path.join(root, 'package-lock.json'), 'utf8')
+      ],
       [
         'go.mod',
         'module example.test/app\ngo 1.24.0\nrequire example.test/lib v1.2.0\n'

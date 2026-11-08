@@ -9,7 +9,9 @@ import {
 
 describe('npm dependency inventory', () => {
   it('rejects range-shaped lock versions and removes credentials from resolved URLs', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-inventory-origin-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-inventory-origin-')
+    );
     try {
       await writeFile(
         path.join(root, 'package-lock.json'),
@@ -35,8 +37,7 @@ describe('npm dependency inventory', () => {
       expect(graph.packages.map((item) => item.name)).toEqual(['private']);
       expect(privatePackage).toMatchObject({
         version: '2.0.0',
-        resolved:
-          'https://registry.private.example/private/-/private-2.0.0.tgz'
+        resolved: 'https://registry.private.example/private/-/private-2.0.0.tgz'
       });
       expect(privatePackage?.registry).toBeUndefined();
       expect(graph.warnings).toContain('npm-lockfile-version-unresolved');
@@ -50,42 +51,45 @@ describe('npm dependency inventory', () => {
   it('derives directness and edges from lock metadata rather than hoisting', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-inventory-'));
     try {
-      await writeFile(path.join(root, 'package-lock.json'), JSON.stringify({
-        lockfileVersion: 3,
-        packages: {
-          '': {
-            name: 'fixture',
-            version: '1.0.0',
-            dependencies: {
-              'direct-package': '^2.0.0',
-              'other-package': '^1.0.0'
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': {
+              name: 'fixture',
+              version: '1.0.0',
+              dependencies: {
+                'direct-package': '^2.0.0',
+                'other-package': '^1.0.0'
+              }
+            },
+            'node_modules/direct-package': {
+              version: '2.0.0',
+              dependencies: {
+                'transitive-package': '^3.0.0',
+                duplicated: '^1.0.0'
+              }
+            },
+            'node_modules/transitive-package': {
+              version: '3.0.0'
+            },
+            'node_modules/direct-package/node_modules/duplicated': {
+              version: '1.0.0'
+            },
+            'node_modules/other-package': {
+              version: '1.0.0',
+              dependencies: {
+                duplicated: '^2.0.0'
+              }
+            },
+            'node_modules/other-package/node_modules/duplicated': {
+              version: '2.0.0',
+              dev: true
             }
-          },
-          'node_modules/direct-package': {
-            version: '2.0.0',
-            dependencies: {
-              'transitive-package': '^3.0.0',
-              duplicated: '^1.0.0'
-            }
-          },
-          'node_modules/transitive-package': {
-            version: '3.0.0'
-          },
-          'node_modules/direct-package/node_modules/duplicated': {
-            version: '1.0.0'
-          },
-          'node_modules/other-package': {
-            version: '1.0.0',
-            dependencies: {
-              duplicated: '^2.0.0'
-            }
-          },
-          'node_modules/other-package/node_modules/duplicated': {
-            version: '2.0.0',
-            dev: true
           }
-        }
-      }));
+        })
+      );
 
       const inventory = await readNpmDependencyInventory(root);
       const direct = inventory.find((item) => item.name === 'direct-package');
@@ -99,7 +103,9 @@ describe('npm dependency inventory', () => {
         direct: false,
         installPath: 'node_modules/transitive-package'
       });
-      expect(duplicates.map((item) => [item.version, item.installPath])).toEqual([
+      expect(
+        duplicates.map((item) => [item.version, item.installPath])
+      ).toEqual([
         ['1.0.0', 'node_modules/direct-package/node_modules/duplicated'],
         ['2.0.0', 'node_modules/other-package/node_modules/duplicated']
       ]);
@@ -121,34 +127,39 @@ describe('npm dependency inventory', () => {
   });
 
   it('resolves npm workspace link entries to the exact workspace package identity', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-inventory-workspace-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-inventory-workspace-')
+    );
     try {
-      await writeFile(path.join(root, 'package-lock.json'), JSON.stringify({
-        lockfileVersion: 3,
-        packages: {
-          '': {
-            name: 'fixture',
-            version: '1.0.0',
-            dependencies: {
-              '@fixture/workspace-package': 'workspace:*'
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': {
+              name: 'fixture',
+              version: '1.0.0',
+              dependencies: {
+                '@fixture/workspace-package': 'workspace:*'
+              }
+            },
+            'node_modules/@fixture/workspace-package': {
+              resolved: 'packages/workspace-package',
+              link: true
+            },
+            'packages/workspace-package': {
+              name: '@fixture/workspace-package',
+              version: '1.5.0',
+              dependencies: {
+                'transitive-package': '^3.0.0'
+              }
+            },
+            'node_modules/transitive-package': {
+              version: '3.0.0'
             }
-          },
-          'node_modules/@fixture/workspace-package': {
-            resolved: 'packages/workspace-package',
-            link: true
-          },
-          'packages/workspace-package': {
-            name: '@fixture/workspace-package',
-            version: '1.5.0',
-            dependencies: {
-              'transitive-package': '^3.0.0'
-            }
-          },
-          'node_modules/transitive-package': {
-            version: '3.0.0'
           }
-        }
-      }));
+        })
+      );
 
       const graph = await readNpmDependencyGraph(root);
       const workspace = graph.packages.find(
@@ -164,17 +175,21 @@ describe('npm dependency inventory', () => {
         installPath: 'packages/workspace-package'
       });
       expect(graph.rootDependencies).toContain(workspace?.id);
-      expect(graph.edges).toContainEqual(expect.objectContaining({
-        from: 'root',
-        to: workspace?.id,
-        name: '@fixture/workspace-package',
-        requirement: 'workspace:*'
-      }));
-      expect(graph.edges).toContainEqual(expect.objectContaining({
-        from: workspace?.id,
-        to: transitive?.id,
-        name: 'transitive-package'
-      }));
+      expect(graph.edges).toContainEqual(
+        expect.objectContaining({
+          from: 'root',
+          to: workspace?.id,
+          name: '@fixture/workspace-package',
+          requirement: 'workspace:*'
+        })
+      );
+      expect(graph.edges).toContainEqual(
+        expect.objectContaining({
+          from: workspace?.id,
+          to: transitive?.id,
+          name: 'transitive-package'
+        })
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }

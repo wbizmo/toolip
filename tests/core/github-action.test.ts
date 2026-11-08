@@ -29,7 +29,9 @@ describe('GitHub Action integration contract', () => {
     expect(commands).toContain('npm audit signatures --ignore-scripts');
     expect(commands).toContain('policy check');
     expect(commands).toContain('--sarif');
-    expect(commands).not.toMatch(/\b(?:npm|pnpm|yarn)\s+(?:install|ci)(?![^\n]*--ignore-scripts)/u);
+    expect(commands).not.toMatch(
+      /\b(?:npm|pnpm|yarn)\s+(?:install|ci)(?![^\n]*--ignore-scripts)/u
+    );
     const upload = action.runs?.steps?.find((step) =>
       step.uses?.startsWith('github/codeql-action/upload-sarif@')
     );
@@ -37,7 +39,9 @@ describe('GitHub Action integration contract', () => {
       /^github\/codeql-action\/upload-sarif@[a-f0-9]{40}$/u
     );
     expect(upload?.if).toContain("inputs.upload-sarif == 'true'");
-    expect(upload?.if).toContain('github.event.pull_request.head.repo.fork == false');
+    expect(upload?.if).toContain(
+      'github.event.pull_request.head.repo.fork == false'
+    );
     expect(upload?.with?.sarif_file).toBe('$' + '{{ inputs.sarif-output }}');
   });
 });

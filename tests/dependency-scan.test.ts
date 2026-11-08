@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createProjectSnapshot, dependencyFileSourceFromSnapshot } from '../src/application/project-snapshot.js';
+import {
+  createProjectSnapshot,
+  dependencyFileSourceFromSnapshot
+} from '../src/application/project-snapshot.js';
 import { AnalysisResultCache } from '../src/application/task-scheduler.js';
 
 const analyzePackageMock = vi.hoisted(() =>
@@ -48,7 +51,11 @@ describe('scanDependencies', () => {
         JSON.stringify({
           lockfileVersion: 3,
           packages: {
-            '': { name: 'fixture', version: '1.0.0', dependencies: { example: '^1.0.0' } },
+            '': {
+              name: 'fixture',
+              version: '1.0.0',
+              dependencies: { example: '^1.0.0' }
+            },
             'node_modules/example': {
               version: '1.2.0',
               ...publicNpmSource('example', '1.2.0')
@@ -57,7 +64,8 @@ describe('scanDependencies', () => {
         })
       );
       const firstSnapshot = await createProjectSnapshot(root);
-      const { scanDependencies } = await import('../src/core/dependency-scan.js');
+      const { scanDependencies } =
+        await import('../src/core/dependency-scan.js');
       const first = await scanDependencies(root, {
         offline: true,
         fileSource: dependencyFileSourceFromSnapshot(firstSnapshot),
@@ -70,7 +78,9 @@ describe('scanDependencies', () => {
       const sourceOnlySnapshot = await createProjectSnapshot(root, {
         previous: firstSnapshot
       });
-      expect(sourceOnlySnapshot.lockGraphDigest).toBe(firstSnapshot.lockGraphDigest);
+      expect(sourceOnlySnapshot.lockGraphDigest).toBe(
+        firstSnapshot.lockGraphDigest
+      );
       const sourceOnly = await scanDependencies(root, {
         offline: true,
         fileSource: dependencyFileSourceFromSnapshot(sourceOnlySnapshot),
@@ -82,12 +92,18 @@ describe('scanDependencies', () => {
 
       await writeFile(
         path.join(root, 'package.json'),
-        JSON.stringify({ name: 'fixture', description: 'changed manifest', dependencies: { example: '^1.0.0' } })
+        JSON.stringify({
+          name: 'fixture',
+          description: 'changed manifest',
+          dependencies: { example: '^1.0.0' }
+        })
       );
       const manifestSnapshot = await createProjectSnapshot(root, {
         previous: sourceOnlySnapshot
       });
-      expect(manifestSnapshot.lockGraphDigest).not.toBe(sourceOnlySnapshot.lockGraphDigest);
+      expect(manifestSnapshot.lockGraphDigest).not.toBe(
+        sourceOnlySnapshot.lockGraphDigest
+      );
       const changedGraph = await scanDependencies(root, {
         offline: true,
         fileSource: dependencyFileSourceFromSnapshot(manifestSnapshot),

@@ -327,7 +327,11 @@ function scanYaml(file: string, source: string): Finding[] {
           lowerPath.length === 1 ||
           (lowerPath.at(-3) === 'items' &&
             /^\d+$/u.test(lowerPath.at(-2) ?? ''));
-        if (!rootKind || !pathEnds(item, 'kind') || typeof item.value !== 'string')
+        if (
+          !rootKind ||
+          !pathEnds(item, 'kind') ||
+          typeof item.value !== 'string'
+        )
           return [];
         return (workloadSpecSuffixes[item.value.toLowerCase()] ?? []).map(
           (suffix) => ({
@@ -398,11 +402,11 @@ function scanYaml(file: string, source: string): Finding[] {
         if (!classified) continue;
         const { key: specKey, relative } = classified;
         const container =
-          (relative[0] === 'containers' ||
-            relative[0] === 'initcontainers') &&
+          (relative[0] === 'containers' || relative[0] === 'initcontainers') &&
           /^\d+$/u.test(relative[1] ?? '');
-        const containerKey =
-          container ? `${specKey}\0${relative[0]}\0${relative[1]}` : '';
+        const containerKey = container
+          ? `${specKey}\0${relative[0]}\0${relative[1]}`
+          : '';
         if (
           item.value === true &&
           container &&
@@ -417,7 +421,11 @@ function scanYaml(file: string, source: string): Finding[] {
           relative.at(-1) === 'allowprivilegeescalation'
         )
           add('TLP-IAC-K8S-002', item);
-        if (item.value === true && relative.length === 1 && relative[0] === 'hostnetwork')
+        if (
+          item.value === true &&
+          relative.length === 1 &&
+          relative[0] === 'hostnetwork'
+        )
           add('TLP-IAC-K8S-003', item);
         if (
           pathEnds(item, 'path') &&
@@ -457,8 +465,7 @@ function scanYaml(file: string, source: string): Finding[] {
         if (
           pathEnds(item, 'image') &&
           relative.length === 3 &&
-          (relative[0] === 'containers' ||
-            relative[0] === 'initcontainers') &&
+          (relative[0] === 'containers' || relative[0] === 'initcontainers') &&
           /^\d+$/u.test(relative[1] ?? '')
         ) {
           containerImages.push({ item, containerKey, specKey });
@@ -502,7 +509,7 @@ function scanYaml(file: string, source: string): Finding[] {
         if (
           key === 'run' &&
           typeof item.value === 'string' &&
-        /\$\{\{\s*(?:github\.event\.(?:(?:pull_request|issue|discussion)\.(?:title|body|head\.ref)|(?:issue_comment|pull_request_review|pull_request_review_comment|commit_comment)\.comment\.body|pull_request_review\.review\.body|commits\[\d+\]\.message|head_commit\.message|repository_dispatch\.client_payload\.[\w.]+|workflow_dispatch\.inputs\.[\w-]+)|github\.head_ref|inputs\.[\w-]+)\s*\}\}/iu.test(
+          /\$\{\{\s*(?:github\.event\.(?:(?:pull_request|issue|discussion)\.(?:title|body|head\.ref)|(?:issue_comment|pull_request_review|pull_request_review_comment|commit_comment)\.comment\.body|pull_request_review\.review\.body|commits\[\d+\]\.message|head_commit\.message|repository_dispatch\.client_payload\.[\w.]+|workflow_dispatch\.inputs\.[\w-]+)|github\.head_ref|inputs\.[\w-]+)\s*\}\}/iu.test(
             item.value
           )
         ) {
@@ -759,16 +766,16 @@ function scanTerraform(file: string, source: string): Finding[] {
     if (resourceType === 'google_compute_firewall') {
       const publicSource =
         !/^\s*direction\s*=\s*"EGRESS"\s*$/imu.test(body) &&
-        /\bsource_ranges\s*=\s*\[[^\]]*"(?:0\.0\.0\.0\/0|::\/0)"/iu.test(
-          body
-        );
+        /\bsource_ranges\s*=\s*\[[^\]]*"(?:0\.0\.0\.0\/0|::\/0)"/iu.test(body);
       if (publicSource) {
         const allowBlocks = [...body.matchAll(/\ballow\s*\{[^}]*\}/giu)];
         for (const block of allowBlocks) {
           const value = block[0] ?? '';
           const ports = value.match(/\bports\s*=\s*\[([^\]]*)\]/iu)?.[1];
           const protocol = value.match(/\bprotocol\s*=\s*"([^"]+)"/iu)?.[1];
-          const numericPorts = [...(ports ?? '').matchAll(/"(\d+)(?:-(\d+))?"/gu)];
+          const numericPorts = [
+            ...(ports ?? '').matchAll(/"(\d+)(?:-(\d+))?"/gu)
+          ];
           const administrationPorts =
             protocol === 'all' ||
             numericPorts.some((match) => {
@@ -787,7 +794,8 @@ function scanTerraform(file: string, source: string): Finding[] {
             : 'TLP-IAC-TF-004';
           const line = start + body.slice(0, offset).split('\n').length;
           const rule = rules[ruleId];
-          if (rule) findings.push(finding(rule, file, line, `${ruleId}:${line}`));
+          if (rule)
+            findings.push(finding(rule, file, line, `${ruleId}:${line}`));
         }
       }
     }

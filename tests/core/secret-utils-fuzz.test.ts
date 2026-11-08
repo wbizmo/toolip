@@ -82,7 +82,9 @@ function insertMatches(
   content: string,
   expressions: readonly { index: number; value: string }[]
 ): string {
-  const sorted = [...expressions].sort((left, right) => right.index - left.index);
+  const sorted = [...expressions].sort(
+    (left, right) => right.index - left.index
+  );
   let result = content;
   for (const expression of sorted) {
     result =

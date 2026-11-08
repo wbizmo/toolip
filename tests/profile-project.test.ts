@@ -117,7 +117,9 @@ describe('profileProject', () => {
   });
 
   it('detects PHP and Laravel from a read-only Composer project profile', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-profile-laravel-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-profile-laravel-')
+    );
     try {
       await mkdir(path.join(root, 'bootstrap'), { recursive: true });
       await writeFile(
@@ -138,7 +140,9 @@ describe('profileProject', () => {
 
       expect(profile.hasPHP).toBe(true);
       expect(profile.hasLaravel).toBe(true);
-      expect(profile.detected).toEqual(expect.arrayContaining(['PHP', 'Laravel']));
+      expect(profile.detected).toEqual(
+        expect.arrayContaining(['PHP', 'Laravel'])
+      );
       expect(profile.languages.PHP).toBe(2);
       expect(profile.packageScripts).toEqual([]);
     } finally {

@@ -335,12 +335,17 @@ export async function generateSbom(
   const documentId = 'SPDXRef-DOCUMENT';
   const rootId = spdxId(`${rootName}-${rootVersion}`);
   const packageSpdxIds = new Map(
-    await mapWithCancellation(dependencies, (dependency) => [
-      dependency.id,
-      spdxId(
-        `${dependency.name}-${dependency.version}-${dependency.installPath}`
-      )
-    ] as const, options.signal)
+    await mapWithCancellation(
+      dependencies,
+      (dependency) =>
+        [
+          dependency.id,
+          spdxId(
+            `${dependency.name}-${dependency.version}-${dependency.installPath}`
+          )
+        ] as const,
+      options.signal
+    )
   );
   const packages = await mapWithCancellation(
     dependencies,

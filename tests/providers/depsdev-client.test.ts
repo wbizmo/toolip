@@ -231,8 +231,9 @@ describe('DepsDevClient', () => {
 
   it('caches only successful responses with bounded TTL and cloned values', async () => {
     let now = 1_000;
-    const fetchImplementation = vi.fn(async () =>
-      new Response(JSON.stringify({ licenses: ['MIT'] }), { status: 200 })
+    const fetchImplementation = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ licenses: ['MIT'] }), { status: 200 })
     ) as unknown as typeof fetch;
     const client = new DepsDevClient({
       fetchImplementation,

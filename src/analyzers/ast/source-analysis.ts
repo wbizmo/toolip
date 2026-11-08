@@ -218,8 +218,8 @@ function requiredUnsafeDeserializer(
   const [argument] = expression.arguments;
   return Boolean(
     argument &&
-      ts.isStringLiteral(argument) &&
-      argument.text === 'node-serialize'
+    ts.isStringLiteral(argument) &&
+    argument.text === 'node-serialize'
   );
 }
 
@@ -354,7 +354,7 @@ function collectBindings(
               ? 'filesystem'
               : fromUnsafeDeserializer
                 ? 'unsafeDeserializerNamespace'
-              : 'shadow'
+                : 'shadow'
         );
       } else if (bindings && ts.isNamedImports(bindings)) {
         for (const element of bindings.elements) {
@@ -384,7 +384,7 @@ function collectBindings(
                     !element.isTypeOnly &&
                     imported === 'unserialize'
                   ? 'unsafeDeserializer'
-                : 'shadow';
+                  : 'shadow';
           scope.bindings.set(element.name.text, binding);
         }
       }
@@ -515,10 +515,10 @@ function collectBindings(
               ? 'exec'
               : kind === 'namespace' && imported === 'execSync'
                 ? 'execSync'
-                  : kind === 'unsafeDeserializerNamespace' &&
-                      imported === 'unserialize'
-                    ? 'unsafeDeserializer'
-                : 'shadow';
+                : kind === 'unsafeDeserializerNamespace' &&
+                    imported === 'unserialize'
+                  ? 'unsafeDeserializer'
+                  : 'shadow';
         if (
           alias !== 'shadow' &&
           item.scope.bindings.get(element.name.text) !== alias

@@ -50,14 +50,20 @@ export function summarizeDepsDevTrust(metadata?: DepsDevVersionResponse) {
     provider: 'deps.dev' as const,
     independentCryptographicVerification: 'not-performed' as const,
     provenance: Object.freeze({
-      status: provenance.length === 0 ? ('not-reported' as const) : ('provider-reported' as const),
+      status:
+        provenance.length === 0
+          ? ('not-reported' as const)
+          : ('provider-reported' as const),
       records: provenance.length,
       recordsMarkedVerifiedByProvider: provenance.filter(
         (item) => item.verified === true
       ).length
     }),
     attestations: Object.freeze({
-      status: attestations.length === 0 ? ('not-reported' as const) : ('provider-reported' as const),
+      status:
+        attestations.length === 0
+          ? ('not-reported' as const)
+          : ('provider-reported' as const),
       records: attestations.length,
       recordsMarkedVerifiedByProvider: attestations.filter(
         (item) => item.verified === true
@@ -134,7 +140,10 @@ async function readJson(response: Response): Promise<unknown> {
   try {
     return JSON.parse(
       new TextDecoder('utf-8', { fatal: true }).decode(
-        Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), bytes)
+        Buffer.concat(
+          chunks.map((chunk) => Buffer.from(chunk)),
+          bytes
+        )
       )
     ) as unknown;
   } catch {
@@ -189,25 +198,39 @@ export class DepsDevClient {
       );
     this.fetchImplementation = options.fetchImplementation ?? globalThis.fetch;
     this.maxRetries = options.maxRetries ?? 2;
-    if (!Number.isSafeInteger(this.maxRetries) || this.maxRetries < 0 || this.maxRetries > 5)
+    if (
+      !Number.isSafeInteger(this.maxRetries) ||
+      this.maxRetries < 0 ||
+      this.maxRetries > 5
+    )
       throw new RangeError('deps.dev retries must be between 0 and 5.');
     this.retryDelayMs = options.retryDelayMs ?? 200;
-    if (!Number.isSafeInteger(this.retryDelayMs) || this.retryDelayMs < 0 || this.retryDelayMs > 5_000)
-      throw new RangeError('deps.dev retry delay must be between 0 and 5000 ms.');
+    if (
+      !Number.isSafeInteger(this.retryDelayMs) ||
+      this.retryDelayMs < 0 ||
+      this.retryDelayMs > 5_000
+    )
+      throw new RangeError(
+        'deps.dev retry delay must be between 0 and 5000 ms.'
+      );
     this.cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
     if (
       !Number.isSafeInteger(this.cacheTtlMs) ||
       this.cacheTtlMs < 0 ||
       this.cacheTtlMs > 24 * 60 * 60 * 1000
     )
-      throw new RangeError('deps.dev cache TTL must be between 0 and 86400000 ms.');
+      throw new RangeError(
+        'deps.dev cache TTL must be between 0 and 86400000 ms.'
+      );
     this.cacheMaxEntries = options.cacheMaxEntries ?? DEFAULT_CACHE_MAX_ENTRIES;
     if (
       !Number.isSafeInteger(this.cacheMaxEntries) ||
       this.cacheMaxEntries < 1 ||
       this.cacheMaxEntries > 100_000
     )
-      throw new RangeError('deps.dev cache size must be between 1 and 100000 entries.');
+      throw new RangeError(
+        'deps.dev cache size must be between 1 and 100000 entries.'
+      );
     this.now = options.now ?? Date.now;
   }
 
@@ -219,8 +242,11 @@ export class DepsDevClient {
     const pathname = `/systems/npm/packages/${encodeURIComponent(
       packageName
     )}/versions/${encodeURIComponent(version)}`;
-    return this.coalesce(`version\0${packageName}\0${version}`, signal, (sharedSignal) =>
-      this.getJson<DepsDevVersionResponse>(pathname, sharedSignal)
+    return this.coalesce(
+      `version\0${packageName}\0${version}`,
+      signal,
+      (sharedSignal) =>
+        this.getJson<DepsDevVersionResponse>(pathname, sharedSignal)
     );
   }
 
@@ -232,8 +258,11 @@ export class DepsDevClient {
     const pathname = `/systems/npm/packages/${encodeURIComponent(
       packageName
     )}/versions/${encodeURIComponent(version)}:dependencies`;
-    return this.coalesce(`dependencies\0${packageName}\0${version}`, signal, (sharedSignal) =>
-      this.getJson<DepsDevDependenciesResponse>(pathname, sharedSignal)
+    return this.coalesce(
+      `dependencies\0${packageName}\0${version}`,
+      signal,
+      (sharedSignal) =>
+        this.getJson<DepsDevDependenciesResponse>(pathname, sharedSignal)
     );
   }
 
@@ -267,14 +296,17 @@ export class DepsDevClient {
     let pending = this.inFlight.get(key);
     if (!pending) {
       const controller = new AbortController();
-      const promise = Promise.resolve().then(() => operation(controller.signal));
+      const promise = Promise.resolve().then(() =>
+        operation(controller.signal)
+      );
       const created: PendingRequest = {
         controller,
         waiters: 0,
         promise: promise.then((value) => {
           if (this.cacheTtlMs > 0) {
             if (this.cache.size >= this.cacheMaxEntries) {
-              const oldest = this.cache.keys().next().value as string | undefined;
+              const oldest = this.cache.keys().next().value as
+                string | undefined;
               if (oldest !== undefined) this.cache.delete(oldest);
             }
             this.cache.set(key, {
@@ -432,7 +464,8 @@ export class DepsDevClient {
       } catch (error) {
         if (outerSignal?.aborted)
           throw new Error('deps.dev request cancelled.');
-        if (budgetExpired) throw new Error('deps.dev request exceeded its overall budget.');
+        if (budgetExpired)
+          throw new Error('deps.dev request exceeded its overall budget.');
         if (timedOut || controller.signal.aborted)
           throw new Error('deps.dev request timed out.');
         throw error;

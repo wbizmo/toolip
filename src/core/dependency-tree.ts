@@ -24,6 +24,12 @@ export type DependencyTree = {
   };
 };
 
+/** @internal Counters used to verify graph traversal resource bounds. */
+export type DependencyGraphTraversalStats = {
+  enqueuedNodes: number;
+  peakQueueEntries: number;
+};
+
 function indexGraph(graph: NpmDependencyGraph): {
   packages: Map<string, DependencyIdentity>;
   children: Map<string, string[]>;
@@ -97,19 +103,31 @@ function treeNode(
   return rootNode;
 }
 
-function graphSummary(
-  children: Map<string, string[]>
+export function graphSummary(
+  children: ReadonlyMap<string, readonly string[]>,
+  stats?: DependencyGraphTraversalStats
 ): DependencyTree['summary'] {
   const direct = new Set(children.get('root') ?? []);
-  const reachable = new Set<string>();
-  const queue = [...direct].map((id) => ({ id, depth: 1 }));
+  const reachable = new Set(direct);
+  const queue = [...direct];
+  if (stats) {
+    stats.enqueuedNodes = queue.length;
+    stats.peakQueueEntries = queue.length;
+  }
   for (let cursor = 0; cursor < queue.length; cursor++) {
     const current = queue[cursor];
-    if (!current || reachable.has(current.id)) continue;
-    reachable.add(current.id);
-    for (const child of children.get(current.id) ?? []) {
-      if (!reachable.has(child))
-        queue.push({ id: child, depth: current.depth + 1 });
+    if (!current) continue;
+    for (const child of children.get(current) ?? []) {
+      if (reachable.has(child)) continue;
+      reachable.add(child);
+      queue.push(child);
+      if (stats) {
+        stats.enqueuedNodes += 1;
+        stats.peakQueueEntries = Math.max(
+          stats.peakQueueEntries,
+          queue.length - cursor - 1
+        );
+      }
     }
   }
 

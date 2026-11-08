@@ -48,10 +48,7 @@ export type AdvisorySnapshotCacheOptions = {
   requireSignature?: boolean;
 };
 
-export type SnapshotSignatureStatus =
-  | 'unsigned'
-  | 'unverified'
-  | 'verified';
+export type SnapshotSignatureStatus = 'unsigned' | 'unverified' | 'verified';
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value))
@@ -141,8 +138,7 @@ function parseDocument(
   if (options.requireSignature && !document.signature) {
     throw new Error('Advisory snapshot signature is required.');
   }
-  if (!document.signature)
-    return { document, signatureStatus: 'unsigned' };
+  if (!document.signature) return { document, signatureStatus: 'unsigned' };
   if (
     document.signature.algorithm !== 'ed25519' ||
     !/^[A-Za-z0-9._-]{1,128}$/u.test(document.signature.keyId) ||
@@ -154,7 +150,9 @@ function parseDocument(
   }
   if (!options.trustedPublicKeyPem) {
     if (options.requireSignature)
-      throw new Error('A trusted public key is required to verify the snapshot.');
+      throw new Error(
+        'A trusted public key is required to verify the snapshot.'
+      );
     return { document, signatureStatus: 'unverified' };
   }
   let publicKey: KeyObject;
@@ -262,9 +260,9 @@ export class AdvisorySnapshotCache implements AnalyzerCache {
     this.trustedPublicKeyPem =
       options.trustedPublicKeyPem ??
       (options.signingPrivateKeyPem
-        ? createPublicKey(
-            createPrivateKey(options.signingPrivateKeyPem)
-          ).export({ type: 'spki', format: 'pem' }).toString()
+        ? createPublicKey(createPrivateKey(options.signingPrivateKeyPem))
+            .export({ type: 'spki', format: 'pem' })
+            .toString()
         : undefined);
     if (options.signingPrivateKeyPem) {
       try {
@@ -333,9 +331,9 @@ export class AdvisorySnapshotCache implements AnalyzerCache {
     const trustedPublicKeyPem =
       options.trustedPublicKeyPem ??
       (options.signingPrivateKeyPem
-        ? createPublicKey(
-            createPrivateKey(options.signingPrivateKeyPem)
-          ).export({ type: 'spki', format: 'pem' }).toString()
+        ? createPublicKey(createPrivateKey(options.signingPrivateKeyPem))
+            .export({ type: 'spki', format: 'pem' })
+            .toString()
         : undefined);
     const parsed = await readDocument(filePath, {
       trustedPublicKeyPem,

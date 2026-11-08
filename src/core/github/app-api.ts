@@ -34,7 +34,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function checkAnnotations(value: unknown): Array<Record<string, unknown>> {
   if (!Array.isArray(value)) return [];
-  const allowedSeverities = new Set(['critical', 'high', 'medium', 'low', 'info']);
+  const allowedSeverities = new Set([
+    'critical',
+    'high',
+    'medium',
+    'low',
+    'info'
+  ]);
   const output: Array<Record<string, unknown>> = [];
   for (const candidate of value) {
     if (!isRecord(candidate)) continue;
@@ -101,7 +107,10 @@ async function readJson(response: Response): Promise<unknown> {
   }
   return JSON.parse(
     new TextDecoder('utf-8', { fatal: true }).decode(
-      Buffer.concat(chunks.map((item) => Buffer.from(item)), bytes)
+      Buffer.concat(
+        chunks.map((item) => Buffer.from(item)),
+        bytes
+      )
     )
   ) as unknown;
 }
@@ -130,7 +139,9 @@ export class GitHubAppApiClient {
       this.requestTimeoutMs < 1_000 ||
       this.requestTimeoutMs > 60_000
     )
-      throw new RangeError('GitHub API timeout must be between 1000 and 60000.');
+      throw new RangeError(
+        'GitHub API timeout must be between 1000 and 60000.'
+      );
   }
 
   /** Creates a minimal checks:write installation token limited to one repository ID. */
@@ -249,13 +260,15 @@ export class GitHubAppApiClient {
       document.permissions.checks !== 'write' ||
       Object.entries(document.permissions).some(
         ([name, permission]) =>
-          name !== 'checks' &&
-          !(name === 'metadata' && permission === 'read')
+          name !== 'checks' && !(name === 'metadata' && permission === 'read')
       )
     )
       throw new Error('github-installation-token-response-invalid');
     const expiresAt = Date.parse(document.expires_at);
-    if (!Number.isFinite(expiresAt) || expiresAt <= this.now() + TOKEN_SAFETY_WINDOW_MS)
+    if (
+      !Number.isFinite(expiresAt) ||
+      expiresAt <= this.now() + TOKEN_SAFETY_WINDOW_MS
+    )
       throw new Error('github-installation-token-expiry-invalid');
     this.tokens.set(key, { value: document.token, expiresAt });
     return document.token;

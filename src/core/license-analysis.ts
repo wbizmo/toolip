@@ -222,7 +222,9 @@ function isPublicNpmRegistry(registry: string | undefined): boolean {
   if (!registry) return false;
   try {
     const url = new URL(registry);
-    return url.protocol === 'https:' && url.origin === 'https://registry.npmjs.org';
+    return (
+      url.protocol === 'https:' && url.origin === 'https://registry.npmjs.org'
+    );
   } catch {
     return false;
   }

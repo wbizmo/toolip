@@ -33,8 +33,17 @@ export type DependencyScanOptions = {
   fileSource?: DependencyFileSource;
   /** Reuse parsed graph facts only; provider health remains time-sensitive. */
   inventoryCache?: {
-    get<T>(snapshotId: string, taskId: string, taskVersion: string): T | undefined;
-    set<T>(snapshotId: string, taskId: string, taskVersion: string, value: T): void;
+    get<T>(
+      snapshotId: string,
+      taskId: string,
+      taskVersion: string
+    ): T | undefined;
+    set<T>(
+      snapshotId: string,
+      taskId: string,
+      taskVersion: string,
+      value: T
+    ): void;
   };
   /** Digest of manifests, lockfiles and package-manager settings in the snapshot. */
   inventoryCacheKey?: string;
@@ -86,7 +95,10 @@ function dependencyInfo(dependency: DependencyIdentity): DependencyInfo {
 async function readDependencyScanInputs(
   root: string,
   fileSource?: DependencyFileSource,
-  options: Pick<DependencyScanOptions, 'inventoryCache' | 'inventoryCacheKey'> = {}
+  options: Pick<
+    DependencyScanOptions,
+    'inventoryCache' | 'inventoryCacheKey'
+  > = {}
 ): Promise<DependencyScanInputs & { cacheHit: boolean }> {
   const cacheKey =
     options.inventoryCache && options.inventoryCacheKey
@@ -105,46 +117,46 @@ async function readDependencyScanInputs(
     if (cached) return { ...cached, cacheHit: true };
   }
   const read = async (): Promise<DependencyScanInputs> => {
-  try {
-    const graph = await readNpmDependencyGraph(root, fileSource);
-    const uniqueDependencies = new Map<string, DependencyInfo>();
+    try {
+      const graph = await readNpmDependencyGraph(root, fileSource);
+      const uniqueDependencies = new Map<string, DependencyInfo>();
 
-    for (const dependency of graph.packages) {
-      const key = dependencyKey(dependency);
-      if (!uniqueDependencies.has(key)) {
-        uniqueDependencies.set(key, dependencyInfo(dependency));
+      for (const dependency of graph.packages) {
+        const key = dependencyKey(dependency);
+        if (!uniqueDependencies.has(key)) {
+          uniqueDependencies.set(key, dependencyInfo(dependency));
+        }
       }
-    }
 
-    return {
-      dependencies: [...uniqueDependencies.values()],
-      identities: graph.packages,
-      totalDependencies:
-        graph.packages.length + graph.unresolvedDependencies.length,
-      unresolvedDependencies: graph.unresolvedDependencies.map((edge) => ({
-        name: edge.name,
-        version: edge.requirement,
-        type: edge.section
-      })),
-      graphWarnings: graph.warnings
-    };
-  } catch (error) {
-    const declarations = await readDependencies(root, fileSource);
-    const code =
-      error && typeof error === 'object' && 'code' in error
-        ? String(error.code)
-        : 'DEPENDENCY_GRAPH_UNAVAILABLE';
-    return {
-      dependencies: [],
-      identities: [],
-      totalDependencies: declarations.length,
-      unresolvedDependencies: declarations,
-      graphWarnings:
-        code === 'ENOENT'
-          ? []
-          : [`Dependency graph could not be resolved (${code}).`]
-    };
-  }
+      return {
+        dependencies: [...uniqueDependencies.values()],
+        identities: graph.packages,
+        totalDependencies:
+          graph.packages.length + graph.unresolvedDependencies.length,
+        unresolvedDependencies: graph.unresolvedDependencies.map((edge) => ({
+          name: edge.name,
+          version: edge.requirement,
+          type: edge.section
+        })),
+        graphWarnings: graph.warnings
+      };
+    } catch (error) {
+      const declarations = await readDependencies(root, fileSource);
+      const code =
+        error && typeof error === 'object' && 'code' in error
+          ? String(error.code)
+          : 'DEPENDENCY_GRAPH_UNAVAILABLE';
+      return {
+        dependencies: [],
+        identities: [],
+        totalDependencies: declarations.length,
+        unresolvedDependencies: declarations,
+        graphWarnings:
+          code === 'ENOENT'
+            ? []
+            : [`Dependency graph could not be resolved (${code}).`]
+      };
+    }
   };
   const inputs = await read();
   if (cacheKey)

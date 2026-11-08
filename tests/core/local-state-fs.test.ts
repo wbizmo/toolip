@@ -1,5 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -11,7 +17,9 @@ import {
 
 describe('private local-state filesystem access', () => {
   it('rejects a local-state file before reading beyond its configured byte limit', async () => {
-    const root = mkdtempSync(path.join(os.tmpdir(), 'toolip-local-state-limit-'));
+    const root = mkdtempSync(
+      path.join(os.tmpdir(), 'toolip-local-state-limit-')
+    );
     const file = path.join(root, 'state.json');
     try {
       writeFileSync(file, '12345');

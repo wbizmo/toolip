@@ -603,36 +603,33 @@ describe('buildSecurityScorecard', () => {
     const root = await fixture();
     const inspect = vi.fn();
     try {
-      const result = await buildSecurityScorecard(
-        root,
-        {
-          dependencyScan: async () => ({
-            identities: [],
-            packages: [],
-            findings: [],
-            failures: [],
-            coverage: coverageOf({
-              eligible: 0,
-              scanned: 0,
-              skipped: 0,
-              failed: 0
-            }),
-            summary: { ...cleanSummary, totalDependencies: 0 }
+      const result = await buildSecurityScorecard(root, {
+        dependencyScan: async () => ({
+          identities: [],
+          packages: [],
+          findings: [],
+          failures: [],
+          coverage: coverageOf({
+            eligible: 0,
+            scanned: 0,
+            skipped: 0,
+            failed: 0
           }),
-          doctor: cleanDoctor as never,
-          gitAudit: cleanGit as never,
-          vulnerabilityAnalyzer: {
-            id: 'clean-vulns',
-            version: '1',
-            analyze: async () => ({
-              analyzer: 'clean-vulns',
-              durationMs: 0,
-              findings: []
-            })
-          },
-          packageHealth: inspect
-        }
-      );
+          summary: { ...cleanSummary, totalDependencies: 0 }
+        }),
+        doctor: cleanDoctor as never,
+        gitAudit: cleanGit as never,
+        vulnerabilityAnalyzer: {
+          id: 'clean-vulns',
+          version: '1',
+          analyze: async () => ({
+            analyzer: 'clean-vulns',
+            durationMs: 0,
+            findings: []
+          })
+        },
+        packageHealth: inspect
+      });
 
       expect(inspect).not.toHaveBeenCalled();
       expect(result.packageHealth).toBeUndefined();

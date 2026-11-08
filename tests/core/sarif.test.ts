@@ -97,10 +97,10 @@ describe('SARIF serialization', () => {
       location: { file: 'src/app.ts', line: 12, column: 3 }
     };
     const complete = createSarifReport({
-        findings: [finding],
-        analysisState: 'complete',
-        toolVersion: '3.2.1-rc'
-      });
+      findings: [finding],
+      analysisState: 'complete',
+      toolVersion: '3.2.1-rc'
+    });
     const partial = createSarifReport({
       findings: [],
       analysisState: 'partial',
@@ -112,8 +112,11 @@ describe('SARIF serialization', () => {
       }
     });
     expect(
-      (complete.runs as Array<{ results: Array<{ partialFingerprints: Record<string, string> }> }>)[0]
-        ?.results[0]?.partialFingerprints['toolip/v1']
+      (
+        complete.runs as Array<{
+          results: Array<{ partialFingerprints: Record<string, string> }>;
+        }>
+      )[0]?.results[0]?.partialFingerprints['toolip/v1']
     ).toMatch(/^[a-f0-9]{64}$/u);
     for (const report of [complete, partial])
       expect(validate(report), JSON.stringify(validate.errors)).toBe(true);

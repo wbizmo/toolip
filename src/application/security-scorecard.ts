@@ -613,7 +613,7 @@ export async function buildSecurityScorecard(
     cacheMetrics: {
       hits:
         (doctorOutcome.status === 'fulfilled'
-          ? doctorOutcome.value.cacheMetrics?.hits ?? 0
+          ? (doctorOutcome.value.cacheMetrics?.hits ?? 0)
           : 0) +
         (dependencyOutcome.status === 'fulfilled' &&
         dependencyOutcome.value.inventoryCacheHit === true
@@ -621,7 +621,7 @@ export async function buildSecurityScorecard(
           : 0),
       misses:
         (doctorOutcome.status === 'fulfilled'
-          ? doctorOutcome.value.cacheMetrics?.misses ?? 0
+          ? (doctorOutcome.value.cacheMetrics?.misses ?? 0)
           : 0) +
         (dependencyOutcome.status === 'fulfilled' &&
         dependencyOutcome.value.inventoryCacheHit === false

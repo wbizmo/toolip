@@ -55,7 +55,10 @@ const rules: DockerRule[] = [
         .filter((line) => /^USER\s+/iu.test(line.trim()))
         .at(-1);
       if (!lastUser) return true;
-      const identity = lastUser.trim().replace(/^USER\s+/iu, '').split(/\s/u)[0];
+      const identity = lastUser
+        .trim()
+        .replace(/^USER\s+/iu, '')
+        .split(/\s/u)[0];
       if (!identity || identity.includes('$')) return false;
       const username = identity.split(':', 1)[0] ?? '';
       if (username.toLowerCase() === 'root') return true;
@@ -199,7 +202,9 @@ function globalDockerArgs(
   const values = new Map<string, string | undefined>();
   for (const instruction of instructions) {
     if (/^FROM\s+/iu.test(instruction.text)) break;
-    const declaration = instruction.text.match(/^ARG\s+([A-Za-z_][\w]*)(?:=(.*))?$/iu);
+    const declaration = instruction.text.match(
+      /^ARG\s+([A-Za-z_][\w]*)(?:=(.*))?$/iu
+    );
     if (!declaration?.[1]) continue;
     const value = declaration[2];
     const expanded =
@@ -219,7 +224,13 @@ function expandBuildArgs(
   let unresolved = false;
   const value = source.replace(
     /\$\{([A-Za-z_][\w]*)(?:(:-|-)([^}]*))?\}|\$([A-Za-z_][\w]*)/gu,
-    (_whole, bracedName: string | undefined, operator: string | undefined, fallback: string | undefined, plainName: string | undefined) => {
+    (
+      _whole,
+      bracedName: string | undefined,
+      operator: string | undefined,
+      fallback: string | undefined,
+      plainName: string | undefined
+    ) => {
       const name = bracedName ?? plainName ?? '';
       if (builtinBuildArgs.has(name)) return `__TOOLIP_BUILTIN_${name}__`;
       const resolved = values.get(name);
@@ -318,9 +329,7 @@ function finalHealthCheckInstruction(
   instructions: readonly DockerInstruction[]
 ): DockerInstruction | undefined {
   return instructions
-    .filter((instruction) =>
-      /^HEALTHCHECK\s+/iu.test(instruction.text.trim())
-    )
+    .filter((instruction) => /^HEALTHCHECK\s+/iu.test(instruction.text.trim()))
     .at(-1);
 }
 
@@ -405,11 +414,7 @@ export class DockerfileAnalyzer implements Analyzer {
 
       if (!unresolvedFinalUser && rootRule?.test('', final.lines)) {
         fileFindings.push(
-          finding(
-            rootRule,
-            file.relativePath,
-            lastUser?.line ?? final.fromLine
-          )
+          finding(rootRule, file.relativePath, lastUser?.line ?? final.fromLine)
         );
       }
 
@@ -433,7 +438,9 @@ export class DockerfileAnalyzer implements Analyzer {
         }
         for (const rule of lineRules) {
           const testedLine =
-            rule.id === 'TLP-DOCKER-003' && resolvedFrom && !resolvedFrom.unresolved
+            rule.id === 'TLP-DOCKER-003' &&
+            resolvedFrom &&
+            !resolvedFrom.unresolved
               ? resolvedFrom.line
               : instruction.text;
           if (
@@ -441,11 +448,7 @@ export class DockerfileAnalyzer implements Analyzer {
             rule.test(testedLine, allLines)
           ) {
             fileFindings.push(
-              finding(
-                rule,
-                file.relativePath,
-                instruction.line
-              )
+              finding(rule, file.relativePath, instruction.line)
             );
           }
         }
@@ -459,15 +462,16 @@ export class DockerfileAnalyzer implements Analyzer {
       findings,
       coverage: (() => {
         const coverage = coverageOf({
-        eligible,
-        scanned: dockerfiles,
-        skipped,
-        failed,
-        cancelled
+          eligible,
+          scanned: dockerfiles,
+          skipped,
+          failed,
+          cancelled
         });
-        const unresolvedFromArgs = warnings.some((warning) =>
-          warning.includes('base image uses an unresolved build argument') ||
-          warning.includes('final stage USER uses an unresolved variable')
+        const unresolvedFromArgs = warnings.some(
+          (warning) =>
+            warning.includes('base image uses an unresolved build argument') ||
+            warning.includes('final stage USER uses an unresolved variable')
         );
         return unresolvedFromArgs
           ? {

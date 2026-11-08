@@ -133,9 +133,9 @@ describe('route authorization candidates', () => {
     expect(scoped.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
       false
     );
-    expect(
-      shadowed.some((finding) => finding.ruleId === 'TLP-AUTH-001')
-    ).toBe(true);
+    expect(shadowed.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      true
+    );
     expect(
       reassigned.some((finding) => finding.ruleId === 'TLP-AUTH-001')
     ).toBe(true);

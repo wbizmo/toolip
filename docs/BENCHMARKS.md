@@ -80,6 +80,19 @@ on the reachable identity set in both cases.
 The one-million-file release benchmark is reserved for final release
 validation and has not been run.
 
+## High-fan-in graph queue regression
+
+`tests/dependency-tree.test.ts` includes a deterministic graph-summary fixture
+with 256 direct nodes, 512 shared reachable nodes, and 131,072 fan-in edges.
+The traversal records the number of enqueued vertices and peak live queue
+entries; both must remain bounded by the 768 reachable vertices. Marking each
+vertex reachable when it is enqueued prevents duplicate queue records before
+the first dequeue. The summary pass is expected `O(V + E)` time with `O(V)`
+additional queue, visited, indegree, and depth state; the caller-owned
+adjacency is `O(V + E)` and is excluded from that additional-space figure.
+This is a deterministic resource-bound regression, not a wall-clock benchmark
+or a substitute for the phase-gated scale campaigns.
+
 ## Snapshot invalidation soak
 
 `npm run soak:analysis` repeatedly changes one tracked source file and runs the

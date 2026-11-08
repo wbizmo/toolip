@@ -710,7 +710,9 @@ describe('createUpgradePullRequest', () => {
   });
 
   it('parses package-manager YAML keys before allowing pnpm or Yarn execution', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-upgrade-config-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-upgrade-config-')
+    );
     try {
       await writeFile(
         path.join(root, 'pnpm-workspace.yaml'),
@@ -718,32 +720,42 @@ describe('createUpgradePullRequest', () => {
       );
       await expect(
         assertSafePackageManagerConfiguration(root, 'pnpm')
-      ).rejects.toMatchObject({ code: 'UPGRADE_PACKAGE_MANAGER_CONFIG_UNSAFE' });
+      ).rejects.toMatchObject({
+        code: 'UPGRADE_PACKAGE_MANAGER_CONFIG_UNSAFE'
+      });
 
       await rm(path.join(root, 'pnpm-workspace.yaml'));
       await writeFile(path.join(root, '.yarnrc.yml'), '"plugins": []\n');
       await expect(
         assertSafePackageManagerConfiguration(root, 'yarn')
-      ).rejects.toMatchObject({ code: 'UPGRADE_PACKAGE_MANAGER_CONFIG_UNSAFE' });
+      ).rejects.toMatchObject({
+        code: 'UPGRADE_PACKAGE_MANAGER_CONFIG_UNSAFE'
+      });
 
       await rm(path.join(root, '.yarnrc.yml'));
       await writeFile(path.join(root, '.yarnrc.yml'), '"npmRegistries": {}\n');
       await expect(
         assertSafePackageManagerConfiguration(root, 'yarn')
-      ).rejects.toMatchObject({ code: 'UPGRADE_PACKAGE_MANAGER_CONFIG_UNSAFE' });
+      ).rejects.toMatchObject({
+        code: 'UPGRADE_PACKAGE_MANAGER_CONFIG_UNSAFE'
+      });
 
       await rm(path.join(root, '.yarnrc.yml'));
       await writeFile(path.join(root, '.npmrc'), 'config-dependencies=hook\n');
       await expect(
         assertSafePackageManagerConfiguration(root, 'pnpm')
-      ).rejects.toMatchObject({ code: 'UPGRADE_PACKAGE_MANAGER_CONFIG_UNSAFE' });
+      ).rejects.toMatchObject({
+        code: 'UPGRADE_PACKAGE_MANAGER_CONFIG_UNSAFE'
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
   it('fails closed on malformed package-manager YAML configuration', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-upgrade-config-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-upgrade-config-')
+    );
     try {
       await writeFile(
         path.join(root, '.yarnrc.yml'),
@@ -751,7 +763,9 @@ describe('createUpgradePullRequest', () => {
       );
       await expect(
         assertSafePackageManagerConfiguration(root, 'yarn')
-      ).rejects.toMatchObject({ code: 'UPGRADE_PACKAGE_MANAGER_CONFIG_UNSAFE' });
+      ).rejects.toMatchObject({
+        code: 'UPGRADE_PACKAGE_MANAGER_CONFIG_UNSAFE'
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

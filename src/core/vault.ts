@@ -305,10 +305,7 @@ async function writeEncryptedVault(
   directoryIdentity: DirectoryIdentity
 ): Promise<void> {
   const directory = path.dirname(vaultPath);
-  if (
-    !Array.isArray(data.secrets) ||
-    data.secrets.length > maximumVaultSecrets
-  )
+  if (!Array.isArray(data.secrets) || data.secrets.length > maximumVaultSecrets)
     throw new ToolipError('Vault exceeds its secret-count budget.', {
       code: 'VAULT_SIZE_LIMIT',
       exitCode: 1

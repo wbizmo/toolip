@@ -274,7 +274,9 @@ describe('non-npm lockfile inventory', () => {
         requirement: '>=2.30,<3'
       })
     );
-    expect(graph.warnings).not.toContain('ecosystem-workspace-graph-incomplete');
+    expect(graph.warnings).not.toContain(
+      'ecosystem-workspace-graph-incomplete'
+    );
     expect(graph.complete).toBe(true);
   });
 
@@ -298,8 +300,31 @@ describe('non-npm lockfile inventory', () => {
         /^python-workspace-member-pattern-unmatched:/u.test(warning)
       )
     ).toBe(true);
+    expect(graph.warnings).toContain('python-resolved-lock-graph-unavailable');
+    expect(graph.complete).toBe(false);
+  });
+
+  it('marks Cargo workspace matching incomplete when its work budget is exhausted', async () => {
+    const root = await fixture();
+    const pattern = 'a'.repeat(512);
+    const files = new Map<string, string>([
+      ['Cargo.toml', `[workspace]\nmembers = ["${pattern}"]\n`]
+    ]);
+    for (let index = 0; index < 128; index++) {
+      const directory = `packages/${'b'.repeat(256)}/${index}`;
+      files.set(
+        `${directory}/Cargo.toml`,
+        `[package]\nname = "member-${index}"\nversion = "1.0.0"\n`
+      );
+    }
+    const fileSource = {
+      files: [...files.keys()],
+      hasFile: (relativePath: string) => files.has(relativePath),
+      readText: (relativePath: string) => files.get(relativePath)
+    };
+    const graph = await readOtherEcosystemInventoryDetailed(root, fileSource);
     expect(graph.warnings).toContain(
-      'python-resolved-lock-graph-unavailable'
+      'cargo-workspace-pattern-work-budget-exceeded'
     );
     expect(graph.complete).toBe(false);
   });
@@ -431,9 +456,8 @@ describe('non-npm lockfile inventory', () => {
       ].join('\n')
     );
 
-    const { readOtherEcosystemInventoryDetailed } = await import(
-      '../../src/core/dependencies/ecosystem-inventory.js'
-    );
+    const { readOtherEcosystemInventoryDetailed } =
+      await import('../../src/core/dependencies/ecosystem-inventory.js');
     const graph = await readOtherEcosystemInventoryDetailed(root);
     const workspace = graph.packages.find((item) => item.name === 'app');
     const serde = graph.packages.find((item) => item.name === 'serde');
@@ -489,7 +513,9 @@ describe('non-npm lockfile inventory', () => {
         name: 'utils'
       })
     );
-    expect(graph.warnings).not.toContain('ecosystem-workspace-graph-incomplete');
+    expect(graph.warnings).not.toContain(
+      'ecosystem-workspace-graph-incomplete'
+    );
     expect(graph.warnings).toContain(
       'cargo-active-feature-target-selection-unverified:crates/app/Cargo.toml'
     );
@@ -536,7 +562,9 @@ describe('non-npm lockfile inventory', () => {
       'lockfile'
     ]);
     expect(new Set(shared.map((item) => item.id)).size).toBe(2);
-    expect(shared.map((item) => JSON.parse(item.resolutionContext ?? '{}'))).toEqual([
+    expect(
+      shared.map((item) => JSON.parse(item.resolutionContext ?? '{}'))
+    ).toEqual([
       {
         markers: ['python_version < "3.12"'],
         extras: ['fast'],
@@ -561,10 +589,7 @@ describe('non-npm lockfile inventory', () => {
 
   it('keeps unhashed requirement pins as declarations and excludes constraint-only identities', async () => {
     const root = await fixture();
-    await writeFile(
-      path.join(root, 'requirements.in'),
-      'Requests==2.31.0\n'
-    );
+    await writeFile(path.join(root, 'requirements.in'), 'Requests==2.31.0\n');
     await writeFile(
       path.join(root, 'constraints-private.txt'),
       [
@@ -598,9 +623,8 @@ describe('non-npm lockfile inventory', () => {
       path.join(constraintsOnlyRoot, 'constraints.txt'),
       'only-a-constraint==9.9.9\n'
     );
-    const constraintsOnly = await readOtherEcosystemInventoryDetailed(
-      constraintsOnlyRoot
-    );
+    const constraintsOnly =
+      await readOtherEcosystemInventoryDetailed(constraintsOnlyRoot);
     expect(constraintsOnly.packages).toEqual([]);
     expect(constraintsOnly.warnings).toContain(
       'python-constraints-not-installed-identities:constraints.txt'
@@ -845,7 +869,9 @@ describe('non-npm lockfile inventory', () => {
     expect(graph.warnings).toContain(
       'composer-workspace-version-unverified:packages/branch/composer.json'
     );
-    expect(graph.warnings).not.toContain('ecosystem-workspace-graph-incomplete');
+    expect(graph.warnings).not.toContain(
+      'ecosystem-workspace-graph-incomplete'
+    );
   });
 
   it('does not link a Composer requirement to one incompatible locked package', async () => {
@@ -856,12 +882,17 @@ describe('non-npm lockfile inventory', () => {
     );
     await writeFile(
       path.join(root, 'composer.lock'),
-      JSON.stringify({ packages: [{ name: 'vendor/library', version: '1.5.0' }] })
+      JSON.stringify({
+        packages: [{ name: 'vendor/library', version: '1.5.0' }]
+      })
     );
 
     const graph = await readOtherEcosystemInventoryDetailed(root);
     expect(graph.edges.some((edge) => edge.from === 'root')).toBe(false);
-    expect(graph.packages[0]).toMatchObject({ direct: false, development: false });
+    expect(graph.packages[0]).toMatchObject({
+      direct: false,
+      development: false
+    });
     expect(graph.warnings).toContain(
       'unresolved-Packagist-root-dependency:vendor/library'
     );
@@ -940,9 +971,7 @@ describe('non-npm lockfile inventory', () => {
     expect(detailed.warnings).toContain(
       'go-checksum-unavailable:github.com/acme/lib@v1.2.3'
     );
-    expect(detailed.warnings).toContain(
-      'go-module-graph-not-resolved:go.mod'
-    );
+    expect(detailed.warnings).toContain('go-module-graph-not-resolved:go.mod');
   });
 
   it('resolves the Go MVS-selected version only after explicit tool execution consent', async () => {
@@ -966,7 +995,8 @@ describe('non-npm lockfile inventory', () => {
     const fileSource = {
       files: Object.keys(metadata),
       hasFile: (relativePath: string) => relativePath in metadata,
-      readText: (relativePath: string) => metadata[relativePath as keyof typeof metadata]
+      readText: (relativePath: string) =>
+        metadata[relativePath as keyof typeof metadata]
     };
     const calls: string[][] = [];
     const runner = async (input: {
@@ -1058,7 +1088,8 @@ describe('non-npm lockfile inventory', () => {
       'go-module-graph-not-resolved:go.mod'
     );
 
-    metadata['go.sum'] = `example.test/lib v1.3.0/go.mod h1:${Buffer.alloc(32, 9).toString('base64')}\n`;
+    metadata['go.sum'] =
+      `example.test/lib v1.3.0/go.mod h1:${Buffer.alloc(32, 9).toString('base64')}\n`;
     const mismatched = await readOtherEcosystemInventoryDetailed(
       root,
       fileSource,
@@ -1089,7 +1120,9 @@ describe('non-npm lockfile inventory', () => {
       }
     });
     expect(calls).toBe(0);
-    expect(result.warnings).toContain('go-tool-execution-disabled-in-offline-mode');
+    expect(result.warnings).toContain(
+      'go-tool-execution-disabled-in-offline-mode'
+    );
     expect(result.packages[0]?.resolutionConfidence).toBe('unknown');
   });
 
@@ -1120,7 +1153,8 @@ describe('non-npm lockfile inventory', () => {
     const fileSource = {
       files: Object.keys(metadata),
       hasFile: (relativePath: string) => relativePath in metadata,
-      readText: (relativePath: string) => metadata[relativePath as keyof typeof metadata]
+      readText: (relativePath: string) =>
+        metadata[relativePath as keyof typeof metadata]
     };
     const calls: string[][] = [];
     const runner = async (input: {
@@ -1167,7 +1201,9 @@ describe('non-npm lockfile inventory', () => {
     const replaced = graph.packages.find(
       (item) => item.name === 'golang.org/x/text'
     );
-    const xMod = graph.packages.find((item) => item.name === 'golang.org/x/mod');
+    const xMod = graph.packages.find(
+      (item) => item.name === 'golang.org/x/mod'
+    );
     expect(calls).toEqual([
       ['version'],
       ['list', '-m', '-json', 'all'],
@@ -1184,7 +1220,9 @@ describe('non-npm lockfile inventory', () => {
     expect(graph.edges.some((edge) => edge.name === 'golang.org/x/tools')).toBe(
       false
     );
-    expect(graph.warnings).not.toContain('go-module-graph-reference-unresolved');
+    expect(graph.warnings).not.toContain(
+      'go-module-graph-reference-unresolved'
+    );
     expect(graph.complete).toBe(true);
   });
 
@@ -1326,12 +1364,13 @@ describe('non-npm lockfile inventory', () => {
       path.join(root, 'go.mod'),
       'module example.test/app\nrequire example.test/lib v1.2.3\n'
     );
-    const { readOtherEcosystemInventoryDetailed } = await import(
-      '../../src/core/dependencies/ecosystem-inventory.js'
-    );
+    const { readOtherEcosystemInventoryDetailed } =
+      await import('../../src/core/dependencies/ecosystem-inventory.js');
 
     const graph = await readOtherEcosystemInventoryDetailed(root);
-    expect(graph.packages.find((item) => item.name === 'example.test/lib')).toMatchObject({
+    expect(
+      graph.packages.find((item) => item.name === 'example.test/lib')
+    ).toMatchObject({
       version: 'v1.2.3',
       source: 'go.mod:replacement-unverified',
       resolutionConfidence: 'unknown'
@@ -1415,20 +1454,31 @@ describe('non-npm lockfile inventory', () => {
       'vendor/modules.txt': [
         '# example.test/lib v1.2.3',
         '## explicit; go 1.24.0',
-        'example.test/lib/pkg',
+        'example.test/lib/root',
+        '# example.test/lib/pkg v2.0.0',
+        '## explicit; go 1.24.0',
+        'example.test/lib/pkg/client',
         '# example.test/transitive v0.4.0',
         'example.test/transitive/pkg'
       ].join('\n'),
       'main.go': [
         'package main',
         '// import "example.test/ignored" is only a comment',
-        'import client "example.test/lib/pkg"',
+        'import (',
+        'client "example.test/lib/root"',
+        'nested "example.test/lib/pkg/client"',
+        ')',
         'var _ = `import "example.test/also-ignored"`'
       ].join('\n'),
       'vendor/example.test/lib/pkg/client.go': [
         'package client',
         'import "example.test/transitive/pkg"'
       ].join('\n'),
+      'vendor/example.test/lib/root/root.go': [
+        'package root',
+        'import "example.test/transitive/pkg"'
+      ].join('\n'),
+      'vendor/example.test/lib/pkg/client/client.go': 'package client\n',
       'vendor/example.test/transitive/pkg/transitive.go': 'package pkg\n'
     };
     const fileSource = {
@@ -1440,10 +1490,14 @@ describe('non-npm lockfile inventory', () => {
     const library = graph.packages.find(
       (item) => item.name === 'example.test/lib'
     );
+    const nested = graph.packages.find(
+      (item) => item.name === 'example.test/lib/pkg'
+    );
     const transitive = graph.packages.find(
       (item) => item.name === 'example.test/transitive'
     );
     expect(library?.direct).toBe(true);
+    expect(nested?.direct).toBe(true);
     expect(graph.edges).toContainEqual(
       expect.objectContaining({
         from: 'root',
@@ -1459,7 +1513,9 @@ describe('non-npm lockfile inventory', () => {
         requirement: 'v0.4.0'
       })
     );
-    expect(graph.warnings).not.toContain('go-vendor-transitive-edges-unresolved');
+    expect(graph.warnings).not.toContain(
+      'go-vendor-transitive-edges-unresolved'
+    );
     expect(graph.warnings).toContain('go-vendor-content-integrity-unverified');
     expect(graph.complete).toBe(false);
   });

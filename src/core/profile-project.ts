@@ -146,9 +146,12 @@ async function readComposerJson(
       )
         return {};
       if (error instanceof ToolipError) throw error;
-      throw new ToolipError('Composer manifest could not be inspected safely.', {
-        code: 'SCAN_DISCOVERY_INCOMPLETE'
-      });
+      throw new ToolipError(
+        'Composer manifest could not be inspected safely.',
+        {
+          code: 'SCAN_DISCOVERY_INCOMPLETE'
+        }
+      );
     }
   }
   const result = await new TextFileReader(manifestBudget, { root }).read(
@@ -231,14 +234,17 @@ export async function profileProject(
     options.snapshotContents
   );
   const deps = dependencyNames(packageJson);
-  const composerDependencies = new Set([
-    ...Object.keys(
-      (composerJson.require as Record<string, unknown> | undefined) ?? {}
-    ),
-    ...Object.keys(
-      (composerJson['require-dev'] as Record<string, unknown> | undefined) ?? {}
-    )
-  ].map((name) => name.toLowerCase()));
+  const composerDependencies = new Set(
+    [
+      ...Object.keys(
+        (composerJson.require as Record<string, unknown> | undefined) ?? {}
+      ),
+      ...Object.keys(
+        (composerJson['require-dev'] as Record<string, unknown> | undefined) ??
+          {}
+      )
+    ].map((name) => name.toLowerCase())
+  );
   const scripts = packageScripts(packageJson);
   const snapshotPaths = options.snapshotContents
     ? new Set(files.map((file) => file.relativePath))
@@ -279,8 +285,7 @@ export async function profileProject(
       (await hasFile('composer.lock')),
     hasLaravel:
       composerDependencies.has('laravel/framework') ||
-      ((await hasFile('artisan')) &&
-        (await hasFile('bootstrap/app.php'))),
+      ((await hasFile('artisan')) && (await hasFile('bootstrap/app.php'))),
     hasTypeScript:
       deps.includes('typescript') || (await hasFile('tsconfig.json')),
     hasJavaScript: files.some((file) => ['js', 'jsx'].includes(file.extension)),

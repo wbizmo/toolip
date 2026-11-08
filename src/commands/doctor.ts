@@ -55,10 +55,22 @@ export function registerDoctorCommand(program: Command): void {
       '--allow-unsigned-rule-pack',
       'Explicitly trust one unsigned declarative rule pack for this local run.'
     )
-    .option('--analyzer-plugin <manifest>', 'Load one signed capability-limited WebAssembly analyzer.')
-    .option('--analyzer-plugin-public-key <file>', 'Trusted Ed25519 public key for the analyzer plugin.')
-    .option('--analyzer-plugin-key-id <id>', 'Expected analyzer plugin signing key ID.')
-    .option('--enable-executable-plugins', 'Explicitly opt in to signed WebAssembly analyzer execution.')
+    .option(
+      '--analyzer-plugin <manifest>',
+      'Load one signed capability-limited WebAssembly analyzer.'
+    )
+    .option(
+      '--analyzer-plugin-public-key <file>',
+      'Trusted Ed25519 public key for the analyzer plugin.'
+    )
+    .option(
+      '--analyzer-plugin-key-id <id>',
+      'Expected analyzer plugin signing key ID.'
+    )
+    .option(
+      '--enable-executable-plugins',
+      'Explicitly opt in to signed WebAssembly analyzer execution.'
+    )
     .action(
       async (options: {
         path: string;
@@ -110,8 +122,7 @@ export function registerDoctorCommand(program: Command): void {
         }
 
         let snapshot:
-          | Awaited<ReturnType<typeof createProjectSnapshot>>
-          | undefined;
+          Awaited<ReturnType<typeof createProjectSnapshot>> | undefined;
         let context: ScannerContext;
         try {
           snapshot = await createProjectSnapshot(options.path);

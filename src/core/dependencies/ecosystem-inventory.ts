@@ -57,7 +57,7 @@ const maximumPythonRequirementDepth = 16;
 const maximumPythonRequirementBytes = 32 * 1024 * 1024;
 const maximumPythonWorkspaceManifests = 5_000;
 const maximumPythonWorkspaceEntries = 50_000;
-const maximumPythonWorkspaceGlobWork = 16_000_000;
+const maximumWorkspaceGlobWork = 16_000_000;
 
 function asRecord(value: unknown): RecordValue | undefined {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -171,14 +171,16 @@ function fromJsonLock(
                 ? packageSource.url
                 : undefined;
           const normalizedPath = rawPath
-            ? path.posix.normalize(rawPath.replaceAll('\\', '/').replace(/^\.\//u, ''))
+            ? path.posix.normalize(
+                rawPath.replaceAll('\\', '/').replace(/^\.\//u, '')
+              )
             : undefined;
           const safePath = Boolean(
             normalizedPath &&
-              !path.posix.isAbsolute(rawPath?.replaceAll('\\', '/') ?? '') &&
-              normalizedPath !== '..' &&
-              !normalizedPath.startsWith('../') &&
-              !normalizedPath.includes('\0')
+            !path.posix.isAbsolute(rawPath?.replaceAll('\\', '/') ?? '') &&
+            normalizedPath !== '..' &&
+            !normalizedPath.startsWith('../') &&
+            !normalizedPath.includes('\0')
           );
           output.push({
             name: pkg.name.toLowerCase(),
@@ -194,7 +196,9 @@ function fromJsonLock(
               : {}),
             ...(isPathRepository
               ? {
-                  resolutionConfidence: safePath ? 'workspace' as const : 'unknown' as const,
+                  resolutionConfidence: safePath
+                    ? ('workspace' as const)
+                    : ('unknown' as const),
                   ...(safePath ? { module: normalizedPath } : {})
                 }
               : {}),
@@ -586,50 +590,94 @@ type CargoDependencyDeclaration = {
   requestedFeatures?: string[];
 };
 
-function cargoPatternMatches(pattern: string, directory: string): boolean {
+function cargoPatternMatches(
+  pattern: string,
+  directory: string,
+  budget: { used: number; exceeded: boolean }
+): boolean {
+  if (pattern.length > 512 || !pattern) return false;
+  budget.used += pattern.length;
+  if (budget.used > maximumWorkspaceGlobWork) {
+    budget.exceeded = true;
+    return false;
+  }
   if (
-    !pattern ||
-    pattern.length > 512 ||
     path.posix.isAbsolute(pattern) ||
     pattern.includes('\\') ||
-    pattern.includes('\0')
+    pattern.includes('\0') ||
+    pattern.split('/').some((part) => part === '..')
   )
     return false;
-  let expression = '^';
-  for (let index = 0; index < pattern.length; index++) {
-    const character = pattern[index] ?? '';
-    if (character === '*' && pattern[index + 1] === '*') {
-      expression += '.*';
-      index++;
-    } else if (character === '*') expression += '[^/]*';
-    else if (character === '?') expression += '[^/]';
-    else expression += character.replace(/[|\\{}()[\]^$+?.]/gu, '\\$&');
-  }
-  expression += '$';
-  return new RegExp(expression, 'u').test(directory);
+  return workspacePatternMatches(pattern, directory, budget);
 }
 
-function cargoRequirementMatches(version: string, requirement: string): boolean {
+function cargoWorkspacePatterns(
+  raw: unknown,
+  field: 'members' | 'exclude',
+  warnings: string[]
+): string[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    warnings.push(`cargo-workspace-${field}-invalid`);
+    return [];
+  }
+  if (raw.length > maximumCargoWorkspaceManifests) {
+    warnings.push('cargo-workspace-pattern-budget-exceeded');
+    return raw
+      .filter((pattern): pattern is string => typeof pattern === 'string')
+      .slice(0, maximumCargoWorkspaceManifests);
+  }
+  const patterns = raw.filter(
+    (pattern): pattern is string => typeof pattern === 'string'
+  );
+  if (
+    patterns.length !== raw.length ||
+    patterns.some(
+      (pattern) =>
+        !pattern ||
+        pattern.length > 512 ||
+        path.posix.isAbsolute(pattern) ||
+        pattern.includes('\\') ||
+        pattern.includes('\0') ||
+        pattern.split('/').some((part) => part === '..')
+    )
+  )
+    warnings.push(`cargo-workspace-${field}-invalid`);
+  return patterns.filter(
+    (pattern) =>
+      pattern.length > 0 &&
+      pattern.length <= 512 &&
+      !path.posix.isAbsolute(pattern) &&
+      !pattern.includes('\\') &&
+      !pattern.includes('\0') &&
+      !pattern.split('/').some((part) => part === '..')
+  );
+}
+
+function cargoRequirementMatches(
+  version: string,
+  requirement: string
+): boolean {
   const normalizedVersion = version.replace(/^v/u, '');
   const normalizedRequirement = requirement.trim().replace(/^=/u, '');
   if (normalizedRequirement === '*' || normalizedRequirement.length === 0)
     return true;
-  if (
-    semver.valid(normalizedRequirement) &&
-    semver.valid(normalizedVersion)
-  )
+  if (semver.valid(normalizedRequirement) && semver.valid(normalizedVersion))
     return semver.eq(normalizedVersion, normalizedRequirement);
   return Boolean(
     semver.valid(normalizedVersion) &&
-      semver.validRange(normalizedRequirement) &&
-      semver.satisfies(normalizedVersion, normalizedRequirement, {
-        includePrerelease: true
-      })
+    semver.validRange(normalizedRequirement) &&
+    semver.satisfies(normalizedVersion, normalizedRequirement, {
+      includePrerelease: true
+    })
   );
 }
 
 /** Resolves a PEP 440-style requirement only against captured exact lock entries. */
-function pythonRequirementMatches(version: string, requirement: string): boolean {
+function pythonRequirementMatches(
+  version: string,
+  requirement: string
+): boolean {
   const normalizeRelease = (value: string): string | undefined => {
     const match = /^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?$/iu.exec(value.trim());
     if (!match?.[1]) return undefined;
@@ -667,7 +715,9 @@ function pythonRequirementMatches(version: string, requirement: string): boolean
       normalized.push(`>=${lower}`, `<${upper}`);
       continue;
     }
-    const comparison = /^(===|==|!=|>=|<=|>|<|=)?\s*(\d+(?:\.\d+){0,2})$/u.exec(clause);
+    const comparison = /^(===|==|!=|>=|<=|>|<|=)?\s*(\d+(?:\.\d+){0,2})$/u.exec(
+      clause
+    );
     if (comparison?.[2]) {
       const expected = normalizeRelease(comparison[2]);
       if (!expected) return false;
@@ -704,9 +754,10 @@ function cargoDependencyDeclarations(
   ): void => {
     for (const [alias, raw] of Object.entries(asRecord(table) ?? {})) {
       const local = asRecord(raw);
-      const inherited = local?.workspace === true
-        ? asRecord(workspaceDependencies[alias])
-        : undefined;
+      const inherited =
+        local?.workspace === true
+          ? asRecord(workspaceDependencies[alias])
+          : undefined;
       const inheritedFeatures = Array.isArray(inherited?.features)
         ? inherited.features
         : [];
@@ -719,7 +770,9 @@ function cargoDependencyDeclarations(
         features: [...inheritedFeatures, ...localFeatures]
       };
       if (local?.workspace === true && !inherited) {
-        warnings.push(`cargo-workspace-dependency-unavailable:${sourcePath}:${alias}`);
+        warnings.push(
+          `cargo-workspace-dependency-unavailable:${sourcePath}:${alias}`
+        );
         continue;
       }
       const packageName =
@@ -748,14 +801,18 @@ function cargoDependencyDeclarations(
           normalized.startsWith('../') ||
           normalized.includes('\0')
         ) {
-          warnings.push(`cargo-path-dependency-outside-project:${sourcePath}:${alias}`);
+          warnings.push(
+            `cargo-path-dependency-outside-project:${sourcePath}:${alias}`
+          );
           continue;
         } else dependencyModule = normalized === '.' ? 'root' : normalized;
       }
       const requestedFeatures = Array.isArray(spec.features)
         ? spec.features
-            .filter((feature): feature is string =>
-              typeof feature === 'string' && /^[A-Za-z0-9_-]{1,128}$/u.test(feature)
+            .filter(
+              (feature): feature is string =>
+                typeof feature === 'string' &&
+                /^[A-Za-z0-9_-]{1,128}$/u.test(feature)
             )
             .sort()
         : [];
@@ -776,7 +833,9 @@ function cargoDependencyDeclarations(
     ['build-dependencies', 'dependency']
   ] as const)
     readTable(manifest[key], section);
-  for (const [target, value] of Object.entries(asRecord(manifest.target) ?? {})) {
+  for (const [target, value] of Object.entries(
+    asRecord(manifest.target) ?? {}
+  )) {
     if (target.length > 512) {
       warnings.push(`cargo-target-context-over-budget:${sourcePath}`);
       continue;
@@ -1240,13 +1299,35 @@ function markGoReplacedPackages(
   warnings: string[],
   source: string
 ): void {
+  type IndexedReplacement = { position: number; replacement: GoReplacement };
+  type ReplacementCandidates = {
+    anyVersion?: IndexedReplacement;
+    versions: Map<string, IndexedReplacement>;
+  };
+  const byModule = new Map<string, ReplacementCandidates>();
+  for (const [position, replacement] of replacements.entries()) {
+    let candidates = byModule.get(replacement.module);
+    if (!candidates) {
+      candidates = { versions: new Map() };
+      byModule.set(replacement.module, candidates);
+    }
+    const indexed = { position, replacement };
+    if (replacement.version === undefined) {
+      candidates.anyVersion ??= indexed;
+    } else if (!candidates.versions.has(replacement.version)) {
+      candidates.versions.set(replacement.version, indexed);
+    }
+  }
   for (const item of packages) {
-    const replacement = replacements.find(
-      (candidate) =>
-        candidate.module === item.name &&
-        (!candidate.version ||
-          candidate.version === item.version.replace(/^v/u, ''))
-    );
+    const candidates = byModule.get(item.name);
+    const exact = candidates?.versions.get(item.version.replace(/^v/u, ''));
+    const general = candidates?.anyVersion;
+    const replacement =
+      exact && general
+        ? exact.position < general.position
+          ? exact.replacement
+          : general.replacement
+        : (exact?.replacement ?? general?.replacement);
     if (!replacement) continue;
     item.source = `${source}:replacement-unverified`;
     item.resolutionConfidence = 'unknown';
@@ -1288,9 +1369,9 @@ function encodeGoModulePath(value: string): string {
   return value.replace(/[A-Z]/gu, (letter) => `!${letter.toLowerCase()}`);
 }
 
-function goModuleReference(value: unknown):
-  | { name: string; version: string }
-  | undefined {
+function goModuleReference(
+  value: unknown
+): { name: string; version: string } | undefined {
   if (typeof value !== 'string' || value.length > 4_096) return undefined;
   const separator = value.lastIndexOf('@');
   if (separator < 1 || separator === value.length - 1) return undefined;
@@ -1359,7 +1440,7 @@ function resolveGoToolGraph(input: {
       replacementVersion.length > 0 &&
       semver.valid(replacementVersion) !== null;
     const packageName =
-      replaced && replacementIsExternal ? replacementPath ?? name : name;
+      replaced && replacementIsExternal ? (replacementPath ?? name) : name;
     const packageVersion =
       replaced && replacementIsExternal ? replacementVersion : version;
     const checksumRecord =
@@ -1423,22 +1504,22 @@ function resolveGoToolGraph(input: {
     );
     selectedByModule.set(name, item);
     selectedVersionByModule.set(name, version);
-    if (
-      replaced &&
-      replacementIsExternal &&
-      packageName !== name
-    ) {
+    if (replaced && replacementIsExternal && packageName !== name) {
       selectedByModule.set(packageName, item);
       selectedVersionByModule.set(packageName, packageVersion);
     }
     if (replaced && !replacementIsExternal)
       warnings.add(`go-replacement-provenance-unverified:${name}`);
     if (!validGoModSum)
-      warnings.add(`go-checksum-database-unverified:${packageName}@${packageVersion}`);
+      warnings.add(
+        `go-checksum-database-unverified:${packageName}@${packageVersion}`
+      );
     if (!validModuleSum)
       warnings.add(`go-checksum-mismatch:${packageName}@${packageVersion}`);
     if (!sourceChecksumsAgree)
-      warnings.add(`go-checksum-source-mismatch:${packageName}@${packageVersion}`);
+      warnings.add(
+        `go-checksum-source-mismatch:${packageName}@${packageVersion}`
+      );
     if (Array.isArray(record.Retracted) && record.Retracted.length > 0)
       warnings.add(`go-module-retracted:${name}@${version}`);
     if (typeof record.Deprecated === 'string' && record.Deprecated.length > 0)
@@ -1503,9 +1584,9 @@ function resolveGoToolGraph(input: {
     }
     const fromIdentity = rootFrom
       ? 'root'
-      : identities.get(`${from?.name}@${from?.version}`) ??
+      : (identities.get(`${from?.name}@${from?.version}`) ??
         (from ? selectedByModule.get(from.name) : undefined) ??
-        (from && rootNames.has(from.name) ? 'root' : undefined);
+        (from && rootNames.has(from.name) ? 'root' : undefined));
     const target =
       identities.get(`${to.name}@${to.version}`) ??
       selectedByModule.get(to.name);
@@ -1530,8 +1611,7 @@ function resolveGoToolGraph(input: {
   }
   if (graphLines === 0) warnings.add('go-module-graph-empty');
   const uniqueEdges = new Map<string, DependencyEdge>();
-  for (const edge of edges)
-    uniqueEdges.set(`${edge.from}\0${edge.to}`, edge);
+  for (const edge of edges) uniqueEdges.set(`${edge.from}\0${edge.to}`, edge);
   return {
     packages,
     edges: [...uniqueEdges.values()],
@@ -1633,9 +1713,10 @@ function fromGoVendorModules(
 }
 
 /** Extracts Go import declarations without interpreting comments or string contents. */
-function parseGoImports(
-  source: string
-): { imports: string[]; complete: boolean } {
+function parseGoImports(source: string): {
+  imports: string[];
+  complete: boolean;
+} {
   type Token = { kind: 'word' | 'string' | 'symbol'; value: string };
   const tokens: Token[] = [];
   let complete = true;
@@ -1767,14 +1848,50 @@ function goVendorPath(module: string): string {
   return module.replace(/[A-Z]/gu, (letter) => `!${letter.toLowerCase()}`);
 }
 
+type PathPrefixNode<T> = {
+  value?: T;
+  children: Map<string, PathPrefixNode<T>>;
+};
+
+function pathPrefixIndex<T>(
+  entries: readonly { prefix: string; value: T }[]
+): PathPrefixNode<T> {
+  const root: PathPrefixNode<T> = { children: new Map() };
+  for (const entry of entries) {
+    let current = root;
+    for (const segment of entry.prefix.split('/')) {
+      let child = current.children.get(segment);
+      if (!child) {
+        child = { children: new Map() };
+        current.children.set(segment, child);
+      }
+      current = child;
+    }
+    current.value ??= entry.value;
+  }
+  return root;
+}
+
+function longestPathPrefix<T>(
+  index: PathPrefixNode<T>,
+  value: string
+): T | undefined {
+  let current = index;
+  let match = current.value;
+  for (const segment of value.split('/')) {
+    const child = current.children.get(segment);
+    if (!child) break;
+    current = child;
+    if (current.value !== undefined) match = current.value;
+  }
+  return match;
+}
+
 function longestGoModuleMatch<T extends { name: string }>(
   importPath: string,
-  longestFirstPackages: readonly T[]
+  moduleIndex: PathPrefixNode<T>
 ): T | undefined {
-  const decoded = decodeGoModulePath(importPath);
-  return longestFirstPackages.find(
-    (item) => decoded === item.name || decoded.startsWith(`${item.name}/`)
-  );
+  return longestPathPrefix(moduleIndex, decodeGoModulePath(importPath));
 }
 
 function addGoVendorImportGraph(
@@ -1797,17 +1914,16 @@ function addGoVendorImportGraph(
   if (!complete) warnings.push('go-source-file-budget-exceeded');
   let totalBytes = 0;
   const boundedFiles = sourceFiles.slice(0, maximumGoSourceFiles);
-  const modules = packages
-    .filter(
-      (item) =>
-        item.ecosystem === 'Go' && item.resolutionConfidence !== 'unknown'
-    )
-    .sort((left, right) => right.name.length - left.name.length);
+  const modules = packages.filter(
+    (item) => item.ecosystem === 'Go' && item.resolutionConfidence !== 'unknown'
+  );
   const modulesByName = new Map(modules.map((item) => [item.name, item]));
-  const vendorPrefixes = modules.map((item) => ({
-    item,
-    prefix: goVendorPath(item.name)
-  }));
+  const moduleIndex = pathPrefixIndex(
+    modules.map((item) => ({ prefix: item.name, value: item }))
+  );
+  const vendorIndex = pathPrefixIndex(
+    modules.map((item) => ({ prefix: goVendorPath(item.name), value: item }))
+  );
   const importsByModule = new Map<LockedPackage, Set<string>>();
   const rootImports = new Set<string>();
   const seenVendorModules = new Set<LockedPackage>();
@@ -1858,21 +1974,20 @@ function addGoVendorImportGraph(
       ? file.slice(vendorPrefix.length)
       : undefined;
     const owner = vendorRelative
-      ? vendorPrefixes.find(
-          ({ prefix }) =>
-            vendorRelative === prefix || vendorRelative.startsWith(`${prefix}/`)
-        )?.item
+      ? longestPathPrefix(vendorIndex, vendorRelative)
       : undefined;
     if (owner) seenVendorModules.add(owner);
     const dependencies = owner
-      ? importsByModule.get(owner) ?? new Set<string>()
+      ? (importsByModule.get(owner) ?? new Set<string>())
       : rootImports;
     for (const importPath of parsed.imports) {
-      const target = longestGoModuleMatch(importPath, modules);
+      const target = longestGoModuleMatch(importPath, moduleIndex);
       if (!target) {
         if (importPath.split('/')[0]?.includes('.')) {
           complete = false;
-          warnings.push(`go-import-not-in-vendor:${decodeGoModulePath(importPath)}`);
+          warnings.push(
+            `go-import-not-in-vendor:${decodeGoModulePath(importPath)}`
+          );
         }
         continue;
       }
@@ -1902,8 +2017,7 @@ function addGoVendorImportGraph(
     complete = false;
     warnings.push('go-vendor-source-coverage-incomplete');
   }
-  if (!complete)
-    warnings.push('go-vendor-transitive-edges-unresolved');
+  if (!complete) warnings.push('go-vendor-transitive-edges-unresolved');
 }
 
 type PythonRootRequirement = {
@@ -1961,7 +2075,12 @@ function pythonManifestRequirements(
   const project = asRecord(manifest.project);
   if (Array.isArray(project?.dependencies)) {
     for (const raw of project.dependencies) {
-      const parsed = parsePythonRequirement(raw, 'dependency', undefined, module);
+      const parsed = parsePythonRequirement(
+        raw,
+        'dependency',
+        undefined,
+        module
+      );
       if (parsed) output.push(parsed);
     }
   }
@@ -2094,13 +2213,18 @@ function pythonWorkspacePatterns(
   return { members, exclude };
 }
 
-function pythonWorkspacePatternMatches(
+function workspacePatternMatches(
   pattern: string,
   directory: string,
   budget: { used: number; exceeded: boolean }
 ): boolean {
-  const tokens: Array<{ value: string; star: boolean; crossSlash: boolean }> = [];
+  const tokens: Array<{ value: string; star: boolean; crossSlash: boolean }> =
+    [];
   for (let index = 0; index < pattern.length; index++) {
+    if (++budget.used > maximumWorkspaceGlobWork) {
+      budget.exceeded = true;
+      return false;
+    }
     const character = pattern[index] ?? '';
     if (character === '*') {
       const crossSlash = pattern[index + 1] === '*';
@@ -2118,7 +2242,7 @@ function pythonWorkspacePatternMatches(
     if (token.star) {
       current[0] = previous[0] ?? 0;
       for (let index = 1; index <= directory.length; index++) {
-        if (++budget.used > maximumPythonWorkspaceGlobWork) {
+        if (++budget.used > maximumWorkspaceGlobWork) {
           budget.exceeded = true;
           return false;
         }
@@ -2131,17 +2255,14 @@ function pythonWorkspacePatternMatches(
       }
     } else {
       for (let index = 1; index <= directory.length; index++) {
-        if (++budget.used > maximumPythonWorkspaceGlobWork) {
+        if (++budget.used > maximumWorkspaceGlobWork) {
           budget.exceeded = true;
           return false;
         }
         const character = directory[index - 1] ?? '';
         const matches =
-          token.value === '?'
-            ? character !== '/'
-            : token.value === character;
-        current[index] =
-          previous[index - 1] === 1 && matches ? 1 : 0;
+          token.value === '?' ? character !== '/' : token.value === character;
+        current[index] = previous[index - 1] === 1 && matches ? 1 : 0;
       }
     }
     previous = current;
@@ -2297,7 +2418,9 @@ function pipRequirementsPackages(
       sha384: 96,
       sha512: 128
     };
-    const hashes = hashMatches.map((match) => `${match[1]}:${match[2]?.toLowerCase()}`);
+    const hashes = hashMatches.map(
+      (match) => `${match[1]}:${match[2]?.toLowerCase()}`
+    );
     if (
       hashes.some((hash, index) => {
         const algorithm = hash.split(':', 1)[0] ?? '';
@@ -2328,7 +2451,12 @@ function pipRequirementsPackages(
       continue;
     }
     const extras = (match[2]?.split(',') ?? [])
-      .map((extra) => extra.trim().toLowerCase().replace(/[-_.]+/gu, '-'))
+      .map((extra) =>
+        extra
+          .trim()
+          .toLowerCase()
+          .replace(/[-_.]+/gu, '-')
+      )
       .filter((extra) => /^[a-z0-9][a-z0-9._-]{0,127}$/u.test(extra))
       .sort();
     parsedLines.push({
@@ -2429,7 +2557,10 @@ type PythonRequirementInput = {
 
 function requirementInclude(
   line: string
-): { path: string; mode: 'requirements' | 'constraints' } | 'invalid' | undefined {
+):
+  | { path: string; mode: 'requirements' | 'constraints' }
+  | 'invalid'
+  | undefined {
   const long = line.match(/^(--requirement|--constraint)(?:\s+|=)(\S+)$/u);
   const shortWithSeparator = line.match(/^(-r|-c)(?:\s+|=)(\S+)$/u);
   const shortAttached = line.match(/^(-r|-c)([^\s].*)$/u);
@@ -2533,10 +2664,7 @@ async function collectPythonRequirementInputs(
       }
       pending.push({
         file: normalized,
-        mode:
-          item.mode === 'constraints'
-            ? 'constraints'
-            : include.mode,
+        mode: item.mode === 'constraints' ? 'constraints' : include.mode,
         depth: item.depth + 1
       });
     }
@@ -2589,7 +2717,7 @@ export async function readOtherEcosystemInventoryDetailed(
       let member = false;
       for (const pattern of workspacePatterns.members) {
         if (patternWork.exceeded) break;
-        if (pythonWorkspacePatternMatches(pattern, module, patternWork)) {
+        if (workspacePatternMatches(pattern, module, patternWork)) {
           matchedPatterns.add(pattern);
           member = true;
           break;
@@ -2600,7 +2728,7 @@ export async function readOtherEcosystemInventoryDetailed(
       let excluded = false;
       for (const pattern of workspacePatterns.exclude) {
         if (patternWork.exceeded) break;
-        if (pythonWorkspacePatternMatches(pattern, module, patternWork)) {
+        if (workspacePatternMatches(pattern, module, patternWork)) {
           excluded = true;
           break;
         }
@@ -2612,7 +2740,9 @@ export async function readOtherEcosystemInventoryDetailed(
         const text = await readInput(root, file, fileSource);
         if (text === undefined)
           throw new Error('workspace manifest was not captured');
-        manifest = parseToml(text, { unsafeKeyBehaviour: 'throw' }) as RecordValue;
+        manifest = parseToml(text, {
+          unsafeKeyBehaviour: 'throw'
+        }) as RecordValue;
       } catch {
         warnings.push(`python-workspace-manifest-invalid:${module}`);
         continue;
@@ -2720,13 +2850,19 @@ export async function readOtherEcosystemInventoryDetailed(
     }
   }
 
-  const cargoManifestFiles = await cargoManifestPaths(root, fileSource, warnings);
+  const cargoManifestFiles = await cargoManifestPaths(
+    root,
+    fileSource,
+    warnings
+  );
   const cargoManifests = new Map<string, RecordValue>();
   for (const file of cargoManifestFiles) {
     try {
       const text = await readInput(root, file, fileSource);
       if (text === undefined) continue;
-      const manifest = asRecord(parseToml(text, { unsafeKeyBehaviour: 'throw' }));
+      const manifest = asRecord(
+        parseToml(text, { unsafeKeyBehaviour: 'throw' })
+      );
       if (!manifest) throw new Error('cargo-manifest-not-object');
       cargoManifests.set(file, manifest);
     } catch {
@@ -2735,25 +2871,19 @@ export async function readOtherEcosystemInventoryDetailed(
   }
   const rootCargoManifest = cargoManifests.get('Cargo.toml');
   const cargoWorkspace = asRecord(rootCargoManifest?.workspace);
-  const cargoWorkspaceDependencies = asRecord(
-    cargoWorkspace?.dependencies
-  ) ?? {};
-  const cargoMemberPatterns = Array.isArray(cargoWorkspace?.members)
-    ? cargoWorkspace.members.filter(
-        (member): member is string => typeof member === 'string'
-      )
-    : [];
-  if (
-    cargoWorkspace?.members !== undefined &&
-    (!Array.isArray(cargoWorkspace.members) ||
-      cargoMemberPatterns.length !== cargoWorkspace.members.length)
-  )
-    warnings.push('cargo-workspace-members-invalid');
-  const cargoExcludedPatterns = Array.isArray(cargoWorkspace?.exclude)
-    ? cargoWorkspace.exclude.filter(
-        (member): member is string => typeof member === 'string'
-      )
-    : [];
+  const cargoWorkspaceDependencies =
+    asRecord(cargoWorkspace?.dependencies) ?? {};
+  const cargoMemberPatterns = cargoWorkspacePatterns(
+    cargoWorkspace?.members,
+    'members',
+    warnings
+  );
+  const cargoExcludedPatterns = cargoWorkspacePatterns(
+    cargoWorkspace?.exclude,
+    'exclude',
+    warnings
+  );
+  const cargoPatternWork = { used: 0, exceeded: false };
   const cargoWorkspaceVersion = asRecord(cargoWorkspace?.package)?.version;
   const cargoWorkspacePackages: Array<{
     name: string;
@@ -2762,8 +2892,21 @@ export async function readOtherEcosystemInventoryDetailed(
     file: string;
     declarations: CargoDependencyDeclaration[];
   }> = [];
+  const cargoWorkspaceLockCandidates = new Map<string, LockedPackage[]>();
+  for (const item of output) {
+    if (
+      item.ecosystem !== 'crates.io' ||
+      item.source !== 'Cargo.lock:path-or-workspace-unverified'
+    )
+      continue;
+    const key = JSON.stringify([item.name, item.version.replace(/^v/u, '')]);
+    const candidates = cargoWorkspaceLockCandidates.get(key) ?? [];
+    candidates.push(item);
+    cargoWorkspaceLockCandidates.set(key, candidates);
+  }
   for (const [file, manifest] of cargoManifests) {
-    const module = path.posix.dirname(file) === '.' ? '' : path.posix.dirname(file);
+    const module =
+      path.posix.dirname(file) === '.' ? '' : path.posix.dirname(file);
     const packageRecord = asRecord(manifest.package);
     if (!packageRecord) {
       if (file === 'Cargo.toml' && cargoWorkspace) continue;
@@ -2775,11 +2918,12 @@ export async function readOtherEcosystemInventoryDetailed(
     const included = isRoot
       ? true
       : cargoMemberPatterns.some((pattern) =>
-          cargoPatternMatches(pattern, module)
+          cargoPatternMatches(pattern, module, cargoPatternWork)
         ) &&
         !cargoExcludedPatterns.some((pattern) =>
-          cargoPatternMatches(pattern, module)
+          cargoPatternMatches(pattern, module, cargoPatternWork)
         );
+    if (cargoPatternWork.exceeded) break;
     if (!included) continue;
     const name =
       typeof packageRecord.name === 'string' ? packageRecord.name : undefined;
@@ -2808,13 +2952,10 @@ export async function readOtherEcosystemInventoryDetailed(
       declarations.some((declaration) => declaration.requestedFeatures?.length)
     )
       warnings.push(`cargo-active-feature-target-selection-unverified:${file}`);
-    const locked = output.filter(
-      (item) =>
-        item.ecosystem === 'crates.io' &&
-        item.name === name &&
-        item.version.replace(/^v/u, '') === version.replace(/^v/u, '') &&
-        item.source === 'Cargo.lock:path-or-workspace-unverified'
-    );
+    const locked =
+      cargoWorkspaceLockCandidates.get(
+        JSON.stringify([name, version.replace(/^v/u, '')])
+      ) ?? [];
     if (locked.length !== 1) {
       warnings.push(`cargo-workspace-package-lock-identity-unresolved:${file}`);
       continue;
@@ -2855,6 +2996,8 @@ export async function readOtherEcosystemInventoryDetailed(
     );
     cargoWorkspacePackages.push({ name, version, module, file, declarations });
   }
+  if (cargoPatternWork.exceeded)
+    warnings.push('cargo-workspace-pattern-work-budget-exceeded');
   if (
     cargoWorkspace &&
     cargoMemberPatterns.length > 0 &&
@@ -2864,18 +3007,24 @@ export async function readOtherEcosystemInventoryDetailed(
   for (const pattern of cargoMemberPatterns) {
     if (
       !cargoManifestFiles.some((file) => {
-        const module = path.posix.dirname(file) === '.' ? '' : path.posix.dirname(file);
+        const module =
+          path.posix.dirname(file) === '.' ? '' : path.posix.dirname(file);
         return (
           Boolean(module) &&
-          cargoPatternMatches(pattern, module) &&
+          cargoPatternMatches(pattern, module, cargoPatternWork) &&
           !cargoExcludedPatterns.some((excluded) =>
-            cargoPatternMatches(excluded, module)
+            cargoPatternMatches(excluded, module, cargoPatternWork)
           )
         );
       })
     )
       warnings.push('cargo-workspace-member-pattern-unmatched');
   }
+  if (
+    cargoPatternWork.exceeded &&
+    !warnings.includes('cargo-workspace-pattern-work-budget-exceeded')
+  )
+    warnings.push('cargo-workspace-pattern-work-budget-exceeded');
   for (const item of output) {
     if (
       item.ecosystem === 'crates.io' &&
@@ -2888,10 +3037,19 @@ export async function readOtherEcosystemInventoryDetailed(
 
   if (composerPathPatterns.length > 0) {
     const manifests = await composerManifestPaths(root, fileSource, warnings);
+    const lockedComposerNames = new Set(
+      output
+        .filter((item) => item.ecosystem === 'Packagist')
+        .map((item) => item.name)
+    );
     for (const file of manifests) {
       if (file === 'composer.json') continue;
       const directory = path.posix.dirname(file);
-      if (!composerPathPatterns.some((pattern) => composerPathMatches(pattern, directory)))
+      if (
+        !composerPathPatterns.some((pattern) =>
+          composerPathMatches(pattern, directory)
+        )
+      )
         continue;
       composerWorkspaceFiles.add(file);
       try {
@@ -2902,11 +3060,10 @@ export async function readOtherEcosystemInventoryDetailed(
         }
         const workspace = composerWorkspacePackage(text, file, warnings);
         if (workspace) {
-          const locked = output.some(
-            (item) =>
-              item.ecosystem === 'Packagist' && item.name === workspace.name
-          );
-          if (!locked) output.push(workspace);
+          if (!lockedComposerNames.has(workspace.name)) {
+            output.push(workspace);
+            lockedComposerNames.add(workspace.name);
+          }
         }
       } catch {
         warnings.push(`composer-workspace-manifest-unavailable:${file}`);
@@ -2916,13 +3073,15 @@ export async function readOtherEcosystemInventoryDetailed(
 
   const requirementPattern =
     /^(?:requirements|constraints)(?:-[^/]+)?\.(?:txt|in)$/u;
-  const requirementFiles = (fileSource
-    ? fileSource.files.filter((file) =>
-        requirementPattern.test(path.posix.basename(file))
-      )
-    : (await readdir(root).catch(() => [])).filter((file) =>
-        requirementPattern.test(path.posix.basename(file))
-      )).sort();
+  const requirementFiles = (
+    fileSource
+      ? fileSource.files.filter((file) =>
+          requirementPattern.test(path.posix.basename(file))
+        )
+      : (await readdir(root).catch(() => [])).filter((file) =>
+          requirementPattern.test(path.posix.basename(file))
+        )
+  ).sort();
   if (requirementFiles.length > maximumPythonRequirementFiles)
     warnings.push('python-requirements-file-budget-exceeded');
   const installRequirementFiles = requirementFiles.filter(
@@ -2930,10 +3089,7 @@ export async function readOtherEcosystemInventoryDetailed(
   );
   let pipCompileLockAvailable = installRequirementFiles.length > 0;
   const seenPythonRequirementInstances = new Set<string>();
-  for (const file of requirementFiles.slice(
-    0,
-    maximumPythonRequirementFiles
-  )) {
+  for (const file of requirementFiles.slice(0, maximumPythonRequirementFiles)) {
     try {
       const inputs = await collectPythonRequirementInputs(
         root,
@@ -3065,8 +3221,7 @@ export async function readOtherEcosystemInventoryDetailed(
     !goToolGraphApplied
   )
     warnings.push('go-work-replace-resolution-incomplete');
-  if (!goToolGraphApplied)
-    warnings.push(...goWorkspaceDirectiveWarnings);
+  if (!goToolGraphApplied) warnings.push(...goWorkspaceDirectiveWarnings);
   if (goVendorText !== undefined) {
     const vendorPackages = fromGoVendorModules(goVendorText, warnings);
     markGoReplacedPackages(
@@ -3238,9 +3393,12 @@ export async function readOtherEcosystemInventoryDetailed(
     );
   if (
     hasPythonManifest &&
-    !['Pipfile.lock', 'poetry.lock', 'uv.lock', 'pip-compile-requirements'].some((file) =>
-      loadedLockfiles.has(file)
-    )
+    ![
+      'Pipfile.lock',
+      'poetry.lock',
+      'uv.lock',
+      'pip-compile-requirements'
+    ].some((file) => loadedLockfiles.has(file))
   )
     warnings.push('python-resolved-lock-graph-unavailable');
   if (hasRoot('Cargo.toml') && !loadedLockfiles.has('Cargo.lock'))
@@ -3258,6 +3416,9 @@ export async function readOtherEcosystemInventoryDetailed(
     !mavenTreeAvailable
   )
     warnings.push('maven-resolved-graph-unavailable');
+  const cargoWorkspaceFiles = new Set(
+    cargoWorkspacePackages.map((member) => member.file)
+  );
   for (const file of projectFiles) {
     const basename = path.posix.basename(file);
     const nested = file.includes('/');
@@ -3266,11 +3427,7 @@ export async function readOtherEcosystemInventoryDetailed(
       continue;
     if (basename === 'composer.json' && composerWorkspaceFiles.has(file))
       continue;
-    if (
-      basename === 'Cargo.toml' &&
-      cargoWorkspacePackages.some((member) => member.file === file)
-    )
-      continue;
+    if (basename === 'Cargo.toml' && cargoWorkspaceFiles.has(file)) continue;
     if (
       /^(?:Cargo\.toml|composer\.json|pom\.xml|pyproject\.toml|Pipfile|(?:requirements|constraints)(?:-[^/]+)?\.(?:txt|in)|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?)$/u.test(
         basename
@@ -3301,15 +3458,81 @@ export async function readOtherEcosystemInventoryDetailed(
     values.push(dependency);
     byName.set(key, values);
   }
+  const contextByDependency = new WeakMap<
+    DependencyIdentity,
+    { markers?: Set<string>; extras: Set<string> }
+  >();
+  const resolutionByName = new Map<
+    string,
+    {
+      candidates: DependencyIdentity[];
+      hasMarkerContexts: boolean;
+      byMarker: Map<string, DependencyIdentity[]>;
+    }
+  >();
+  for (const [key, candidates] of byName) {
+    const index = {
+      candidates,
+      hasMarkerContexts: false,
+      byMarker: new Map<string, DependencyIdentity[]>()
+    };
+    for (const candidate of candidates) {
+      let context: { markers?: Set<string>; extras: Set<string> } = {
+        extras: new Set()
+      };
+      try {
+        const parsed = JSON.parse(candidate.resolutionContext ?? '{}') as {
+          markers?: unknown;
+          extras?: unknown;
+        };
+        const markers = Array.isArray(parsed.markers)
+          ? parsed.markers.filter(
+              (value): value is string => typeof value === 'string'
+            )
+          : typeof parsed.markers === 'string'
+            ? [parsed.markers]
+            : undefined;
+        const extras = Array.isArray(parsed.extras)
+          ? parsed.extras.filter(
+              (value): value is string => typeof value === 'string'
+            )
+          : [];
+        context = {
+          ...(markers ? { markers: new Set(markers) } : {}),
+          extras: new Set(extras)
+        };
+      } catch {
+        // Malformed contexts remain unavailable for targeted resolution.
+      }
+      contextByDependency.set(candidate, context);
+      if (context.markers) {
+        index.hasMarkerContexts = true;
+        for (const marker of context.markers) {
+          const matches = index.byMarker.get(marker) ?? [];
+          matches.push(candidate);
+          index.byMarker.set(marker, matches);
+        }
+      }
+    }
+    resolutionByName.set(key, index);
+  }
+  const pythonPackagesByWorkspaceName = new Map<string, DependencyIdentity[]>();
+  for (const item of packages) {
+    if (
+      item.ecosystem !== 'PyPI' ||
+      !item.workspace ||
+      item.resolutionConfidence !== 'workspace'
+    )
+      continue;
+    const key = JSON.stringify([item.workspace, item.name]);
+    const matches = pythonPackagesByWorkspaceName.get(key) ?? [];
+    matches.push(item);
+    pythonPackagesByWorkspaceName.set(key, matches);
+  }
   const pythonWorkspacePackages = new Map<string, DependencyIdentity>();
   for (const [module, name] of pythonWorkspaceProjects) {
-    const matches = packages.filter(
-      (item) =>
-        item.ecosystem === 'PyPI' &&
-        item.name === name &&
-        item.workspace === module &&
-        item.resolutionConfidence === 'workspace'
-    );
+    const matches =
+      pythonPackagesByWorkspaceName.get(JSON.stringify([module, name])) ?? [];
     if (matches.length !== 1) {
       warnings.push(`python-workspace-package-unresolved:${module}`);
       continue;
@@ -3326,7 +3549,8 @@ export async function readOtherEcosystemInventoryDetailed(
     marker?: string,
     extras?: readonly string[]
   ): DependencyIdentity | undefined => {
-    const candidates = byName.get(`${ecosystem}\0${name}`) ?? [];
+    const index = resolutionByName.get(`${ecosystem}\0${name}`);
+    const candidates = index?.candidates ?? [];
     if (ecosystem === 'Packagist') {
       const matches = candidates.filter((candidate) =>
         composerRequirementMatches(candidate.version, requirement)
@@ -3334,52 +3558,23 @@ export async function readOtherEcosystemInventoryDetailed(
       return matches.length === 1 ? matches[0] : undefined;
     }
     let markerCandidates: DependencyIdentity[] = [];
-    const hasMarkerContexts = candidates.some((candidate) => {
-      try {
-        const context = JSON.parse(candidate.resolutionContext ?? '{}') as {
-          markers?: unknown;
-        };
-        return context.markers !== undefined;
-      } catch {
-        return false;
-      }
-    });
     if (marker) {
-      markerCandidates = candidates.filter((candidate) => {
-        if (!candidate.resolutionContext) return false;
-        try {
-          const context = JSON.parse(candidate.resolutionContext) as {
-            markers?: unknown;
-          };
-          return Array.isArray(context.markers)
-            ? context.markers.includes(marker)
-            : context.markers === marker;
-        } catch {
-          return false;
-        }
-      });
-      if (hasMarkerContexts && markerCandidates.length === 0) return undefined;
+      markerCandidates = index?.byMarker.get(marker) ?? [];
+      if (index?.hasMarkerContexts && markerCandidates.length === 0)
+        return undefined;
     }
     let resolutionCandidates =
       markerCandidates.length > 0 ? markerCandidates : candidates;
     if (extras?.length) {
       const withExtraContexts = resolutionCandidates.filter((candidate) => {
-        try {
-          const context = JSON.parse(candidate.resolutionContext ?? '{}') as {
-            extras?: unknown;
-          };
-          const contextExtras = Array.isArray(context.extras)
-            ? context.extras
-            : [];
-          return (
-            contextExtras.length > 0 &&
-            extras.every((extra) => contextExtras.includes(extra))
-          );
-        } catch {
-          return false;
-        }
+        const contextExtras = contextByDependency.get(candidate)?.extras;
+        return (
+          Boolean(contextExtras?.size) &&
+          extras.every((extra) => contextExtras?.has(extra))
+        );
       });
-      if (withExtraContexts.length > 0) resolutionCandidates = withExtraContexts;
+      if (withExtraContexts.length > 0)
+        resolutionCandidates = withExtraContexts;
     }
     if (ecosystem === 'crates.io') {
       const cargoMatches = resolutionCandidates.filter((candidate) =>
@@ -3549,7 +3744,9 @@ export async function readOtherEcosystemInventoryDetailed(
   )) {
     let context: { markers?: unknown; extras?: unknown } = {};
     try {
-      context = JSON.parse(dependency.resolutionContext ?? '{}') as typeof context;
+      context = JSON.parse(
+        dependency.resolutionContext ?? '{}'
+      ) as typeof context;
     } catch {
       warnings.push(`python-requirement-context-invalid:${dependency.name}`);
     }
@@ -3561,7 +3758,9 @@ export async function readOtherEcosystemInventoryDetailed(
           ? context.markers[0]
           : undefined;
     const extras = Array.isArray(context.extras)
-      ? context.extras.filter((extra): extra is string => typeof extra === 'string')
+      ? context.extras.filter(
+          (extra): extra is string => typeof extra === 'string'
+        )
       : undefined;
     edges.push({
       from: 'root',
@@ -3819,7 +4018,10 @@ function composerWorkspacePackage(
   };
 }
 
-function composerRequirementMatches(version: string, requirement: string): boolean {
+function composerRequirementMatches(
+  version: string,
+  requirement: string
+): boolean {
   const clean = requirement.trim().replace(/@[A-Za-z]+$/u, '');
   if (!clean || clean === '*') return true;
   if (version === clean || version === clean.replace(/^v/u, '')) return true;
@@ -3837,7 +4039,6 @@ export async function readOtherEcosystemInventory(
   fileSource?: DependencyFileSource,
   options: OtherEcosystemInventoryOptions = {}
 ): Promise<DependencyIdentity[]> {
-  return (
-    await readOtherEcosystemInventoryDetailed(root, fileSource, options)
-  ).packages;
+  return (await readOtherEcosystemInventoryDetailed(root, fileSource, options))
+    .packages;
 }

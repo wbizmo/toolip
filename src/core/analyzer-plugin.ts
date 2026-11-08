@@ -77,9 +77,13 @@ export async function loadWasmAnalyzerPluginForCli(options: {
   );
   if (!supplied && options.enabled !== true) return undefined;
   if (options.enabled !== true)
-    throw new Error('--enable-executable-plugins is required to run a WASM analyzer plugin.');
+    throw new Error(
+      '--enable-executable-plugins is required to run a WASM analyzer plugin.'
+    );
   if (!options.manifestPath || !options.publicKeyPath || !options.trustedKeyId)
-    throw new Error('A signed plugin manifest, trusted public key and key ID are required.');
+    throw new Error(
+      'A signed plugin manifest, trusted public key and key ID are required.'
+    );
   const publicKeyPem = await readPemKeyFile(options.publicKeyPath);
   return loadWasmAnalyzerPlugin(options.manifestPath, {
     publicKeyPem,
@@ -91,7 +95,7 @@ export type WasmAnalyzerPlugin = Readonly<{
   id: string;
   apiVersion: 1;
   moduleSha256: string;
-  capabilities: readonly ('read-snapshot')[];
+  capabilities: readonly 'read-snapshot'[];
   limits: Readonly<PluginManifest['limits']>;
   keyId: string;
 }>;
@@ -145,13 +149,17 @@ function validateMemorySection(bytes: Uint8Array, maximumPages: number): void {
     const end = offset + sectionSize;
     if (end > bytes.byteLength) throw new Error('WASM section is truncated.');
     if (sectionId === 5) {
-      if (foundMemory) throw new Error('Multiple WASM memory sections are denied.');
+      if (foundMemory)
+        throw new Error('Multiple WASM memory sections are denied.');
       foundMemory = true;
       const state = { offset };
       const count = readUnsignedLeb(bytes, state);
       if (count !== 1) throw new Error('Exactly one WASM memory is required.');
       const flags = readUnsignedLeb(bytes, state);
-      if (flags !== 1) throw new Error('WASM memory must be 32-bit, unshared and explicitly bounded.');
+      if (flags !== 1)
+        throw new Error(
+          'WASM memory must be 32-bit, unshared and explicitly bounded.'
+        );
       const minimum = readUnsignedLeb(bytes, state);
       const maximum = readUnsignedLeb(bytes, state);
       if (minimum > maximum || maximum > maximumPages || state.offset !== end)
@@ -159,17 +167,29 @@ function validateMemorySection(bytes: Uint8Array, maximumPages: number): void {
     }
     offset = end;
   }
-  if (!foundMemory) throw new Error('Analyzer plugin must define bounded memory.');
+  if (!foundMemory)
+    throw new Error('Analyzer plugin must define bounded memory.');
 }
 
-async function readRegularFile(filePath: string, maximumBytes: number): Promise<Uint8Array> {
+async function readRegularFile(
+  filePath: string,
+  maximumBytes: number
+): Promise<Uint8Array> {
   const absolute = path.resolve(filePath);
   const before = await lstat(absolute, { bigint: true });
-  if (!before.isFile() || before.isSymbolicLink() || before.size > BigInt(maximumBytes))
-    throw new Error('Analyzer plugin input must be a bounded regular non-symlink file.');
+  if (
+    !before.isFile() ||
+    before.isSymbolicLink() ||
+    before.size > BigInt(maximumBytes)
+  )
+    throw new Error(
+      'Analyzer plugin input must be a bounded regular non-symlink file.'
+    );
   const handle = await open(
     absolute,
-    constants.O_RDONLY | noFollow | (process.platform === 'win32' ? 0 : constants.O_NONBLOCK)
+    constants.O_RDONLY |
+      noFollow |
+      (process.platform === 'win32' ? 0 : constants.O_NONBLOCK)
   );
   try {
     const opened = await handle.stat({ bigint: true });
@@ -187,7 +207,8 @@ async function readRegularFile(filePath: string, maximumBytes: number): Promise<
       const read = await handle.read(chunk, 0, chunk.byteLength, null);
       if (read.bytesRead === 0) break;
       total += read.bytesRead;
-      if (total > maximumBytes) throw new Error('Analyzer plugin input exceeds its byte limit.');
+      if (total > maximumBytes)
+        throw new Error('Analyzer plugin input exceeds its byte limit.');
       chunks.push(chunk.subarray(0, read.bytesRead));
     }
     const after = await handle.stat({ bigint: true });
@@ -231,7 +252,9 @@ export async function loadWasmAnalyzerPlugin(
   const manifestBytes = await readRegularFile(manifestPath, MAX_MANIFEST_BYTES);
   let raw: unknown;
   try {
-    raw = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(manifestBytes));
+    raw = JSON.parse(
+      new TextDecoder('utf-8', { fatal: true }).decode(manifestBytes)
+    );
   } catch {
     throw new Error('Analyzer plugin manifest is invalid JSON.');
   }
@@ -239,7 +262,9 @@ export async function loadWasmAnalyzerPlugin(
   if (!parsed.success) throw new Error('Analyzer plugin manifest is invalid.');
   const manifest = parsed.data;
   if (!validateManifestPath(manifest.module))
-    throw new Error('Analyzer plugin module path must stay beside its manifest.');
+    throw new Error(
+      'Analyzer plugin module path must stay beside its manifest.'
+    );
   if (manifest.signature.keyId !== options.trustedKeyId)
     throw new Error('Analyzer plugin signing key is not trusted.');
   const now = options.now ?? Date.now();
@@ -251,7 +276,9 @@ export async function loadWasmAnalyzerPlugin(
     expiresAt <= issuedAt ||
     expiresAt - issuedAt > 180 * 24 * 60 * 60 * 1000
   )
-    throw new Error('Analyzer plugin signature is expired or has invalid dates.');
+    throw new Error(
+      'Analyzer plugin signature is expired or has invalid dates.'
+    );
   const { signature, ...payload } = manifest;
   const canonical = canonicalEvidenceJson(payload);
   let verified = false;
@@ -265,17 +292,22 @@ export async function loadWasmAnalyzerPlugin(
   } catch {
     verified = false;
   }
-  if (!verified) throw new Error('Analyzer plugin signature verification failed.');
+  if (!verified)
+    throw new Error('Analyzer plugin signature verification failed.');
 
   const manifestRoot = await realpath(path.dirname(path.resolve(manifestPath)));
   const modulePath = path.resolve(manifestRoot, manifest.module);
   const moduleRoot = await realpath(path.dirname(modulePath));
   if (moduleRoot !== manifestRoot)
-    throw new Error('Analyzer plugin module must remain in its manifest directory.');
+    throw new Error(
+      'Analyzer plugin module must remain in its manifest directory.'
+    );
   const moduleBytes = await readRegularFile(modulePath, MAX_MODULE_BYTES);
   const moduleSha256 = createHash('sha256').update(moduleBytes).digest('hex');
   if (moduleSha256 !== manifest.moduleSha256)
-    throw new Error('Analyzer plugin module digest does not match its signature.');
+    throw new Error(
+      'Analyzer plugin module digest does not match its signature.'
+    );
   validateMemorySection(moduleBytes, manifest.limits.memoryPages);
   const compiled = await wasmApi.compile(moduleBytes);
   if (wasmApi.Module.imports(compiled).length !== 0)
@@ -289,7 +321,9 @@ export async function loadWasmAnalyzerPlugin(
     exports.get('toolip_analyze') !== 'function' ||
     exports.get('toolip_output_len') !== 'function'
   )
-    throw new Error('Analyzer plugin does not implement the Toolip WASM ABI v1.');
+    throw new Error(
+      'Analyzer plugin does not implement the Toolip WASM ABI v1.'
+    );
   const plugin: WasmAnalyzerPlugin = Object.freeze({
     id: manifest.id,
     apiVersion: 1,
@@ -329,7 +363,10 @@ const pluginFindingSchema = z
   .strict();
 
 const pluginOutputSchema = z
-  .object({ schemaVersion: z.literal(1), findings: z.array(pluginFindingSchema).max(MAX_FINDINGS) })
+  .object({
+    schemaVersion: z.literal(1),
+    findings: z.array(pluginFindingSchema).max(MAX_FINDINGS)
+  })
   .strict();
 
 const wasmWorkerSource = `
@@ -397,7 +434,10 @@ export async function runWasmAnalyzerPlugin(
   }
   const input = JSON.stringify({
     schemaVersion: 1,
-    files: files.map(({ path: filePath, content }) => ({ path: filePath, content }))
+    files: files.map(({ path: filePath, content }) => ({
+      path: filePath,
+      content
+    }))
   });
   if (Buffer.byteLength(input, 'utf8') > plugin.limits.maxInputBytes)
     return pluginFailure(files.length, 'plugin-input-budget-exceeded');
@@ -494,16 +534,16 @@ export async function runWasmAnalyzerPlugin(
     return pluginFailure(files.length, 'plugin-output-invalid');
   }
   const parsed = pluginOutputSchema.safeParse(output);
-  if (!parsed.success) return pluginFailure(files.length, 'plugin-output-invalid');
+  if (!parsed.success)
+    return pluginFailure(files.length, 'plugin-output-invalid');
   const inputPaths = new Set(files.map((file) => file.path));
   if (
     parsed.data.findings.some(
       (finding) =>
         !inputPaths.has(finding.file) ||
-        !new RegExp(
-          `^TLP-PLUGIN-${plugin.id.toUpperCase()}-\\d{3}$`,
-          'u'
-        ).test(finding.ruleId)
+        !new RegExp(`^TLP-PLUGIN-${plugin.id.toUpperCase()}-\\d{3}$`, 'u').test(
+          finding.ruleId
+        )
     )
   )
     return pluginFailure(files.length, 'plugin-output-reference-invalid');

@@ -1,7 +1,4 @@
-import {
-  generateKeyPairSync,
-  verify as verifySignature
-} from 'node:crypto';
+import { generateKeyPairSync, verify as verifySignature } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { GitHubAppApiClient } from '../../src/core/github/app-api.js';
 import type {
@@ -11,7 +8,9 @@ import type {
 } from '../../src/core/github/app-webhook.js';
 
 const keyPair = generateKeyPairSync('rsa', { modulusLength: 2048 });
-const privateKey = keyPair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+const privateKey = keyPair.privateKey
+  .export({ type: 'pkcs8', format: 'pem' })
+  .toString();
 const publicKey = keyPair.publicKey;
 const now = Date.parse('2026-11-07T00:00:00.000Z');
 const installationToken = ['ghs_', 'test_installation_token_value'].join('');
@@ -106,14 +105,20 @@ describe('least-privilege GitHub App check-run API', () => {
       repository_ids: [123],
       permissions: { checks: 'write' }
     });
-    const jwt = new Headers(tokenRequest?.init.headers).get('authorization')?.slice('Bearer '.length);
+    const jwt = new Headers(tokenRequest?.init.headers)
+      .get('authorization')
+      ?.slice('Bearer '.length);
     expect(jwt).toBeDefined();
     const [header, payload, signature] = (jwt ?? '').split('.');
-    expect(JSON.parse(Buffer.from(header ?? '', 'base64url').toString())).toEqual({
+    expect(
+      JSON.parse(Buffer.from(header ?? '', 'base64url').toString())
+    ).toEqual({
       alg: 'RS256',
       typ: 'JWT'
     });
-    expect(JSON.parse(Buffer.from(payload ?? '', 'base64url').toString())).toMatchObject({
+    expect(
+      JSON.parse(Buffer.from(payload ?? '', 'base64url').toString())
+    ).toMatchObject({
       iss: '12345',
       iat: Math.floor(now / 1_000) - 30,
       exp: Math.floor(now / 1_000) + 8 * 60
@@ -127,9 +132,14 @@ describe('least-privilege GitHub App check-run API', () => {
       )
     ).toBe(true);
 
-    const checks = requests.filter((request) => request.url.endsWith('/check-runs'));
+    const checks = requests.filter((request) =>
+      request.url.endsWith('/check-runs')
+    );
     expect(checks).toHaveLength(3);
-    const checkBodies = checks.map((request) => JSON.parse(String(request.init.body)) as Record<string, unknown>);
+    const checkBodies = checks.map(
+      (request) =>
+        JSON.parse(String(request.init.body)) as Record<string, unknown>
+    );
     expect(checkBodies.map((body) => body.conclusion)).toEqual([
       'success',
       'failure',
@@ -198,8 +208,7 @@ describe('least-privilege GitHub App check-run API', () => {
       now: () => now,
       fetchImplementation: async (_input, init = {}) => {
         let streamController:
-          | ReadableStreamDefaultController<Uint8Array>
-          | undefined;
+          ReadableStreamDefaultController<Uint8Array> | undefined;
         const stream = new ReadableStream<Uint8Array>({
           start(value) {
             streamController = value;

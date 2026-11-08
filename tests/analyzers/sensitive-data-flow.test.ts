@@ -149,7 +149,8 @@ export async function handler() {
     ]);
     expect(
       findings.every(
-        (finding) => finding.severity === 'medium' && finding.confidence === 'low'
+        (finding) =>
+          finding.severity === 'medium' && finding.confidence === 'low'
       )
     ).toBe(true);
     expect(JSON.stringify(findings)).not.toContain('SERVICE_TOKEN');

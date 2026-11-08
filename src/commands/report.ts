@@ -40,7 +40,9 @@ async function readReport(filePath: string): Promise<ToolipReport> {
         code: 'REPORT_INPUT_INVALID',
         exitCode: 1
       });
-    const report = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
+    const report = JSON.parse(
+      new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    ) as unknown;
     if (
       !report ||
       typeof report !== 'object' ||
@@ -66,11 +68,18 @@ async function readReport(filePath: string): Promise<ToolipReport> {
 }
 
 export function registerReportCommand(program: Command): void {
-  const report = program.command('report').description('Verify signed Toolip scan evidence.');
+  const report = program
+    .command('report')
+    .description('Verify signed Toolip scan evidence.');
   report
     .command('verify <file>')
-    .description('Verify report integrity, project identity, trusted key and signature age.')
-    .requiredOption('--public-key <file>', 'Trusted Ed25519 public key PEM file.')
+    .description(
+      'Verify report integrity, project identity, trusted key and signature age.'
+    )
+    .requiredOption(
+      '--public-key <file>',
+      'Trusted Ed25519 public key PEM file.'
+    )
     .requiredOption('--key-id <id>', 'Expected key identifier.')
     .requiredOption('--project-id <id>', 'Expected stable project identifier.')
     .option(
@@ -78,31 +87,36 @@ export function registerReportCommand(program: Command): void {
       'Require this exact trusted Toolip runtime artifact digest.'
     )
     .option('--max-age-days <days>', 'Maximum accepted signature age.', '90')
-    .action(async (file: string, options: {
-      publicKey: string;
-      keyId: string;
-      projectId: string;
-      scannerArtifactSha256?: string;
-      maxAgeDays: string;
-    }) => {
-      const maxAgeDays = Number(options.maxAgeDays);
-      if (!Number.isFinite(maxAgeDays) || maxAgeDays < 0 || maxAgeDays > 365)
-        throw new ToolipError('--max-age-days must be between 0 and 365.', {
-          code: 'REPORT_MAX_AGE_INVALID',
-          exitCode: 1
+    .action(
+      async (
+        file: string,
+        options: {
+          publicKey: string;
+          keyId: string;
+          projectId: string;
+          scannerArtifactSha256?: string;
+          maxAgeDays: string;
+        }
+      ) => {
+        const maxAgeDays = Number(options.maxAgeDays);
+        if (!Number.isFinite(maxAgeDays) || maxAgeDays < 0 || maxAgeDays > 365)
+          throw new ToolipError('--max-age-days must be between 0 and 365.', {
+            code: 'REPORT_MAX_AGE_INVALID',
+            exitCode: 1
+          });
+        const [scanReport, publicKeyPem] = await Promise.all([
+          readReport(file),
+          readPemKeyFile(options.publicKey)
+        ]);
+        const result = verifyReportEvidence(scanReport, {
+          publicKeyPem,
+          trustedKeyId: options.keyId,
+          expectedProjectId: options.projectId,
+          expectedScannerArtifactSha256: options.scannerArtifactSha256,
+          maxAgeMs: maxAgeDays * 24 * 60 * 60 * 1000
         });
-      const [scanReport, publicKeyPem] = await Promise.all([
-        readReport(file),
-        readPemKeyFile(options.publicKey)
-      ]);
-      const result = verifyReportEvidence(scanReport, {
-        publicKeyPem,
-        trustedKeyId: options.keyId,
-        expectedProjectId: options.projectId,
-        expectedScannerArtifactSha256: options.scannerArtifactSha256,
-        maxAgeMs: maxAgeDays * 24 * 60 * 60 * 1000
-      });
-      console.log(JSON.stringify(result, null, 2));
-      if (result.status !== 'verified') process.exitCode = 2;
-    });
+        console.log(JSON.stringify(result, null, 2));
+        if (result.status !== 'verified') process.exitCode = 2;
+      }
+    );
 }

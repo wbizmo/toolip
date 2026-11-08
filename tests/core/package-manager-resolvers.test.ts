@@ -321,14 +321,16 @@ child@^2.0.0:
         .map((item) => [item.name, item.id])
     );
     const foos = graph.packages.filter((item) => item.name === 'foo');
-    const appTargets = ['app-a', 'app-b'].map((name) =>
-      graph.edges.find((edge) => edge.from === apps.get(name))?.to
+    const appTargets = ['app-a', 'app-b'].map(
+      (name) => graph.edges.find((edge) => edge.from === apps.get(name))?.to
     );
 
     expect(graph.complete).toBe(true);
     expect(foos).toHaveLength(2);
     expect(new Set(foos.map((item) => item.id)).size).toBe(2);
-    expect(appTargets).toEqual(expect.arrayContaining(foos.map((item) => item.id)));
+    expect(appTargets).toEqual(
+      expect.arrayContaining(foos.map((item) => item.id))
+    );
     expect(new Set(appTargets).size).toBe(2);
   });
 

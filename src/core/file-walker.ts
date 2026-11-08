@@ -35,7 +35,10 @@ type StreamEntry = {
   };
 };
 
-async function trackedEntries(root: string, signal?: AbortSignal): Promise<string[]> {
+async function trackedEntries(
+  root: string,
+  signal?: AbortSignal
+): Promise<string[]> {
   let ancestor = root;
   let hasGitMarker = false;
   while (true) {
@@ -61,12 +64,18 @@ async function trackedEntries(root: string, signal?: AbortSignal): Promise<strin
     !process.env.GIT_INDEX_FILE
   )
     return [];
-  const listing = await runGit(
-    ['ls-files', '--cached', '--full-name', '-z'],
-    { cwd: root, timeoutMs: 5_000, maxBuffer: 64 * 1024 * 1024, signal }
-  );
+  const listing = await runGit(['ls-files', '--cached', '--full-name', '-z'], {
+    cwd: root,
+    timeoutMs: 5_000,
+    maxBuffer: 64 * 1024 * 1024,
+    signal
+  });
   if (listing.code !== 0) {
-    if (/not a git repository|not inside a work tree|outside a work tree/iu.test(listing.stderr))
+    if (
+      /not a git repository|not inside a work tree|outside a work tree/iu.test(
+        listing.stderr
+      )
+    )
       return [];
     throw new ToolipError('Git could not list tracked project files.', {
       code: 'SCAN_DISCOVERY_INCOMPLETE'
@@ -166,23 +175,23 @@ export async function walkProjectFiles(
     const cancelStream = (): void => stream.destroy?.();
     options.signal?.addEventListener('abort', cancelStream, { once: true });
     try {
-    for await (const item of stream) {
-      throwIfCancelled(options.signal);
-      const entry = typeof item === 'string' ? item : item.path;
-      if (toolipIgnore.ignores(path.join(absoluteRoot, entry))) continue;
-      if (
-        typeof item !== 'string' &&
-        !item.dirent.isFile() &&
-        !item.dirent.isSymbolicLink()
-      ) {
-        continue;
+      for await (const item of stream) {
+        throwIfCancelled(options.signal);
+        const entry = typeof item === 'string' ? item : item.path;
+        if (toolipIgnore.ignores(path.join(absoluteRoot, entry))) continue;
+        if (
+          typeof item !== 'string' &&
+          !item.dirent.isFile() &&
+          !item.dirent.isSymbolicLink()
+        ) {
+          continue;
+        }
+        candidates.push(entry);
+        if (candidates.length > maxFiles) {
+          stream.destroy?.();
+          throw fileLimitError(candidates.length, maxFiles);
+        }
       }
-      candidates.push(entry);
-      if (candidates.length > maxFiles) {
-        stream.destroy?.();
-        throw fileLimitError(candidates.length, maxFiles);
-      }
-    }
     } finally {
       options.signal?.removeEventListener('abort', cancelStream);
     }

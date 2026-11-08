@@ -97,9 +97,7 @@ export function createReport(input: {
     summary: summarizeFindings(input.findings),
     findings: input.findings.map(serializeFinding),
     ...(input.analysis ? { analysis: input.analysis } : {}),
-    ...(input.analyzerPlugins
-      ? { analyzerPlugins: input.analyzerPlugins }
-      : {})
+    ...(input.analyzerPlugins ? { analyzerPlugins: input.analyzerPlugins } : {})
   });
 }
 

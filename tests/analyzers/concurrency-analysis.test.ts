@@ -42,9 +42,9 @@ describe('AST concurrency candidates', () => {
          }
        }`
     );
-    expect(findings.filter((finding) => finding.ruleId.startsWith('TLP-RACE-'))).toEqual(
-      []
-    );
+    expect(
+      findings.filter((finding) => finding.ruleId.startsWith('TLP-RACE-'))
+    ).toEqual([]);
   });
 
   it('does not treat safe independent Promise.all work as a race', () => {
@@ -54,9 +54,9 @@ describe('AST concurrency candidates', () => {
          return Promise.all(ids.map((id) => db.item.findUnique({ where: { id } })));
        }`
     );
-    expect(findings.filter((finding) => finding.ruleId.startsWith('TLP-RACE-'))).toEqual(
-      []
-    );
+    expect(
+      findings.filter((finding) => finding.ruleId.startsWith('TLP-RACE-'))
+    ).toEqual([]);
   });
 
   it('flags unbounded side-effecting Promise.all work but accepts a static cap', () => {

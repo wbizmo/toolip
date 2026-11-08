@@ -43,11 +43,16 @@ export function registerIntelligenceCommand(program: Command): void {
       '30'
     )
     .option('--signing-key <file>', 'Owner-only Ed25519 PEM signing key.')
-    .option('--signing-key-id <id>', 'Identifier bound to the snapshot signature.')
+    .option(
+      '--signing-key-id <id>',
+      'Identifier bound to the snapshot signature.'
+    )
     .action(async (options: SnapshotOptions) => {
       const maxAgeMs = ageLimitMs(options.maxAdvisoryAgeDays);
       if (Boolean(options.signingKey) !== Boolean(options.signingKeyId))
-        throw new Error('--signing-key and --signing-key-id must be supplied together.');
+        throw new Error(
+          '--signing-key and --signing-key-id must be supplied together.'
+        );
       const cache = await AdvisorySnapshotCache.open(options.file, {
         signingPrivateKeyPem: options.signingKey
           ? await readPemKeyFile(options.signingKey, { privateKey: true })
@@ -101,9 +106,17 @@ export function registerIntelligenceCommand(program: Command): void {
       'Maximum age before the snapshot is reported stale.',
       '30'
     )
-    .option('--public-key <file>', 'Trusted Ed25519 PEM key for signature verification.')
+    .option(
+      '--public-key <file>',
+      'Trusted Ed25519 PEM key for signature verification.'
+    )
     .action(
-      async (options: Pick<SnapshotOptions, 'file' | 'maxAdvisoryAgeDays' | 'publicKey'>) => {
+      async (
+        options: Pick<
+          SnapshotOptions,
+          'file' | 'maxAdvisoryAgeDays' | 'publicKey'
+        >
+      ) => {
         const maxAgeMs = ageLimitMs(options.maxAdvisoryAgeDays);
         const cache = await AdvisorySnapshotCache.open(options.file, {
           trustedPublicKeyPem: options.publicKey

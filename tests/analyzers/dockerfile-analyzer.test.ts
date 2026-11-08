@@ -78,7 +78,9 @@ describe('DockerfileAnalyzer', () => {
       );
 
       expect(rootFinding?.location?.line).toBe(4);
-      expect(secretFinding?.evidence?.[0]?.summary).toContain('content redacted');
+      expect(secretFinding?.evidence?.[0]?.summary).toContain(
+        'content redacted'
+      );
       expect(JSON.stringify(secretFinding)).not.toContain(
         'do-not-leak-this-value'
       );
@@ -114,7 +116,9 @@ describe('DockerfileAnalyzer', () => {
 
       expect(secretFindings).toHaveLength(1);
       expect(secretFindings[0]?.location?.line).toBe(5);
-      expect(secretFindings[0]?.evidence?.[0]?.summary).toContain('content redacted');
+      expect(secretFindings[0]?.evidence?.[0]?.summary).toContain(
+        'content redacted'
+      );
       expect(JSON.stringify(secretFindings)).not.toContain(
         'synthetic-secret-value'
       );
@@ -125,7 +129,9 @@ describe('DockerfileAnalyzer', () => {
   });
 
   it('does not expose opaque values from matched RUN instructions', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-evidence-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-evidence-')
+    );
     const opaqueValue = 'opaque-value-not-matched-by-name-redaction';
     try {
       await writeFile(

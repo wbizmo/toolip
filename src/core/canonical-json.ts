@@ -8,12 +8,7 @@ interface NormalizedJsonObject {
 }
 
 type NormalizedJson =
-  | null
-  | boolean
-  | number
-  | string
-  | NormalizedJson[]
-  | NormalizedJsonObject;
+  null | boolean | number | string | NormalizedJson[] | NormalizedJsonObject;
 
 function consume(budget: CanonicalBudget, bytes: number): void {
   budget.bytes += bytes;
@@ -93,7 +88,10 @@ function normalize(
       consume(budget, 2 + Math.max(0, length - 1));
       const result: NormalizedJson[] = [];
       for (let index = 0; index < length; index++) {
-        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        const descriptor = Object.getOwnPropertyDescriptor(
+          value,
+          String(index)
+        );
         if (!descriptor?.enumerable || !('value' in descriptor))
           throw new TypeError(
             'Canonical JSON arrays must contain enumerable data values.'
@@ -121,7 +119,9 @@ function normalize(
         );
       if (descriptor.value !== undefined) entries.push([key, descriptor.value]);
     }
-    entries.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+    entries.sort(([left], [right]) =>
+      left < right ? -1 : left > right ? 1 : 0
+    );
 
     // Include braces, colons and commas in the output budget. A null
     // prototype keeps `__proto__` an ordinary signed property.

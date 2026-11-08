@@ -279,9 +279,9 @@ describe('InfrastructureAnalyzer', () => {
     );
     const result = await new InfrastructureAnalyzer().analyze({ root });
     expect(result.coverage.state).toBe('failed');
-    expect(result.warnings?.some((warning) => warning.includes('heredoc'))).toBe(
-      true
-    );
+    expect(
+      result.warnings?.some((warning) => warning.includes('heredoc'))
+    ).toBe(true);
   });
 
   it('detects public ingress outside administrative ports', async () => {

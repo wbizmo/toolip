@@ -26,7 +26,9 @@ export function registerVulnerabilitiesCommand(
   program
     .command('vulnerabilities')
     .alias('vulns')
-    .description('Match resolved supported-ecosystem dependencies against OSV.dev.')
+    .description(
+      'Match resolved supported-ecosystem dependencies against OSV.dev.'
+    )
     .option('-p, --path <path>', 'Project path to inspect.', process.cwd())
     .option('--json', 'Print structured JSON output.')
     .option('--include-dev', 'Include development dependency findings.')
@@ -42,12 +44,18 @@ export function registerVulnerabilitiesCommand(
       '--data-snapshot <file>',
       'Read and update this local advisory snapshot.'
     )
-    .option('--snapshot-public-key <file>', 'Verify a signed advisory snapshot.')
+    .option(
+      '--snapshot-public-key <file>',
+      'Verify a signed advisory snapshot.'
+    )
     .option(
       '--snapshot-signing-key <file>',
       'Owner-only Ed25519 PEM key used to sign snapshot updates.'
     )
-    .option('--snapshot-signing-key-id <id>', 'Identifier bound to the signature.')
+    .option(
+      '--snapshot-signing-key-id <id>',
+      'Identifier bound to the signature.'
+    )
     .option(
       '--vex-file <file>',
       'Import VEX assessments for exact package instances.'

@@ -98,7 +98,9 @@ export async function openPrivateFile(
     maximumBytes < 1 ||
     maximumBytes > 512 * 1024 * 1024
   )
-    throw new RangeError('Private local-state read limit is outside its budget.');
+    throw new RangeError(
+      'Private local-state read limit is outside its budget.'
+    );
   const resolved = path.resolve(filePath);
   const nonBlocking = process.platform === 'win32' ? 0 : constants.O_NONBLOCK;
   const handle = await open(
@@ -146,7 +148,9 @@ export async function openPrivateFile(
     const chunks: Buffer[] = [];
     let total = 0;
     while (total <= maximumBytes) {
-      const buffer = Buffer.alloc(Math.min(64 * 1024, maximumBytes + 1 - total));
+      const buffer = Buffer.alloc(
+        Math.min(64 * 1024, maximumBytes + 1 - total)
+      );
       const result = await handle.read(buffer, 0, buffer.length, total);
       if (result.bytesRead === 0) break;
       total += result.bytesRead;

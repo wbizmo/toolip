@@ -100,24 +100,25 @@ describe('history store', () => {
   });
 
   it('enforces bounded retention values and preserves only the latest entries', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-history-retention-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-history-retention-')
+    );
     try {
-      await expect(appendHistory(root, historyEntry('invalid'), Number.NaN)).rejects.toThrow(
-        'History retention must be between'
-      );
+      await expect(
+        appendHistory(root, historyEntry('invalid'), Number.NaN)
+      ).rejects.toThrow('History retention must be between');
       for (const invalid of [0, 1.5, 5_001, Number.POSITIVE_INFINITY]) {
-        await expect(appendHistory(root, historyEntry(`invalid-${invalid}`), invalid)).rejects.toThrow(
-          'History retention must be between'
-        );
+        await expect(
+          appendHistory(root, historyEntry(`invalid-${invalid}`), invalid)
+        ).rejects.toThrow('History retention must be between');
       }
 
       for (const id of ['one', 'two', 'three'])
         await appendHistory(root, historyEntry(id), 2);
 
-      expect((await readHistory(root)).entries.map((entry) => entry.id)).toEqual([
-        'two',
-        'three'
-      ]);
+      expect(
+        (await readHistory(root)).entries.map((entry) => entry.id)
+      ).toEqual(['two', 'three']);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

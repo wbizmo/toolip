@@ -36,12 +36,14 @@ async function writeFixture(root: string): Promise<void> {
         'node_modules/restrictive': {
           name: 'restrictive',
           version: '2.4.0',
-          resolved: 'https://registry.npmjs.org/restrictive/-/restrictive-2.4.0.tgz'
+          resolved:
+            'https://registry.npmjs.org/restrictive/-/restrictive-2.4.0.tgz'
         },
         'node_modules/unavailable': {
           name: 'unavailable',
           version: '3.1.0',
-          resolved: 'https://registry.npmjs.org/unavailable/-/unavailable-3.1.0.tgz'
+          resolved:
+            'https://registry.npmjs.org/unavailable/-/unavailable-3.1.0.tgz'
         }
       }
     })
@@ -199,7 +201,9 @@ describe('analyzeLicenses', () => {
                   'safe-new': 'npm:safe@2.0.0'
                 }
               },
-              ...(index === 0 ? records : Object.fromEntries(Object.entries(records).reverse()))
+              ...(index === 0
+                ? records
+                : Object.fromEntries(Object.entries(records).reverse()))
             }
           })
         );
@@ -214,7 +218,9 @@ describe('analyzeLicenses', () => {
           }
         });
       const [first, second] = await Promise.all(roots.map(analyze));
-      expect(first.licenses.map(({ version, license }) => [version, license])).toEqual([
+      expect(
+        first.licenses.map(({ version, license }) => [version, license])
+      ).toEqual([
         ['1.0.0', 'license-1.0.0'],
         ['2.0.0', 'license-2.0.0']
       ]);
@@ -228,7 +234,9 @@ describe('analyzeLicenses', () => {
   });
 
   it('deduplicates exact instances, preserves production classification and withholds mixed origins', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-license-origin-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-license-origin-')
+    );
     let calls = 0;
     try {
       await writeFile(
@@ -303,7 +311,9 @@ describe('analyzeLicenses', () => {
   });
 
   it('withholds scoped and unverified-origin package names without consent', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-license-privacy-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-license-privacy-')
+    );
     let calls = 0;
     try {
       await writeFile(

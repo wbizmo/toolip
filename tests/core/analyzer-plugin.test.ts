@@ -11,13 +11,15 @@ import {
 
 const directories: string[] = [];
 
-async function pluginFixture(input: {
-  module?: Uint8Array;
-  output?: string;
-  timeoutMs?: number;
-  memoryPages?: number;
-  maxOutputBytes?: number;
-} = {}) {
+async function pluginFixture(
+  input: {
+    module?: Uint8Array;
+    output?: string;
+    timeoutMs?: number;
+    memoryPages?: number;
+    maxOutputBytes?: number;
+  } = {}
+) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-wasm-plugin-'));
   directories.push(root);
   const module = input.module ?? testModule({ output: input.output });
@@ -49,7 +51,11 @@ async function pluginFixture(input: {
     path.join(root, 'plugin.json'),
     JSON.stringify({
       ...payload,
-      signature: { algorithm: 'Ed25519', keyId: 'fixture-key', value: signature }
+      signature: {
+        algorithm: 'Ed25519',
+        keyId: 'fixture-key',
+        value: signature
+      }
     })
   );
   return {
@@ -89,21 +95,35 @@ function wasmFunction(body: number[]): number[] {
   return [...wasmLeb(body.length), ...body];
 }
 
-function testModule(options: {
-  output?: string;
-  infinite?: boolean;
-  imports?: boolean;
-  unboundedMemory?: boolean;
-  oversizedOutput?: boolean;
-} = {}): Uint8Array {
+function testModule(
+  options: {
+    output?: string;
+    infinite?: boolean;
+    imports?: boolean;
+    unboundedMemory?: boolean;
+    oversizedOutput?: boolean;
+  } = {}
+): Uint8Array {
   const output = Buffer.from(
     options.output ?? JSON.stringify({ schemaVersion: 1, findings: [] })
   );
   const types = wasmSection(1, [
     ...wasmLeb(3),
-    0x60, 0x01, 0x7f, 0x01, 0x7f,
-    0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f,
-    0x60, 0x00, 0x01, 0x7f
+    0x60,
+    0x01,
+    0x7f,
+    0x01,
+    0x7f,
+    0x60,
+    0x02,
+    0x7f,
+    0x7f,
+    0x01,
+    0x7f,
+    0x60,
+    0x00,
+    0x01,
+    0x7f
   ]);
   const imports = options.imports
     ? wasmSection(2, [
@@ -128,13 +148,7 @@ function testModule(options: {
       [...wasmString('toolip_output_len'), 0x00, ...wasmLeb(indexOffset + 2)]
     ])
   );
-  const allocBody = wasmFunction([
-    0x00,
-    0x41,
-    0x80,
-    0x10,
-    0x0b
-  ]);
+  const allocBody = wasmFunction([0x00, 0x41, 0x80, 0x10, 0x0b]);
   const analyzeBody = options.infinite
     ? wasmFunction([0x00, 0x03, 0x40, 0x0c, 0x00, 0x0b, 0x41, 0x00, 0x0b])
     : wasmFunction([0x00, 0x41, 0x00, 0x0b]);
@@ -161,7 +175,14 @@ function testModule(options: {
     ...output
   ]);
   return new Uint8Array([
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+    0x00,
+    0x61,
+    0x73,
+    0x6d,
+    0x01,
+    0x00,
+    0x00,
+    0x00,
     ...types,
     ...imports,
     ...functions,
@@ -174,9 +195,9 @@ function testModule(options: {
 
 afterEach(async () => {
   await Promise.all(
-    directories.splice(0).map((directory) =>
-      rm(directory, { recursive: true, force: true })
-    )
+    directories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true }))
   );
 });
 
@@ -211,9 +232,14 @@ describe('signed capability-limited WASM analyzer plugins', () => {
       source: 'signed-wasm-plugin:demo-plugin',
       message: expect.stringContaining('Review the rule definition'),
       location: { file: 'src/app.ts', line: 4, column: 2 },
-      metadata: { pluginSha256: plugin.moduleSha256, pluginKeyId: 'fixture-key' }
+      metadata: {
+        pluginSha256: plugin.moduleSha256,
+        pluginKeyId: 'fixture-key'
+      }
     });
-    expect(JSON.stringify(result.findings)).not.toContain('fixture-secret-value');
+    expect(JSON.stringify(result.findings)).not.toContain(
+      'fixture-secret-value'
+    );
   });
 
   it('denies unsigned, changed, imported, unbounded-memory and untrusted-path plugins', async () => {
@@ -225,7 +251,9 @@ describe('signed capability-limited WASM analyzer plugins', () => {
       })
     ).rejects.toThrow('not trusted');
 
-    const imported = await pluginFixture({ module: testModule({ imports: true }) });
+    const imported = await pluginFixture({
+      module: testModule({ imports: true })
+    });
     await expect(
       loadWasmAnalyzerPlugin(imported.manifest, {
         publicKeyPem: imported.publicKeyPem,
@@ -307,7 +335,9 @@ describe('signed capability-limited WASM analyzer plugins', () => {
         }
       ]
     });
-    const outside = await pluginFixture({ module: testModule({ output: outsideOutput }) });
+    const outside = await pluginFixture({
+      module: testModule({ output: outsideOutput })
+    });
     const safe = await loadWasmAnalyzerPlugin(outside.manifest, {
       publicKeyPem: outside.publicKeyPem,
       trustedKeyId: 'fixture-key'

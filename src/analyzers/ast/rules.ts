@@ -6,7 +6,8 @@ import type {
 export type AstSecurityRule = {
   id: string;
   title: string;
-  category: 'dangerous-code' | 'authorization' | 'sensitive-data' | 'concurrency';
+  category:
+    'dangerous-code' | 'authorization' | 'sensitive-data' | 'concurrency';
   severity: FindingSeverity;
   confidence: FindingConfidence;
   message: string;

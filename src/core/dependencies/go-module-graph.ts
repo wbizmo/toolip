@@ -155,7 +155,8 @@ function isWithin(root: string, candidate: string): boolean {
 }
 
 function hasExecutableImageHeader(header: Buffer): boolean {
-  if (process.platform === 'win32') return header.subarray(0, 2).toString() === 'MZ';
+  if (process.platform === 'win32')
+    return header.subarray(0, 2).toString() === 'MZ';
   if (header.length < 4) return false;
   const signatures = [
     Buffer.from([0x7f, 0x45, 0x4c, 0x46]), // ELF
@@ -166,7 +167,9 @@ function hasExecutableImageHeader(header: Buffer): boolean {
     Buffer.from([0xca, 0xfe, 0xba, 0xbe]), // Universal Mach-O
     Buffer.from([0xca, 0xfe, 0xba, 0xbf]) // Universal 64-bit Mach-O
   ];
-  return signatures.some((signature) => header.subarray(0, 4).equals(signature));
+  return signatures.some((signature) =>
+    header.subarray(0, 4).equals(signature)
+  );
 }
 
 async function findGoExecutable(
@@ -227,7 +230,9 @@ export async function captureGoMvsGraph(
   } = {}
 ): Promise<GoModuleGraphCapture> {
   if (!fileSource)
-    throw new Error('Go tool execution requires an immutable project snapshot.');
+    throw new Error(
+      'Go tool execution requires an immutable project snapshot.'
+    );
   if (options.signal?.aborted)
     throw new Error('Go graph resolution cancelled.');
 
@@ -237,7 +242,9 @@ export async function captureGoMvsGraph(
     )
     .sort();
   if (metadataFiles.length === 0 || metadataFiles.length > maxMetadataFiles)
-    throw new Error('Go module metadata is missing or exceeds its file budget.');
+    throw new Error(
+      'Go module metadata is missing or exceeds its file budget.'
+    );
 
   const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'toolip-go-mvs-'));
   try {
@@ -259,7 +266,9 @@ export async function captureGoMvsGraph(
         throw new Error('Go module metadata contains an unsafe path.');
       const content = fileSource.readText(relative);
       if (content === undefined)
-        throw new Error('Go module metadata is absent from the immutable snapshot.');
+        throw new Error(
+          'Go module metadata is absent from the immutable snapshot.'
+        );
       const size = Buffer.byteLength(content, 'utf8');
       bytes += size;
       if (bytes > maxMetadataBytes)
@@ -285,8 +294,12 @@ export async function captureGoMvsGraph(
       PATH: process.env.PATH,
       ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
       ...(process.env.WINDIR ? { WINDIR: process.env.WINDIR } : {}),
-      ...(process.env.HTTPS_PROXY ? { HTTPS_PROXY: process.env.HTTPS_PROXY } : {}),
-      ...(process.env.https_proxy ? { https_proxy: process.env.https_proxy } : {}),
+      ...(process.env.HTTPS_PROXY
+        ? { HTTPS_PROXY: process.env.HTTPS_PROXY }
+        : {}),
+      ...(process.env.https_proxy
+        ? { https_proxy: process.env.https_proxy }
+        : {}),
       ...(process.env.HTTP_PROXY ? { HTTP_PROXY: process.env.HTTP_PROXY } : {}),
       ...(process.env.http_proxy ? { http_proxy: process.env.http_proxy } : {}),
       ...(process.env.NO_PROXY ? { NO_PROXY: process.env.NO_PROXY } : {}),
@@ -355,7 +368,9 @@ export async function captureGoMvsGraph(
   }
 }
 
-export function parseGoModuleJsonStream(text: string): Record<string, unknown>[] {
+export function parseGoModuleJsonStream(
+  text: string
+): Record<string, unknown>[] {
   if (Buffer.byteLength(text, 'utf8') > maxCommandOutputBytes)
     throw new Error('Go module output exceeds its configured byte budget.');
   const records: Record<string, unknown>[] = [];

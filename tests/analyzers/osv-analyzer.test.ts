@@ -363,7 +363,9 @@ describe('OsvVulnerabilityAnalyzer', () => {
         }
       });
 
-      const result = await new OsvVulnerabilityAnalyzer(client).analyze({ root });
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({
+        root
+      });
 
       expect(queryCount).toBe(0);
       expect(result.coverage?.state).not.toBe('complete');
@@ -374,7 +376,9 @@ describe('OsvVulnerabilityAnalyzer', () => {
   });
 
   it('withholds public PyPI advisory requests for hashed requirements inherited from a custom index', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-python-source-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-osv-python-source-')
+    );
     let queryCount = 0;
     try {
       await mkdir(path.join(root, 'requirements'), { recursive: true });
@@ -393,7 +397,9 @@ describe('OsvVulnerabilityAnalyzer', () => {
         }
       });
 
-      const result = await new OsvVulnerabilityAnalyzer(client).analyze({ root });
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({
+        root
+      });
 
       expect(queryCount).toBe(0);
       expect(result.coverage?.state).not.toBe('complete');
@@ -406,8 +412,13 @@ describe('OsvVulnerabilityAnalyzer', () => {
   });
 
   it('withholds OSV queries for Cargo path and git packages and reports partial coverage', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-cargo-provenance-'));
-    let queries: Array<{ package: { ecosystem: string; name: string }; version: string }> = [];
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-osv-cargo-provenance-')
+    );
+    let queries: Array<{
+      package: { ecosystem: string; name: string };
+      version: string;
+    }> = [];
     try {
       await writeFile(
         path.join(root, 'Cargo.lock'),
@@ -432,7 +443,9 @@ describe('OsvVulnerabilityAnalyzer', () => {
       );
       const client = new OsvClient({
         fetchImplementation: async (_input, init) => {
-          const body = JSON.parse(String(init?.body)) as { queries: typeof queries };
+          const body = JSON.parse(String(init?.body)) as {
+            queries: typeof queries;
+          };
           queries = body.queries;
           return new Response(
             JSON.stringify({ results: queries.map(() => ({ vulns: [] })) }),
@@ -441,7 +454,9 @@ describe('OsvVulnerabilityAnalyzer', () => {
         }
       });
 
-      const result = await new OsvVulnerabilityAnalyzer(client).analyze({ root });
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({
+        root
+      });
 
       expect(queries).toEqual([
         {
@@ -952,7 +967,9 @@ describe('OsvVulnerabilityAnalyzer', () => {
   });
 
   it('queries exact Python, Go, Cargo, Maven and Packagist identities through OSV', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-ecosystems-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-osv-ecosystems-')
+    );
     const queried = new Map<string, string[]>();
     try {
       await writeFile(
@@ -996,7 +1013,10 @@ describe('OsvVulnerabilityAnalyzer', () => {
       const client = new OsvClient({
         fetchImplementation: async (_input, init) => {
           const body = JSON.parse(String(init?.body)) as {
-            queries: Array<{ package: { ecosystem: string; name: string }; version: string }>;
+            queries: Array<{
+              package: { ecosystem: string; name: string };
+              version: string;
+            }>;
           };
           for (const query of body.queries) {
             const versions = queried.get(query.package.ecosystem) ?? [];
@@ -1026,14 +1046,19 @@ describe('OsvVulnerabilityAnalyzer', () => {
         }
       });
 
-      const result = await new OsvVulnerabilityAnalyzer(client).analyze({ root });
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({
+        root
+      });
 
       expect(result.coverage?.state).toBe('partial');
       expect(result.warnings).toContain(
         'dependency-graph:python-requirements-are-declared-pins:requirements.txt'
       );
       expect(queried.get('PyPI')).toContain('requests@2.31.0');
-      expect(queried.has('PyPI') && queried.get('PyPI')?.some((value) => value.startsWith('ignored@'))).toBe(false);
+      expect(
+        queried.has('PyPI') &&
+          queried.get('PyPI')?.some((value) => value.startsWith('ignored@'))
+      ).toBe(false);
       expect(
         queried.get('Go')?.includes('example.test/lib@v1.2.3') ?? false
       ).toBe(false);
@@ -1051,7 +1076,9 @@ describe('OsvVulnerabilityAnalyzer', () => {
         resolutionConfidence: 'declared-pin',
         declaredVersion: '2.31.0'
       });
-      expect(declaredPinFinding?.metadata).not.toHaveProperty('installedVersion');
+      expect(declaredPinFinding?.metadata).not.toHaveProperty(
+        'installedVersion'
+      );
       const goFinding = result.findings.find(
         (finding) => finding.metadata?.package === 'example.test/lib'
       );
@@ -1076,7 +1103,8 @@ describe('OsvVulnerabilityAnalyzer', () => {
     const fileSource = {
       files: Object.keys(files),
       hasFile: (relativePath: string) => relativePath in files,
-      readText: (relativePath: string) => files[relativePath as keyof typeof files]
+      readText: (relativePath: string) =>
+        files[relativePath as keyof typeof files]
     };
     const queried: string[] = [];
     const runner = async (input: {

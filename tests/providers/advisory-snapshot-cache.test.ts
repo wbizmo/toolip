@@ -177,9 +177,7 @@ describe('AdvisorySnapshotCache', () => {
       requireSignature: true
     });
     await verifier.set('new', { value: 2 });
-    await expect(verifier.flush()).rejects.toThrow(
-      'requires its signing key'
-    );
+    await expect(verifier.flush()).rejects.toThrow('requires its signing key');
     const stillSigned = await AdvisorySnapshotCache.open(file, {
       trustedPublicKeyPem: publicKey,
       requireSignature: true

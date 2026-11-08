@@ -25,12 +25,19 @@ describe('GitHub App local configuration', () => {
     const file = await config({
       version: 1,
       repositories: [
-        { name: 'Acme/Service', installationId: 42, repositoryId: 123, root: path.resolve('/tmp/service') }
+        {
+          name: 'Acme/Service',
+          installationId: 42,
+          repositoryId: 123,
+          root: path.resolve('/tmp/service')
+        }
       ]
     });
     await expect(loadGitHubAppConfiguration(file)).resolves.toMatchObject({
       version: 1,
-      repositories: [{ name: 'Acme/Service', installationId: 42, repositoryId: 123 }]
+      repositories: [
+        { name: 'Acme/Service', installationId: 42, repositoryId: 123 }
+      ]
     });
   });
 
@@ -45,7 +52,12 @@ describe('GitHub App local configuration', () => {
         await config({
           version: 1,
           repositories: [
-            { name: 'acme/service', installationId: 42, repositoryId: 123, root: 'relative/path' }
+            {
+              name: 'acme/service',
+              installationId: 42,
+              repositoryId: 123,
+              root: 'relative/path'
+            }
           ]
         })
       )
@@ -55,8 +67,18 @@ describe('GitHub App local configuration', () => {
         await config({
           version: 1,
           repositories: [
-            { name: 'acme/service', installationId: 42, repositoryId: 123, root: '/tmp/one' },
-            { name: 'ACME/SERVICE', installationId: 42, repositoryId: 123, root: '/tmp/two' }
+            {
+              name: 'acme/service',
+              installationId: 42,
+              repositoryId: 123,
+              root: '/tmp/one'
+            },
+            {
+              name: 'ACME/SERVICE',
+              installationId: 42,
+              repositoryId: 123,
+              root: '/tmp/two'
+            }
           ]
         })
       )
@@ -64,7 +86,9 @@ describe('GitHub App local configuration', () => {
   });
 
   it('rejects oversized input before parsing', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-github-app-large-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-github-app-large-')
+    );
     roots.push(root);
     const file = path.join(root, 'large.json');
     await writeFile(file, ' '.repeat(256 * 1024 + 1));
