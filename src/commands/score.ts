@@ -15,8 +15,24 @@ export function registerScoreCommand(program: Command): void {
       process.cwd()
     )
     .option('--json', 'Print structured JSON output.')
-    .action(async (options: { path: string; json?: boolean }) => {
-      const scorecard = await buildSecurityScorecard(options.path);
+    .option('--licenses', 'Include deps.dev license analysis.')
+    .option('--offline', 'Disable registry and advisory network requests.')
+    .option(
+      '--allow-public-scope',
+      'Consent to sending scoped npm package names to public providers.'
+    )
+    .action(async (options: {
+      path: string;
+      json?: boolean;
+      licenses?: boolean;
+      offline?: boolean;
+      allowPublicScope?: boolean;
+    }) => {
+      const scorecard = await buildSecurityScorecard(options.path, {}, {
+        includeLicenseAnalysis: options.licenses,
+        offline: options.offline,
+        allowPublicScope: options.allowPublicScope
+      });
 
       if (options.json) {
         console.log(JSON.stringify(scorecard, null, 2));

@@ -758,6 +758,36 @@ shared@^1.0.0:
         );
         await rm(outside, { recursive: true, force: true });
       }
+
+      sharedV1.packageLocation =
+        './.yarn/cache/shared-npm-1.2.0.zip/node_modules/shared/';
+      const cachePath = path.join(root, '.yarn', 'cache');
+      await mkdir(cachePath, { recursive: true });
+      await writeFile(
+        path.join(cachePath, 'shared-npm-1.2.0.zip'),
+        'not a verified Yarn archive'
+      );
+      await writeFile(
+        path.join(root, '.pnp.cjs'),
+        `const RAW_RUNTIME_STATE = ${JSON.stringify(pnpState)};\n`
+      );
+      const archiveLocation = await new ReachabilityAnalyzer().analyze({
+        root
+      });
+      const archivePackages = archiveLocation.metadata?.packages as Array<{
+        packageName: string;
+        packageVersion: string;
+        state: string;
+      }>;
+      expect(
+        archivePackages.find(
+          (item) =>
+            item.packageName === 'shared' && item.packageVersion === '1.2.0'
+        )?.state
+      ).toBe('unknown');
+      expect(archiveLocation.warnings).toContainEqual(
+        expect.stringContaining('yarn-pnp-archive-content-unverified:')
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }

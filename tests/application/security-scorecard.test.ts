@@ -15,6 +15,7 @@ import { runSecurityDoctor } from '../../src/core/security-doctor.js';
 import { coverageOf } from '../../src/contracts/analysis.js';
 import type { DependencyIdentity } from '../../src/core/dependencies/inventory.js';
 import type { PackageHealthAnalysis } from '../../src/core/package-health-analysis.js';
+import { analyzeLicenses } from '../../src/core/license-analysis.js';
 
 const cleanSummary = {
   totalDependencies: 1,
@@ -633,6 +634,128 @@ describe('buildSecurityScorecard', () => {
 
       expect(inspect).not.toHaveBeenCalled();
       expect(result.packageHealth).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('includes exact license metadata and unknown coverage in the shared scorecard', async () => {
+    const root = await fixture();
+    const identity: DependencyIdentity = {
+      id: 'npm:node_modules/safe-package:safe-package@1.2.3',
+      ecosystem: 'npm',
+      name: 'safe-package',
+      version: '1.2.3',
+      direct: true,
+      development: false,
+      source: 'package-lock',
+      resolutionConfidence: 'lockfile',
+      installPath: 'node_modules/safe-package',
+      registry: 'https://registry.npmjs.org'
+    };
+    const provider = vi.fn(async () => ({ licenses: ['MIT'] }));
+    try {
+      const result = await buildSecurityScorecard(
+        root,
+        {
+          dependencyScan: async () => ({
+            identities: [identity],
+            packages: [packageHealth],
+            findings: [],
+            failures: [],
+            coverage: coverageOf({
+              eligible: 1,
+              scanned: 1,
+              skipped: 0,
+              failed: 0
+            }),
+            summary: cleanSummary
+          }),
+          doctor: cleanDoctor as never,
+          gitAudit: cleanGit as never,
+          vulnerabilityAnalyzer: {
+            id: 'clean-vulns',
+            version: '1',
+            analyze: async () => ({
+              analyzer: 'clean-vulns',
+              durationMs: 0,
+              findings: []
+            })
+          },
+          licenseAnalysis: (path, _provider, signal, options) =>
+            analyzeLicenses(path, { getVersion: provider }, signal, options)
+        },
+        { includeLicenseAnalysis: true }
+      );
+
+      expect(provider).toHaveBeenCalledWith(
+        'safe-package',
+        '1.2.3',
+        expect.anything()
+      );
+      expect(result.licenseAnalysis?.licenses).toMatchObject([
+        { name: 'safe-package', version: '1.2.3', license: 'MIT' }
+      ]);
+      expect(result.analysis.state).toBe('complete');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps opted-in license analysis incomplete when offline metadata is unknown', async () => {
+    const root = await fixture();
+    const identity: DependencyIdentity = {
+      id: 'npm:node_modules/private-package:private-package@1.0.0',
+      ecosystem: 'npm',
+      name: 'private-package',
+      version: '1.0.0',
+      direct: true,
+      development: false,
+      source: 'package-lock',
+      resolutionConfidence: 'lockfile',
+      installPath: 'node_modules/private-package',
+      registry: 'https://registry.npmjs.org'
+    };
+    const provider = vi.fn(async () => ({ licenses: ['MIT'] }));
+    try {
+      const result = await buildSecurityScorecard(
+        root,
+        {
+          dependencyScan: async () => ({
+            identities: [identity],
+            packages: [packageHealth],
+            findings: [],
+            failures: [],
+            coverage: coverageOf({
+              eligible: 1,
+              scanned: 1,
+              skipped: 0,
+              failed: 0
+            }),
+            summary: cleanSummary
+          }),
+          doctor: cleanDoctor as never,
+          gitAudit: cleanGit as never,
+          vulnerabilityAnalyzer: {
+            id: 'clean-vulns',
+            version: '1',
+            analyze: async () => ({
+              analyzer: 'clean-vulns',
+              durationMs: 0,
+              findings: []
+            })
+          },
+          licenseAnalysis: (path, _provider, signal, options) =>
+            analyzeLicenses(path, { getVersion: provider }, signal, options)
+        },
+        { includeLicenseAnalysis: true, offline: true }
+      );
+
+      expect(provider).not.toHaveBeenCalled();
+      expect(result.licenseAnalysis?.licenses[0]?.license).toBe('UNKNOWN');
+      expect(result.licenseAnalysis?.coverage.state).toBe('failed');
+      expect(result.analysis.state).toBe('partial');
+      expect(result.analysis.reasons.join(' ')).toContain('license analysis');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

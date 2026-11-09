@@ -44,6 +44,20 @@ The caller's active branch and dirty files remain untouched throughout this proc
 
 Toolip selects lockfile/update behavior from the project instead of always running npm commands. Current upgrade handling supports npm, pnpm, and Yarn project conventions.
 
+Frozen installs are supported with npm 7–11, pnpm 6–12, Yarn Classic 1.22.x,
+and Yarn Berry 2–4. An explicit `packageManager` field must name the same
+manager as the selected lockfile and use a supported exact version. The host
+manager's version is checked before installation; unknown or out-of-range
+versions stop the transaction.
+
+Both baseline and candidate installs use the selected lockfile's frozen mode
+and disable lifecycle/build scripts. Yarn Berry uses `--mode=skip-build`;
+Yarn Classic, npm, and pnpm use their no-script install flags. Only the
+explicitly approved project test command runs project-controlled code. The
+temporary package-manager `PATH` excludes relative entries, the caller's
+working tree, the temporary worktree, and writable executable directories, so
+a repository-local executable cannot replace npm, pnpm, or Yarn.
+
 ## Safety guarantees
 
 - invalid target versions are rejected before mutable work begins
@@ -60,6 +74,8 @@ Toolip selects lockfile/update behavior from the project instead of always runni
 - package-manager and test processes receive a private temporary home and an
   allowlisted environment; host registry/GitHub/cloud credentials and
   `NODE_OPTIONS` are not inherited
+- package-manager output is capped at 8 MiB and each child process has a
+  five-minute timeout; cancellation signals are passed to active children
 - project package-manager configuration is checked before the first install;
   authentication overrides, non-public registries, Yarn plugins/shims and pnpm
   resolver hooks fail closed
@@ -86,4 +102,7 @@ three-minute deadline per scorecard. The target manifest is capped at 1 MiB,
 package-manager configuration at 32 KiB per file, and verified post-test
 manifest/lockfile hashing at 1 MiB/64 MiB respectively. Those project inputs
 must be regular files within the isolated worktree and remain unchanged during
-the bounded read.
+the bounded read. If `P` entries are present in the inherited `PATH`, executable
+path filtering costs `O(P)` filesystem metadata checks and retains `O(P)` path
+strings; filtered paths must be absolute, canonicalizable, and not writable by
+group or other users on POSIX.

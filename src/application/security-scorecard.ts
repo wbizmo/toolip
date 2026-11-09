@@ -27,6 +27,10 @@ import {
 } from '../core/dependency-scan.js';
 import { runSecurityDoctor } from '../core/security-doctor.js';
 import { runGitAudit } from '../core/git-audit.js';
+import {
+  analyzeLicenses,
+  type LicenseAnalysisResult
+} from '../core/license-analysis.js';
 import type { ScannerContext } from '../core/scanner-context.js';
 import {
   createScanBudget,
@@ -53,6 +57,7 @@ export type SecurityScorecardServices = {
   gitAudit?: typeof runGitAudit;
   vulnerabilityAnalyzer?: Analyzer;
   packageHealth?: typeof analyzePackageHealth;
+  licenseAnalysis?: typeof analyzeLicenses;
 };
 
 export type SecurityScorecardOptions = {
@@ -72,6 +77,8 @@ export type SecurityScorecardOptions = {
   allowPublicScope?: boolean;
   /** Opt in to npm publisher, maintenance and lifecycle-history review signals. */
   includePackageHealth?: boolean;
+  /** Add deps.dev license findings to the immutable scan result. */
+  includeLicenseAnalysis?: boolean;
   rulePacks?: readonly VerifiedRulePack[];
   analyzerPlugins?: readonly WasmAnalyzerPlugin[];
   enableExecutablePlugins?: boolean;
@@ -92,6 +99,7 @@ export type SecurityScorecardResult = {
   dependencyHealth?: DependencyHealthBreakdown;
   dependencySummary?: DependencyScanResult['summary'];
   packageHealth?: PackageHealthAnalysis;
+  licenseAnalysis?: LicenseAnalysisResult;
   findings: Finding[];
   warnings: string[];
   snapshotId: string;
@@ -134,6 +142,7 @@ export async function buildSecurityScorecard(
   const vulnerabilityAnalyzer =
     services.vulnerabilityAnalyzer ?? new OsvVulnerabilityAnalyzer();
   const packageHealthAnalyzer = services.packageHealth ?? analyzePackageHealth;
+  const licenseAnalyzer = services.licenseAnalysis ?? analyzeLicenses;
   const scanRoot = options.scannerContext?.root ?? root;
   const runner = new AnalyzerRunner({ concurrency: 1, timeoutMs: 60_000 });
   const { budget, dispose } = createScanBudget(options.budget);
@@ -181,7 +190,8 @@ export async function buildSecurityScorecard(
         kind: 'vulnerability';
         value: Awaited<ReturnType<AnalyzerRunner['run']>>;
       }
-    | { kind: 'packageHealth'; value: PackageHealthAnalysis };
+    | { kind: 'packageHealth'; value: PackageHealthAnalysis }
+    | { kind: 'licenses'; value: LicenseAnalysisResult };
   let dependencyOutcome: PromiseSettledResult<DependencyScanResult>;
   let doctorOutcome: PromiseSettledResult<
     Awaited<ReturnType<typeof runSecurityDoctor>>
@@ -192,6 +202,7 @@ export async function buildSecurityScorecard(
   >;
   let packageHealthOutcome:
     PromiseSettledResult<PackageHealthAnalysis> | undefined;
+  let licenseOutcome: PromiseSettledResult<LicenseAnalysisResult> | undefined;
 
   try {
     const fileSource = dependencyFileSourceFromSnapshot(projectSnapshot);
@@ -277,6 +288,37 @@ export async function buildSecurityScorecard(
         })
       });
     }
+    if (options.includeLicenseAnalysis) {
+      tasks.push({
+        id: 'license-analysis',
+        dependsOn: ['dependency-health'],
+        run: async (signal) => ({
+          kind: 'licenses',
+          value: await licenseAnalyzer(context.root, undefined, signal, {
+            offline: options.offline,
+            allowPublicScope: options.allowPublicScope,
+            concurrency: Math.max(
+              1,
+              Math.floor(budget.maxConcurrentRequests / 2)
+            ),
+            fileSource,
+            ...(dependencyFacts?.identities
+              ? { inventory: dependencyFacts.identities }
+              : {}),
+            ...(dependencyFacts
+              ? {
+                  inventoryComplete: !dependencyFacts.failures.some(
+                    (failure) => failure.kind === 'unresolved'
+                  ),
+                  inventoryWarnings: dependencyFacts.failures
+                    .filter((failure) => failure.kind === 'unresolved')
+                    .map((failure) => failure.message)
+                }
+              : {})
+          })
+        })
+      });
+    }
     const outcomes = await runTaskDag<ScorecardTaskValue>(tasks, {
       concurrency: 4,
       signal: budget.signal
@@ -303,7 +345,8 @@ export async function buildSecurityScorecard(
               doctor: 'security-doctor',
               git: 'git-audit',
               vulnerability: 'vulnerability-intelligence',
-              packageHealth: 'package-health-anomalies'
+              packageHealth: 'package-health-anomalies',
+              licenses: 'license-analysis'
             } satisfies Record<ScorecardTaskValue['kind'], string>
           )[kind]
       );
@@ -326,6 +369,9 @@ export async function buildSecurityScorecard(
     packageHealthOutcome = options.includePackageHealth
       ? settle('packageHealth')
       : undefined;
+    licenseOutcome = options.includeLicenseAnalysis
+      ? settle('licenses')
+      : undefined;
   } finally {
     dispose();
   }
@@ -341,6 +387,8 @@ export async function buildSecurityScorecard(
     packageHealthOutcome?.status === 'fulfilled'
       ? packageHealthOutcome.value
       : undefined;
+  const licenseAnalysisResult =
+    licenseOutcome?.status === 'fulfilled' ? licenseOutcome.value : undefined;
   let dependencyDimension: ScoreDimension;
   const findings: Finding[] = [];
   const warnings: string[] = [];
@@ -348,6 +396,10 @@ export async function buildSecurityScorecard(
   if (packageHealthResult) {
     findings.push(...packageHealthResult.findings);
     warnings.push(...packageHealthResult.warnings);
+  }
+  if (licenseAnalysisResult) {
+    findings.push(...licenseAnalysisResult.findings);
+    warnings.push(...licenseAnalysisResult.warnings);
   }
 
   if (dependencyOutcome.status === 'rejected') {
@@ -537,6 +589,26 @@ export async function buildSecurityScorecard(
       }`
     );
   }
+  if (licenseOutcome?.status === 'rejected') {
+    analysisReasons.push(
+      `license analysis: failed - ${
+        licenseOutcome.reason instanceof Error
+          ? licenseOutcome.reason.message
+          : String(licenseOutcome.reason)
+      }`
+    );
+  } else if (
+    licenseAnalysisResult?.coverage.state !== undefined &&
+    licenseAnalysisResult.coverage.state !== 'complete'
+  ) {
+    analysisReasons.push(
+      `license analysis: ${licenseAnalysisResult.coverage.state}${
+        licenseAnalysisResult.coverage.reason
+          ? ` - ${licenseAnalysisResult.coverage.reason}`
+          : ''
+      }`
+    );
+  }
   const baseAnalysisState =
     unmeasured.length === 0
       ? 'complete'
@@ -574,6 +646,7 @@ export async function buildSecurityScorecard(
         })
     );
   }
+  if (licenseAnalysisResult) sources.push(licenseAnalysisResult.coverage);
 
   const totals = sources.reduce(
     (sum, part) => ({
@@ -601,6 +674,9 @@ export async function buildSecurityScorecard(
     dependencyHealth,
     dependencySummary,
     ...(packageHealthResult ? { packageHealth: packageHealthResult } : {}),
+    ...(licenseAnalysisResult
+      ? { licenseAnalysis: licenseAnalysisResult }
+      : {}),
     findings,
     warnings,
     snapshotId: capturedSnapshot.id,

@@ -80,6 +80,7 @@
     "fast-glob": "^3.3.3",
     "ignore": "^7.0.3",
     "ora": "^8.2.0",
+    "packageurl-js": "^2.0.1",
     "pacote": "^22.0.1",
     "proper-lockfile": "4.1.2",
     "semver": "^7.7.3",
@@ -99,7 +100,6 @@
     "ajv-draft-04": "^1.0.0",
     "ajv-formats": "^3.0.1",
     "ajv-formats-draft2019": "^1.6.1",
-    "packageurl-js": "^2.0.1",
     "prettier": "3.9.10",
     "tsx": "^4.19.3",
     "vitest": "^5.1.0"

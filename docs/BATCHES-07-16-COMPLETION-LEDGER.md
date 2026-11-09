@@ -341,3 +341,65 @@ Signed WASM plugin validation isolation for #66: module compilation, import enum
 Go checksum parsing follow-up for #80: malformed nonblank `go.sum` records and invalid h1 hashes now add `go-checksum-format-invalid` instead of being silently ignored; valid `/go.mod` checksums are syntax-checked but not misused as module archive integrity. A regression confirms malformed source sums leave the graph incomplete and report missing verified archive checksum. The ecosystem and OSV focused suites pass 58 tests; typecheck, lint and formatting pass. Go checksum database status and full workspace/MVS acceptance remain partial.
 
 Final local verification for the current combined worktree (Linux): Node 22.23.4 and Node 24.22.1 `npm run verify` each passed 959 tests with 1 skipped; coverage each passed 957 with 1 skipped (84.20% statements, 78.33% branches, 92.41% functions, 86.32% lines). Node 24.22.1 `npm run release:check` passed its clean scripts-disabled install, repeated verification, build, package smoke tests and packed `toolip@2.2.1` install/CLI checks; nothing was published. Separate clean `npm ci --ignore-scripts` passed. Workflow policy verified 7 workflows; lockfile integrity verified 355 packages; npm audit found zero vulnerabilities; registry audit verified 299 package signatures and 101 attestations. Focused dependency/GitHub App/WASM tests passed 117 tests before the final PEP 508 whitespace and Go checksum corrections; final ecosystem/OSV focused tests passed 58, and Stage A/artifact/release-isolation/staged-blob/malicious-content suites passed 102 tests. Typecheck, lint, formatting and quality checks passed. Gitleaks 8.30.1 found no leaks in 127 commits (4.36 MB history), the 6.33 MB worktree or the final staged diff (49 KB). Existing raw benchmark evidence remains preserved; no new 50k campaign was run because these fixes do not change the AST benchmark path. All 37 issues remain Partial; bootstrap/ruleset enforcement, remote CI/CodeQL, supported-platform evidence, independent review and outstanding issue-specific acceptance remain open.
+
+### Batch 08 checkpoint (2026-11-09)
+
+The combined Batch 08 scope is #28, #36, #37, #38, #43 and #64. All six
+issues remain **Partial**.
+
+- **#28:** Frozen-install setup now rejects unsupported manager releases and a
+  `packageManager` declaration that does not exactly match the detected lock
+  manager/version. The private install environment filters project/worktree
+  paths, symlink escapes, unresolved/non-directory entries and writable
+  executable directories; manager commands use that environment while git and
+  `gh` retain their authenticated host environment. Yarn Classic and Berry,
+  pnpm and npm integration fixtures check that install hooks stay inert and
+  test executables remain available. Provider-specific rollback, cancellation
+  and supported-platform acceptance remain.
+- **#36:** Reachability no longer treats an import string as proof that an
+  unresolved Yarn archive contains the referenced package. Unverified archive
+  identities remain unknown with an explicit warning. Exact runtime identity,
+  archive-content and supported-platform acceptance remain.
+- **#37:** PURLs for PyPI, Cargo, Maven and Composer use `packageurl-js`; npm
+  scoped/escaped PURLs are independently parsed and round-tripped. The package
+  is now a production dependency and the packed artifact installs and runs its
+  CLI successfully. Existing CycloneDX/SPDX schema and timestamp checks remain.
+  Full ecosystem/workspace lockfile conformance and independent review remain.
+- **#38:** `scan --licenses` and `score --licenses` expose license analysis;
+  scorecards reuse dependency-health identities, warnings and snapshot bytes,
+  honor offline/public-scope settings, and mark unknown or incomplete metadata
+  as partial. Provider bounds, cache, retry and cancellation remain covered by
+  focused tests. Remote deps.dev behavior, live throttling and full provider
+  acceptance remain.
+- **#43:** This checkpoint adds the license flags but does not change the
+  resolver's installed-version classification. The existing no-lock npm path
+  remains unknown rather than treating manifest ranges as resolved versions;
+  full ecosystem/protocol and workspace acceptance remains open.
+- **#64:** pnpm/Yarn lock entries with non-HTTPS, credentialed, nonstandard-port
+  or otherwise rejected source URLs now produce an incomplete graph and do not
+  expose raw URL credentials in warnings. npm/pnpm/Yarn lock and workspace
+  joins remain covered by the existing resolver tests; full golden-format,
+  peer-context and registry-provenance acceptance remains open.
+
+The Batch 08 focused group passed 109 tests with one environment-dependent
+skip across upgrade PRs, lockfile resolvers, SBOM, license analysis, scorecard,
+reachability, OSV and dependency scan. `npm run typecheck`, `npm run quality`,
+Biome lint, changed-file formatting, and `git diff --check` passed. After the
+Node 24 packed-artifact test exposed that `packageurl-js` was only a development
+dependency, it was moved into production dependencies and the package lock was
+updated; the packed install/CLI smoke test then passed.
+
+Final local Linux verification on the corrected tree: Node 22.23.4
+`npm run verify` passed 980 tests with 2 skipped; coverage passed 978 with 2
+skipped at 84.27% statements, 78.72% branches, 92.43% functions and 86.47%
+lines. Node 24.22.1 `npm run release:check` passed its clean scripts-disabled
+install, full verification and coverage, build, and packed `toolip@2.2.1`
+install/CLI validation (593.9 kB, 492 files); no package was published. Both
+verifications passed 980 unit tests with 2 skipped and 978 coverage tests with
+2 skipped at the same percentages. Workflow policy verified 7 workflows;
+lockfile integrity verified 355 packages; full and runtime npm audits found 0
+vulnerabilities; signature audit verified 299 registry signatures and 101
+attestations. Actionlint 1.7.12 passed. Gitleaks 8.30.1 found no leaks in 129
+commits / 4.47 MB of history and passed both working-tree and staged-diff
+scans. No new benchmark campaign was run; existing raw evidence is preserved.
+These local results do not complete the issue acceptance lists.

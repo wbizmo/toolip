@@ -388,3 +388,34 @@ This validates marker syntax but does not evaluate the expression against a
 target Python/OS matrix; those variants remain retained
 as explicit lock contexts or incomplete coverage. These changes have focused
 regressions; the full ecosystem/platform matrix remains open.
+
+### Batch 08: license analysis, SBOM identity, and frozen upgrade installs (2026-11-09)
+
+The integrated scorecard reuses the dependency-health inventory and snapshot
+file source for optional license analysis rather than parsing the same lock
+graph a second time. Grouping direct instances by exact package name and
+version takes expected `O(D)` time and `O(D)` space for `D` inventory records;
+the deterministic result sort is `O(U log U)` for `U` distinct direct
+identities. Provider work is bounded to the configured concurrency `C <= 32`;
+the deps.dev client caps each response at 1 MiB and bounds request/retry time.
+Retained license entries and findings are `O(U)` plus bounded provider
+responses. Incomplete dependency identity or metadata is reflected as partial
+coverage instead of a clean result.
+
+SBOM PURL construction validates ecosystem-specific normalized values through
+`packageurl-js`; npm scoped names retain the canonical encoded namespace and
+round-trip through the independent parser. Per-package normalization and
+validation are linear in the PURL string length; overall generation remains
+bounded by the already parsed dependency graph and the existing graph-index,
+sorting, cancellation and output limits. No benchmark was repeated because
+this batch does not alter the AST analysis or cache path.
+
+Frozen upgrade installation resolves executable search directories once per
+transaction. For `P` inherited PATH entries, canonicalization and metadata
+checks use `O(P)` filesystem probes and `O(P)` temporary path storage, with
+repository/worktree and temporary-directory entries excluded. Package manager
+versions and declared `packageManager` pins are checked before frozen install;
+lifecycle scripts remain disabled and the test command runs only after the
+install gate. Real npm, pnpm, Yarn Classic and Yarn Berry fixtures exercise
+these boundaries. These bounds do not turn package-manager processes into an
+OS sandbox; provider/platform and independent security acceptance remain open.

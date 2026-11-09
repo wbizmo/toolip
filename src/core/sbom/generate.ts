@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
+import { PackageURL } from 'packageurl-js';
 import {
   readNpmDependencyGraph,
   type DependencyFileSource,
@@ -32,7 +33,16 @@ export function npmPurl(name: string, version: string): string {
     throw new Error('npm package URL name is invalid.');
   const encoded = parts.map(encodePurlComponent);
   const normalizedName = scoped ? `%40${encoded[0]}/${encoded[1]}` : encoded[0];
-  return `pkg:npm/${normalizedName}@${encodePurlComponent(version)}`;
+  const value = `pkg:npm/${normalizedName}@${encodePurlComponent(version)}`;
+  const parsed = PackageURL.fromString(value);
+  if (
+    parsed.type !== 'npm' ||
+    parsed.namespace !== (scoped ? `@${parts[0]}` : undefined) ||
+    parsed.name !== parts.at(-1) ||
+    parsed.version !== version
+  )
+    throw new Error('npm package URL components did not round-trip.');
+  return value;
 }
 
 function encodePurlComponent(value: string): string {
@@ -47,26 +57,49 @@ function purl(dependency: DependencyIdentity): string {
     case 'npm':
       return npmPurl(dependency.name, dependency.version);
     case 'PyPI':
-      return `pkg:pypi/${encodeURIComponent(dependency.name.toLowerCase().replace(/[-_.]+/gu, '-'))}@${encodeURIComponent(dependency.version)}`;
+      return new PackageURL(
+        'pypi',
+        undefined,
+        dependency.name.toLowerCase().replace(/[-_.]+/gu, '-'),
+        dependency.version
+      ).toString();
     case 'Go':
       return `pkg:golang/${dependency.name.split('/').map(encodeURIComponent).join('/')}@${encodeURIComponent(dependency.version)}`;
     case 'crates.io':
-      return `pkg:cargo/${encodeURIComponent(dependency.name)}@${encodeURIComponent(dependency.version)}`;
+      return new PackageURL(
+        'cargo',
+        undefined,
+        dependency.name,
+        dependency.version
+      ).toString();
     case 'Maven': {
       const [group, artifact] = dependency.name.split(':');
-      const base = `pkg:maven/${encodeURIComponent(group ?? '')}/${encodeURIComponent(artifact ?? dependency.name)}@${encodeURIComponent(dependency.version)}`;
-      const qualifiers = [
-        ...(dependency.classifier
-          ? [`classifier=${encodeURIComponent(dependency.classifier)}`]
-          : []),
-        ...(dependency.packageType && dependency.packageType !== 'jar'
-          ? [`type=${encodeURIComponent(dependency.packageType)}`]
-          : [])
-      ];
-      return qualifiers.length > 0 ? `${base}?${qualifiers.join('&')}` : base;
+      return new PackageURL(
+        'maven',
+        group ?? '',
+        artifact ?? dependency.name,
+        dependency.version,
+        {
+          ...(dependency.classifier
+            ? { classifier: dependency.classifier }
+            : {}),
+          ...(dependency.packageType && dependency.packageType !== 'jar'
+            ? { type: dependency.packageType }
+            : {})
+        }
+      ).toString();
     }
-    case 'Packagist':
-      return `pkg:composer/${dependency.name.split('/').map(encodeURIComponent).join('/')}@${encodeURIComponent(dependency.version)}`;
+    case 'Packagist': {
+      const [namespace, name] = dependency.name.split('/');
+      if (!namespace || !name || dependency.name.split('/').length !== 2)
+        throw new Error('Composer package name is invalid.');
+      return new PackageURL(
+        'composer',
+        namespace,
+        name,
+        dependency.version
+      ).toString();
+    }
   }
 }
 

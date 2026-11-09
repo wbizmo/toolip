@@ -8,6 +8,7 @@ import {
   mkdtemp,
   realpath,
   rm,
+  stat,
   writeFile
 } from 'node:fs/promises';
 import os from 'node:os';
@@ -133,10 +134,19 @@ export async function createUpgradePullRequest(
 }> {
   throwIfAborted(signal);
   let transactionHooksPath: string | undefined;
+  let transactionEnvironment: NodeJS.ProcessEnv | undefined;
+  let transactionPath: string | undefined;
   const operationRuntime: UpgradePrRuntime = {
     makeTempDir: runtime.makeTempDir,
-    exec: (command, args, cwd, childSignal, env) =>
-      runtime.exec(
+    exec: (command, args, cwd, childSignal, env) => {
+      const commandEnv =
+        env ??
+        (command === 'git' && transactionPath
+          ? { ...process.env, PATH: transactionPath }
+          : isPackageManagerCommand(command)
+            ? transactionEnvironment
+            : undefined);
+      return runtime.exec(
         command,
         command === 'git'
           ? [
@@ -150,8 +160,9 @@ export async function createUpgradePullRequest(
           : args,
         cwd,
         childSignal ?? signal,
-        env
-      ),
+        commandEnv
+      );
+    },
     ...(runtime.assess ? { assess: runtime.assess } : {})
   };
   const absoluteRoot = await realpath(path.resolve(root));
@@ -210,6 +221,7 @@ export async function createUpgradePullRequest(
       }
     );
   }
+  assertPackageManagerDeclaration(manager, manifest.packageManager);
 
   const manifestRelative = packageRelative
     ? path.join(packageRelative, 'package.json')
@@ -276,7 +288,12 @@ export async function createUpgradePullRequest(
 
   try {
     await mkdir(transactionHooksPath, { mode: 0o700 });
-    const projectEnvironment = await createIsolatedProjectEnvironment(tempRoot);
+    const projectEnvironment = await createIsolatedProjectEnvironment(
+      tempRoot,
+      repoRoot
+    );
+    transactionEnvironment = projectEnvironment;
+    transactionPath = projectEnvironment.PATH;
     throwIfAborted(signal);
     await operationRuntime.exec(
       'git',
@@ -450,6 +467,10 @@ function isPackageName(value: string): boolean {
     value.length <= 214 &&
     /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/u.test(value)
   );
+}
+
+function isPackageManagerCommand(command: string): boolean {
+  return command === 'npm' || command === 'pnpm' || command === 'yarn';
 }
 
 async function assessUpgradeProject(
@@ -1056,14 +1077,8 @@ async function updateLockfile(
     return;
   }
 
-  const version = await runtime.exec(
-    'yarn',
-    ['--version'],
-    cwd,
-    undefined,
-    env
-  );
-  const major = Number.parseInt(version.stdout.trim().split('.')[0] ?? '', 10);
+  const version = await supportedManagerVersion('yarn', cwd, runtime, env);
+  const major = semver.major(version);
 
   if (Number.isInteger(major) && major >= 2) {
     await runtime.exec(
@@ -1102,6 +1117,7 @@ export async function installFrozenDependencies(
   runtime: UpgradePrRuntime,
   env?: NodeJS.ProcessEnv
 ): Promise<void> {
+  const version = await supportedManagerVersion(manager, cwd, runtime, env);
   if (manager === 'npm') {
     await runtime.exec('npm', ['ci', '--ignore-scripts'], cwd, undefined, env);
     return;
@@ -1118,18 +1134,11 @@ export async function installFrozenDependencies(
     return;
   }
 
-  const version = await runtime.exec(
-    'yarn',
-    ['--version'],
-    cwd,
-    undefined,
-    env
-  );
-  const major = Number.parseInt(version.stdout.trim().split('.')[0] ?? '', 10);
+  const major = semver.major(version);
   if (Number.isInteger(major) && major >= 2) {
     await runtime.exec(
       'yarn',
-      ['install', '--immutable', '--mode=skip-builds'],
+      ['install', '--immutable', '--mode=skip-build'],
       cwd,
       undefined,
       env
@@ -1146,8 +1155,87 @@ export async function installFrozenDependencies(
   );
 }
 
+function assertPackageManagerDeclaration(
+  detected: Exclude<PackageManager, 'unknown'>,
+  declaration: unknown
+): void {
+  if (declaration === undefined) return;
+  if (typeof declaration !== 'string') {
+    throw new ToolipError(
+      'packageManager must be an exact supported manager pin.',
+      {
+        code: 'UPGRADE_PACKAGE_MANAGER_VERSION_UNSUPPORTED',
+        exitCode: 1
+      }
+    );
+  }
+  const separator = declaration.indexOf('@');
+  const declaredManager = declaration.slice(0, separator);
+  const declaredVersion = declaration.slice(separator + 1).split('+sha', 1)[0];
+  if (
+    separator < 1 ||
+    declaredManager !== detected ||
+    !declaredVersion ||
+    !semver.valid(declaredVersion) ||
+    !isSupportedManagerVersion(detected, declaredVersion)
+  ) {
+    throw new ToolipError(
+      'packageManager does not select an exact supported version matching the detected lockfile.',
+      {
+        code: 'UPGRADE_PACKAGE_MANAGER_VERSION_UNSUPPORTED',
+        exitCode: 1
+      }
+    );
+  }
+}
+
+async function supportedManagerVersion(
+  manager: Exclude<PackageManager, 'unknown'>,
+  cwd: string,
+  runtime: UpgradePrRuntime,
+  env?: NodeJS.ProcessEnv
+): Promise<string> {
+  const result = await runtime.exec(
+    manager,
+    ['--version'],
+    cwd,
+    undefined,
+    env
+  );
+  const version = result.stdout.trim().split(/\s+/u, 1)[0] ?? '';
+  const valid = semver.valid(version);
+  if (!valid || !isSupportedManagerVersion(manager, valid)) {
+    throw new ToolipError(
+      `Unsupported ${manager} version${version ? ` ${version}` : ''}; frozen upgrade verification requires a recognized lockfile-compatible release.`,
+      {
+        code: 'UPGRADE_PACKAGE_MANAGER_VERSION_UNSUPPORTED',
+        exitCode: 1
+      }
+    );
+  }
+  return valid;
+}
+
+function isSupportedManagerVersion(
+  manager: Exclude<PackageManager, 'unknown'>,
+  version: string
+): boolean {
+  switch (manager) {
+    case 'npm':
+      return semver.satisfies(version, '>=7 <12');
+    case 'pnpm':
+      return semver.satisfies(version, '>=6 <13');
+    case 'yarn':
+      return (
+        semver.satisfies(version, '>=1.22.0 <2') ||
+        semver.satisfies(version, '>=2 <5')
+      );
+  }
+}
+
 async function createIsolatedProjectEnvironment(
-  tempRoot: string
+  tempRoot: string,
+  repoRoot: string
 ): Promise<NodeJS.ProcessEnv> {
   const privateHome = path.join(tempRoot, 'home');
   const privateConfig = path.join(tempRoot, 'config');
@@ -1169,8 +1257,36 @@ async function createIsolatedProjectEnvironment(
   );
   await writeFile(gitConfig, '', { mode: 0o600 });
 
+  const safePathEntries: string[] = [];
+  for (const entry of (process.env.PATH ?? '').split(path.delimiter)) {
+    if (!entry || !path.isAbsolute(entry)) continue;
+    const absolute = path.resolve(entry);
+    if (
+      isWithinDirectory(repoRoot, absolute) ||
+      isWithinDirectory(tempRoot, absolute)
+    )
+      continue;
+    const canonical = await realpath(absolute).catch(() => undefined);
+    if (!canonical) continue;
+    if (
+      isWithinDirectory(repoRoot, canonical) ||
+      isWithinDirectory(tempRoot, canonical)
+    )
+      continue;
+    const metadata = await stat(canonical).catch(() => undefined);
+    if (!metadata?.isDirectory()) continue;
+    if (process.platform !== 'win32' && (metadata.mode & 0o022) !== 0) continue;
+    safePathEntries.push(absolute);
+  }
+  if (safePathEntries.length === 0) {
+    throw new ToolipError(
+      'No trusted package-manager executable path remains after isolating the project environment.',
+      { code: 'UPGRADE_PACKAGE_MANAGER_PATH_UNAVAILABLE', exitCode: 1 }
+    );
+  }
+
   const env: NodeJS.ProcessEnv = {
-    PATH: process.env.PATH ?? '',
+    PATH: safePathEntries.join(path.delimiter),
     HOME: privateHome,
     USERPROFILE: privateHome,
     CI: '1',
@@ -1197,6 +1313,16 @@ async function createIsolatedProjectEnvironment(
     env.TMP ??= privateHome;
   }
   return env;
+}
+
+function isWithinDirectory(root: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return (
+    relative === '' ||
+    (!path.isAbsolute(relative) &&
+      relative !== '..' &&
+      !relative.startsWith(`..${path.sep}`))
+  );
 }
 
 /** @internal Reject package-manager configuration that can run code or redirect resolution. */

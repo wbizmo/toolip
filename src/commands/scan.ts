@@ -92,6 +92,10 @@ export function registerScanCommand(program: Command): void {
       'Opt in to bounded npm maintainer, publisher, release and lifecycle-history signals.'
     )
     .option(
+      '--licenses',
+      'Include bounded deps.dev license metadata, unknown-license findings and provider metrics.'
+    )
+    .option(
       '--allow-public-scope',
       'Consent to sending scoped npm package names to public metadata and advisory providers.'
     )
@@ -139,6 +143,7 @@ export function registerScanCommand(program: Command): void {
         offline?: boolean;
         allowGoToolExecution?: boolean;
         packageHealth?: boolean;
+        licenses?: boolean;
         allowPublicScope?: boolean;
         dataSnapshot?: string;
         snapshotPublicKey?: string;
@@ -293,6 +298,7 @@ export function registerScanCommand(program: Command): void {
             offline: options.offline,
             allowGoToolExecution: options.allowGoToolExecution,
             includePackageHealth: options.packageHealth,
+            includeLicenseAnalysis: options.licenses,
             rulePacks: rulePack ? [rulePack] : undefined,
             analyzerPlugins: analyzerPlugin ? [analyzerPlugin] : undefined,
             enableExecutablePlugins: options.enableExecutablePlugins,

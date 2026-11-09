@@ -989,14 +989,13 @@ export class ReachabilityAnalyzer implements Analyzer {
           packageVersion: dependency.version,
           installPath:
             installedPathById.get(dependency.id) ?? dependency.installPath,
-          state:
-            packageReferences.length > 0
+          state: unresolved.has(dependency.id)
+            ? 'unknown'
+            : packageReferences.length > 0
               ? 'reachable'
-              : unresolved.has(dependency.id)
-                ? 'unknown'
-                : dependency.direct
-                  ? 'possibly-reachable'
-                  : 'not-observed',
+              : dependency.direct
+                ? 'possibly-reachable'
+                : 'not-observed',
           direct: dependency.direct,
           development: dependency.development,
           references: packageReferences

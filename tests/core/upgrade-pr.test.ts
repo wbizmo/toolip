@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import {
   chmod,
@@ -24,6 +24,10 @@ import {
 } from '../../src/core/github/upgrade-pr.js';
 
 const execFileAsync = promisify(execFile);
+const pnpmAvailable =
+  spawnSync('pnpm', ['--version'], { encoding: 'utf8' }).status === 0;
+const yarnAvailable =
+  spawnSync('yarn', ['--version'], { encoding: 'utf8' }).status === 0;
 
 describe('createUpgradePullRequest', () => {
   it('runs a devDependency-provided test executable after frozen install in a real worktree', async () => {
@@ -58,7 +62,11 @@ describe('createUpgradePullRequest', () => {
           {
             name: 'upgrade-real-install-fixture',
             version: '1.0.0',
-            scripts: { test: 'fixture-check' },
+            scripts: {
+              preinstall:
+                "node -e \"require('node:fs').writeFileSync('root-lifecycle-ran', 'yes')\"",
+              test: 'fixture-check'
+            },
             devDependencies: { 'fixture-cli': 'file:./fixture-cli' }
           },
           null,
@@ -71,7 +79,8 @@ describe('createUpgradePullRequest', () => {
           {
             name: 'fixture-cli',
             version: '1.0.0',
-            bin: { 'fixture-check': './bin/check.js' }
+            bin: { 'fixture-check': './bin/check.js' },
+            scripts: { install: 'node ./install-hook.js' }
           },
           null,
           2
@@ -80,6 +89,10 @@ describe('createUpgradePullRequest', () => {
       await writeFile(
         path.join(root, 'fixture-cli/bin/check.js'),
         '#!/usr/bin/env node\nrequire("node:fs").writeFileSync("fixture-test-ran", "yes");\n'
+      );
+      await writeFile(
+        path.join(root, 'fixture-cli/install-hook.js'),
+        "require('node:fs').writeFileSync('lifecycle-ran', 'yes');\n"
       );
       await chmod(path.join(root, 'fixture-cli/bin/check.js'), 0o755);
       await runtime.exec(
@@ -104,6 +117,15 @@ describe('createUpgradePullRequest', () => {
       worktreeAdded = true;
 
       await installFrozenDependencies('npm', worktree, runtime);
+      await expect(
+        readFile(path.join(worktree, 'root-lifecycle-ran'), 'utf8')
+      ).rejects.toThrow();
+      await expect(
+        readFile(
+          path.join(worktree, 'node_modules/fixture-cli/lifecycle-ran'),
+          'utf8'
+        )
+      ).rejects.toThrow();
       await runtime.exec('npm', ['test'], worktree);
       expect(
         await realpath(path.join(worktree, 'node_modules/.bin/fixture-check'))
@@ -125,6 +147,18 @@ describe('createUpgradePullRequest', () => {
     }
   }, 60_000);
 
+  it.skipIf(!pnpmAvailable)(
+    'runs the pnpm dev test tool after frozen install without package hooks',
+    () => verifyFrozenManagerFixture('pnpm'),
+    60_000
+  );
+
+  it.skipIf(!yarnAvailable)(
+    'runs the Yarn dev test tool after frozen install without package hooks',
+    () => verifyFrozenManagerFixture('yarn'),
+    60_000
+  );
+
   it('uses frozen no-script install flags for pnpm and both Yarn generations', async () => {
     const calls: string[][] = [];
     let yarnVersion = '1.22.22';
@@ -132,6 +166,9 @@ describe('createUpgradePullRequest', () => {
       makeTempDir: mkdtemp,
       async exec(command, args) {
         calls.push([command, ...args]);
+        if (command === 'pnpm' && args[0] === '--version') {
+          return { stdout: '12.18.0', stderr: '' };
+        }
         if (command === 'yarn' && args[0] === '--version') {
           return { stdout: yarnVersion, stderr: '' };
         }
@@ -162,8 +199,54 @@ describe('createUpgradePullRequest', () => {
       'yarn',
       'install',
       '--immutable',
-      '--mode=skip-builds'
+      '--mode=skip-build'
     ]);
+  });
+
+  it('rejects unsupported package-manager versions before starting an install', async () => {
+    const calls: string[][] = [];
+    const runtime: UpgradePrRuntime = {
+      makeTempDir: mkdtemp,
+      async exec(command, args) {
+        calls.push([command, ...args]);
+        return { stdout: '13.0.0', stderr: '' };
+      }
+    };
+
+    await expect(
+      installFrozenDependencies('pnpm', '/tmp/worktree', runtime)
+    ).rejects.toMatchObject({
+      code: 'UPGRADE_PACKAGE_MANAGER_VERSION_UNSUPPORTED'
+    });
+    expect(calls).toEqual([['pnpm', '--version']]);
+  });
+
+  it('rejects a packageManager declaration that contradicts its lockfile', async () => {
+    const fixture = await createRepositoryFixture();
+    try {
+      const manifest = JSON.parse(
+        await readFile(path.join(fixture.root, 'package.json'), 'utf8')
+      ) as Record<string, unknown>;
+      manifest.packageManager = 'yarn@4.5.0';
+      await writeFile(
+        path.join(fixture.root, 'package.json'),
+        `${JSON.stringify(manifest, null, 2)}\n`
+      );
+
+      await expect(
+        createUpgradePullRequest(
+          fixture.root,
+          'example-package',
+          '2.0.0',
+          true,
+          createRuntime({})
+        )
+      ).rejects.toMatchObject({
+        code: 'UPGRADE_PACKAGE_MANAGER_VERSION_UNSUPPORTED'
+      });
+    } finally {
+      await rm(fixture.container, { recursive: true, force: true });
+    }
   });
 
   it('uses an isolated worktree and preserves a dirty original working tree', async () => {
@@ -820,6 +903,12 @@ describe('createUpgradePullRequest', () => {
         expect(env.NODE_OPTIONS).toBeUndefined();
         expect(env.HOME).not.toBe(process.env.HOME);
         expect(env.NPM_CONFIG_REGISTRY).toBe('https://registry.npmjs.org/');
+        expect(env.PATH).not.toContain(fixture.root);
+        expect(
+          (env.PATH ?? '')
+            .split(path.delimiter)
+            .every((entry) => path.isAbsolute(entry))
+        ).toBe(true);
       }
     } finally {
       await rm(fixture.container, { recursive: true, force: true });
@@ -856,6 +945,136 @@ describe('createUpgradePullRequest', () => {
   });
 });
 
+async function verifyFrozenManagerFixture(
+  manager: 'pnpm' | 'yarn'
+): Promise<void> {
+  const container = await mkdtemp(
+    path.join(os.tmpdir(), `toolip-upgrade-${manager}-install-`)
+  );
+  const root = path.join(container, 'repo');
+  const worktree = path.join(container, 'worktree');
+  const rootHookMarker = path.join(container, 'root-hook-ran');
+  const dependencyHookMarker = path.join(container, 'dependency-hook-ran');
+  let worktreeAdded = false;
+  const runtime: UpgradePrRuntime = {
+    makeTempDir: mkdtemp,
+    async exec(command, args, cwd, signal, env) {
+      let result: Awaited<ReturnType<typeof execFileAsync>>;
+      try {
+        result = await execFileAsync(command, args, {
+          cwd,
+          encoding: 'utf8',
+          timeout: 60_000,
+          maxBuffer: 4 * 1024 * 1024,
+          signal,
+          ...(env ? { env } : {})
+        });
+      } catch (error) {
+        const stderr =
+          error && typeof error === 'object' && 'stderr' in error
+            ? String(error.stderr).slice(0, 2_048)
+            : '';
+        const stdout =
+          error && typeof error === 'object' && 'stdout' in error
+            ? String(error.stdout).slice(0, 2_048)
+            : '';
+        throw new Error(
+          `${command} ${args.join(' ')} failed: ${stderr || stdout}`
+        );
+      }
+      return {
+        stdout: String(result.stdout ?? ''),
+        stderr: String(result.stderr ?? '')
+      };
+    }
+  };
+
+  try {
+    await mkdir(path.join(root, 'fixture-cli/bin'), { recursive: true });
+    const version = await runtime.exec(manager, ['--version'], root);
+    const yarnClassic =
+      manager === 'yarn' && version.stdout.trim().startsWith('1.');
+    await writeFile(
+      path.join(root, 'package.json'),
+      JSON.stringify({
+        name: `upgrade-${manager}-install-fixture`,
+        version: '1.0.0',
+        ...(manager === 'yarn' && !yarnClassic
+          ? { private: true, workspaces: ['fixture-cli'] }
+          : {}),
+        scripts: { preinstall: 'node preinstall.js', test: 'fixture-check' },
+        devDependencies: {
+          'fixture-cli':
+            manager === 'yarn' && !yarnClassic
+              ? 'workspace:*'
+              : 'file:./fixture-cli'
+        }
+      })
+    );
+    await writeFile(
+      path.join(root, 'preinstall.js'),
+      `require('node:fs').writeFileSync(${JSON.stringify(rootHookMarker)}, 'yes');\n`
+    );
+    await writeFile(
+      path.join(root, 'fixture-cli/package.json'),
+      JSON.stringify({
+        name: 'fixture-cli',
+        version: '1.0.0',
+        bin: { 'fixture-check': './bin/check.js' },
+        scripts: { install: 'node ./install-hook.js' }
+      })
+    );
+    await writeFile(
+      path.join(root, 'fixture-cli/bin/check.js'),
+      '#!/usr/bin/env node\nrequire("node:fs").writeFileSync("fixture-test-ran", "yes");\n'
+    );
+    await writeFile(
+      path.join(root, 'fixture-cli/install-hook.js'),
+      `require('node:fs').writeFileSync(${JSON.stringify(dependencyHookMarker)}, 'yes');\n`
+    );
+    await chmod(path.join(root, 'fixture-cli/bin/check.js'), 0o755);
+
+    const lockfileArgs =
+      manager === 'pnpm'
+        ? ['install', '--lockfile-only', '--ignore-scripts']
+        : yarnClassic
+          ? ['install', '--ignore-scripts', '--non-interactive']
+          : ['install', '--mode=skip-build'];
+    await runtime.exec(manager, lockfileArgs, root);
+    await runtime.exec('git', ['init', root], container);
+    await runtime.exec('git', ['config', 'user.name', 'Toolip Test'], root);
+    await runtime.exec(
+      'git',
+      ['config', 'user.email', 'toolip@example.test'],
+      root
+    );
+    await runtime.exec('git', ['add', '.'], root);
+    await runtime.exec('git', ['commit', '-m', 'fixture'], root);
+    await runtime.exec(
+      'git',
+      ['worktree', 'add', '-b', `upgrade-${manager}-fixture`, worktree, 'HEAD'],
+      root
+    );
+    worktreeAdded = true;
+
+    await installFrozenDependencies(manager, worktree, runtime);
+    await runtime.exec(manager, ['test'], worktree);
+
+    expect(existsSync(rootHookMarker)).toBe(false);
+    expect(existsSync(dependencyHookMarker)).toBe(false);
+    expect(
+      await readFile(path.join(worktree, 'fixture-test-ran'), 'utf8')
+    ).toBe('yes');
+  } finally {
+    if (worktreeAdded) {
+      await runtime
+        .exec('git', ['worktree', 'remove', '--force', worktree], root)
+        .catch(() => undefined);
+    }
+    await rm(container, { recursive: true, force: true });
+  }
+}
+
 function createRuntime(options: {
   failTests?: boolean;
   failInstall?: boolean;
@@ -879,6 +1098,9 @@ function createRuntime(options: {
       if (command === 'npm') {
         if (env) options.environments?.push(env);
         options.npmCalls?.push(args);
+        if (args[0] === '--version') {
+          return { stdout: '11.9.0', stderr: '' };
+        }
         if (args[0] === 'ci' && options.failInstall) {
           throw new Error('simulated install failure');
         }

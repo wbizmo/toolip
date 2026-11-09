@@ -46,7 +46,15 @@ function safeResolved(value: unknown): string | undefined {
   if (typeof value !== 'string' || value.length > 2_048) return undefined;
   try {
     const url = new URL(value);
-    if (!['https:', 'http:'].includes(url.protocol)) return undefined;
+    if (
+      url.protocol !== 'https:' ||
+      !url.hostname ||
+      url.username ||
+      url.password ||
+      (url.port !== '' && url.port !== '443') ||
+      url.hash
+    )
+      return undefined;
     return `${url.protocol}//${url.host}${url.pathname}`;
   } catch {
     return undefined;
@@ -391,6 +399,11 @@ export async function readPnpmDependencyGraph(
       }));
   for (const { locator, entry, parsed, snapshot } of installedEntries) {
     const resolution = record(entry.resolution);
+    if (
+      resolution?.tarball !== undefined &&
+      safeResolved(resolution.tarball) === undefined
+    )
+      warnings.push(`pnpm source URL is unsafe: ${locator.slice(0, 200)}`);
     const item: LockedInstance = {
       locator,
       name: parsed.name,
@@ -990,6 +1003,13 @@ export async function readYarnDependencyGraph(
   for (const [groupedDescriptor, raw] of Object.entries(lock)) {
     if (groupedDescriptor === '__metadata') continue;
     const entry = record(raw);
+    if (
+      entry?.resolved !== undefined &&
+      safeResolved(entry.resolved) === undefined
+    )
+      warnings.push(
+        `Yarn source URL is unsafe: ${groupedDescriptor.slice(0, 200)}`
+      );
     const descriptors = splitYarnSelectors(groupedDescriptor);
     if (
       !entry ||

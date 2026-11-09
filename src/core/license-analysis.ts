@@ -1,11 +1,13 @@
 import type { Finding } from '../contracts/finding.js';
+import { coverageOf, type AnalysisCoverage } from '../contracts/analysis.js';
 import { mapConcurrent } from '../application/concurrency.js';
 import {
   sharedDepsDevClient,
   type DepsDevClient
 } from '../providers/depsdev/client.js';
 import {
-  readNpmDependencyInventory,
+  readNpmDependencyGraph,
+  type DependencyFileSource,
   type DependencyIdentity
 } from './dependencies/inventory.js';
 
@@ -22,6 +24,7 @@ export type LicenseAnalysisResult = {
   licenses: LicenseEntry[];
   findings: Finding[];
   warnings: string[];
+  coverage: AnalysisCoverage;
   summary: {
     total: number;
     unknown: number;
@@ -35,6 +38,7 @@ export type LicenseAnalysisResult = {
     throttledResponses?: number;
     retries?: number;
     cacheHits?: number;
+    peakConcurrency?: number;
   };
 };
 
@@ -42,6 +46,11 @@ export type LicenseAnalysisOptions = {
   concurrency?: number;
   offline?: boolean;
   allowPublicScope?: boolean;
+  fileSource?: DependencyFileSource;
+  /** Reuse the canonical graph already parsed by the enclosing scorecard. */
+  inventory?: readonly DependencyIdentity[];
+  inventoryComplete?: boolean;
+  inventoryWarnings?: readonly string[];
 };
 
 export type LicenseMetadataProvider = Pick<DepsDevClient, 'getVersion'>;
@@ -52,7 +61,17 @@ export async function analyzeLicenses(
   signal?: AbortSignal,
   options: LicenseAnalysisOptions = {}
 ): Promise<LicenseAnalysisResult> {
-  const inventory = await readNpmDependencyInventory(root);
+  const graph = options.inventory
+    ? undefined
+    : await readNpmDependencyGraph(root, options.fileSource);
+  const inventory = options.inventory ?? graph?.packages ?? [];
+  const graphComplete = options.inventory
+    ? (options.inventoryComplete ?? true)
+    : (graph?.complete ?? false);
+  const graphWarnings = [
+    ...(options.inventoryWarnings ?? []),
+    ...(graph?.warnings ?? [])
+  ];
   const directGroups = new Map<string, DependencyIdentity[]>();
   for (const dependency of inventory) {
     if (!dependency.direct) continue;
@@ -152,12 +171,15 @@ export async function analyzeLicenses(
   );
 
   const findings = entries.flatMap(licenseToFindings);
-  const warnings = entries
-    .filter((entry) => entry.metadataSource === 'unavailable')
-    .map(
-      (entry) =>
-        `License metadata unavailable for ${entry.name}@${entry.version}: ${entry.metadataError ?? 'provider error'}`
-    );
+  const warnings = [
+    ...graphWarnings,
+    ...entries
+      .filter((entry) => entry.metadataSource === 'unavailable')
+      .map(
+        (entry) =>
+          `License metadata unavailable for ${entry.name}@${entry.version}: ${entry.metadataError ?? 'provider error'}`
+      )
+  ];
   const distribution = entries.reduce<Record<string, number>>(
     (summary, entry) => {
       summary[entry.license] = (summary[entry.license] ?? 0) + 1;
@@ -173,14 +195,45 @@ export async function analyzeLicenses(
         throttledResponses: number;
         retries: number;
         cacheHits?: number;
+        peakConcurrency?: number;
       };
     }
   ).getMetrics?.();
+
+  const eligible = entries.length + graphWarnings.length;
+  const scanned = entries.filter(
+    (entry) =>
+      entry.metadataSource === 'deps.dev' && entry.license !== 'UNKNOWN'
+  ).length;
+  const rawCoverage = coverageOf({
+    eligible,
+    scanned,
+    skipped: 0,
+    failed: Math.max(0, eligible - scanned)
+  });
+  const coverage: AnalysisCoverage = {
+    ...rawCoverage,
+    state:
+      !graphComplete && rawCoverage.state !== 'failed'
+        ? 'partial'
+        : rawCoverage.state,
+    ...(graphComplete && rawCoverage.state === 'complete'
+      ? {}
+      : {
+          reason: [
+            ...(!graphComplete ? ['dependency graph is incomplete'] : []),
+            ...(warnings.length > 0
+              ? ['license metadata is unknown or unavailable']
+              : [])
+          ].join('; ')
+        })
+  };
 
   return {
     licenses: entries,
     findings,
     warnings,
+    coverage,
     summary: {
       total: entries.length,
       unknown: entries.filter((entry) => entry.license === 'UNKNOWN').length,
@@ -197,7 +250,8 @@ export async function analyzeLicenses(
             httpRequests: requestMetrics.httpRequests,
             throttledResponses: requestMetrics.throttledResponses,
             retries: requestMetrics.retries,
-            cacheHits: requestMetrics.cacheHits
+            cacheHits: requestMetrics.cacheHits,
+            peakConcurrency: requestMetrics.peakConcurrency
           }
         : {})
     }

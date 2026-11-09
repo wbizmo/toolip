@@ -392,6 +392,42 @@ child@^2.0.0:
     );
   });
 
+  it.each([
+    ['plain HTTP', 'http://registry.npmjs.org/foo/-/foo-1.2.0.tgz'],
+    [
+      'credentialed HTTPS',
+      'https://user:secret@registry.npmjs.org/foo/-/foo-1.2.0.tgz'
+    ],
+    ['nonstandard HTTPS port', 'https://registry.npmjs.org:8443/foo.tgz']
+  ])(
+    'marks Yarn %s source provenance incomplete without exposing it',
+    async (_label, resolved) => {
+      const root = await fixture();
+      await writeFile(
+        path.join(root, 'package.json'),
+        JSON.stringify({ dependencies: { foo: '^1.0.0' } })
+      );
+      await writeFile(
+        path.join(root, 'yarn.lock'),
+        `# yarn lockfile v1
+
+foo@^1.0.0:
+  version "1.2.0"
+  resolved "${resolved}"
+  integrity sha512-Zm9v
+`
+      );
+
+      const graph = await readNpmDependencyGraph(root);
+
+      expect(graph.complete).toBe(false);
+      expect(graph.warnings).toContain('Yarn source URL is unsafe: foo@^1.0.0');
+      expect(graph.warnings.join(' ')).not.toContain('secret');
+      expect(graph.packages[0]?.resolved).toBeUndefined();
+      expect(JSON.stringify(graph)).not.toContain('registry.npmjs.org');
+    }
+  );
+
   it('resolves Yarn Berry protocol descriptors without executing PnP files', async () => {
     const root = await fixture();
     await writeFile(
@@ -428,6 +464,35 @@ child@^2.0.0:
     expect(graph.edges).toContainEqual(
       expect.objectContaining({ from: foo?.id, to: child?.id })
     );
+  });
+
+  it('marks pnpm unsafe tarball URLs incomplete without retaining credentials', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'pnpm-lock.yaml'),
+      `lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      foo:
+        specifier: ^1.0.0
+        version: 1.2.0
+packages:
+  foo@1.2.0:
+    resolution:
+      tarball: 'http://user:secret@registry.example/foo.tgz'
+      integrity: sha512-Zm9v
+snapshots:
+  foo@1.2.0: {}
+`
+    );
+
+    const graph = await readNpmDependencyGraph(root);
+
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain('pnpm source URL is unsafe: foo@1.2.0');
+    expect(JSON.stringify(graph)).not.toContain('secret');
+    expect(graph.packages[0]?.resolved).toBeUndefined();
   });
 
   it('resolves grouped Yarn Berry selectors to their shared exact instance', async () => {
