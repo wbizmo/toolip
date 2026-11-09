@@ -129,8 +129,15 @@ export class GitHubAppApiClient {
       throw new Error('GitHub App ID is invalid.');
     this.appId = options.appId;
     this.privateKey = createPrivateKey(options.privateKey);
-    if (this.privateKey.asymmetricKeyType !== 'rsa')
-      throw new Error('GitHub App private key must use RSA.');
+    const modulusLength = this.privateKey.asymmetricKeyDetails?.modulusLength;
+    if (
+      this.privateKey.asymmetricKeyType !== 'rsa' ||
+      !Number.isSafeInteger(modulusLength) ||
+      (modulusLength ?? 0) < 2_048
+    )
+      throw new Error(
+        'GitHub App private key must use RSA with at least 2048 bits.'
+      );
     this.fetchImplementation = options.fetchImplementation ?? globalThis.fetch;
     this.now = options.now ?? Date.now;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 10_000;

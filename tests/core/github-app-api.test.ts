@@ -201,6 +201,15 @@ describe('least-privilege GitHub App check-run API', () => {
     );
   });
 
+  it('rejects RSA private keys below the 2048-bit minimum', () => {
+    const weakKey = generateKeyPairSync('rsa', { modulusLength: 1024 })
+      .privateKey.export({ type: 'pkcs8', format: 'pem' })
+      .toString();
+    expect(
+      () => new GitHubAppApiClient({ appId: '12345', privateKey: weakKey })
+    ).toThrow('at least 2048 bits');
+  });
+
   it('keeps cancellation and timeout active while reading an API response body', async () => {
     const client = new GitHubAppApiClient({
       appId: '12345',
