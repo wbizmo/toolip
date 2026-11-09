@@ -1,0 +1,98 @@
+import { generateKeyPairSync } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createProgram } from '../../src/cli/program.js';
+import { createReport } from '../../src/core/report.js';
+import { signReportEvidence } from '../../src/core/report-signature.js';
+
+const roots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
+  );
+});
+
+describe('signed report verification command', () => {
+  it('verifies trusted report evidence and rejects a different scanner digest', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-report-cli-'));
+    roots.push(root);
+    const keyPair = generateKeyPairSync('ed25519');
+    const privateKeyPem = keyPair.privateKey
+      .export({ type: 'pkcs8', format: 'pem' })
+      .toString();
+    const publicKeyPem = keyPair.publicKey
+      .export({ type: 'spki', format: 'pem' })
+      .toString();
+    const publicKeyPath = path.join(root, 'trusted.pub');
+    const reportPath = path.join(root, 'report.json');
+    const scannerDigest = 'a'.repeat(64);
+    const report = signReportEvidence(
+      createReport({
+        version: '3.2.1-rc',
+        command: 'scan',
+        root: '/captured/project',
+        findings: [],
+        analysis: { state: 'complete', reasons: [] }
+      }),
+      {
+        privateKeyPem,
+        keyId: 'trusted-key',
+        projectId: 'org/repository',
+        scannerArtifactSha256: scannerDigest,
+        issuedAt: new Date().toISOString()
+      }
+    );
+    await writeFile(publicKeyPath, publicKeyPem, { mode: 0o600 });
+    await writeFile(reportPath, `${JSON.stringify(report)}\n`);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const originalExitCode = process.exitCode;
+
+    try {
+      await createProgram().parseAsync([
+        'node',
+        'toolip',
+        'report',
+        'verify',
+        reportPath,
+        '--public-key',
+        publicKeyPath,
+        '--key-id',
+        'trusted-key',
+        '--project-id',
+        'org/repository',
+        '--scanner-artifact-sha256',
+        scannerDigest
+      ]);
+      expect(log).toHaveBeenLastCalledWith(
+        expect.stringContaining('"status": "verified"')
+      );
+      expect(process.exitCode).toBe(originalExitCode);
+
+      await createProgram().parseAsync([
+        'node',
+        'toolip',
+        'report',
+        'verify',
+        reportPath,
+        '--public-key',
+        publicKeyPath,
+        '--key-id',
+        'trusted-key',
+        '--project-id',
+        'org/repository',
+        '--scanner-artifact-sha256',
+        'b'.repeat(64)
+      ]);
+      expect(log).toHaveBeenLastCalledWith(
+        expect.stringContaining('"reason": "scanner-artifact-mismatch"')
+      );
+      expect(process.exitCode).toBe(2);
+    } finally {
+      process.exitCode = originalExitCode;
+      log.mockRestore();
+    }
+  });
+});
