@@ -281,6 +281,59 @@ async function handler(req: RequestLike, db: Database) {
     );
   });
 
+  it('preserves taint through computed request fields and Promise callbacks', () => {
+    const findings = analyzeAstSource(
+      'routes.ts',
+      `function handler(req: RequestLike, db: Database) {
+  db.query(req.body[req.query.field]);
+  Promise.resolve(req.query.sql).then((sql) => db.query(sql));
+}`
+    );
+    expect(
+      findings.filter((finding) => finding.ruleId === 'TLP-AST-005')
+    ).toHaveLength(2);
+  });
+
+  it('accepts only an HTML-context encoder at HTML sinks and not other sinks', () => {
+    const findings = analyzeAstSource(
+      'routes.ts',
+      `function handler(req: RequestLike, db: Database) {
+  element.innerHTML = escapeHtml(req.body.html);
+  element.innerHTML = genericSanitize(req.body.otherHtml);
+  db.query(escapeHtml(req.query.sql));
+}`
+    );
+    expect(findings.map((finding) => finding.ruleId)).toEqual([
+      'TLP-AST-007',
+      'TLP-AST-005'
+    ]);
+  });
+
+  it('accepts a fail-closed literal fetch host allowlist and rejects dynamic policies or redirects', () => {
+    const findings = analyzeAstSource(
+      'routes.ts',
+      `async function handler(req: RequestLike) {
+  const url = new URL(req.query.destination);
+  if (!['service.example'].includes(url.hostname)) throw new Error('blocked');
+  await fetch(url, { redirect: 'error' });
+  const other = new URL(req.query.other);
+  if (!getAllowedHosts().includes(other.hostname)) throw new Error('blocked');
+  await fetch(other, { redirect: 'error' });
+  const local = new URL(req.query.local);
+  if (!['localhost'].includes(local.hostname)) throw new Error('blocked');
+  await fetch(local, { redirect: 'error' });
+  const changed = new URL(req.query.changed);
+  if (!['service.example'].includes(changed.hostname)) throw new Error('blocked');
+  changed.hostname = '127.0.0.1';
+  await fetch(changed, { redirect: 'error' });
+  await fetch(url);
+}`
+    );
+    expect(
+      findings.filter((finding) => finding.ruleId === 'TLP-AST-006')
+    ).toHaveLength(4);
+  });
+
   it('distinguishes tainted shell commands from safe argument-array execution', () => {
     const findings = analyzeAstSource(
       'commands.ts',
@@ -382,6 +435,35 @@ export function handler(req: RequestLike, db: Database) {
     const findings = analyzeAstSource('database.ts', database, project);
     expect(findings.map((finding) => finding.ruleId)).toEqual(['TLP-AST-005']);
     expect(findings[0]?.location?.file).toBe('database.ts');
+  });
+
+  it('follows cross-file async wrappers and Promise callbacks to a SQL sink', () => {
+    const root = path.join(os.tmpdir(), 'toolip-ast-async-wrapper');
+    const route = `import { execute } from './queries.js';
+export async function handler(req: RequestLike) {
+  await execute(req.body.statement);
+}`;
+    const query = `export async function execute(statement: string) {
+  await Promise.resolve(statement).then((value) => db.query(value));
+}`;
+    const project = createAstProjectAnalysis([
+      {
+        filePath: 'routes.ts',
+        absolutePath: path.join(root, 'routes.ts'),
+        content: route
+      },
+      {
+        filePath: 'queries.ts',
+        absolutePath: path.join(root, 'queries.ts'),
+        content: query
+      }
+    ]);
+
+    expect(
+      analyzeAstSource('queries.ts', query, project).map(
+        (finding) => finding.ruleId
+      )
+    ).toEqual(['TLP-AST-005']);
   });
 
   it('resolves child_process aliases through immutable project re-exports', () => {

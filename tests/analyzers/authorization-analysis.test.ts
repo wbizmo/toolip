@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { analyzeAstSource } from '../../src/analyzers/ast/source-analysis.js';
+import path from 'node:path';
+import {
+  analyzeAstSource,
+  createAstProjectAnalysis
+} from '../../src/analyzers/ast/source-analysis.js';
 
 describe('route authorization candidates', () => {
   it('flags an Express object lookup by a request-controlled ID without a visible policy check', () => {
@@ -67,7 +71,7 @@ describe('route authorization candidates', () => {
     );
   });
 
-  it('does not flag a nested tenant predicate or route-level role guard', () => {
+  it('accepts a nested tenant predicate but keeps role-only access candidates', () => {
     const tenantGuard = analyzeAstSource(
       'src/routes/invoices.ts',
       [
@@ -92,7 +96,7 @@ describe('route authorization candidates', () => {
       tenantGuard.some((finding) => finding.ruleId === 'TLP-AUTH-001')
     ).toBe(false);
     expect(roleGuard.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
-      false
+      true
     );
   });
 
@@ -151,7 +155,7 @@ describe('route authorization candidates', () => {
     );
   });
 
-  it('recognizes Nest route parameters, injected identities, tenant scopes and role decorators', () => {
+  it('recognizes Nest route parameters and tenant scopes without treating role decorators as ownership', () => {
     const findings = analyzeAstSource(
       'src/users.controller.ts',
       `class UsersController {
@@ -176,7 +180,7 @@ describe('route authorization candidates', () => {
       findings
         .filter((finding) => finding.ruleId === 'TLP-AUTH-001')
         .map((finding) => finding.location?.line)
-    ).toEqual([4]);
+    ).toEqual([4, 15]);
   });
 
   it('does not let an authorization check after the lookup hide the lookup', () => {
@@ -213,7 +217,7 @@ describe('route authorization candidates', () => {
     );
   });
 
-  it('accepts a fail-closed role check that exits before the lookup', () => {
+  it('does not treat a fail-closed role check as resource ownership', () => {
     const findings = analyzeAstSource(
       'src/routes/early-denial.ts',
       [
@@ -226,7 +230,7 @@ describe('route authorization candidates', () => {
     );
 
     expect(findings.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
-      false
+      true
     );
   });
 
@@ -302,6 +306,92 @@ describe('route authorization candidates', () => {
     );
     expect(
       authenticationOnly.some((finding) => finding.ruleId === 'TLP-AUTH-001')
+    ).toBe(true);
+  });
+
+  it('requires resource arguments for named guards and leaves opaque middleware uncertain', () => {
+    const resourceGuard = analyzeAstSource(
+      'src/routes/guarded.ts',
+      [
+        "router.get('/records/:id', async (req, res) => {",
+        '  await assertOwner(req.user, req.params.id);',
+        '  return records.findById(req.params.id);',
+        '});'
+      ].join('\n')
+    );
+    const identityOnly = analyzeAstSource(
+      'src/routes/identity-only.ts',
+      [
+        "router.get('/records/:id', requireRole('admin'), async (req, res) => {",
+        '  assertOwner(req.user);',
+        '  return records.findById(req.params.id);',
+        '});'
+      ].join('\n')
+    );
+    const opaqueMiddleware = analyzeAstSource(
+      'src/routes/middleware.ts',
+      [
+        "router.get('/records/:id', authorizeRecord, async (req, res) => {",
+        '  return records.findById(req.params.id);',
+        '});'
+      ].join('\n')
+    );
+
+    expect(
+      resourceGuard.some((finding) => finding.ruleId === 'TLP-AUTH-001')
+    ).toBe(false);
+    expect(
+      identityOnly.some((finding) => finding.ruleId === 'TLP-AUTH-001')
+    ).toBe(true);
+    expect(
+      opaqueMiddleware.some((finding) => finding.ruleId === 'TLP-AUTH-001')
+    ).toBe(true);
+    expect(
+      opaqueMiddleware.find((finding) => finding.ruleId === 'TLP-AUTH-001')
+        ?.confidence
+    ).toBe('low');
+  });
+
+  it('verifies cross-file middleware bodies before trusting a route guard', () => {
+    const root = '/toolip-auth-middleware';
+    const route = `import { authorizeRecord } from './policy.js';
+async function handler(req: RequestLike, res: ResponseLike) {
+  return records.findById(req.params.id);
+}
+router.get('/records/:id', authorizeRecord, handler);`;
+    const policy = `export function authorizeRecord(req: RequestLike, next: () => void) {
+  assertOwner(req.user, req.params.id);
+  next();
+}`;
+    const inputs = (body: string) => [
+      {
+        filePath: 'routes.ts',
+        absolutePath: path.join(root, 'routes.ts'),
+        content: route
+      },
+      {
+        filePath: 'policy.ts',
+        absolutePath: path.join(root, 'policy.ts'),
+        content: body
+      }
+    ];
+    const project = createAstProjectAnalysis(inputs(policy));
+    const authenticationOnlyProject = createAstProjectAnalysis(
+      inputs(`export function authorizeRecord(req: RequestLike, next: () => void) {
+  if (!isAuthenticated(req.user)) throw new Error('unauthorized');
+  next();
+}`)
+    );
+
+    expect(
+      analyzeAstSource('routes.ts', route, project).some(
+        (finding) => finding.ruleId === 'TLP-AUTH-001'
+      )
+    ).toBe(false);
+    expect(
+      analyzeAstSource('routes.ts', route, authenticationOnlyProject).some(
+        (finding) => finding.ruleId === 'TLP-AUTH-001'
+      )
     ).toBe(true);
   });
 });

@@ -212,6 +212,33 @@ describe('non-executing malicious content chain analysis', () => {
     ]);
   });
 
+  it('keeps tracing import edges after the content-reference cache slice fills', () => {
+    const imports = Array.from(
+      { length: 260 },
+      (_, index) => `import './safe-${index}.orc';`
+    );
+    imports.push("import './payload.orc';");
+    const files = [
+      {
+        path: 'package.json',
+        content: JSON.stringify({ scripts: { prepare: 'node bootstrap' } })
+      },
+      { path: 'bootstrap', content: imports.join('\n') },
+      ...Array.from({ length: 260 }, (_, index) => ({
+        path: `safe-${index}.orc`,
+        content: "console.log('ready');"
+      })),
+      {
+        path: 'payload.orc',
+        content: 'const payload = atob(encoded); eval(payload);'
+      }
+    ];
+    const result = analyzeMaliciousContent(files);
+
+    expect(result.findings[0]?.ruleId).toBe('TLP-MAL-001');
+    expect(result.findings[0]?.metadata?.trace).toContain('payload.orc');
+  });
+
   it('discovers shebang scripts with unfamiliar names even without a manifest reference', () => {
     const result = analyzeMaliciousContent([
       {

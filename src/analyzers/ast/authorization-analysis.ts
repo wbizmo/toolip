@@ -14,11 +14,9 @@ const objectLookupMethods = new Set([
   'find'
 ]);
 const explicitGuards = new Set([
-  'authorize',
   'authorizeResource',
   'assertOwner',
   'assertPermission',
-  'requireRole',
   'assertTenant'
 ]);
 const booleanGuards = new Set([
@@ -31,9 +29,7 @@ const booleanGuards = new Set([
   'owns',
   'isOwner',
   'belongsToTenant',
-  'hasTenantAccess',
-  'isAdmin',
-  'hasRole'
+  'hasTenantAccess'
 ]);
 const normalizedBooleanGuards = new Set(
   [...booleanGuards].map((name) => name.replace(/[_-]/gu, '').toLowerCase())
@@ -341,7 +337,10 @@ function hasOwnershipPredicate(
 
 function hasRoleOrOwnershipGuard(
   handler: ts.FunctionLikeDeclaration,
-  registrationGuards: readonly string[],
+  registrationGuards: readonly ts.Expression[],
+  helperFunctions: ReadonlyMap<string, readonly ts.FunctionLikeDeclaration[]>,
+  resourceMiddlewareFunctions:
+    WeakMap<ts.Identifier, ts.FunctionLikeDeclaration> | undefined,
   beforePosition: number,
   requestParameters: ReadonlySet<string>,
   identityParameters: ReadonlySet<string>
@@ -351,15 +350,25 @@ function hasRoleOrOwnershipGuard(
     : [];
   if (
     decorators.some((decorator) =>
-      ['roles', 'requirerole', 'authorize', 'authorizeresource'].includes(
+      ['authorize', 'authorizeresource'].includes(
         decoratorName(decorator) ?? ''
       )
     )
   )
     return true;
   if (
-    registrationGuards.some((guard) =>
-      /(?:authorize|permission|owner|tenant|role|access|admin)/iu.test(guard)
+    registrationGuards.some(
+      (guard) =>
+        isResourceAuthorizationCall(
+          guard,
+          requestParameters,
+          identityParameters
+        ) ||
+        isVerifiedResourceMiddleware(
+          guard,
+          helperFunctions,
+          resourceMiddlewareFunctions
+        )
     )
   )
     return true;
@@ -367,15 +376,9 @@ function hasRoleOrOwnershipGuard(
   visitCurrentFunction(handler, (node) => {
     if (guarded || node.getStart() >= beforePosition) return;
     if (ts.isCallExpression(node)) {
-      const name = callName(node);
-      if (name && explicitGuards.has(name) && node.getEnd() <= beforePosition) {
-        guarded = true;
-        return;
-      }
       if (
-        name &&
-        /^(?:isAdmin|hasRole|requireAdmin|ensureRole)$/iu.test(name) &&
-        node.arguments.some((argument) => authIdentity(argument))
+        node.getEnd() <= beforePosition &&
+        isResourceAuthorizationCall(node, requestParameters, identityParameters)
       ) {
         guarded = true;
         return;
@@ -406,32 +409,73 @@ function hasRoleOrOwnershipGuard(
         }
       }
     }
-    const condition = node.expression
-      .getText()
-      .replace(/^\((.*)\)$/u, '$1')
-      .trim();
-    const deniedWhenTrue =
-      /^!\s*(?:(?:req|request|ctx|context)\s*\.\s*(?:user|auth)\s*\.\s*(?:isAdmin|isOwner|hasAccess|canAccess)|hasRole\s*\()/iu.test(
-        condition
-      ) ||
-      /^(?:req|request|ctx|context)\s*\.\s*(?:user|auth)\s*\.\s*role\s*!==?\s*['"][^'"]+['"]$/iu.test(
-        condition
-      );
-    const deniedWhenFalse =
-      /^(?:(?:req|request|ctx|context)\s*\.\s*(?:user|auth)\s*\.\s*(?:isAdmin|isOwner|hasAccess|canAccess)|hasRole\s*\()/iu.test(
-        condition
-      ) ||
-      /^(?:req|request|ctx|context)\s*\.\s*(?:user|auth)\s*\.\s*role\s*===?\s*['"][^'"]+['"]$/iu.test(
-        condition
-      );
-    const thenExits = exitsBeforeContinuation(node.thenStatement);
-    const elseExits = node.elseStatement
-      ? exitsBeforeContinuation(node.elseStatement)
-      : false;
-    if ((deniedWhenTrue && thenExits) || (deniedWhenFalse && elseExits))
-      guarded = true;
   });
   return guarded;
+}
+
+function isVerifiedResourceMiddleware(
+  expression: ts.Expression,
+  helperFunctions: ReadonlyMap<string, readonly ts.FunctionLikeDeclaration[]>,
+  resourceMiddlewareFunctions?: WeakMap<
+    ts.Identifier,
+    ts.FunctionLikeDeclaration
+  >
+): boolean {
+  if (!ts.isIdentifier(expression)) return false;
+  const helper = resourceMiddlewareFunctions
+    ? resourceMiddlewareFunctions.get(expression)
+    : helperFunctions.get(expression.text)?.length === 1
+      ? helperFunctions.get(expression.text)?.[0]
+      : undefined;
+  if (!helper) return false;
+  const requests = requestControlledNames(
+    helper,
+    frameworkRequestParameters(helper)
+  );
+  const identities = authenticatedIdentityAliases(
+    helper,
+    frameworkIdentityParameters(helper)
+  );
+  let verified = false;
+  visitCurrentFunction(helper, (node) => {
+    if (verified) return;
+    if (ts.isCallExpression(node)) {
+      if (isResourceAuthorizationCall(node, requests, identities)) {
+        verified = true;
+        return;
+      }
+    }
+    if (!ts.isIfStatement(node)) return;
+    const condition = unwrapBooleanCondition(node.expression);
+    if (!condition) return;
+    const name = callName(condition.call);
+    if (!isBooleanOwnershipGuard(condition.call, name, requests, identities))
+      return;
+    const denied = condition.negated ? node.thenStatement : node.elseStatement;
+    if (denied && exitsBeforeContinuation(denied)) verified = true;
+  });
+  return verified;
+}
+
+/** A guard must bind an authenticated identity to this requested resource. */
+function isResourceAuthorizationCall(
+  expression: ts.Expression,
+  requestParameters: ReadonlySet<string>,
+  identityParameters: ReadonlySet<string>
+): boolean {
+  if (!ts.isCallExpression(expression)) return false;
+  const name = callName(expression);
+  if (!name || !explicitGuards.has(name)) return false;
+  const checksIdentity = expression.arguments.some((argument) =>
+    authIdentity(argument, identityParameters)
+  );
+  const checksRequestedObject = expression.arguments.some(
+    (argument) =>
+      requestObjectId(argument) ||
+      hasRequestId(argument) ||
+      hasRequestParameter(argument, requestParameters)
+  );
+  return checksIdentity && checksRequestedObject;
 }
 
 function isBooleanOwnershipGuard(
@@ -444,7 +488,7 @@ function isBooleanOwnershipGuard(
   const normalized = name.replace(/[_-]/gu, '').toLowerCase();
   const recognized =
     normalizedBooleanGuards.has(normalized) ||
-    /^(?:(?:can|has|is|owns|belongsto|check|authorize|assert|ensure).*(?:access|owner|permission|tenant|role|resource|record|project|document|member)|(?:is|has).*member)$/iu.test(
+    /^(?:(?:can|has|is|owns|belongsto|check|authorize|assert|ensure).*(?:access|owner|permission|tenant|resource|record|project|document|member)|(?:is|has).*member)$/iu.test(
       normalized
     );
   if (!recognized) return false;
@@ -704,7 +748,7 @@ function createCandidate(
     severity: 'medium',
     confidence: 'low',
     message:
-      'A recognized route handler loads an object using a request-controlled identifier, but this handler contains no recognized ownership, tenant, permission, or role check. Verify authorization on every access path.',
+      'A recognized route handler loads an object using a request-controlled identifier, but this handler contains no visible resource ownership, tenant, or permission check. Authentication and role checks alone do not establish access to this object.',
     source: 'typescript-ast-authorization-heuristic',
     location,
     evidence: [
@@ -719,9 +763,9 @@ function createCandidate(
         'Scope the object query by the authenticated owner or tenant, or enforce a resource-specific authorization check before returning or mutating the object.'
     },
     metadata: {
-      analysisModel: 'same-handler-authorization-heuristic-v1',
+      analysisModel: 'same-handler-resource-authorization-heuristic-v2',
       limitation:
-        'Cross-file middleware, policy engines, indirect ownership checks and shared-resource rules may not be resolved; manually verify this candidate.'
+        'Cross-file middleware, policy engines, trusted helper implementations, implicit policies and shared-resource grants may not be resolved; manually verify this low-confidence candidate.'
     }
   };
 }
@@ -730,7 +774,12 @@ function createCandidate(
 export function analyzeAuthorizationSource(
   filePath: string,
   content: string,
-  capturedSourceFile?: ts.SourceFile
+  capturedSourceFile?: ts.SourceFile,
+  relatedSourceFiles: readonly ts.SourceFile[] = [],
+  resourceMiddlewareFunctions?: WeakMap<
+    ts.Identifier,
+    ts.FunctionLikeDeclaration
+  >
 ): Finding[] {
   const sourceFile =
     capturedSourceFile ??
@@ -741,8 +790,20 @@ export function analyzeAuthorizationSource(
       true,
       filePath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS
     );
-  const handlers = new Map<ts.FunctionLikeDeclaration, string[]>();
-  const referencedHandlers = new Map<string, string[]>();
+  const handlers = new Map<ts.FunctionLikeDeclaration, ts.Expression[]>();
+  const referencedHandlers = new Map<string, ts.Expression[]>();
+  const helperFunctions = new Map<string, ts.FunctionLikeDeclaration[]>();
+  for (const related of new Set([sourceFile, ...relatedSourceFiles])) {
+    const collectHelpers = (node: ts.Node): void => {
+      if (isFunction(node) && ts.isFunctionDeclaration(node) && node.name) {
+        const declarations = helperFunctions.get(node.name.text) ?? [];
+        declarations.push(node);
+        helperFunctions.set(node.name.text, declarations);
+      }
+      ts.forEachChild(node, collectHelpers);
+    };
+    collectHelpers(related);
+  }
   const routeCalls: ts.CallExpression[] = [];
   const collectRoutes = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
@@ -759,8 +820,7 @@ export function analyzeAuthorizationSource(
     );
     const guards = route.arguments
       .slice(0, handlerIndex < 0 ? undefined : handlerIndex)
-      .filter((argument) => !ts.isStringLiteral(argument))
-      .map((argument) => argument.getText().slice(0, 256));
+      .filter((argument) => !ts.isStringLiteral(argument));
     for (const argument of route.arguments) {
       if (ts.isArrowFunction(argument) || ts.isFunctionExpression(argument))
         handlers.set(argument, guards);
@@ -806,6 +866,8 @@ export function analyzeAuthorizationSource(
             hasRoleOrOwnershipGuard(
               node,
               registrationGuards,
+              helperFunctions,
+              resourceMiddlewareFunctions,
               child.getStart(),
               requestParameters,
               identityParameters

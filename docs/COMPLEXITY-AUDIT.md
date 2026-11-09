@@ -550,3 +550,26 @@ These bounds are source-derived and backed by focused regression tests; they do
 not replace cross-platform 1k/10k/50k resource measurements, a whole-process
 memory profile, independent provider review or external ecosystem calibration.
 No new large benchmark campaign was run for this code change.
+
+## Batch 11 concurrency callback indexing (2026-11-09)
+
+For `N` syntax nodes, `I` identifier references, `F` same-file function
+declarations, and `P` Promise-all map patterns, the concurrency analyzer builds
+the callback index, imported-pool index, and per-function side-effect memo in
+linear AST passes. Callback wrappers are resolved only when their same-file
+name is unique. The memo ensures each resolved function body is inspected once;
+recursive and over-depth paths conservatively remain candidates, with callback
+depth capped at 16. Pool suppression requires a direct call through a unique
+`const` created by a literal `p-limit` import with concurrency from 1 through
+32; shadowed factories, aliasing, property mutation, dynamic or larger values
+do not suppress. The source-level import name is not proof of the installed
+package's resolved identity, so package-alias resolution remains an explicit
+limitation.
+
+The added indexing and memo work is expected `O(N + P)` time and `O(N + P)`
+additional space under hash-map behavior. The analyzer still
+retains the parsed AST and findings; project AST depth/node limits apply before
+analysis. Regression cases cover arbitrary `limit` wrappers, opaque external
+callbacks, a shadowed `p-limit` factory, dynamic/over-cap/mutated pools and a
+statically bounded pool. These focused cases establish behavior, not a whole
+repository performance or memory bound.

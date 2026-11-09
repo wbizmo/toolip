@@ -6,6 +6,12 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 
 ## Unreleased
 
+- Extend bounded AST taint propagation through computed request fields, Promise callbacks and cross-file async wrappers; apply sink-specific HTML encoding and conservative literal Fetch host-allowlist checks while retaining path-containment and dynamic-policy uncertainty.
+- Keep BOLA candidates visible when code proves only authentication or a role; trust cross-file route middleware only after resolving and inspecting its resource-specific guard body.
+- Follow same-file callback wrappers in unbounded Promise.all mutation checks, require the read entity's version in optimistic update predicates, and recognize explicitly serializable database transactions.
+- Trace sensitive request destructuring through unknown serializers without exposing field names or values; continue to leave schema-specific data classes and external serializer contracts incomplete.
+- Preserve malicious-content reference tracing after the bounded content-cache reference slice fills; all staged and repository payload analysis remains static and non-executing.
+
 - Avoid copying source expressions into AST evidence, omit install-script command text, and redact supported credential patterns in analyzer output, errors, reports and MCP output; remove low-entropy secret hashes from public finding summaries and identities.
 - Scan bounded readable text files including credential dotfiles such as `.npmrc`; source comments no longer suppress secret findings, and fixture suppression requires caller-owned policy with optional expiry.
 - Trace Stage A GitHub Actions block-form commands and working directories into exact npm/pnpm/Yarn workspace manifests and package-relative script targets; follow VS Code automatic task dependencies, reject malformed run scalars, and mark unresolved workspace/task references incomplete.

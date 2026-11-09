@@ -1,5 +1,6 @@
 import ts from 'typescript';
 import { createHash } from 'node:crypto';
+import { isIP } from 'node:net';
 import path from 'node:path';
 import type { Finding } from '../../contracts/finding.js';
 import { astSecurityRules, type AstSecurityRule } from './rules.js';
@@ -1959,7 +1960,8 @@ function collectFlowNames(
           targets,
           sensitiveDestructuring &&
             ts.isObjectBindingPattern(node.name) &&
-            isProcessEnvironmentObject(node.initializer)
+            (isProcessEnvironmentObject(node.initializer) ||
+              Boolean(node.initializer && isRequestSource(node.initializer)))
         );
       }
     }
@@ -1997,6 +1999,30 @@ function collectFlowNames(
             );
           }
         }
+      }
+
+      // Promise callbacks receive the resolved value; collection callbacks
+      // receive elements. Add bounded static edges without running callbacks.
+      const target = node.expression;
+      const method = ts.isPropertyAccessExpression(target)
+        ? target.name.text
+        : undefined;
+      const callback = node.arguments[0];
+      if (
+        method &&
+        callback &&
+        (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)) &&
+        callback.parameters[0] &&
+        ['then', 'map', 'flatMap', 'filter', 'forEach'].includes(method)
+      ) {
+        const callbackScope = scopes.get(callback);
+        const parameter = callback.parameters[0];
+        if (callbackScope && parameter && ts.isPropertyAccessExpression(target))
+          addFlow(
+            target.expression,
+            callScope ?? callbackScope,
+            flowTargets(parameter.name, callbackScope, sensitiveDestructuring)
+          );
       }
     }
 
@@ -2079,8 +2105,35 @@ function isMemberAccessRoot(expression: ts.Expression): boolean {
 
 /** Deliberately narrow source model; this is a heuristic, not full taint proof. */
 function isRequestSource(expression: ts.Expression): boolean {
-  const parts = propertyPath(expression);
-  if (!parts) return false;
+  const parts: string[] = [];
+  let current = expression;
+  while (true) {
+    if (ts.isParenthesizedExpression(current)) {
+      current = current.expression;
+      continue;
+    }
+    if (ts.isPropertyAccessExpression(current)) {
+      parts.push(current.name.text);
+      current = current.expression;
+      continue;
+    }
+    if (ts.isElementAccessExpression(current)) {
+      if (
+        current.argumentExpression &&
+        (ts.isStringLiteral(current.argumentExpression) ||
+          ts.isNumericLiteral(current.argumentExpression))
+      )
+        parts.push(current.argumentExpression.text);
+      current = current.expression;
+      continue;
+    }
+    if (ts.isIdentifier(current)) {
+      parts.push(current.text);
+      break;
+    }
+    return false;
+  }
+  parts.reverse();
   const root = parts[0];
   const supportedRoot =
     root === 'req' ||
@@ -2175,15 +2228,13 @@ function collectTaintedNames(
 const sensitiveName =
   /(?:token|secret|password|passwd|private.?key|api.?key|credential|auth.?key|(?:access|refresh).?token|session.?cookie|email|phone|ssn|social.?security|birth.?date|date.?of.?birth|passport|address)/iu;
 const redactionHelpers = new Set([
-  'redact',
   'redactSecret',
   'redactSecrets',
   'redactSensitive',
   'redactSensitiveData',
   'maskSecret',
   'maskToken',
-  'sanitizeSecret',
-  'safeSerialize'
+  'sanitizeSecret'
 ]);
 
 function isIdentifierPropertyName(node: ts.Identifier): boolean {
@@ -2260,6 +2311,10 @@ export type AstProjectInput = {
 export type AstProjectAnalysis = {
   sourceFiles: Map<string, ts.SourceFile>;
   scopes: WeakMap<ts.Node, Scope>;
+  resourceMiddlewareFunctions: WeakMap<
+    ts.Identifier,
+    ts.FunctionLikeDeclaration
+  >;
   taint: FlowAnalysis;
   sensitive: FlowAnalysis;
   /** Transitive content digests for each file's resolved local import closure. */
@@ -2510,9 +2565,82 @@ export function createAstProjectAnalysis(
     adjacency.set(input.filePath, dependencies);
   }
   const dependencyDigests = transitiveImportDigests(inputs, adjacency);
+  const resourceMiddlewareFunctions = new WeakMap<
+    ts.Identifier,
+    ts.FunctionLikeDeclaration
+  >();
+  const routeMethods = new Set([
+    'get',
+    'post',
+    'put',
+    'patch',
+    'delete',
+    'all'
+  ]);
+  const resolveFunctionDeclaration = (
+    expression: ts.Identifier
+  ): ts.FunctionLikeDeclaration | undefined => {
+    let symbol = checker.getSymbolAtLocation(expression);
+    if (symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0) {
+      try {
+        symbol = checker.getAliasedSymbol(symbol);
+      } catch {
+        return undefined;
+      }
+    }
+    const declarations = symbol?.getDeclarations() ?? [];
+    if (declarations.length !== 1) return undefined;
+    const declaration = declarations[0];
+    if (
+      declaration &&
+      ts.isFunctionLike(declaration) &&
+      'body' in declaration &&
+      declaration.body
+    )
+      return declaration;
+    if (declaration && ts.isVariableDeclaration(declaration)) {
+      const initializer = declaration.initializer;
+      if (
+        initializer &&
+        (ts.isArrowFunction(initializer) ||
+          ts.isFunctionExpression(initializer))
+      )
+        return initializer;
+    }
+    return undefined;
+  };
+  for (const sourceFile of parsedFiles) {
+    const collectMiddleware = (node: ts.Node): void => {
+      if (ts.isCallExpression(node)) {
+        const method = ts.isPropertyAccessExpression(node.expression)
+          ? node.expression.name.text.toLowerCase()
+          : ts.isIdentifier(node.expression)
+            ? node.expression.text.toLowerCase()
+            : '';
+        if (routeMethods.has(method)) {
+          const handlerIndex = node.arguments.findIndex(
+            (argument) =>
+              ts.isArrowFunction(argument) || ts.isFunctionExpression(argument)
+          );
+          for (const argument of node.arguments.slice(
+            0,
+            handlerIndex < 0 ? undefined : handlerIndex
+          )) {
+            if (!ts.isIdentifier(argument)) continue;
+            const declaration = resolveFunctionDeclaration(argument);
+            if (declaration)
+              resourceMiddlewareFunctions.set(argument, declaration);
+          }
+        }
+      }
+      ts.forEachChild(node, collectMiddleware);
+    };
+    collectMiddleware(sourceFile);
+  }
   return {
     sourceFiles,
     scopes,
+    resourceMiddlewareFunctions,
     taint: collectTaintedNames(
       parsedFiles,
       scopes,
@@ -3154,6 +3282,41 @@ function htmlSink(node: ts.Node): boolean {
   return false;
 }
 
+/** Recognizes only explicit HTML-context encoders at HTML-writing sinks. */
+function isHtmlEscaped(expression: ts.Expression): boolean {
+  let current = expression;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isNonNullExpression(current) ||
+    ts.isSatisfiesExpression(current)
+  )
+    current = current.expression;
+  if (!ts.isCallExpression(current)) return false;
+  const target = current.expression;
+  const name = ts.isPropertyAccessExpression(target)
+    ? target.name.text.toLowerCase()
+    : ts.isIdentifier(target)
+      ? target.text.toLowerCase()
+      : '';
+  if (
+    [
+      'escapehtml',
+      'escapehtmlentities',
+      'encodehtmlentities',
+      'sanitizehtml'
+    ].includes(name)
+  )
+    return true;
+  return (
+    name === 'sanitize' &&
+    ts.isPropertyAccessExpression(target) &&
+    ts.isIdentifier(target.expression) &&
+    target.expression.text === 'DOMPurify'
+  );
+}
+
 function isFileSystemSinkCall(call: ts.CallExpression, scope: Scope): boolean {
   const target = call.expression;
   if (ts.isIdentifier(target))
@@ -3172,6 +3335,175 @@ function isFileSystemSinkCall(call: ts.CallExpression, scope: Scope): boolean {
   );
 }
 
+function unwrapExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isAsExpression(current) ||
+    ts.isTypeAssertionExpression(current) ||
+    ts.isNonNullExpression(current) ||
+    ts.isSatisfiesExpression(current)
+  )
+    current = current.expression;
+  return current;
+}
+
+function failClosed(statement: ts.Statement): boolean {
+  if (ts.isThrowStatement(statement) || ts.isReturnStatement(statement))
+    return true;
+  if (ts.isBlock(statement)) {
+    const last = statement.statements.at(-1);
+    return last ? failClosed(last) : false;
+  }
+  if (ts.isIfStatement(statement))
+    return Boolean(
+      statement.elseStatement &&
+      failClosed(statement.thenStatement) &&
+      failClosed(statement.elseStatement)
+    );
+  return false;
+}
+
+function literalHostAllowlist(expression: ts.Expression): boolean {
+  const value = unwrapExpression(expression);
+  if (
+    !ts.isArrayLiteralExpression(value) ||
+    value.elements.length === 0 ||
+    !value.elements.every((element) => ts.isStringLiteral(element))
+  )
+    return false;
+  return value.elements.every((element) => {
+    if (!ts.isStringLiteral(element)) return false;
+    const host = element.text.trim().toLowerCase().replace(/\.$/u, '');
+    return (
+      host.length > 0 &&
+      !host.includes('*') &&
+      !isIP(host.replace(/^\[|\]$/gu, '')) &&
+      host !== 'localhost' &&
+      !host.endsWith('.localhost') &&
+      !host.endsWith('.local') &&
+      !host.endsWith('.internal')
+    );
+  });
+}
+
+function hostAllowlistGuard(
+  statement: ts.IfStatement,
+  candidate: ts.Expression
+): boolean {
+  const condition = unwrapExpression(statement.expression);
+  if (
+    !ts.isPrefixUnaryExpression(condition) ||
+    condition.operator !== ts.SyntaxKind.ExclamationToken
+  )
+    return false;
+  const denied = statement.thenStatement;
+  if (!failClosed(denied)) return false;
+  const check = unwrapExpression(condition.operand);
+  if (!ts.isCallExpression(check) || check.arguments.length !== 1) return false;
+  const member = check.expression;
+  if (
+    !ts.isPropertyAccessExpression(member) ||
+    !['includes', 'has'].includes(member.name.text)
+  )
+    return false;
+  if (!literalHostAllowlist(member.expression)) return false;
+  const hostArgument = check.arguments[0];
+  if (!hostArgument) return false;
+  const host = unwrapExpression(hostArgument);
+  if (!ts.isPropertyAccessExpression(host) || host.name.text !== 'hostname')
+    return false;
+  const candidateValue = unwrapExpression(candidate);
+  const candidateHost =
+    ts.isPropertyAccessExpression(candidateValue) &&
+    ['href', 'url'].includes(candidateValue.name.text.toLowerCase())
+      ? candidateValue.expression
+      : candidateValue;
+  return (
+    candidateHost.getText() === unwrapExpression(host.expression).getText()
+  );
+}
+
+function rootIdentifier(expression: ts.Expression): ts.Identifier | undefined {
+  let current = unwrapExpression(expression);
+  while (
+    ts.isPropertyAccessExpression(current) ||
+    ts.isElementAccessExpression(current)
+  )
+    current = current.expression;
+  return ts.isIdentifier(current) ? current : undefined;
+}
+
+function mutatedBetween(
+  ownerBody: ts.Node,
+  expression: ts.Expression,
+  start: number,
+  end: number
+): boolean {
+  const root = rootIdentifier(expression);
+  if (!root) return false;
+  let mutated = false;
+  const visit = (node: ts.Node): void => {
+    if (mutated || (node !== ownerBody && ts.isFunctionLike(node))) return;
+    if (node.getStart() > start && node.getEnd() < end) {
+      if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+        rootIdentifier(node.left)?.text === root.text
+      ) {
+        mutated = true;
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(ownerBody);
+  return mutated;
+}
+
+function redirectsBlocked(call: ts.CallExpression): boolean {
+  const options = call.arguments[1];
+  if (!options || !ts.isObjectLiteralExpression(options)) return false;
+  return options.properties.some(
+    (property) =>
+      ts.isPropertyAssignment(property) &&
+      propertyName(property.name) === 'redirect' &&
+      ts.isStringLiteral(property.initializer) &&
+      property.initializer.text === 'error'
+  );
+}
+
+/** Accepts a literal host allowlist only when its rejection branch exits and
+ * Fetch is configured to fail on redirects, which could otherwise leave the
+ * checked host. Dynamic policies remain review candidates. */
+function hasVerifiedFetchHostAllowlist(
+  call: ts.CallExpression,
+  candidate: ts.Expression
+): boolean {
+  if (!redirectsBlocked(call)) return false;
+  let owner = call.parent;
+  while (owner && !ts.isFunctionLike(owner)) owner = owner.parent;
+  if (!owner || !('body' in owner) || !owner.body) return false;
+  const ownerBody = owner.body;
+  let verified = false;
+  const visit = (node: ts.Node): void => {
+    if (verified || (node !== owner && ts.isFunctionLike(node))) return;
+    if (
+      ts.isIfStatement(node) &&
+      node.getEnd() < call.getStart() &&
+      hostAllowlistGuard(node, candidate) &&
+      !mutatedBetween(ownerBody, candidate, node.getEnd(), call.getStart())
+    ) {
+      verified = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(ownerBody);
+  return verified;
+}
+
 function sourceSinkRule(
   node: ts.Node,
   scope: Scope,
@@ -3179,7 +3511,8 @@ function sourceSinkRule(
   callReturns: WeakMap<ts.CallExpression, FlowBinding>
 ): AstSecurityRule | undefined {
   if (htmlSink(node) && ts.isBinaryExpression(node)) {
-    return isTainted(node.right, scope, tainted, callReturns)
+    return isTainted(node.right, scope, tainted, callReturns) &&
+      !isHtmlEscaped(node.right)
       ? astSecurityRules.crossSiteScripting
       : undefined;
   }
@@ -3251,7 +3584,8 @@ function sourceSinkRule(
       (method === 'fetch' ||
         ['axios', 'http', 'https', 'got', 'request', 'client'].includes(
           receiver ?? ''
-        ))
+        )) &&
+      !hasVerifiedFetchHostAllowlist(node, first)
     ) {
       return astSecurityRules.serverSideRequestForgery;
     }
@@ -3262,7 +3596,11 @@ function sourceSinkRule(
   ) {
     const htmlArgument =
       method === 'insertAdjacentHTML' ? node.arguments[1] : first;
-    if (htmlArgument && isTainted(htmlArgument, scope, tainted, callReturns))
+    if (
+      htmlArgument &&
+      isTainted(htmlArgument, scope, tainted, callReturns) &&
+      !isHtmlEscaped(htmlArgument)
+    )
       return astSecurityRules.crossSiteScripting;
   }
   if (
@@ -3417,7 +3755,13 @@ export function analyzeAstSource(
 
   return [
     ...findings,
-    ...analyzeAuthorizationSource(filePath, content, sourceFile),
+    ...analyzeAuthorizationSource(
+      filePath,
+      content,
+      sourceFile,
+      project ? [...project.sourceFiles.values()] : [],
+      project?.resourceMiddlewareFunctions
+    ),
     ...analyzeConcurrencySource(filePath, content, sourceFile)
   ];
 }

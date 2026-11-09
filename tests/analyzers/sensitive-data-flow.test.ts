@@ -127,6 +127,25 @@ export async function handler() {
     expect(JSON.stringify(findings)).not.toContain('email');
   });
 
+  it('tracks sensitive request destructuring and unknown serializers without leaking fields', () => {
+    const findings = analyzeAstSource(
+      'src/profile.ts',
+      [
+        'async function handler(req: RequestLike) {',
+        '  const { email } = req.body;',
+        '  res.json(externalSerialize({ ...{ email } }));',
+        '  logger.info(safeSerialize(process.env.API_TOKEN));',
+        '}'
+      ].join('\n')
+    ).filter((item) => item.ruleId === 'TLP-DATA-001');
+    expect(findings.map((item) => item.metadata?.sinkClass)).toEqual([
+      'response',
+      'log'
+    ]);
+    expect(JSON.stringify(findings)).not.toContain('email');
+    expect(JSON.stringify(findings)).not.toContain('API_TOKEN');
+  });
+
   it('reports credential flows to explicit file, browser and database storage sinks', () => {
     const findings = analyzeAstSource(
       'src/storage.ts',

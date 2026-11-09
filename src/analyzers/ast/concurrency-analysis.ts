@@ -54,6 +54,32 @@ function methodName(call: ts.CallExpression): string | undefined {
       : undefined;
 }
 
+function propertyName(name: ts.PropertyName): string | undefined {
+  return ts.isIdentifier(name) || ts.isStringLiteral(name)
+    ? name.text
+    : undefined;
+}
+
+function isDeclarationIdentifier(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  return (
+    (ts.isVariableDeclaration(parent) && parent.name === node) ||
+    (ts.isParameter(parent) && parent.name === node) ||
+    (ts.isFunctionDeclaration(parent) && parent.name === node) ||
+    (ts.isFunctionExpression(parent) && parent.name === node) ||
+    (ts.isClassDeclaration(parent) && parent.name === node) ||
+    (ts.isClassExpression(parent) && parent.name === node) ||
+    (ts.isTypeParameterDeclaration(parent) && parent.name === node) ||
+    (ts.isImportClause(parent) && parent.name === node) ||
+    (ts.isImportSpecifier(parent) && parent.name === node) ||
+    (ts.isNamespaceImport(parent) && parent.name === node) ||
+    (ts.isImportEqualsDeclaration(parent) && parent.name === node) ||
+    (ts.isEnumDeclaration(parent) && parent.name === node) ||
+    (ts.isModuleDeclaration(parent) && parent.name === node) ||
+    (ts.isCatchClause(parent) && parent.variableDeclaration?.name === node)
+  );
+}
+
 function callArgument(call: ts.CallExpression): ts.Expression | undefined {
   return call.arguments[0];
 }
@@ -103,23 +129,73 @@ function mentionsIdentifier(node: ts.Node, name: string): boolean {
   return found;
 }
 
-function containsVersionPredicate(node: ts.Node): boolean {
+function containsVersionPredicate(node: ts.Node, entityName: string): boolean {
   let found = false;
   const walk = (child: ts.Node): void => {
     if (found) return;
     if (
       ts.isPropertyAssignment(child) &&
-      (ts.isIdentifier(child.name) || ts.isStringLiteral(child.name)) &&
-      /^(?:version|revision|etag|updatedAt|rowVersion)$/iu.test(child.name.text)
+      propertyName(child.name) === 'where'
     ) {
-      found = true;
-      return;
+      const where = child.initializer;
+      if (ts.isObjectLiteralExpression(where)) {
+        for (const predicate of where.properties) {
+          if (!ts.isPropertyAssignment(predicate)) continue;
+          const key = propertyName(predicate.name);
+          if (
+            key &&
+            /^(?:version|revision|etag|updatedAt|rowVersion)$/iu.test(key) &&
+            ts.isPropertyAccessExpression(predicate.initializer) &&
+            predicate.initializer.name.text === key &&
+            ts.isIdentifier(predicate.initializer.expression) &&
+            predicate.initializer.expression.text === entityName
+          ) {
+            found = true;
+            return;
+          }
+        }
+      }
     }
     if (child !== node && ts.isFunctionLike(child)) return;
     ts.forEachChild(child, walk);
   };
   walk(node);
   return found;
+}
+
+function isSerializableTransaction(write: ts.Node): boolean {
+  for (
+    let current: ts.Node | undefined = write;
+    current;
+    current = current.parent
+  ) {
+    if (!ts.isFunctionLike(current) || !('body' in current) || !current.body)
+      continue;
+    const call = current.parent;
+    if (
+      !ts.isCallExpression(call) ||
+      !call.arguments.includes(current as ts.Expression) ||
+      !['transaction', '$transaction'].includes(methodName(call) ?? '')
+    )
+      continue;
+    const options = call.arguments[1];
+    if (!options || !ts.isObjectLiteralExpression(options)) continue;
+    return options.properties.some((property) => {
+      if (
+        !ts.isPropertyAssignment(property) ||
+        propertyName(property.name) !== 'isolationLevel'
+      )
+        return false;
+      const value = property.initializer;
+      if (ts.isStringLiteral(value))
+        return value.text.toLowerCase() === 'serializable';
+      return (
+        ts.isPropertyAccessExpression(value) &&
+        value.name.text.toLowerCase() === 'serializable'
+      );
+    });
+  }
+  return false;
 }
 
 function hasAtomicOperation(node: ts.Node): boolean {
@@ -163,14 +239,7 @@ const concurrentSideEffectMethods = new Set([
   'write',
   'writeFile'
 ]);
-const concurrencyLimitHelpers = new Set([
-  'limit',
-  'pLimit',
-  'pMap',
-  'mapLimit',
-  'runLimited',
-  'withConcurrency'
-]);
+const MAX_RECOGNIZED_POOL_CONCURRENCY = 32;
 
 function hasStaticArrayBound(mapCall: ts.CallExpression): boolean {
   const receiver = ts.isPropertyAccessExpression(mapCall.expression)
@@ -193,35 +262,233 @@ function hasStaticArrayBound(mapCall: ts.CallExpression): boolean {
   );
 }
 
-function hasSideEffectingCallback(callback: ts.Expression): boolean {
-  if (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback))
-    return false;
+type FunctionIndex = ReadonlyMap<string, readonly ts.FunctionLikeDeclaration[]>;
+type BoundedPools = ReadonlyMap<string, ts.VariableDeclaration>;
+type SideEffectMemo = Map<ts.FunctionLikeDeclaration, boolean>;
+
+function callbackFunction(
+  callback: ts.Expression,
+  functions: FunctionIndex
+): ts.FunctionLikeDeclaration | undefined {
+  if (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))
+    return callback;
+  if (ts.isIdentifier(callback)) {
+    const declarations = functions.get(callback.text);
+    if (declarations?.length === 1) return declarations[0];
+  }
+  return undefined;
+}
+
+function numericConcurrency(expression: ts.Expression | undefined): boolean {
+  return Boolean(
+    expression &&
+    ts.isNumericLiteral(expression) &&
+    Number.isSafeInteger(Number(expression.text)) &&
+    Number(expression.text) > 0 &&
+    Number(expression.text) <= MAX_RECOGNIZED_POOL_CONCURRENCY
+  );
+}
+
+function collectBoundedPools(
+  sourceFile: ts.SourceFile
+): Map<string, ts.VariableDeclaration> {
+  const pLimitFactories = new Set<string>();
+  const trustedFactoryBindings = new Set<ts.Identifier>();
+  for (const statement of sourceFile.statements) {
+    if (
+      !ts.isImportDeclaration(statement) ||
+      !ts.isStringLiteral(statement.moduleSpecifier) ||
+      !statement.importClause
+    )
+      continue;
+    const module = statement.moduleSpecifier.text;
+    if (module === 'p-limit' && statement.importClause.name) {
+      pLimitFactories.add(statement.importClause.name.text);
+      trustedFactoryBindings.add(statement.importClause.name);
+    }
+    const bindings = statement.importClause.namedBindings;
+    if (!bindings || !ts.isNamedImports(bindings)) continue;
+    for (const binding of bindings.elements) {
+      if (binding.isTypeOnly) continue;
+      const imported = binding.propertyName?.text ?? binding.name.text;
+      if (module === 'p-limit' && ['default', 'pLimit'].includes(imported)) {
+        pLimitFactories.add(binding.name.text);
+        trustedFactoryBindings.add(binding.name);
+      }
+    }
+  }
+
+  const declarations = new Map<string, ts.VariableDeclaration[]>();
+  const unsafeUses = new Set<string>();
+  const shadowedFactories = new Set<string>();
+  const collect = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+      const values = declarations.get(node.name.text) ?? [];
+      values.push(node);
+      declarations.set(node.name.text, values);
+    }
+    if (ts.isIdentifier(node)) {
+      const parent = node.parent;
+      const declarationName =
+        ts.isVariableDeclaration(parent) && parent.name === node;
+      const directCall =
+        ts.isCallExpression(parent) && parent.expression === node;
+      if (!declarationName && !directCall) unsafeUses.add(node.text);
+      if (
+        isDeclarationIdentifier(node) &&
+        pLimitFactories.has(node.text) &&
+        !trustedFactoryBindings.has(node)
+      )
+        shadowedFactories.add(node.text);
+    }
+    ts.forEachChild(node, collect);
+  };
+  collect(sourceFile);
+
+  const limiters = new Map<string, ts.VariableDeclaration>();
+  for (const [name, values] of declarations) {
+    const declaration = values[0];
+    const initializer = declaration?.initializer;
+    const declarationList = declaration?.parent;
+    if (
+      values.length !== 1 ||
+      !declaration ||
+      !initializer ||
+      !ts.isCallExpression(initializer) ||
+      !ts.isIdentifier(initializer.expression) ||
+      !pLimitFactories.has(initializer.expression.text) ||
+      shadowedFactories.has(initializer.expression.text) ||
+      !numericConcurrency(initializer.arguments[0]) ||
+      !declarationList ||
+      !ts.isVariableDeclarationList(declarationList) ||
+      (declarationList.flags & ts.NodeFlags.Const) === 0
+    )
+      continue;
+    if (!unsafeUses.has(name)) limiters.set(name, declaration);
+  }
+  return limiters;
+}
+
+function isWithinDeclarationScope(
+  declaration: ts.VariableDeclaration,
+  use: ts.Node
+): boolean {
+  let scope: ts.Node | undefined = declaration.parent;
+  while (
+    scope &&
+    !ts.isSourceFile(scope) &&
+    !ts.isBlock(scope) &&
+    !ts.isFunctionLike(scope)
+  )
+    scope = scope.parent;
+  if (!scope || declaration.getStart() >= use.getStart()) return false;
+  for (
+    let current: ts.Node | undefined = use;
+    current;
+    current = current.parent
+  )
+    if (current === scope) return true;
+  return false;
+}
+
+function isBoundedPoolCall(
+  call: ts.CallExpression,
+  limiters: BoundedPools
+): boolean {
+  if (ts.isIdentifier(call.expression)) {
+    const pool = limiters.get(call.expression.text);
+    if (pool && isWithinDeclarationScope(pool, call)) return true;
+  }
+  return false;
+}
+
+function hasSideEffectingCallback(
+  callback: ts.Expression,
+  functions: FunctionIndex,
+  pools: BoundedPools,
+  memo: SideEffectMemo,
+  visited = new Set<ts.FunctionLikeDeclaration>(),
+  depth = 0
+): boolean {
+  const declaration = callbackFunction(callback, functions);
+  if (!declaration || !('body' in declaration) || !declaration.body)
+    return true;
+  const cached = memo.get(declaration);
+  if (cached !== undefined) return cached;
+  if (visited.has(declaration) || depth >= 16) return true;
+  visited.add(declaration);
   let sideEffect = false;
-  let limited = false;
   const walk = (node: ts.Node): void => {
-    if (sideEffect || limited) return;
-    if (node !== callback && ts.isFunctionLike(node)) return;
+    if (sideEffect) return;
+    if (node !== declaration && ts.isFunctionLike(node)) {
+      if (
+        ts.isCallExpression(node.parent) &&
+        node.parent.arguments.includes(node as ts.Expression)
+      )
+        return; // The parent call examines callbacks without executing them.
+      return;
+    }
     if (ts.isCallExpression(node)) {
       const name = methodName(node);
-      if (name && concurrencyLimitHelpers.has(name)) {
-        limited = true;
+      if (name && concurrentSideEffectMethods.has(name)) {
+        sideEffect = true;
         return;
       }
-      if (name && concurrentSideEffectMethods.has(name)) {
+      if (isBoundedPoolCall(node, pools)) {
+        for (const argument of node.arguments)
+          if (
+            !ts.isArrowFunction(argument) &&
+            !ts.isFunctionExpression(argument)
+          )
+            walk(argument);
+        return;
+      }
+      for (const argument of node.arguments) {
+        if (
+          callbackFunction(argument, functions) &&
+          hasSideEffectingCallback(
+            argument,
+            functions,
+            pools,
+            memo,
+            visited,
+            depth + 1
+          )
+        ) {
+          sideEffect = true;
+          return;
+        }
+      }
+      if (
+        ts.isIdentifier(node.expression) &&
+        hasSideEffectingCallback(
+          node.expression,
+          functions,
+          pools,
+          memo,
+          visited,
+          depth + 1
+        )
+      ) {
         sideEffect = true;
         return;
       }
     }
     ts.forEachChild(node, walk);
   };
-  walk(callback.body);
-  return sideEffect && !limited;
+  walk(declaration.body);
+  visited.delete(declaration);
+  memo.set(declaration, sideEffect);
+  return sideEffect;
 }
 
 function findUnboundedPromiseAll(
   sourceFile: ts.SourceFile,
   node: ts.Node,
-  findings: Finding[]
+  findings: Finding[],
+  functions: FunctionIndex,
+  pools: BoundedPools,
+  memo: SideEffectMemo
 ): void {
   if (!ts.isCallExpression(node)) return;
   const target = node.expression;
@@ -237,7 +504,8 @@ function findUnboundedPromiseAll(
     return;
   if (hasStaticArrayBound(mapped)) return;
   const callback = mapped.arguments[0];
-  if (!callback || !hasSideEffectingCallback(callback)) return;
+  if (!callback || !hasSideEffectingCallback(callback, functions, pools, memo))
+    return;
   findings.push(
     createFinding(sourceFile, node, 'unbounded-concurrent-mutation')
   );
@@ -376,7 +644,11 @@ function findReadCheckWrite(
           )
       );
       for (const write of writes) {
-        if (containsVersionPredicate(write) || hasAtomicOperation(write))
+        if (
+          containsVersionPredicate(write, entityName) ||
+          hasAtomicOperation(write) ||
+          isSerializableTransaction(write)
+        )
           continue;
         findings.push(
           createFinding(sourceFile, write, 'non-atomic-read-check-write')
@@ -404,6 +676,29 @@ export function analyzeConcurrencySource(
   const findings: Finding[] = [];
   const factsByFunction = new Map<ts.Node, FunctionFacts>();
   const topLevelFacts = emptyFacts();
+  const functionsByName = new Map<string, ts.FunctionLikeDeclaration[]>();
+  const collectFunctions = (node: ts.Node): void => {
+    if (ts.isFunctionDeclaration(node) && node.name && node.body) {
+      const declarations = functionsByName.get(node.name.text) ?? [];
+      declarations.push(node);
+      functionsByName.set(node.name.text, declarations);
+    } else if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer &&
+      (ts.isArrowFunction(node.initializer) ||
+        ts.isFunctionExpression(node.initializer))
+    ) {
+      const declarations = functionsByName.get(node.name.text) ?? [];
+      declarations.push(node.initializer);
+      functionsByName.set(node.name.text, declarations);
+    }
+    ts.forEachChild(node, collectFunctions);
+  };
+  collectFunctions(sourceFile);
+  const functions: FunctionIndex = functionsByName;
+  const limiters = collectBoundedPools(sourceFile);
+  const sideEffectMemo: SideEffectMemo = new Map();
   const functionStack: ts.Node[] = [];
   const visit = (node: ts.Node): void => {
     const startsFunction =
@@ -418,7 +713,14 @@ export function analyzeConcurrencySource(
       topLevelFacts;
     if (ts.isCallExpression(node)) {
       facts.calls.push(node);
-      findUnboundedPromiseAll(sourceFile, node, findings);
+      findUnboundedPromiseAll(
+        sourceFile,
+        node,
+        findings,
+        functions,
+        limiters,
+        sideEffectMemo
+      );
     }
     if (ts.isVariableDeclaration(node)) facts.declarations.push(node);
     if (ts.isIfStatement(node)) facts.conditionals.push(node);
