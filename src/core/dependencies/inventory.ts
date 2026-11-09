@@ -377,7 +377,10 @@ export async function readNpmDependencyGraph(
       continue;
     }
     const name = entry.name ?? packageNameFromLockPath(installPath);
-    if (!name) continue;
+    if (!name) {
+      warnings.push('npm-lockfile-package-name-unresolved');
+      continue;
+    }
     const resolution = sanitizedNpmResolution(entry.resolved);
 
     identitiesByPath.set(installPath, {

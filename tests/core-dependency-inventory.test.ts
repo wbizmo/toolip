@@ -47,6 +47,26 @@ describe('npm dependency inventory', () => {
     }
   });
 
+  it('keeps prototype-like lock paths inert and warns for unidentified records', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-inventory-proto-')
+    );
+    try {
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        '{"lockfileVersion":3,"packages":{"":{"dependencies":{}},"__proto__":{"version":"1.0.0"}}}'
+      );
+      const graph = await readNpmDependencyGraph(root);
+
+      expect(graph.complete).toBe(false);
+      expect(graph.warnings).toContain('npm-lockfile-package-name-unresolved');
+      expect(graph.packages).toEqual([]);
+      expect(Object.prototype).not.toHaveProperty('version');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects range-shaped lock versions and removes credentials from resolved URLs', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-inventory-origin-')
