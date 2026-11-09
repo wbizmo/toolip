@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, truncate, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -16,6 +16,37 @@ afterEach(async () => {
 });
 
 describe('signed report verification command', () => {
+  it('rejects report files over the bounded input size before parsing', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-report-limit-'));
+    roots.push(root);
+    const keyPair = generateKeyPairSync('ed25519');
+    const publicKeyPath = path.join(root, 'trusted.pub');
+    const reportPath = path.join(root, 'oversized.json');
+    await writeFile(
+      publicKeyPath,
+      keyPair.publicKey.export({ type: 'spki', format: 'pem' }),
+      { mode: 0o600 }
+    );
+    await writeFile(reportPath, '{}');
+    await truncate(reportPath, 8 * 1024 * 1024 + 1);
+
+    await expect(
+      createProgram().parseAsync([
+        'node',
+        'toolip',
+        'report',
+        'verify',
+        reportPath,
+        '--public-key',
+        publicKeyPath,
+        '--key-id',
+        'trusted-key',
+        '--project-id',
+        'org/repository'
+      ])
+    ).rejects.toMatchObject({ code: 'REPORT_INPUT_INVALID' });
+  });
+
   it('verifies trusted report evidence and rejects a different scanner digest', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-report-cli-'));
     roots.push(root);
