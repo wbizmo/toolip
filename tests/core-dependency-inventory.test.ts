@@ -21,6 +21,12 @@ describe('npm dependency inventory', () => {
             'node_modules/broken': { version: '1.0.0', dependencies: 'bad' }
           }
         },
+        {
+          lockfileVersion: 3,
+          packages: {
+            'node_modules/broken': { name: 7, version: '1.0.0' }
+          }
+        },
         { lockfileVersion: 3, packages: { 'node_modules/broken': null } }
       ];
 

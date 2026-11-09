@@ -124,7 +124,7 @@ function validPackageLockEntry(value: unknown): value is PackageLockEntry {
     )
       return false;
   }
-  for (const field of ['version', 'resolved', 'integrity']) {
+  for (const field of ['name', 'version', 'resolved', 'integrity']) {
     if (value[field] !== undefined && typeof value[field] !== 'string')
       return false;
   }
