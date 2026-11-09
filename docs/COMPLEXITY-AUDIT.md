@@ -13,7 +13,10 @@ they are not a claim of deterministic worst-case constant-time hashing.
 | `F`      | discovered or changed file entries                                         |
 | `B`      | accepted source, lockfile, Git-object and response bytes, stated per stage |
 | `V`, `E` | dependency or execution graph vertices and edges                           |
+| `N`      | TypeScript syntax-tree nodes traversed                                     |
 | `S`      | AST symbols and references                                                 |
+| `A`, `W` | pending local aliases and assignment-write events                          |
+| `U`      | distinct identifiers with one or more assignment writes                    |
 | `M`      | secret matches                                                             |
 | `R`      | findings and serialized report bytes, as applicable                        |
 | `C`      | bounded concurrent workers or provider requests                            |
@@ -125,10 +128,17 @@ memory proof, cross-platform result, or release qualification. The legacy
 secret-location comparison intentionally stops at 10k because its prior
 algorithm is quadratic.
 
-The new epic requires independent variation of file count and total bytes,
-graph density, AST/rule counts and concurrency; p50/p95 wall time, files/s,
-MiB/s, CPU, peak RSS/heap, I/O, cache/queue pressure, coverage and planted
-finding accuracy; and exact baseline/artifact identity. The dedicated 100k and
+The scale harness now exposes independent controls for file count, requested
+source-byte target, exported symbols, up to eight planted AST rule IDs, seeded
+files, simultaneous scorecards and graph fanout. It records exact fixture
+hashes, planted-finding counts, coverage, CPU, heap/RSS samples and cache
+counters. A small 4-file/two-scorecard and 20-node/fanout-four smoke is preserved
+in `docs/benchmarks/toolip-v3.2.1-batch09-harness-smoke-2026-11-09-linux-node24.jsonl`.
+The scorecard API does not stream findings, so time-to-first-finding remains
+unavailable; simultaneous scorecards do not vary the internal AST worker pool.
+The smoke does not complete the independent 1k/10k/50k dimensional campaign or
+provide p50/p95. Whole-codebase CPU/RSS/input-I/O profiles, queue pressure,
+cross-platform runs and measured budgets remain open. The dedicated 100k and
 250k campaign must wait until combined Batches 07–16 are accepted and merged.
 1M/2M qualification and bounded 5M/10M stress attempts belong to final release
 qualification, not this batch.
@@ -419,3 +429,80 @@ lifecycle scripts remain disabled and the test command runs only after the
 install gate. Real npm, pnpm, Yarn Classic and Yarn Berry fixtures exercise
 these boundaries. These bounds do not turn package-manager processes into an
 OS sandbox; provider/platform and independent security acceptance remain open.
+
+### Batch 09 AST binding accuracy follow-up (2026-11-09)
+
+`collectBindings` now records identifier assignments during its existing
+syntax-tree walk. Straight-line writes resolve at each call's source position;
+conditional writes and nested-function writes remain low-confidence dynamic
+candidates only when a child-process target is possible. The pass sorts `W`
+write events in `O(W log W)` time and retains `O(W)` event state. For `Q`
+binding lookups it adds `O(Q log W)` expected lookup time, with a 256-step cap
+on chained alias resolution, alongside the existing `O(N + A)` AST walk and
+alias queue (`N` syntax nodes, `A` pending aliases). Additional peak state is
+`O(W + A)`; source text and AST retention remain governed by the existing
+snapshot/worker limits. A 300-write adversarial chain returns an unresolved
+candidate instead of growing the JavaScript call stack. No 50k run was repeated
+for this accuracy correction; it does not claim a performance improvement.
+
+The fixed AST corpus now has 19 labeled synthetic cases across shell, SQL,
+SSRF, XSS, prototype mutation and route-authorization heuristics: ten positive
+and nine negative. The focused run has zero false positives among the nine
+negative fixtures and zero false negatives among the ten positive fixtures.
+These fixed-fixture counts are not a production precision estimate. Inline and
+worker parity includes calls before/after writes and conditional alias writes.
+The new harness dimension smoke is recorded in `docs/BENCHMARKS.md`; it is not
+the required independent 1k/10k/50k campaign. Existing large raw benchmark rows
+remain unchanged; the 100k/250k work stays beyond this PR's phase boundary.
+
+### Snapshot-backed module re-export resolution (2026-11-09)
+
+For `T` top-level statements, `I` imported names, `X` named/star exports and
+`L` local declarations, the project resolver builds static import/export/local
+indexes and module-local write events in `O(N + T + I + X + L + W log W)`
+time and `O(I + X + L + W)` additional space, where `N` is traversed AST nodes
+and `W` is indexed write events. The write scan propagates conditional and
+closure context once through the bounded tree instead of walking each
+assignment's ancestor chain separately.
+Before this index, resolving `Q` aliases through modules with `T` statements
+could rescan those statements for each hop, giving `O(QDT)` work for maximum
+re-export depth `D`. The index removes those repeated syntax scans.
+Named ESM re-exports, `export *`, local aliases and static CommonJS
+`exports.name`/`module.exports` assignments are resolved only against the
+captured source files. Default ESM bindings and default exports are included;
+module-local writes are indexed only after lexical bindings exist, avoiding
+cross-scope name collisions. For `Q` distinct `(source, export-name)` queries over
+`V` files and `E` re-export edges, memoized resolution is expected
+`O(Q(V + E))` in the worst case before bounds; TypeScript module-path lookup
+cost is included per traversed edge. Resolution work is capped at 8,000,000
+steps, nesting at 256, and cached export results at 1,000,000 entries. The
+additional memo is therefore `O(min(QV, 1,000,000))` space beyond the index
+and write-event state. Exceeding the work or cache cap throws inside the
+killable project-analysis worker and produces
+incomplete AST coverage; an over-depth possible child-process alias returns a
+low-confidence unresolved candidate. These are explicit bounds, not a claim
+that the resolver always completes a 50k-file project. Focused tests cover
+multi-hop, star, default and namespace imports/exports, static CommonJS
+forwarding, mutable and conditional exported aliases, shadowed `exports`, a
+same-named local in an unrelated closure, a depth-over-limit chain, source
+locations, and worker/inline parity.
+
+The frozen resolver snapshot was run once at each scale on Linux x64 with Node
+24.22.1. Each cold full offline scorecard used 512-byte source files, three
+exported symbols per file, and eight planted AST rules in one file. All
+scorecards and coverage were complete, all eight planted findings were
+detected, and provider requests were zero. At 1k/10k/50k source files, wall
+times were 1.14/5.03/20.79 seconds and sampled process RSS peaks were
+394/633/967 MiB. The 50k run opened 50,003 files and read 25,600,244 bytes.
+Fixture SHA-256 values and CPU/heap/RSS measurements are in
+[`frozen resolver scale JSONL`](benchmarks/toolip-v3.2.1-batch09-module-index-frozen-scale-2026-11-09-linux-node24.jsonl).
+The artifact SHA-256 is
+`b3dbf3c93933f6f2086edf8dbf5e9d1052a8118e94f7dad06e933a9864bb5106`; its
+source/test/runner diff SHA-256 relative to PR head
+`3ce12f2948af4378e2dfd9845244f8a3afa976ec` is
+`2e68326c471fa713ebc60016962e96a8c31ae9dbb2cc9144c96f17dff8a1209e`.
+After collection, only source formatting, an unused-parameter removal and a
+test-helper safety cleanup changed; scanner behavior was unchanged. These are
+one cold sample per size, not repeated p50/p95 measurements, a memory bound, a
+cross-platform result, or release qualification. Earlier raw benchmark
+artifacts remain preserved and were not overwritten.

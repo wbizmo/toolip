@@ -104,12 +104,12 @@ export const astSecurityRules = {
   },
   dynamicCommandExecution: {
     id: 'TLP-AST-011',
-    title: 'Request data reaches a dynamic child-process method',
+    title: 'Unresolved child-process call target',
     category: 'dangerous-code',
     severity: 'medium',
     confidence: 'low',
     message:
-      'Request-derived data reaches a dynamically selected child-process method; the scanner cannot determine whether it invokes a shell.',
+      'A computed or conditionally reassigned call target may resolve to a child-process method; the scanner cannot determine whether it invokes a shell.',
     remediation:
       'Select a fixed child-process API and executable. Keep shell execution disabled and validate each argument.'
   },

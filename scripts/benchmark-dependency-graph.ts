@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { PerformanceObserver } from 'node:perf_hooks';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,6 +22,60 @@ import {
 } from '../src/core/secret-utils.js';
 
 const defaultSizes = [1_000, 10_000, 50_000];
+const defaultSourceBody =
+  'export const fixtureValue = "bounded-source-fixture";\n';
+function boundedEnvironmentInteger(
+  name: string,
+  fallback: number,
+  minimum: number,
+  maximum: number
+): number {
+  const raw = process.env[name];
+  const value = raw === undefined ? fallback : Number(raw);
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new Error(
+      `${name} must be an integer between ${minimum} and ${maximum}`
+    );
+  }
+  return value;
+}
+
+const sourceSymbolsPerFile = boundedEnvironmentInteger(
+  'TOOLIP_BENCHMARK_SYMBOLS_PER_FILE',
+  1,
+  1,
+  100
+);
+const sourceBytesPerFile = boundedEnvironmentInteger(
+  'TOOLIP_BENCHMARK_SOURCE_BYTES',
+  Buffer.byteLength(defaultSourceBody),
+  Buffer.byteLength('export const x=0;\n'),
+  4_096
+);
+const seededFindingCount = boundedEnvironmentInteger(
+  'TOOLIP_BENCHMARK_SEEDED_FINDINGS',
+  0,
+  0,
+  50_000
+);
+const benchmarkRuleCount = boundedEnvironmentInteger(
+  'TOOLIP_BENCHMARK_RULES',
+  1,
+  0,
+  8
+);
+const benchmarkConcurrency = boundedEnvironmentInteger(
+  'TOOLIP_BENCHMARK_CONCURRENT_SCANS',
+  2,
+  1,
+  4
+);
+const graphFanout = boundedEnvironmentInteger(
+  'TOOLIP_BENCHMARK_GRAPH_FANOUT',
+  2,
+  1,
+  8
+);
 const workerIndex = process.argv.indexOf('--worker');
 const workerFixture =
   workerIndex >= 0 ? process.argv[workerIndex + 1] : undefined;
@@ -50,6 +106,15 @@ async function measure<T>(
 ): Promise<Measurement<T>> {
   const before = process.memoryUsage();
   const cpuBefore = process.cpuUsage();
+  let gcCount = 0;
+  let gcDurationMs = 0;
+  const gcObserver = new PerformanceObserver((list) => {
+    for (const entry of list.getEntries()) {
+      gcCount += 1;
+      gcDurationMs += entry.duration;
+    }
+  });
+  gcObserver.observe({ entryTypes: ['gc'] });
   let heapPeakBytes = before.heapUsed;
   let rssPeakBytes = before.rss;
   const sample = (): void => {
@@ -64,6 +129,7 @@ async function measure<T>(
     const result = await operation();
     sample();
     const elapsed = performance.now() - started;
+    await new Promise<void>((resolve) => setImmediate(resolve));
     const cpu = process.cpuUsage(cpuBefore);
     const after = process.memoryUsage();
     return {
@@ -74,9 +140,12 @@ async function measure<T>(
       heapPeakBytes,
       rssDeltaBytes: after.rss - before.rss,
       rssPeakBytes,
+      gcCount,
+      gcDurationMs: Math.round(gcDurationMs * 100) / 100,
       result
     };
   } finally {
+    gcObserver.disconnect();
     clearInterval(timer);
   }
 }
@@ -94,6 +163,11 @@ function emit(
       size,
       pass,
       platform: process.platform,
+      architecture: process.arch,
+      osRelease: os.release(),
+      cpuModel: os.cpus()[0]?.model ?? 'unknown',
+      logicalCpuCount: os.availableParallelism(),
+      hostMemoryBytes: os.totalmem(),
       node: process.version,
       gitSha: process.env.GIT_COMMIT ?? 'working-tree',
       measurementScope:
@@ -104,6 +178,113 @@ function emit(
       ...data
     })}\n`
   );
+}
+
+const seededRuleIds = [
+  'TLP-AST-001',
+  'TLP-AST-002',
+  'TLP-AST-003',
+  'TLP-AST-004',
+  'TLP-AST-005',
+  'TLP-AST-006',
+  'TLP-AST-007',
+  'TLP-AST-008'
+] as const;
+const seededRuleSource = [
+  "eval('benchmark-seed');\n",
+  "new Function('return 1');\n",
+  "seededExec('benchmark-seed');\n",
+  "seededExecSync('benchmark-seed');\n",
+  'db.query(req.query.value);\n',
+  'fetch(req.query.url);\n',
+  'element.innerHTML = req.query.html;\n',
+  'Object.assign(target, req.body);\n'
+].slice(0, benchmarkRuleCount);
+const sourceDeclarations = Array.from(
+  { length: sourceSymbolsPerFile },
+  (_, symbol) => `export const fixtureValue${symbol} = ${symbol};\n`
+).join('');
+const childProcessImports =
+  benchmarkRuleCount >= 3
+    ? "import { exec as seededExec, execSync as seededExecSync } from 'node:child_process';\n"
+    : '';
+const sourceContentCache = new Map<string, string>();
+
+function sourceFileContent(index: number, incremental = false): string {
+  const seeded = index < seededFindingCount;
+  const cacheKey = `${seeded}:${incremental ? index : ''}`;
+  const cached = sourceContentCache.get(cacheKey);
+  if (cached) return cached;
+  const ruleLines = seeded ? seededRuleSource.join('') : '';
+  const imports = seeded && benchmarkRuleCount >= 3 ? childProcessImports : '';
+  const changed = incremental ? `// incremental revision ${index}\n` : '';
+  const prefix = `${sourceDeclarations}${imports}${ruleLines}${changed}`;
+  if (Buffer.byteLength(prefix) > 4_096) {
+    throw new Error(
+      'benchmark source dimensions exceed the 4,096-byte per-file scanner limit'
+    );
+  }
+  const prefixBytes = Buffer.byteLength(prefix);
+  const paddingBytes = sourceBytesPerFile - prefixBytes;
+  const content =
+    paddingBytes <= 0
+      ? prefix
+      : paddingBytes < 3
+        ? `${prefix}${' '.repeat(paddingBytes)}`
+        : `${prefix}//${'x'.repeat(paddingBytes - 3)}\n`;
+  if (Buffer.byteLength(content) > 4_096) {
+    throw new Error(
+      'benchmark source dimensions exceed the 4,096-byte per-file scanner limit'
+    );
+  }
+  sourceContentCache.set(cacheKey, content);
+  return content;
+}
+
+function sourceFixtureSha256(
+  size: number,
+  extraFiles: readonly { path: string; content: string }[] = [],
+  changedFile?: { index: number; content: string }
+): string {
+  const hash = createHash('sha256');
+  const update = (filePath: string, content: string): void => {
+    hash.update(filePath).update('\0').update(content).update('\0');
+  };
+  for (let index = 0; index < size; index += 1) {
+    const name = `source-${index.toString().padStart(6, '0')}.ts`;
+    update(
+      name,
+      changedFile?.index === index
+        ? changedFile.content
+        : sourceFileContent(index)
+    );
+  }
+  for (const file of [...extraFiles].sort((left, right) =>
+    left.path.localeCompare(right.path)
+  ))
+    update(file.path, file.content);
+  return hash.digest('hex');
+}
+
+function sourceFixtureBytes(size: number): number {
+  const seeded = Math.min(seededFindingCount, size);
+  const seededBytes = Buffer.byteLength(sourceFileContent(0));
+  const ordinaryBytes =
+    seeded < size ? Buffer.byteLength(sourceFileContent(seeded)) : 0;
+  return seeded * seededBytes + (size - seeded) * ordinaryBytes;
+}
+
+function countSeededRuleFindings(
+  findings: readonly { ruleId: string }[]
+): Record<string, number> {
+  const seededIds = new Set<string>(seededRuleIds.slice(0, benchmarkRuleCount));
+  const counts: Record<string, number> = {};
+  for (const ruleId of seededIds) counts[ruleId] = 0;
+  for (const finding of findings) {
+    if (seededIds.has(finding.ruleId))
+      counts[finding.ruleId] = (counts[finding.ruleId] ?? 0) + 1;
+  }
+  return counts;
 }
 
 async function benchmarkLockfile(
@@ -126,7 +307,7 @@ async function benchmarkLockfile(
       if (shape === 'wide') rootDependencies[name] = `1.${index % 100}.0`;
       const dependencies: Record<string, string> = {};
       if (shape === 'converging') {
-        for (const offset of [1, 2]) {
+        for (let offset = 1; offset <= graphFanout; offset += 1) {
           const child = index + offset;
           if (child < size) {
             dependencies[`fixture-${child.toString().padStart(6, '0')}`] =
@@ -156,10 +337,8 @@ async function benchmarkLockfile(
       lockfileVersion: 3,
       packages
     };
-    await writeFile(
-      path.join(root, 'package-lock.json'),
-      JSON.stringify(lockfile)
-    );
+    const lockfileText = JSON.stringify(lockfile);
+    await writeFile(path.join(root, 'package-lock.json'), lockfileText);
 
     for (const pass of ['cold', 'warm'] as const) {
       const measurement = await measure(() => buildDependencyTree(root));
@@ -177,8 +356,16 @@ async function benchmarkLockfile(
       emit(`npm-lock-${shape}`, size, pass, {
         ...measurement,
         result: measurement.result.summary,
+        fixtureSha256: createHash('sha256').update(lockfileText).digest('hex'),
+        graphFanout: shape === 'wide' ? 0 : graphFanout,
         filesOpened: 1,
-        graphEdges: shape === 'wide' ? size : Math.max(0, (size - 1) * 2)
+        graphEdges:
+          shape === 'wide'
+            ? size
+            : size <= graphFanout
+              ? (size * (size - 1)) / 2
+              : (size - graphFanout) * graphFanout +
+                (graphFanout * (graphFanout - 1)) / 2
       });
     }
   } finally {
@@ -187,7 +374,6 @@ async function benchmarkLockfile(
 }
 
 async function createSourceFixture(root: string, size: number): Promise<void> {
-  const body = 'export const fixtureValue = "bounded-source-fixture";\n';
   const batchSize = 128;
   for (let offset = 0; offset < size; offset += batchSize) {
     const end = Math.min(size, offset + batchSize);
@@ -195,7 +381,7 @@ async function createSourceFixture(root: string, size: number): Promise<void> {
       Array.from({ length: end - offset }, (_, relative) => {
         const index = offset + relative;
         const name = `source-${index.toString().padStart(6, '0')}.ts`;
-        return writeFile(path.join(root, name), body);
+        return writeFile(path.join(root, name), sourceFileContent(index));
       })
     );
   }
@@ -205,7 +391,11 @@ async function readFixture(
   root: string,
   files: Awaited<ReturnType<typeof walkProjectFiles>>
 ) {
-  const bodyBytes = 57;
+  const bodyBytes = Math.max(
+    ...Array.from({ length: Math.min(files.length, 32) }, (_, index) =>
+      Buffer.byteLength(sourceFileContent(index))
+    )
+  );
   const reader = new TextFileReader(
     {
       maxFiles: files.length,
@@ -246,6 +436,12 @@ async function benchmarkSourceTree(size: number): Promise<void> {
       emit('source-tree-walk-and-bounded-read', size, pass, {
         ...measurement,
         result: measurement.result,
+        fixtureSha256: sourceFixtureSha256(size),
+        sourceSymbolsPerFile,
+        sourceRuleCount: benchmarkRuleCount,
+        sourceBytesPerFile: Buffer.byteLength(sourceFileContent(0)),
+        sourceBytesTarget: sourceBytesPerFile,
+        sourceBytes: sourceFixtureBytes(size),
         filesDiscovered: files.length,
         filesOpened: measurement.result.filesRead,
         bytesRead: measurement.result.bytesRead
@@ -263,6 +459,9 @@ async function benchmarkAstDirectoryIndex(size: number): Promise<void> {
     directories.add(path.join(root, 'src', `module-${index}`));
   }
   const queries = [...directories].slice(1);
+  const fixtureSha256 = createHash()
+    .update([...directories].sort().join('\0'))
+    .digest('hex');
 
   const indexed = await measure(async () => {
     const childrenByDirectory = indexSourceDirectoryChildren(directories);
@@ -281,6 +480,7 @@ async function benchmarkAstDirectoryIndex(size: number): Promise<void> {
   emit('ast-source-directory-indexed', size, 'indexed', {
     ...indexed,
     result: indexed.result,
+    fixtureSha256,
     directoriesIndexed: indexed.result.directoryCount,
     directoryQueries: indexed.result.queryCount
   });
@@ -315,6 +515,7 @@ async function benchmarkAstDirectoryIndex(size: number): Promise<void> {
     emit('ast-source-directory-full-scan-reference', size, 'baseline', {
       ...legacy,
       result: legacy.result,
+      fixtureSha256,
       directoriesScanned: legacy.result.directoryCount,
       directoryQueries: legacy.result.queryCount,
       baselineRevision: '41a3a9319b19bfb2c2290bafd1bb9fab794ddcd0'
@@ -351,34 +552,34 @@ async function benchmarkRepositoryScan(
   let previousSnapshot: ProjectSnapshot | undefined;
   try {
     await createSourceFixture(root, size);
-    await writeFile(
-      path.join(root, 'package.json'),
-      JSON.stringify({ name: 'toolip-benchmark-fixture', version: '1.0.0' })
-    );
-    await writeFile(
-      path.join(root, 'package-lock.json'),
-      JSON.stringify({
-        name: 'toolip-benchmark-fixture',
-        version: '1.0.0',
-        lockfileVersion: 3,
-        requires: true,
-        packages: {
-          '': { name: 'toolip-benchmark-fixture', version: '1.0.0' }
-        }
-      })
-    );
-    await writeFile(
-      path.join(root, '.gitignore'),
-      '.env*\n*.pem\n*.key\nnode_modules/\n'
-    );
+    const packageJson = JSON.stringify({
+      name: 'toolip-benchmark-fixture',
+      version: '1.0.0'
+    });
+    const lockfile = JSON.stringify({
+      name: 'toolip-benchmark-fixture',
+      version: '1.0.0',
+      lockfileVersion: 3,
+      requires: true,
+      packages: {
+        '': { name: 'toolip-benchmark-fixture', version: '1.0.0' }
+      }
+    });
+    const gitignore = '.env*\n*.pem\n*.key\nnode_modules/\n';
+    const extraFiles = [
+      { path: 'package.json', content: packageJson },
+      { path: 'package-lock.json', content: lockfile },
+      { path: '.gitignore', content: gitignore }
+    ];
+    await writeFile(path.join(root, 'package.json'), packageJson);
+    await writeFile(path.join(root, 'package-lock.json'), lockfile);
+    await writeFile(path.join(root, '.gitignore'), gitignore);
     await runGitChecked(['init'], { cwd: root });
     await runGitChecked(['add', '-A'], { cwd: root });
     for (const pass of passes) {
+      const changedSource = sourceFileContent(0, true);
       if (pass === 'incremental')
-        await writeFile(
-          path.join(root, 'source-000000.ts'),
-          'export const fixtureValue = "incremental-source-fixture";\n'
-        );
+        await writeFile(path.join(root, 'source-000000.ts'), changedSource);
       const measurement = await measure(async () => {
         const context = await createScannerContext(root, {
           maxFiles: expectedFiles
@@ -415,6 +616,25 @@ async function benchmarkRepositoryScan(
             `full repository scan was incomplete at ${size} source files: ${JSON.stringify({ analysis: scorecard.analysis, warnings: scorecard.warnings, cache: analysisCache ? { entries: analysisCache.size, bytes: analysisCache.byteSize } : undefined })}`
           );
         }
+        const expectedSeeded = Math.min(seededFindingCount, size);
+        const detectedByRule = countSeededRuleFindings(scorecard.findings);
+        const expectedByRule = Object.fromEntries(
+          seededRuleIds
+            .slice(0, benchmarkRuleCount)
+            .map((ruleId) => [ruleId, expectedSeeded])
+        );
+        if (
+          Object.entries(expectedByRule).some(
+            ([ruleId, count]) => detectedByRule[ruleId] !== count
+          )
+        )
+          throw new Error(
+            `seeded AST finding mismatch: expected ${JSON.stringify(expectedByRule)}, detected ${JSON.stringify(detectedByRule)}`
+          );
+        const detectedSeeded = Object.values(detectedByRule).reduce(
+          (total, count) => total + count,
+          0
+        );
         previousSnapshot = snapshot;
         return {
           snapshotReads: snapshot.metrics.filesRead,
@@ -425,6 +645,10 @@ async function benchmarkRepositoryScan(
           astProjectCacheHits: scorecard.cacheMetrics.astProjectHits,
           astProjectCacheMisses: scorecard.cacheMetrics.astProjectMisses,
           resultCache: scorecard.cacheMetrics.resultCache,
+          seededFindingsExpected: expectedSeeded * benchmarkRuleCount,
+          seededFindingsDetected: detectedSeeded,
+          seededFindingsByRule: detectedByRule,
+          seededFindingFiles: expectedSeeded,
           findings: scorecard.findings.length,
           filesDiscovered: context.summary.totalFiles,
           scorecardState: scorecard.analysis.state,
@@ -434,6 +658,29 @@ async function benchmarkRepositoryScan(
       emit(fixtureName, size, pass, {
         ...measurement,
         result: measurement.result,
+        fixtureSha256: sourceFixtureSha256(
+          size,
+          extraFiles,
+          pass === 'incremental'
+            ? { index: 0, content: changedSource }
+            : undefined
+        ),
+        sourceBytesTarget: sourceBytesPerFile,
+        sourceSymbolsPerFile,
+        sourceBytesPerFile: Math.max(
+          Buffer.byteLength(sourceFileContent(0)),
+          Buffer.byteLength(
+            sourceFileContent(Math.min(seededFindingCount, size))
+          )
+        ),
+        sourceBytes: sourceFixtureBytes(size),
+        seededFindingCount: Math.min(seededFindingCount, size),
+        seededFindingFiles: Math.min(seededFindingCount, size),
+        sourceRuleCount: benchmarkRuleCount,
+        seededRuleIds: seededRuleIds.slice(0, benchmarkRuleCount),
+        timeToFirstFindingMs: null,
+        timeToFirstFindingUnavailableReason:
+          'scorecard returns aggregate findings after analyzer completion',
         filesOpened: measurement.result.snapshotReads,
         bytesRead: measurement.result.snapshotBytesRead,
         cacheHits: measurement.result.cacheHits,
@@ -457,29 +704,28 @@ async function benchmarkConcurrentRepositoryScans(size: number): Promise<void> {
   const maximumTotalBytes = Math.max(1, expectedFiles * 4_096);
   try {
     await createSourceFixture(root, size);
-    await writeFile(
-      path.join(root, 'package.json'),
-      JSON.stringify({
-        name: 'toolip-concurrent-benchmark-fixture',
-        version: '1.0.0'
-      })
-    );
-    await writeFile(
-      path.join(root, 'package-lock.json'),
-      JSON.stringify({
-        name: 'toolip-concurrent-benchmark-fixture',
-        version: '1.0.0',
-        lockfileVersion: 3,
-        requires: true,
-        packages: {
-          '': { name: 'toolip-concurrent-benchmark-fixture', version: '1.0.0' }
-        }
-      })
-    );
-    await writeFile(
-      path.join(root, '.gitignore'),
-      '.env*\n*.pem\n*.key\nnode_modules/\n'
-    );
+    const packageJson = JSON.stringify({
+      name: 'toolip-concurrent-benchmark-fixture',
+      version: '1.0.0'
+    });
+    const lockfile = JSON.stringify({
+      name: 'toolip-concurrent-benchmark-fixture',
+      version: '1.0.0',
+      lockfileVersion: 3,
+      requires: true,
+      packages: {
+        '': { name: 'toolip-concurrent-benchmark-fixture', version: '1.0.0' }
+      }
+    });
+    const gitignore = '.env*\n*.pem\n*.key\nnode_modules/\n';
+    const extraFiles = [
+      { path: 'package.json', content: packageJson },
+      { path: 'package-lock.json', content: lockfile },
+      { path: '.gitignore', content: gitignore }
+    ];
+    await writeFile(path.join(root, 'package.json'), packageJson);
+    await writeFile(path.join(root, 'package-lock.json'), lockfile);
+    await writeFile(path.join(root, '.gitignore'), gitignore);
     await runGitChecked(['init'], { cwd: root });
     await runGitChecked(['add', '-A'], { cwd: root });
     const context = await createScannerContext(root, {
@@ -493,7 +739,7 @@ async function benchmarkConcurrentRepositoryScans(size: number): Promise<void> {
     });
     const measurement = await measure(async () => {
       const results = await Promise.all(
-        [0, 1].map(() =>
+        Array.from({ length: benchmarkConcurrency }, () =>
           buildSecurityScorecard(
             root,
             {},
@@ -512,17 +758,27 @@ async function benchmarkConcurrentRepositoryScans(size: number): Promise<void> {
           )
         )
       );
+      const expectedSeeded = Math.min(seededFindingCount, size);
       if (
         results.some(
           (scorecard) =>
             scorecard.analysis.state !== 'complete' ||
             scorecard.coverage.state !== 'complete' ||
-            scorecard.coverage.scanned !== expectedFiles
+            scorecard.coverage.scanned !== expectedFiles ||
+            Object.entries(countSeededRuleFindings(scorecard.findings)).some(
+              ([, count]) => count !== expectedSeeded
+            )
         )
       )
         throw new Error(`concurrent scorecard was incomplete at ${size} files`);
       return results.map((scorecard) => ({
         findings: scorecard.findings.length,
+        seededFindingsExpected: expectedSeeded * benchmarkRuleCount,
+        seededFindingsDetected: Object.values(
+          countSeededRuleFindings(scorecard.findings)
+        ).reduce((total, count) => total + count, 0),
+        seededFindingsByRule: countSeededRuleFindings(scorecard.findings),
+        seededFindingFiles: expectedSeeded,
         analysis: scorecard.analysis.state,
         coverage: scorecard.coverage.state,
         scanned: scorecard.coverage.scanned,
@@ -533,7 +789,22 @@ async function benchmarkConcurrentRepositoryScans(size: number): Promise<void> {
     emit('repository-security-scorecard-concurrent-pair', size, 'cold', {
       ...measurement,
       result: measurement.result,
-      concurrentScans: 2,
+      fixtureSha256: sourceFixtureSha256(size, extraFiles),
+      sourceSymbolsPerFile,
+      sourceBytesPerFile: Math.max(
+        Buffer.byteLength(sourceFileContent(0)),
+        Buffer.byteLength(sourceFileContent(Math.min(seededFindingCount, size)))
+      ),
+      sourceBytesTarget: sourceBytesPerFile,
+      sourceBytes: sourceFixtureBytes(size),
+      seededFindingCount: Math.min(seededFindingCount, size),
+      seededFindingFiles: Math.min(seededFindingCount, size),
+      sourceRuleCount: benchmarkRuleCount,
+      seededRuleIds: seededRuleIds.slice(0, benchmarkRuleCount),
+      timeToFirstFindingMs: null,
+      timeToFirstFindingUnavailableReason:
+        'scorecard returns aggregate findings after analyzer completion',
+      concurrentScans: benchmarkConcurrency,
       filesPerScan: expectedFiles,
       providerRequests: 0
     });
@@ -568,6 +839,7 @@ async function benchmarkSecretLocations(size: number): Promise<void> {
   emit('secret-locations-optimized', size, 'single-pass', {
     ...optimized,
     result: optimized.result,
+    fixtureSha256: createHash().update(content).digest('hex'),
     sourceBytes: Buffer.byteLength(content)
   });
 
@@ -593,6 +865,7 @@ async function benchmarkSecretLocations(size: number): Promise<void> {
     emit('secret-locations-legacy-prefix-split-reference', size, 'baseline', {
       ...legacy,
       result: legacy.result,
+      fixtureSha256: createHash().update(content).digest('hex'),
       sourceBytes: Buffer.byteLength(content),
       baselineRevision: 'cf94e2103e7d2ced05a0acf68251bcc8fd7ab125'
     });

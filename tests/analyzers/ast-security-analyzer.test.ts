@@ -6,8 +6,18 @@ import { describe, expect, it } from 'vitest';
 import { AstSecurityAnalyzer } from '../../src/analyzers/ast/ast-security-analyzer.js';
 import {
   analyzeAstSource,
-  createAstProjectAnalysis
+  createAstProjectAnalysis,
+  type AstProjectInput
 } from '../../src/analyzers/ast/source-analysis.js';
+
+function requiredProjectInput(
+  inputs: readonly AstProjectInput[],
+  index: number
+): AstProjectInput {
+  const input = inputs[index];
+  if (!input) throw new Error(`missing AST project input at index ${index}`);
+  return input;
+}
 
 describe('AST security source analysis', () => {
   it('does not confuse RegExp.exec() with child_process.exec()', () => {
@@ -49,6 +59,15 @@ runShell(userInput);
 
     expect(findings).toHaveLength(1);
     expect(findings[0]?.ruleId).toBe('TLP-AST-003');
+  });
+
+  it('detects the default ESM child_process namespace import', () => {
+    const findings = analyzeAstSource(
+      'runner.mjs',
+      `import childProcess from 'node:child_process';\nchildProcess.exec(userInput);`
+    );
+
+    expect(findings.map((finding) => finding.ruleId)).toContain('TLP-AST-003');
   });
 
   it('ignores lexically shadowed child_process names and resolves local aliases', () => {
@@ -141,6 +160,57 @@ first.exec(input);`
     );
 
     expect(findings.map((finding) => finding.ruleId)).toContain('TLP-AST-003');
+  });
+
+  it('does not retain dangerous API identity after an alias is reassigned', () => {
+    const findings = analyzeAstSource(
+      'runner.ts',
+      `import { exec } from 'node:child_process';
+let run = exec;
+run = (value: string) => value;
+run(untrusted);`
+    );
+
+    expect(findings.some((finding) => finding.ruleId === 'TLP-AST-003')).toBe(
+      false
+    );
+  });
+
+  it('keeps detection before a later straight-line alias reassignment', () => {
+    const findings = analyzeAstSource(
+      'runner.ts',
+      `import { exec } from 'node:child_process';
+let run = exec;
+run(untrusted);
+run = (value: string) => value;`
+    );
+
+    expect(findings.map((finding) => finding.ruleId)).toContain('TLP-AST-003');
+  });
+
+  it('keeps a low-confidence candidate when reassignment is conditional', () => {
+    const findings = analyzeAstSource(
+      'runner.ts',
+      `import { exec } from 'node:child_process';
+let run = (value: string) => value;
+if (condition) run = exec;
+run(untrusted);`
+    );
+
+    expect(findings.map((finding) => finding.ruleId)).toContain('TLP-AST-011');
+  });
+
+  it('bounds long reassignment chains and reports their unresolved call', () => {
+    const writes = Array.from({ length: 300 }, () => 'run = run;').join('\n');
+    const findings = analyzeAstSource(
+      'runner.ts',
+      `import { exec } from 'node:child_process';
+let run = exec;
+${writes}
+run(untrusted);`
+    );
+
+    expect(findings.map((finding) => finding.ruleId)).toContain('TLP-AST-011');
   });
 
   it('detects namespace execSync calls', () => {
@@ -312,6 +382,268 @@ export function handler(req: RequestLike, db: Database) {
     const findings = analyzeAstSource('database.ts', database, project);
     expect(findings.map((finding) => finding.ruleId)).toEqual(['TLP-AST-005']);
     expect(findings[0]?.location?.file).toBe('database.ts');
+  });
+
+  it('resolves child_process aliases through immutable project re-exports', () => {
+    const root = path.join(os.tmpdir(), 'toolip-ast-child-process-reexports');
+    const route = `import { run } from './barrel.js';
+run(untrusted);`;
+    const inputs = (bridge: string): AstProjectInput[] => [
+      {
+        filePath: 'route.ts',
+        absolutePath: path.join(root, 'route.ts'),
+        content: route
+      },
+      {
+        filePath: 'bridge.ts',
+        absolutePath: path.join(root, 'bridge.ts'),
+        content: bridge
+      }
+    ];
+
+    for (const [barrel, bridge] of [
+      [
+        `export { run } from './bridge.js';`,
+        `export { exec as run } from 'node:child_process';`
+      ],
+      [
+        `export * from './bridge.js';`,
+        `import { exec } from 'node:child_process'; const run = exec; export { run };`
+      ]
+    ]) {
+      const projectInputs = [
+        requiredProjectInput(inputs(bridge), 0),
+        {
+          filePath: 'barrel.ts',
+          absolutePath: path.join(root, 'barrel.ts'),
+          content: barrel
+        },
+        requiredProjectInput(inputs(bridge), 1)
+      ];
+      const project = createAstProjectAnalysis(projectInputs);
+      const findings = analyzeAstSource('route.ts', route, project);
+      expect(findings.map((finding) => finding.ruleId)).toContain(
+        'TLP-AST-003'
+      );
+    }
+
+    const defaultRoute = `import run from './bridge.js';\nrun(untrusted);`;
+    const defaultProject = createAstProjectAnalysis([
+      {
+        filePath: 'route.ts',
+        absolutePath: path.join(root, 'route.ts'),
+        content: defaultRoute
+      },
+      {
+        filePath: 'bridge.ts',
+        absolutePath: path.join(root, 'bridge.ts'),
+        content: `import { exec } from 'node:child_process';\nexport default exec;`
+      }
+    ]);
+    expect(
+      analyzeAstSource('route.ts', defaultRoute, defaultProject).map(
+        (finding) => finding.ruleId
+      )
+    ).toContain('TLP-AST-003');
+
+    const typeOnlyProject = createAstProjectAnalysis([
+      requiredProjectInput(
+        inputs(`export { exec as run } from 'node:child_process';`),
+        0
+      ),
+      {
+        filePath: 'barrel.ts',
+        absolutePath: path.join(root, 'barrel.ts'),
+        content: `export type { run } from './bridge.js';`
+      },
+      {
+        filePath: 'bridge.ts',
+        absolutePath: path.join(root, 'bridge.ts'),
+        content: `export { exec as run } from 'node:child_process';`
+      }
+    ]);
+    expect(
+      analyzeAstSource('route.ts', route, typeOnlyProject).some(
+        (finding) => finding.ruleId === 'TLP-AST-003'
+      )
+    ).toBe(false);
+
+    const resolveBridge = (bridge: string) =>
+      createAstProjectAnalysis([
+        requiredProjectInput(inputs(bridge), 0),
+        {
+          filePath: 'barrel.ts',
+          absolutePath: path.join(root, 'barrel.ts'),
+          content: `export { run } from './bridge.js';`
+        },
+        requiredProjectInput(inputs(bridge), 1)
+      ]);
+    const reassignedProject =
+      resolveBridge(`import { exec } from 'node:child_process';
+let run = exec;
+run = (value: string) => value;
+export { run };`);
+    expect(
+      analyzeAstSource('route.ts', route, reassignedProject).some(
+        (finding) =>
+          finding.ruleId === 'TLP-AST-003' || finding.ruleId === 'TLP-AST-011'
+      )
+    ).toBe(false);
+
+    const conditionalProject =
+      resolveBridge(`import { exec } from 'node:child_process';
+let run = (value: string) => value;
+if (condition) run = exec;
+export { run };`);
+    expect(
+      analyzeAstSource('route.ts', route, conditionalProject).map(
+        (finding) => finding.ruleId
+      )
+    ).toContain('TLP-AST-011');
+
+    const closureProject =
+      resolveBridge(`import { exec } from 'node:child_process';
+let run = (value: string) => value;
+function promote() { run = exec; }
+export { run };`);
+    expect(
+      analyzeAstSource('route.ts', route, closureProject).map(
+        (finding) => finding.ruleId
+      )
+    ).toContain('TLP-AST-011');
+
+    const shadowedClosureProject = resolveBridge(
+      `let run = (value: string) => value;
+function unrelated() { let run = require('node:child_process').exec; }
+export { run };`
+    );
+    expect(
+      analyzeAstSource('route.ts', route, shadowedClosureProject).some(
+        (finding) =>
+          finding.ruleId === 'TLP-AST-003' || finding.ruleId === 'TLP-AST-011'
+      )
+    ).toBe(false);
+
+    const importEqualsRoute = `import childProcess = require('./bridge.js');
+childProcess.exec(untrusted);`;
+    const importEqualsProject = createAstProjectAnalysis([
+      {
+        filePath: 'route.ts',
+        absolutePath: path.join(root, 'route.ts'),
+        content: importEqualsRoute
+      },
+      {
+        filePath: 'bridge.ts',
+        absolutePath: path.join(root, 'bridge.ts'),
+        content: `export = require('node:child_process');`
+      }
+    ]);
+    expect(
+      analyzeAstSource('route.ts', importEqualsRoute, importEqualsProject).map(
+        (finding) => finding.ruleId
+      )
+    ).toContain('TLP-AST-003');
+  }, 30_000);
+
+  it('resolves CommonJS child_process re-exports without treating shadowed exports as trusted', () => {
+    const root = path.join(os.tmpdir(), 'toolip-ast-child-process-cjs');
+    const route = `import { run } from './bridge.cjs';
+run(untrusted);`;
+    for (const bridge of [
+      `const cp = require('node:child_process');\nexports.run = cp.exec;`,
+      `const cp = require('node:child_process');\nmodule.exports = { run: cp.exec };`
+    ]) {
+      const project = createAstProjectAnalysis([
+        {
+          filePath: 'route.ts',
+          absolutePath: path.join(root, 'route.ts'),
+          content: route
+        },
+        {
+          filePath: 'bridge.cjs',
+          absolutePath: path.join(root, 'bridge.cjs'),
+          content: bridge
+        }
+      ]);
+
+      expect(
+        analyzeAstSource('route.ts', route, project).map(
+          (finding) => finding.ruleId
+        )
+      ).toContain('TLP-AST-003');
+    }
+
+    const namespaceRoute = `import * as childProcess from './bridge.cjs';
+childProcess.exec(untrusted);`;
+    const namespaceProject = createAstProjectAnalysis([
+      {
+        filePath: 'route.ts',
+        absolutePath: path.join(root, 'route.ts'),
+        content: namespaceRoute
+      },
+      {
+        filePath: 'bridge.cjs',
+        absolutePath: path.join(root, 'bridge.cjs'),
+        content: `module.exports = require('node:child_process');`
+      }
+    ]);
+    expect(
+      analyzeAstSource('route.ts', namespaceRoute, namespaceProject).map(
+        (finding) => finding.ruleId
+      )
+    ).toContain('TLP-AST-003');
+
+    const shadowed = createAstProjectAnalysis([
+      {
+        filePath: 'route.ts',
+        absolutePath: path.join(root, 'route.ts'),
+        content: route
+      },
+      {
+        filePath: 'bridge.cjs',
+        absolutePath: path.join(root, 'bridge.cjs'),
+        content: `const exports = {}; exports.run = (value) => value;`
+      }
+    ]);
+    expect(
+      analyzeAstSource('route.ts', route, shadowed).some(
+        (finding) => finding.ruleId === 'TLP-AST-003'
+      )
+    ).toBe(false);
+  }, 30_000);
+
+  it('returns an unresolved candidate when a project re-export chain exceeds its depth budget', () => {
+    const root = path.join(
+      os.tmpdir(),
+      'toolip-ast-child-process-deep-reexports'
+    );
+    const inputs: AstProjectInput[] = [
+      {
+        filePath: 'route.ts',
+        absolutePath: path.join(root, 'route.ts'),
+        content: `import { run } from './module-0.js'; run(untrusted);`
+      }
+    ];
+    const moduleCount = 270;
+    for (let index = 0; index < moduleCount; index += 1) {
+      inputs.push({
+        filePath: `module-${index}.ts`,
+        absolutePath: path.join(root, `module-${index}.ts`),
+        content:
+          index + 1 === moduleCount
+            ? `export { exec as run } from 'node:child_process';`
+            : `export { run } from './module-${index + 1}.js';`
+      });
+    }
+
+    const project = createAstProjectAnalysis(inputs);
+    const firstInput = requiredProjectInput(inputs, 0);
+    const findings = analyzeAstSource(
+      firstInput.filePath,
+      firstInput.content,
+      project
+    );
+    expect(findings.map((finding) => finding.ruleId)).toContain('TLP-AST-011');
   });
 
   it('keeps project taint analysis complete above the former 2,000-file cutoff', () => {

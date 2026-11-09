@@ -455,3 +455,67 @@ range. Raw current rows are in
 [`Batch 07 worker-pool JSONL`](benchmarks/toolip-v3.2.1-batch07-50k-worker-pool-linux-node24.jsonl);
 the preceding cache-map sample is preserved in
 [`Batch 07 cache-copy JSONL`](benchmarks/toolip-v3.2.1-batch07-50k-post-cache-copy-removal-linux-node24.jsonl).
+
+## Batch 09 benchmark dimension smoke (2026-11-09)
+
+The harness now accepts independent source-byte targets, exported-symbol counts,
+seeded AST rule counts, seeded-file counts, simultaneous scorecard counts and
+dependency-graph fanout. A small Linux Node 24.22.1 smoke run used four source
+files, a 512-byte target, three symbols per file, eight seeded rule IDs in one
+file, and two simultaneous scorecards over one immutable snapshot. Both scans
+completed with seven of seven files covered and detected all eight seeded rule
+IDs once per scan; provider requests were zero. The concurrent pair took
+895.79 ms and sampled 53.7 MiB heap / 357.6 MiB RSS. A separate single cold
+scorecard took 486.79 ms. A 20-node dependency graph at fanout four reported 70
+edges and the same graph summary on cold and warm passes.
+
+Raw JSONL, including hardware, runtime, fixture hashes, CPU and process memory,
+is preserved in
+[`Batch 09 harness smoke`](benchmarks/toolip-v3.2.1-batch09-harness-smoke-2026-11-09-linux-node24.jsonl).
+The scorecard fixture hash is
+`5aa581594382c9fdc9381541a6cb20a9bf8dbb004c2569e78dca750adff7773c`; the
+converging lockfile hash is
+`d0e5ffb7cfa54b2aa0eaf81603bea22df42bd5763f8ae9d44b3a107e7d3019e5`.
+`timeToFirstFindingMs` remains null because the aggregate scorecard API does
+not expose incremental result delivery. This smoke verifies the new dimensions
+and result checks; it does not replace the larger 1k/10k/50k evidence, provide
+p50/p95 or establish a memory bound. No additional 50k campaign was run.
+
+After the source-position alias correction, the concurrent scorecard smoke was
+rerun with the same fixture and eight planted rule IDs. It again completed both
+scans with 7/7 file coverage and all seeded findings detected; the single
+process sample was 1.03 s, 51.9 MiB heap and 344.4 MiB RSS. The updated raw row
+is preserved separately in
+[`alias-flow harness smoke`](benchmarks/toolip-v3.2.1-batch09-alias-flow-smoke-2026-11-09-linux-node24.jsonl);
+the earlier harness-only sample remains intact. These single measurements
+show fixture consistency and timing variability, not a performance comparison.
+
+## Frozen Batch 09 resolver scale (2026-11-09)
+
+After adding default ESM import/export resolution and correcting module-local
+write indexing to respect lexical scopes, one isolated cold full-scorecard run
+was recorded at each in-scope size. The environment was Linux x64, Node
+24.22.1, kernel `6.18.57`, on an AMD EPYC 9V74 host. Each generated source
+file targeted 512 bytes and three exported symbols; one file contained eight
+planted AST rule patterns. All eight were detected at every size, scorecard
+and file coverage were complete, and provider requests were zero.
+
+| Source files | Wall time | User / system CPU | Sampled heap peak | Sampled RSS peak | Files opened / bytes read |
+| -----------: | --------: | ----------------: | ----------------: | ---------------: | ------------------------: |
+|        1,000 |    1.14 s |     1.27 / 0.28 s |          78.7 MiB |        394.3 MiB |           1,003 / 512,244 |
+|       10,000 |    5.03 s |     4.25 / 1.71 s |         144.8 MiB |        633.1 MiB |        10,003 / 5,120,244 |
+|       50,000 |   20.79 s |    15.09 / 8.06 s |         332.0 MiB |        967.4 MiB |       50,003 / 25,600,244 |
+
+The raw three-row JSONL is
+[`toolip-v3.2.1-batch09-module-index-frozen-scale-2026-11-09-linux-node24.jsonl`](benchmarks/toolip-v3.2.1-batch09-module-index-frozen-scale-2026-11-09-linux-node24.jsonl),
+SHA-256 `b3dbf3c93933f6f2086edf8dbf5e9d1052a8118e94f7dad06e933a9864bb5106`.
+Fixture hashes are recorded per row. Its `gitSha` is `working-tree`; the
+binary source/test/runner diff SHA-256 relative to PR head
+`3ce12f2948af4378e2dfd9845244f8a3afa976ec` is
+`2e68326c471fa713ebc60016962e96a8c31ae9dbb2cc9144c96f17dff8a1209e`.
+After collection, follow-up edits only formatted the analyzer, removed an
+unused indexing parameter, and replaced test-only non-null assertions with an
+explicit checked helper; scanner and benchmark behavior did not change.
+This is one cold sample per size. It does not provide p50/p95, compare Node
+majors or platforms, establish a memory bound, or qualify a release. Earlier
+raw benchmark evidence was preserved unchanged.

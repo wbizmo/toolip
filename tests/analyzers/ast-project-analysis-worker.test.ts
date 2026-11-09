@@ -93,20 +93,88 @@ describe('killable AST project analysis', () => {
   });
 
   it('matches inline findings and dependency digests for the immutable inputs', async () => {
-    const inline = createAstProjectAnalysis(inputs);
+    const parityInputs: AstProjectInput[] = [
+      ...inputs,
+      {
+        filePath: 'src/reassigned.ts',
+        absolutePath: '/tmp/toolip-ast-worker/src/reassigned.ts',
+        content:
+          'import { exec } from "node:child_process"; let run = exec; run = (value: string) => value; run(untrusted);'
+      },
+      {
+        filePath: 'src/before-write.ts',
+        absolutePath: '/tmp/toolip-ast-worker/src/before-write.ts',
+        content:
+          'import { exec } from "node:child_process"; let run = exec; run(untrusted); run = (value: string) => value;'
+      },
+      {
+        filePath: 'src/conditional-write.ts',
+        absolutePath: '/tmp/toolip-ast-worker/src/conditional-write.ts',
+        content:
+          'import { exec } from "node:child_process"; let run = (value: string) => value; if (condition) run = exec; run(untrusted);'
+      },
+      {
+        filePath: 'src/reexport-route.ts',
+        absolutePath: '/tmp/toolip-ast-worker/src/reexport-route.ts',
+        content: 'import { run } from "./barrel.js"; run(untrusted);'
+      },
+      {
+        filePath: 'src/barrel.ts',
+        absolutePath: '/tmp/toolip-ast-worker/src/barrel.ts',
+        content: 'export { run } from "./bridge.js";'
+      },
+      {
+        filePath: 'src/bridge.ts',
+        absolutePath: '/tmp/toolip-ast-worker/src/bridge.ts',
+        content: 'export { exec as run } from "node:child_process";'
+      },
+      {
+        filePath: 'src/commonjs-route.ts',
+        absolutePath: '/tmp/toolip-ast-worker/src/commonjs-route.ts',
+        content: 'import { run } from "./bridge.cjs"; run(untrusted);'
+      },
+      {
+        filePath: 'src/bridge.cjs',
+        absolutePath: '/tmp/toolip-ast-worker/src/bridge.cjs',
+        content:
+          'const cp = require("node:child_process"); exports.run = cp.exec;'
+      }
+    ];
+    const inline = createAstProjectAnalysis(parityInputs);
     const expectedFindings = new Map(
-      inputs.map((input) => [
+      parityInputs.map((input) => [
         input.filePath,
         analyzeAstSource(input.filePath, input.content, inline)
       ])
     );
 
-    const workerResult = await analyzeAstProjectInWorker(inputs, {
+    const workerResult = await analyzeAstProjectInWorker(parityInputs, {
       timeoutMs: 20_000
     });
     expect([...workerResult.findingsByPath]).toEqual([...expectedFindings]);
+    expect(workerResult.findingsByPath.get('src/reassigned.ts')).toEqual([]);
+    expect(
+      workerResult.findingsByPath
+        .get('src/before-write.ts')
+        ?.map((finding) => finding.ruleId)
+    ).toContain('TLP-AST-003');
+    expect(
+      workerResult.findingsByPath
+        .get('src/conditional-write.ts')
+        ?.map((finding) => finding.ruleId)
+    ).toContain('TLP-AST-011');
+    expect(
+      workerResult.findingsByPath
+        .get('src/reexport-route.ts')
+        ?.map((finding) => finding.ruleId)
+    ).toContain('TLP-AST-003');
+    expect(
+      workerResult.findingsByPath
+        .get('src/commonjs-route.ts')
+        ?.map((finding) => finding.ruleId)
+    ).toContain('TLP-AST-003');
     expect([...workerResult.componentDigests]).toEqual([
-      ...planAstProjectComponents(inputs).componentDigests
+      ...planAstProjectComponents(parityInputs).componentDigests
     ]);
     expect([...workerResult.dependencyDigests]).toEqual([
       ...inline.dependencyDigests

@@ -18,18 +18,894 @@ type BindingKind =
   | 'fork'
   | 'unsafeDeserializerNamespace'
   | 'unsafeDeserializer'
+  | 'dynamicChildProcess'
   | 'shadow';
 type ScopeKind = 'source' | 'function' | 'block' | 'loop' | 'catch';
+type BindingWrite = {
+  position: number;
+  expression?: ts.Expression;
+  uncertain: boolean;
+};
+type ImportBinding = {
+  moduleSpecifier: string;
+  importedName?: string;
+  namespace: boolean;
+};
+type ExportBinding =
+  | { kind: 'module'; moduleSpecifier: string; importedName: string }
+  | { kind: 'namespace'; moduleSpecifier: string }
+  | { kind: 'local'; localName: string }
+  | { kind: 'variable'; declaration: ts.VariableDeclaration }
+  | { kind: 'expression'; expression: ts.Expression };
+type LocalBindingReference = {
+  declaration: ts.VariableDeclaration;
+  propertyName?: string;
+  writes: BindingWrite[];
+};
+type ProjectModuleResolver = {
+  sourceFilesByAbsolutePath: Map<string, ts.SourceFile>;
+  scopes: WeakMap<ts.Node, Scope>;
+  importsBySource: WeakMap<ts.SourceFile, Map<string, ImportBinding>>;
+  exportsBySource: WeakMap<ts.SourceFile, Map<string, ExportBinding[]>>;
+  exportStarsBySource: WeakMap<ts.SourceFile, string[]>;
+  localsBySource: WeakMap<ts.SourceFile, Map<string, LocalBindingReference>>;
+  commonJsModuleBySource: WeakMap<ts.SourceFile, ts.Expression>;
+  exportCache: WeakMap<ts.SourceFile, Map<string, BindingKind | null>>;
+  resolutionWork: number;
+  exportCacheEntries: number;
+  resolveModule: (
+    moduleSpecifier: string,
+    containingFile: string
+  ) => ts.SourceFile | undefined;
+};
 type Scope = {
   kind: ScopeKind;
+  node: ts.Node;
   parent?: Scope;
   bindings: Map<string, BindingKind>;
+  writes: Map<string, BindingWrite[]>;
+  dynamicWrites: Set<string>;
+  projectModules?: ProjectModuleResolver;
 };
 type PendingBinding = {
   name: ts.BindingName;
   initializer?: ts.Expression;
   scope: Scope;
 };
+
+function isPotentialChildProcess(kind: BindingKind | undefined): boolean {
+  return (
+    kind === 'namespace' ||
+    kind === 'exec' ||
+    kind === 'execSync' ||
+    kind === 'spawn' ||
+    kind === 'spawnSync' ||
+    kind === 'execFile' ||
+    kind === 'execFileSync' ||
+    kind === 'fork' ||
+    kind === 'dynamicChildProcess'
+  );
+}
+
+function childProcessExport(name: string): BindingKind | undefined {
+  const methods: Record<string, BindingKind> = {
+    exec: 'exec',
+    execSync: 'execSync',
+    spawn: 'spawn',
+    spawnSync: 'spawnSync',
+    execFile: 'execFile',
+    execFileSync: 'execFileSync',
+    fork: 'fork'
+  };
+  return methods[name];
+}
+
+function definitelySafeChildProcessValue(
+  expression: ts.Expression | undefined
+): boolean {
+  let current = expression;
+  while (
+    current &&
+    (ts.isParenthesizedExpression(current) ||
+      ts.isAsExpression(current) ||
+      ts.isTypeAssertionExpression(current) ||
+      ts.isNonNullExpression(current) ||
+      ts.isSatisfiesExpression(current))
+  )
+    current = current.expression;
+  return Boolean(
+    current &&
+    (ts.isArrowFunction(current) ||
+      ts.isFunctionExpression(current) ||
+      ts.isClassExpression(current) ||
+      ts.isObjectLiteralExpression(current) ||
+      ts.isArrayLiteralExpression(current) ||
+      ts.isNewExpression(current) ||
+      ts.isStringLiteralLike(current) ||
+      ts.isNumericLiteral(current) ||
+      current.kind === ts.SyntaxKind.TrueKeyword ||
+      current.kind === ts.SyntaxKind.FalseKeyword ||
+      current.kind === ts.SyntaxKind.NullKeyword)
+  );
+}
+
+function conditionallyExecutesChildren(node: ts.Node): boolean {
+  if (
+    ts.isIfStatement(node) ||
+    ts.isSwitchStatement(node) ||
+    ts.isCaseClause(node) ||
+    ts.isForStatement(node) ||
+    ts.isForInStatement(node) ||
+    ts.isForOfStatement(node) ||
+    ts.isWhileStatement(node) ||
+    ts.isDoStatement(node) ||
+    ts.isTryStatement(node) ||
+    ts.isCatchClause(node) ||
+    ts.isConditionalExpression(node)
+  )
+    return true;
+  return (
+    ts.isBinaryExpression(node) &&
+    (node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+      node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+      node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
+  );
+}
+
+function bindingPatternContains(name: ts.BindingName, target: string): boolean {
+  if (ts.isIdentifier(name)) return name.text === target;
+  return name.elements.some(
+    (element) =>
+      !ts.isOmittedExpression(element) &&
+      bindingPatternContains(element.name, target)
+  );
+}
+
+function declaresTopLevelName(
+  sourceFile: ts.SourceFile,
+  name: string
+): boolean {
+  return sourceFile.statements.some((statement) => {
+    if (ts.isVariableStatement(statement))
+      return statement.declarationList.declarations.some((declaration) =>
+        bindingPatternContains(declaration.name, name)
+      );
+    if (
+      (ts.isFunctionDeclaration(statement) ||
+        ts.isClassDeclaration(statement)) &&
+      statement.name?.text === name
+    )
+      return true;
+    if (ts.isImportEqualsDeclaration(statement))
+      return statement.name.text === name;
+    if (
+      ts.isImportDeclaration(statement) &&
+      statement.importClause &&
+      !statement.importClause.isTypeOnly
+    ) {
+      if (statement.importClause.name?.text === name) return true;
+      const bindings = statement.importClause.namedBindings;
+      if (!bindings) return false;
+      if (ts.isNamespaceImport(bindings)) return bindings.name.text === name;
+      return bindings.elements.some(
+        (element) => !element.isTypeOnly && element.name.text === name
+      );
+    }
+    return false;
+  });
+}
+
+function spendProjectModuleResolution(modules: ProjectModuleResolver): void {
+  modules.resolutionWork += 1;
+  if (modules.resolutionWork > MAX_INTERPROCEDURAL_WORK)
+    throw new Error('AST project module resolution work budget exceeded');
+}
+
+function cacheProjectModuleExport(
+  sourceFile: ts.SourceFile,
+  exportName: string,
+  result: BindingKind | undefined,
+  modules: ProjectModuleResolver
+): void {
+  let cache = modules.exportCache.get(sourceFile);
+  if (!cache) {
+    cache = new Map();
+    modules.exportCache.set(sourceFile, cache);
+  }
+  if (!cache.has(exportName)) {
+    modules.exportCacheEntries += 1;
+    if (modules.exportCacheEntries > MAX_AST_TRAVERSAL_NODES)
+      throw new Error('AST project module export cache budget exceeded');
+  }
+  cache.set(exportName, result ?? null);
+}
+
+function indexProjectModuleSources(
+  parsedFiles: readonly ts.SourceFile[]
+): Pick<
+  ProjectModuleResolver,
+  | 'importsBySource'
+  | 'exportsBySource'
+  | 'exportStarsBySource'
+  | 'localsBySource'
+  | 'commonJsModuleBySource'
+  | 'exportCache'
+> {
+  const importsBySource = new WeakMap<
+    ts.SourceFile,
+    Map<string, ImportBinding>
+  >();
+  const exportsBySource = new WeakMap<
+    ts.SourceFile,
+    Map<string, ExportBinding[]>
+  >();
+  const exportStarsBySource = new WeakMap<ts.SourceFile, string[]>();
+  const localsBySource = new WeakMap<
+    ts.SourceFile,
+    Map<string, LocalBindingReference>
+  >();
+  const commonJsModuleBySource = new WeakMap<ts.SourceFile, ts.Expression>();
+  const exportCache = new WeakMap<
+    ts.SourceFile,
+    Map<string, BindingKind | null>
+  >();
+
+  for (const sourceFile of parsedFiles) {
+    const imports = new Map<string, ImportBinding>();
+    const exports = new Map<string, ExportBinding[]>();
+    const exportStars: string[] = [];
+    const locals = new Map<string, LocalBindingReference>();
+    let commonJsModule: ts.Expression | undefined;
+    const commonJsGlobalsAvailable =
+      !declaresTopLevelName(sourceFile, 'module') &&
+      !declaresTopLevelName(sourceFile, 'exports');
+    for (const statement of sourceFile.statements) {
+      if (
+        ts.isImportEqualsDeclaration(statement) &&
+        !statement.isTypeOnly &&
+        ts.isExternalModuleReference(statement.moduleReference) &&
+        statement.moduleReference.expression &&
+        ts.isStringLiteral(statement.moduleReference.expression)
+      ) {
+        imports.set(statement.name.text, {
+          moduleSpecifier: statement.moduleReference.expression.text,
+          namespace: true
+        });
+      }
+
+      if (
+        ts.isImportDeclaration(statement) &&
+        ts.isStringLiteral(statement.moduleSpecifier) &&
+        statement.importClause &&
+        !statement.importClause.isTypeOnly
+      ) {
+        if (statement.importClause.name)
+          imports.set(statement.importClause.name.text, {
+            moduleSpecifier: statement.moduleSpecifier.text,
+            importedName: 'default',
+            namespace: false
+          });
+        const bindings = statement.importClause.namedBindings;
+        if (bindings && ts.isNamespaceImport(bindings)) {
+          imports.set(bindings.name.text, {
+            moduleSpecifier: statement.moduleSpecifier.text,
+            namespace: true
+          });
+        } else if (bindings && ts.isNamedImports(bindings)) {
+          for (const element of bindings.elements) {
+            if (!element.isTypeOnly)
+              imports.set(element.name.text, {
+                moduleSpecifier: statement.moduleSpecifier.text,
+                importedName: element.propertyName?.text ?? element.name.text,
+                namespace: false
+              });
+          }
+        }
+      }
+
+      if (ts.isExportDeclaration(statement)) {
+        if (statement.isTypeOnly) continue;
+        const moduleSpecifier =
+          statement.moduleSpecifier &&
+          ts.isStringLiteral(statement.moduleSpecifier)
+            ? statement.moduleSpecifier.text
+            : undefined;
+        if (!statement.exportClause && moduleSpecifier) {
+          exportStars.push(moduleSpecifier);
+        } else if (
+          statement.exportClause &&
+          ts.isNamespaceExport(statement.exportClause) &&
+          moduleSpecifier
+        ) {
+          const bindings = exports.get(statement.exportClause.name.text) ?? [];
+          bindings.push({ kind: 'namespace', moduleSpecifier });
+          exports.set(statement.exportClause.name.text, bindings);
+        } else if (
+          statement.exportClause &&
+          ts.isNamedExports(statement.exportClause)
+        ) {
+          for (const element of statement.exportClause.elements) {
+            if (element.isTypeOnly) continue;
+            const bindings = exports.get(element.name.text) ?? [];
+            const localName = element.propertyName?.text ?? element.name.text;
+            bindings.push(
+              moduleSpecifier
+                ? {
+                    kind: 'module',
+                    moduleSpecifier,
+                    importedName: localName
+                  }
+                : { kind: 'local', localName }
+            );
+            exports.set(element.name.text, bindings);
+          }
+        }
+        continue;
+      }
+
+      if (ts.isExportAssignment(statement)) {
+        if (statement.isExportEquals) {
+          commonJsModule = statement.expression;
+        } else {
+          exports.set('default', [
+            { kind: 'expression', expression: statement.expression }
+          ]);
+        }
+        continue;
+      }
+
+      if (
+        commonJsGlobalsAvailable &&
+        ts.isExpressionStatement(statement) &&
+        ts.isBinaryExpression(statement.expression) &&
+        statement.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      ) {
+        const { left, right } = statement.expression;
+        const appendExpressionExport = (
+          exportName: string,
+          expression: ts.Expression
+        ): void => {
+          const bindings = exports.get(exportName) ?? [];
+          bindings.push({ kind: 'expression', expression });
+          exports.set(exportName, bindings);
+        };
+        if (ts.isPropertyAccessExpression(left)) {
+          if (
+            ts.isIdentifier(left.expression) &&
+            left.expression.text === 'exports'
+          ) {
+            appendExpressionExport(left.name.text, right);
+          } else if (
+            ts.isPropertyAccessExpression(left.expression) &&
+            ts.isIdentifier(left.expression.expression) &&
+            left.expression.expression.text === 'module' &&
+            left.expression.name.text === 'exports'
+          ) {
+            appendExpressionExport(left.name.text, right);
+          } else if (
+            ts.isIdentifier(left.expression) &&
+            left.expression.text === 'module' &&
+            left.name.text === 'exports'
+          ) {
+            commonJsModule = right;
+            if (ts.isObjectLiteralExpression(right)) {
+              for (const property of right.properties) {
+                if (!ts.isPropertyAssignment(property)) continue;
+                const exportName = propertyName(property.name);
+                if (exportName)
+                  appendExpressionExport(exportName, property.initializer);
+              }
+            }
+          }
+        }
+      }
+
+      if (!ts.isVariableStatement(statement)) continue;
+      const exported = statement.modifiers?.some(
+        (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword
+      );
+      for (const declaration of statement.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name)) {
+          locals.set(declaration.name.text, { declaration, writes: [] });
+          if (exported) {
+            const bindings = exports.get(declaration.name.text) ?? [];
+            bindings.push({ kind: 'variable', declaration });
+            exports.set(declaration.name.text, bindings);
+          }
+          continue;
+        }
+        if (!ts.isObjectBindingPattern(declaration.name)) continue;
+        for (const element of declaration.name.elements) {
+          if (ts.isOmittedExpression(element) || !ts.isIdentifier(element.name))
+            continue;
+          const name = element.name.text;
+          const reference: LocalBindingReference = {
+            declaration,
+            propertyName: propertyName(element.propertyName) ?? name,
+            writes: []
+          };
+          locals.set(name, reference);
+          if (exported) {
+            const bindings = exports.get(name) ?? [];
+            bindings.push({ kind: 'variable', declaration });
+            exports.set(name, bindings);
+          }
+        }
+      }
+    }
+    if (imports.size > 0) importsBySource.set(sourceFile, imports);
+    if (exports.size > 0) exportsBySource.set(sourceFile, exports);
+    if (exportStars.length > 0)
+      exportStarsBySource.set(sourceFile, exportStars);
+    if (locals.size > 0) localsBySource.set(sourceFile, locals);
+    if (commonJsModule) commonJsModuleBySource.set(sourceFile, commonJsModule);
+  }
+
+  return {
+    importsBySource,
+    exportsBySource,
+    exportStarsBySource,
+    localsBySource,
+    commonJsModuleBySource,
+    exportCache
+  };
+}
+
+/** Indexes top-level local writes after lexical bindings have been collected. */
+function indexProjectModuleWrites(
+  parsedFiles: readonly ts.SourceFile[],
+  scopes: WeakMap<ts.Node, Scope>,
+  modules: ProjectModuleResolver
+): void {
+  for (const sourceFile of parsedFiles) {
+    const sourceScope = scopes.get(sourceFile);
+    const locals = modules.localsBySource.get(sourceFile);
+    if (!sourceScope || !locals) continue;
+    const collectWrites = (
+      node: ts.Node,
+      conditional: boolean,
+      inNestedFunction: boolean
+    ): void => {
+      const nestedConditional =
+        conditional || conditionallyExecutesChildren(node);
+      const nestedFunction = inNestedFunction || ts.isFunctionLike(node);
+      if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+        ts.isIdentifier(node.left)
+      ) {
+        const reference = locals.get(node.left.text);
+        const assignmentScope = scopes.get(node);
+        // A same-named local in a nested function/block is a separate binding
+        // and must not mutate the module's exported alias.
+        if (
+          reference &&
+          assignmentScope &&
+          bindingOwner(assignmentScope, node.left.text) === sourceScope
+        ) {
+          reference.writes.push({
+            position: nestedFunction
+              ? Number.NEGATIVE_INFINITY
+              : node.getStart(sourceFile),
+            ...(node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+              ? { expression: node.right }
+              : {}),
+            uncertain:
+              node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+              nestedFunction ||
+              nestedConditional ||
+              assignmentScope !== sourceScope
+          });
+        }
+      }
+      ts.forEachChild(node, (child) =>
+        collectWrites(child, nestedConditional, nestedFunction)
+      );
+    };
+    collectWrites(sourceFile, false, false);
+    for (const reference of locals.values())
+      reference.writes.sort((left, right) => left.position - right.position);
+  }
+}
+
+function findImportBinding(
+  sourceFile: ts.SourceFile,
+  localName: string,
+  modules?: ProjectModuleResolver
+): ImportBinding | undefined {
+  const indexed = modules?.importsBySource.get(sourceFile);
+  if (modules) return indexed?.get(localName);
+  for (const statement of sourceFile.statements) {
+    if (
+      ts.isImportEqualsDeclaration(statement) &&
+      !statement.isTypeOnly &&
+      statement.name.text === localName &&
+      ts.isExternalModuleReference(statement.moduleReference) &&
+      statement.moduleReference.expression &&
+      ts.isStringLiteral(statement.moduleReference.expression)
+    )
+      return {
+        moduleSpecifier: statement.moduleReference.expression.text,
+        namespace: true
+      };
+    if (
+      !ts.isImportDeclaration(statement) ||
+      !ts.isStringLiteral(statement.moduleSpecifier) ||
+      !statement.importClause ||
+      statement.importClause.isTypeOnly
+    )
+      continue;
+    if (statement.importClause.name?.text === localName)
+      return {
+        moduleSpecifier: statement.moduleSpecifier.text,
+        importedName: 'default',
+        namespace: false
+      };
+    const bindings = statement.importClause.namedBindings;
+    if (bindings && ts.isNamespaceImport(bindings)) {
+      if (bindings.name.text === localName)
+        return {
+          moduleSpecifier: statement.moduleSpecifier.text,
+          namespace: true
+        };
+    } else if (bindings && ts.isNamedImports(bindings)) {
+      for (const element of bindings.elements) {
+        if (!element.isTypeOnly && element.name.text === localName)
+          return {
+            moduleSpecifier: statement.moduleSpecifier.text,
+            importedName: element.propertyName?.text ?? element.name.text,
+            namespace: false
+          };
+      }
+    }
+  }
+  return undefined;
+}
+
+function resolveChildProcessImport(
+  binding: ImportBinding,
+  sourceFile: ts.SourceFile,
+  modules: ProjectModuleResolver,
+  depth: number,
+  visited: Set<string>
+): BindingKind | undefined {
+  if (depth > MAX_BINDING_RESOLUTION_DEPTH) return 'dynamicChildProcess';
+  if (isChildProcessModule(binding.moduleSpecifier)) {
+    // Node exposes the CommonJS built-in export as the default ESM binding.
+    // Treat it like a namespace so default imports retain method provenance.
+    if (binding.namespace || binding.importedName === 'default')
+      return 'namespace';
+    return binding.importedName
+      ? childProcessExport(binding.importedName)
+      : undefined;
+  }
+  spendProjectModuleResolution(modules);
+  const target = modules.resolveModule(
+    binding.moduleSpecifier,
+    sourceFile.fileName
+  );
+  if (!target) return undefined;
+  if (binding.namespace) {
+    for (const name of [
+      'exec',
+      'execSync',
+      'spawn',
+      'spawnSync',
+      'execFile',
+      'execFileSync',
+      'fork'
+    ]) {
+      if (resolveChildProcessExport(target, name, modules, depth + 1, visited))
+        return 'namespace';
+    }
+    return undefined;
+  }
+  return binding.importedName
+    ? resolveChildProcessExport(
+        target,
+        binding.importedName,
+        modules,
+        depth + 1,
+        visited
+      )
+    : undefined;
+}
+
+function resolveChildProcessExport(
+  sourceFile: ts.SourceFile,
+  exportName: string,
+  modules: ProjectModuleResolver,
+  depth: number,
+  visited: Set<string>
+): BindingKind | undefined {
+  if (depth > MAX_BINDING_RESOLUTION_DEPTH) return 'dynamicChildProcess';
+  const cache = modules.exportCache.get(sourceFile);
+  if (cache?.has(exportName)) return cache.get(exportName) ?? undefined;
+  const visitKey = `${canonicalPath(sourceFile.fileName)}#export:${exportName}`;
+  if (visited.has(visitKey)) return undefined;
+  spendProjectModuleResolution(modules);
+  visited.add(visitKey);
+  let result: BindingKind | undefined;
+  const bindings =
+    modules.exportsBySource.get(sourceFile)?.get(exportName) ?? [];
+  for (const binding of bindings) {
+    let candidate: BindingKind | undefined;
+    if (binding.kind === 'module' || binding.kind === 'namespace') {
+      candidate = resolveChildProcessImport(
+        binding.kind === 'namespace'
+          ? { moduleSpecifier: binding.moduleSpecifier, namespace: true }
+          : {
+              moduleSpecifier: binding.moduleSpecifier,
+              importedName: binding.importedName,
+              namespace: false
+            },
+        sourceFile,
+        modules,
+        depth + 1,
+        visited
+      );
+    } else if (binding.kind === 'local') {
+      candidate = resolveLocalChildProcessValue(
+        sourceFile,
+        binding.localName,
+        modules,
+        depth + 1,
+        visited
+      );
+    } else if (binding.kind === 'expression') {
+      candidate = resolveChildProcessExpression(
+        binding.expression,
+        sourceFile,
+        modules,
+        depth + 1,
+        visited
+      );
+    } else {
+      candidate = resolveLocalChildProcessValue(
+        sourceFile,
+        exportName,
+        modules,
+        depth + 1,
+        visited
+      );
+    }
+    if (!candidate) continue;
+    if (result && result !== candidate) {
+      result = 'dynamicChildProcess';
+      break;
+    }
+    result = candidate;
+  }
+
+  if (!result) {
+    for (const moduleSpecifier of modules.exportStarsBySource.get(sourceFile) ??
+      []) {
+      spendProjectModuleResolution(modules);
+      const target = modules.resolveModule(
+        moduleSpecifier,
+        sourceFile.fileName
+      );
+      if (!target) continue;
+      const candidate = resolveChildProcessExport(
+        target,
+        exportName,
+        modules,
+        depth + 1,
+        visited
+      );
+      if (!candidate) continue;
+      if (result && result !== candidate) {
+        result = 'dynamicChildProcess';
+        break;
+      }
+      result = candidate;
+    }
+  }
+  if (!result) {
+    const commonJsModule = modules.commonJsModuleBySource.get(sourceFile);
+    const moduleKind = commonJsModule
+      ? resolveChildProcessExpression(
+          commonJsModule,
+          sourceFile,
+          modules,
+          depth + 1,
+          visited
+        )
+      : undefined;
+    if (moduleKind === 'namespace') result = childProcessExport(exportName);
+    else if (
+      moduleKind === 'dynamicChildProcess' &&
+      childProcessExport(exportName)
+    )
+      result = moduleKind;
+  }
+  visited.delete(visitKey);
+  cacheProjectModuleExport(sourceFile, exportName, result, modules);
+  return result;
+}
+
+function resolveLocalChildProcessValue(
+  sourceFile: ts.SourceFile,
+  localName: string,
+  modules: ProjectModuleResolver,
+  depth: number,
+  visited: Set<string>
+): BindingKind | undefined {
+  if (depth > MAX_BINDING_RESOLUTION_DEPTH) return 'dynamicChildProcess';
+  const visitKey = `${canonicalPath(sourceFile.fileName)}#local:${localName}`;
+  if (visited.has(visitKey)) return undefined;
+  spendProjectModuleResolution(modules);
+  visited.add(visitKey);
+
+  const imported = findImportBinding(sourceFile, localName, modules);
+  if (imported) {
+    const result = resolveChildProcessImport(
+      imported,
+      sourceFile,
+      modules,
+      depth + 1,
+      visited
+    );
+    visited.delete(visitKey);
+    return result;
+  }
+
+  const reference = modules.localsBySource.get(sourceFile)?.get(localName);
+  if (!reference) {
+    visited.delete(visitKey);
+    return undefined;
+  }
+  const namespace = resolveChildProcessExpression(
+    reference.declaration.initializer,
+    sourceFile,
+    modules,
+    depth + 1,
+    visited
+  );
+  let result =
+    !reference.propertyName || !isPotentialChildProcess(namespace)
+      ? namespace
+      : namespace === 'namespace'
+        ? childProcessExport(reference.propertyName)
+        : namespace;
+  if (
+    !result &&
+    definitelySafeChildProcessValue(reference.declaration.initializer)
+  )
+    result = 'shadow';
+
+  for (const write of reference.writes) {
+    if (write.position === Number.NEGATIVE_INFINITY) continue;
+    const assigned = write.expression
+      ? ts.isIdentifier(write.expression) && write.expression.text === localName
+        ? result
+        : (resolveChildProcessExpression(
+            write.expression,
+            sourceFile,
+            modules,
+            depth + 1,
+            visited
+          ) ??
+          (definitelySafeChildProcessValue(write.expression)
+            ? 'shadow'
+            : undefined))
+      : undefined;
+    if (write.uncertain) {
+      result =
+        isPotentialChildProcess(result) || isPotentialChildProcess(assigned)
+          ? 'dynamicChildProcess'
+          : (assigned ?? 'shadow');
+    } else if (assigned) {
+      result = assigned;
+    } else {
+      result = isPotentialChildProcess(result)
+        ? 'dynamicChildProcess'
+        : 'shadow';
+    }
+  }
+
+  if (
+    reference.writes.some(
+      (write) => write.position === Number.NEGATIVE_INFINITY
+    ) &&
+    reference.writes.some((write) => {
+      if (write.position !== Number.NEGATIVE_INFINITY) return false;
+      if (!write.expression) return isPotentialChildProcess(result);
+      const assigned = resolveChildProcessExpression(
+        write.expression,
+        sourceFile,
+        modules,
+        depth + 1,
+        visited
+      );
+      return (
+        isPotentialChildProcess(result) || isPotentialChildProcess(assigned)
+      );
+    })
+  )
+    result = 'dynamicChildProcess';
+  visited.delete(visitKey);
+  return result;
+}
+
+function resolveChildProcessExpression(
+  expression: ts.Expression | undefined,
+  sourceFile: ts.SourceFile,
+  modules: ProjectModuleResolver,
+  depth: number,
+  visited: Set<string>
+): BindingKind | undefined {
+  if (!expression) return undefined;
+  if (depth > MAX_BINDING_RESOLUTION_DEPTH) return 'dynamicChildProcess';
+  if (ts.isIdentifier(expression))
+    return resolveLocalChildProcessValue(
+      sourceFile,
+      expression.text,
+      modules,
+      depth + 1,
+      visited
+    );
+  if (
+    ts.isParenthesizedExpression(expression) ||
+    ts.isAsExpression(expression) ||
+    ts.isTypeAssertionExpression(expression) ||
+    ts.isNonNullExpression(expression) ||
+    ts.isSatisfiesExpression(expression)
+  )
+    return resolveChildProcessExpression(
+      expression.expression,
+      sourceFile,
+      modules,
+      depth + 1,
+      visited
+    );
+  if (
+    ts.isCallExpression(expression) &&
+    ts.isIdentifier(expression.expression)
+  ) {
+    const requireIsShadowed = declaresTopLevelName(sourceFile, 'require');
+    const [argument] = expression.arguments;
+    if (
+      expression.expression.text === 'require' &&
+      !requireIsShadowed &&
+      expression.arguments.length === 1 &&
+      argument &&
+      ts.isStringLiteral(argument) &&
+      isChildProcessModule(argument.text)
+    )
+      return 'namespace';
+  }
+  if (ts.isPropertyAccessExpression(expression)) {
+    const receiver = resolveChildProcessExpression(
+      expression.expression,
+      sourceFile,
+      modules,
+      depth + 1,
+      visited
+    );
+    return receiver === 'namespace'
+      ? childProcessExport(expression.name.text)
+      : undefined;
+  }
+  if (
+    ts.isElementAccessExpression(expression) &&
+    expression.argumentExpression &&
+    ts.isStringLiteral(expression.argumentExpression)
+  ) {
+    const receiver = resolveChildProcessExpression(
+      expression.expression,
+      sourceFile,
+      modules,
+      depth + 1,
+      visited
+    );
+    return receiver === 'namespace'
+      ? childProcessExport(expression.argumentExpression.text)
+      : undefined;
+  }
+  return undefined;
+}
 
 /** Selects the TypeScript parser mode from a source filename extension. */
 function scriptKind(filePath: string): ts.ScriptKind {
@@ -98,39 +974,97 @@ function scopeKind(node: ts.Node): ScopeKind | undefined {
 
 const MAX_AST_TRAVERSAL_DEPTH = 512;
 const MAX_AST_TRAVERSAL_NODES = 1_000_000;
+const MAX_BINDING_RESOLUTION_DEPTH = 256;
 
 function createScopeTree(
   node: ts.Node,
   parent: Scope | undefined,
   scopes: WeakMap<ts.Node, Scope>,
   budget: { nodes: number } = { nodes: 0 },
-  depth = 0
+  depth = 0,
+  projectModules?: ProjectModuleResolver
 ): Scope {
   budget.nodes += 1;
   if (depth > MAX_AST_TRAVERSAL_DEPTH || budget.nodes > MAX_AST_TRAVERSAL_NODES)
     throw new Error('AST source traversal budget exceeded');
   const kind = scopeKind(node);
   const scope = kind
-    ? { kind, parent, bindings: new Map<string, BindingKind>() }
+    ? {
+        kind,
+        node,
+        parent,
+        bindings: new Map<string, BindingKind>(),
+        writes: new Map<string, BindingWrite[]>(),
+        dynamicWrites: new Set<string>(),
+        projectModules
+      }
     : (parent ?? {
         kind: 'source' as const,
-        bindings: new Map<string, BindingKind>()
+        node,
+        bindings: new Map<string, BindingKind>(),
+        writes: new Map<string, BindingWrite[]>(),
+        dynamicWrites: new Set<string>(),
+        projectModules
       });
   scopes.set(node, scope);
   ts.forEachChild(node, (child) => {
-    createScopeTree(child, scope, scopes, budget, depth + 1);
+    createScopeTree(child, scope, scopes, budget, depth + 1, projectModules);
   });
   return scope;
 }
 
-function lookupBinding(scope: Scope, name: string): BindingKind | undefined {
+function lookupBinding(
+  scope: Scope,
+  name: string,
+  position = Number.POSITIVE_INFINITY,
+  depth = 0
+): BindingKind | undefined {
+  if (depth > MAX_BINDING_RESOLUTION_DEPTH) return 'dynamicChildProcess';
   for (
     let current: Scope | undefined = scope;
     current;
     current = current.parent
   ) {
     const binding = current.bindings.get(name);
-    if (binding) return binding;
+    if (binding) {
+      if (current.dynamicWrites.has(name)) return 'dynamicChildProcess';
+      const writes = current.writes.get(name);
+      if (!writes?.length) return binding;
+      let low = 0;
+      let high = writes.length;
+      while (low < high) {
+        const middle = low + Math.floor((high - low) / 2);
+        const write = writes[middle];
+        if (write && write.position < position) low = middle + 1;
+        else high = middle;
+      }
+      if (low === 0) return binding;
+      const write = writes[low - 1];
+      if (!write) return 'dynamicChildProcess';
+      if (write.uncertain) {
+        const prior = lookupBinding(current, name, write.position, depth + 1);
+        const assigned = write.expression
+          ? childProcessValue(
+              write.expression,
+              current,
+              write.position,
+              depth + 1
+            )
+          : undefined;
+        return isPotentialChildProcess(prior) ||
+          isPotentialChildProcess(assigned)
+          ? 'dynamicChildProcess'
+          : 'shadow';
+      }
+      return write.expression
+        ? (childProcessValue(
+            write.expression,
+            current,
+            write.position,
+            depth + 1
+          ) ?? 'shadow')
+        : 'shadow';
+    }
   }
   return undefined;
 }
@@ -170,7 +1104,9 @@ function propertyName(name: ts.PropertyName | undefined): string | undefined {
 
 function requiredChildProcess(
   expression: ts.Expression | undefined,
-  scope: Scope
+  scope: Scope,
+  position = Number.POSITIVE_INFINITY,
+  depth = 0
 ): boolean {
   if (
     !expression ||
@@ -178,7 +1114,7 @@ function requiredChildProcess(
     !ts.isIdentifier(expression.expression) ||
     expression.expression.text !== 'require' ||
     expression.arguments.length !== 1 ||
-    lookupBinding(scope, 'require') !== undefined
+    lookupBinding(scope, 'require', position, depth + 1) !== undefined
   )
     return false;
   const [argument] = expression.arguments;
@@ -191,7 +1127,9 @@ function requiredChildProcess(
 
 function requiredFileSystem(
   expression: ts.Expression | undefined,
-  scope: Scope
+  scope: Scope,
+  position = Number.POSITIVE_INFINITY,
+  depth = 0
 ): boolean {
   if (
     !expression ||
@@ -199,7 +1137,7 @@ function requiredFileSystem(
     !ts.isIdentifier(expression.expression) ||
     expression.expression.text !== 'require' ||
     expression.arguments.length !== 1 ||
-    lookupBinding(scope, 'require') !== undefined
+    lookupBinding(scope, 'require', position, depth + 1) !== undefined
   )
     return false;
   const [argument] = expression.arguments;
@@ -212,7 +1150,9 @@ function requiredFileSystem(
 
 function requiredUnsafeDeserializer(
   expression: ts.Expression | undefined,
-  scope: Scope
+  scope: Scope,
+  position = Number.POSITIVE_INFINITY,
+  depth = 0
 ): boolean {
   if (
     !expression ||
@@ -220,7 +1160,7 @@ function requiredUnsafeDeserializer(
     !ts.isIdentifier(expression.expression) ||
     expression.expression.text !== 'require' ||
     expression.arguments.length !== 1 ||
-    lookupBinding(scope, 'require') !== undefined
+    lookupBinding(scope, 'require', position, depth + 1) !== undefined
   )
     return false;
   const [argument] = expression.arguments;
@@ -233,13 +1173,41 @@ function requiredUnsafeDeserializer(
 
 function childProcessValue(
   expression: ts.Expression | undefined,
-  scope: Scope
+  scope: Scope,
+  position = Number.POSITIVE_INFINITY,
+  depth = 0
 ): BindingKind | undefined {
   if (!expression) return undefined;
-  if (ts.isIdentifier(expression)) return lookupBinding(scope, expression.text);
-  if (requiredChildProcess(expression, scope)) return 'namespace';
-  if (requiredFileSystem(expression, scope)) return 'filesystem';
-  if (requiredUnsafeDeserializer(expression, scope))
+  if (depth > MAX_BINDING_RESOLUTION_DEPTH) return 'dynamicChildProcess';
+  if (ts.isIdentifier(expression)) {
+    const binding = lookupBinding(scope, expression.text, position, depth + 1);
+    if (
+      !scope.projectModules ||
+      (binding !== 'shadow' && binding !== undefined) ||
+      bindingOwner(scope, expression.text)?.kind !== 'source'
+    )
+      return binding;
+    const imported = findImportBinding(
+      expression.getSourceFile(),
+      expression.text,
+      scope.projectModules
+    );
+    if (!imported) return binding;
+    return (
+      resolveChildProcessImport(
+        imported,
+        expression.getSourceFile(),
+        scope.projectModules,
+        depth + 1,
+        new Set<string>()
+      ) ?? binding
+    );
+  }
+  if (requiredChildProcess(expression, scope, position, depth))
+    return 'namespace';
+  if (requiredFileSystem(expression, scope, position, depth))
+    return 'filesystem';
+  if (requiredUnsafeDeserializer(expression, scope, position, depth))
     return 'unsafeDeserializerNamespace';
   if (
     !ts.isPropertyAccessExpression(expression) &&
@@ -253,7 +1221,12 @@ function childProcessValue(
       ? expression.argumentExpression.text
       : undefined;
   if (!method) return undefined;
-  const receiver = childProcessValue(expression.expression, scope);
+  const receiver = childProcessValue(
+    expression.expression,
+    scope,
+    position,
+    depth + 1
+  );
   if (receiver === 'namespace') {
     if (method === 'exec') return 'exec';
     if (method === 'execSync') return 'execSync';
@@ -284,8 +1257,13 @@ function shellOptionEnabled(call: ts.CallExpression): boolean {
 }
 
 function invokesShell(call: ts.CallExpression, scope: Scope): boolean {
-  const kind = childProcessValue(call.expression, scope);
-  if (kind === 'exec' || kind === 'execSync') return true;
+  const kind = childProcessValue(
+    call.expression,
+    scope,
+    call.expression.getStart()
+  );
+  if (kind === 'exec' || kind === 'execSync' || kind === 'dynamicChildProcess')
+    return true;
   return (
     ['spawn', 'spawnSync', 'execFile', 'execFileSync'].includes(kind ?? '') &&
     shellOptionEnabled(call)
@@ -301,7 +1279,8 @@ function dynamicChildProcessCall(
     ts.isElementAccessExpression(target) &&
     target.argumentExpression &&
     !ts.isStringLiteral(target.argumentExpression) &&
-    childProcessValue(target.expression, scope) === 'namespace'
+    childProcessValue(target.expression, scope, target.getStart()) ===
+      'namespace'
   );
 }
 
@@ -316,15 +1295,80 @@ function aliasReference(
   return undefined;
 }
 
+function assignmentMayBeConditional(node: ts.Node, owner: Scope): boolean {
+  for (let current = node.parent; current; current = current.parent) {
+    if (current === owner.node) return false;
+    if (
+      ts.isFunctionLike(current) ||
+      ts.isIfStatement(current) ||
+      ts.isSwitchStatement(current) ||
+      ts.isCaseClause(current) ||
+      ts.isForStatement(current) ||
+      ts.isForInStatement(current) ||
+      ts.isForOfStatement(current) ||
+      ts.isWhileStatement(current) ||
+      ts.isDoStatement(current) ||
+      ts.isTryStatement(current) ||
+      ts.isCatchClause(current) ||
+      ts.isConditionalExpression(current)
+    )
+      return true;
+    if (
+      ts.isBinaryExpression(current) &&
+      (current.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+        current.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+        current.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
+    )
+      return true;
+  }
+  return true;
+}
+
+function assignmentInNestedFunction(node: ts.Node, owner: Scope): boolean {
+  for (let current = node.parent; current; current = current.parent) {
+    if (current === owner.node) return false;
+    if (ts.isFunctionLike(current)) return true;
+  }
+  return false;
+}
+
 /** Assigns imported dangerous functions to lexical scopes, respecting shadowing. */
 function collectBindings(
   sourceFile: ts.SourceFile,
   scopes: WeakMap<ts.Node, Scope>
 ): void {
   const pending: PendingBinding[] = [];
+  const seenScopes = new Set<Scope>();
   const collect = (node: ts.Node): void => {
     const scope = scopes.get(node);
     if (!scope) return;
+    seenScopes.add(scope);
+
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+      ts.isIdentifier(node.left)
+    ) {
+      const owner = bindingOwner(scope, node.left.text);
+      if (owner) {
+        const writes = owner.writes.get(node.left.text) ?? [];
+        const nestedFunctionWrite = assignmentInNestedFunction(node, owner);
+        writes.push({
+          position: nestedFunctionWrite
+            ? Number.NEGATIVE_INFINITY
+            : node.getStart(sourceFile),
+          ...(node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+            ? { expression: node.right }
+            : {}),
+          uncertain:
+            node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+            nestedFunctionWrite ||
+            assignmentMayBeConditional(node, owner)
+        });
+        owner.writes.set(node.left.text, writes);
+      }
+    }
 
     if (ts.isImportDeclaration(node) && node.importClause) {
       const moduleName = ts.isStringLiteral(node.moduleSpecifier)
@@ -346,11 +1390,13 @@ function collectBindings(
       if (node.importClause.name)
         scope.bindings.set(
           node.importClause.name.text,
-          fromFileSystem
-            ? 'filesystem'
-            : fromUnsafeDeserializer
-              ? 'unsafeDeserializerNamespace'
-              : 'shadow'
+          fromChildProcess
+            ? 'namespace'
+            : fromFileSystem
+              ? 'filesystem'
+              : fromUnsafeDeserializer
+                ? 'unsafeDeserializerNamespace'
+                : 'shadow'
         );
       const bindings = node.importClause.namedBindings;
       if (bindings && ts.isNamespaceImport(bindings)) {
@@ -476,6 +1522,10 @@ function collectBindings(
     ts.forEachChild(node, collect);
   };
   collect(sourceFile);
+  for (const scope of seenScopes) {
+    for (const writes of scope.writes.values())
+      writes.sort((left, right) => left.position - right.position);
+  }
 
   const dependents = new Map<Scope, Map<string, PendingBinding[]>>();
   for (const item of pending) {
@@ -497,7 +1547,11 @@ function collectBindings(
     const item = queue[cursor];
     if (!item) continue;
     queued.delete(item);
-    const kind = childProcessValue(item.initializer, item.scope);
+    const kind = childProcessValue(
+      item.initializer,
+      item.scope,
+      item.initializer?.getStart(sourceFile)
+    );
     if (!kind || kind === 'shadow') continue;
     const changedNames: string[] = [];
     if (ts.isIdentifier(item.name)) {
@@ -543,6 +1597,25 @@ function collectBindings(
         queued.add(dependent);
         queue.push(dependent);
       }
+    }
+  }
+
+  for (const scope of seenScopes) {
+    for (const [name, writes] of scope.writes) {
+      if (
+        writes.some((write) => write.position === Number.NEGATIVE_INFINITY) &&
+        (isPotentialChildProcess(scope.bindings.get(name)) ||
+          writes.some(
+            (write) =>
+              write.position === Number.NEGATIVE_INFINITY &&
+              isPotentialChildProcess(
+                write.expression
+                  ? childProcessValue(write.expression, scope, write.position)
+                  : undefined
+              )
+          ))
+      )
+        scope.dynamicWrites.add(name);
     }
   }
 }
@@ -611,9 +1684,15 @@ function childProcessRuleForCall(
   call: ts.CallExpression,
   scope: Scope
 ): AstSecurityRule | undefined {
-  const kind = childProcessValue(call.expression, scope);
+  const kind = childProcessValue(
+    call.expression,
+    scope,
+    call.expression.getStart()
+  );
   if (kind === 'exec') return astSecurityRules.childProcessExec;
   if (kind === 'execSync') return astSecurityRules.childProcessExecSync;
+  if (kind === 'dynamicChildProcess')
+    return astSecurityRules.dynamicCommandExecution;
   return undefined;
 }
 
@@ -675,9 +1754,16 @@ function collectFlowNames(
   const budget = { used: 0 };
   const tainted: TaintedNames = new Map();
   const callReturns = new WeakMap<ts.CallExpression, FlowBinding>();
-  const sourceScope =
-    (sourceFiles[0] && scopes.get(sourceFiles[0])) ??
-    ({ kind: 'source', bindings: new Map<string, BindingKind>() } as const);
+  const fallbackSourceFile =
+    sourceFiles[0] ??
+    ts.createSourceFile('empty.ts', '', ts.ScriptTarget.Latest);
+  const sourceScope = (sourceFiles[0] && scopes.get(sourceFiles[0])) ?? {
+    kind: 'source' as const,
+    node: fallbackSourceFile,
+    bindings: new Map<string, BindingKind>(),
+    writes: new Map<string, BindingWrite[]>(),
+    dynamicWrites: new Set<string>()
+  };
   const reverse = new Map<Scope, Map<string, FlowBinding[]>>();
   const queue: FlowBinding[] = [];
   const queued = new Map<Scope, Set<string>>();
@@ -1354,10 +2440,52 @@ export function createAstProjectAnalysis(
 
   const scopes = new WeakMap<ts.Node, Scope>();
   const traversalBudget = { nodes: 0 };
+  const sourceFilesByAbsolutePath = new Map(
+    parsedFiles.map((sourceFile) => [
+      canonicalPath(sourceFile.fileName),
+      sourceFile
+    ])
+  );
+  const projectModules: ProjectModuleResolver = {
+    sourceFilesByAbsolutePath,
+    scopes,
+    resolutionWork: 0,
+    exportCacheEntries: 0,
+    importsBySource: new WeakMap(),
+    exportsBySource: new WeakMap(),
+    exportStarsBySource: new WeakMap(),
+    localsBySource: new WeakMap(),
+    commonJsModuleBySource: new WeakMap(),
+    exportCache: new WeakMap(),
+    resolveModule: (moduleSpecifier, containingFile) => {
+      const resolved = ts.resolveModuleName(
+        moduleSpecifier,
+        containingFile,
+        options,
+        host
+      ).resolvedModule;
+      return resolved
+        ? sourceFilesByAbsolutePath.get(
+            canonicalPath(resolved.resolvedFileName)
+          )
+        : undefined;
+    }
+  };
   for (const sourceFile of parsedFiles) {
-    createScopeTree(sourceFile, undefined, scopes, traversalBudget);
+    createScopeTree(
+      sourceFile,
+      undefined,
+      scopes,
+      traversalBudget,
+      0,
+      projectModules
+    );
+  }
+  Object.assign(projectModules, indexProjectModuleSources(parsedFiles));
+  for (const sourceFile of parsedFiles) {
     collectBindings(sourceFile, scopes);
   }
+  indexProjectModuleWrites(parsedFiles, scopes, projectModules);
   const checker = program.getTypeChecker();
   const inputPathByAbsolutePath = new Map(
     inputs.map((input) => [canonicalPath(input.absolutePath), input.filePath])
@@ -2079,7 +3207,8 @@ function sourceSinkRule(
       : '';
   const first = node.arguments[0];
   if (
-    childProcessValue(target, scope) === 'unsafeDeserializer' &&
+    childProcessValue(target, scope, target.getStart()) ===
+      'unsafeDeserializer' &&
     first &&
     isTainted(first, scope, tainted, callReturns)
   )
