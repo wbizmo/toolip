@@ -179,6 +179,12 @@ export class GitHubAppApiClient {
     const headSha = summary.revision ?? work.revision;
     if (!headSha || !SHA.test(headSha))
       throw new Error('github-check-revision-unavailable');
+    if (
+      work.revision &&
+      summary.revision &&
+      summary.revision.toLowerCase() !== work.revision.toLowerCase()
+    )
+      throw new Error('github-check-revision-mismatch');
     const [owner, name] = repository.name.split('/');
     if (!owner || !name) throw new Error('github-check-repository-invalid');
     const token = await this.installationToken(repository, signal);

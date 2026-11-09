@@ -232,6 +232,27 @@ describe('least-privilege GitHub App check-run API', () => {
     expect(requests).toBe(0);
   });
 
+  it('rejects a check summary for a revision different from its webhook work', async () => {
+    let requests = 0;
+    const client = new GitHubAppApiClient({
+      appId: '12345',
+      privateKey,
+      now: () => now,
+      fetchImplementation: async () => {
+        requests += 1;
+        return response({}, 201);
+      }
+    });
+    await expect(
+      client.createSecurityCheck(work, repository, {
+        status: 'complete',
+        findingCount: 0,
+        revision: 'b'.repeat(40)
+      })
+    ).rejects.toThrow('github-check-revision-mismatch');
+    expect(requests).toBe(0);
+  });
+
   it('keeps cancellation and timeout active while reading an API response body', async () => {
     const client = new GitHubAppApiClient({
       appId: '12345',
