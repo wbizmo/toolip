@@ -157,6 +157,28 @@ describe('finding baselines and remediation SLAs', () => {
     ]);
   });
 
+  it('does not mark an SLA overdue at the exact deadline boundary', () => {
+    const record = {
+      fingerprint: 'boundary-finding',
+      ruleId: 'TLP-TEST-001',
+      severity: 'high' as const,
+      firstSeenAt: '2026-11-01T00:00:00.000Z'
+    };
+    const entry = {
+      ...historyEntry('boundary', [record.fingerprint]),
+      findingRecords: [record]
+    };
+    const policy = { critical: 1, high: 7, medium: 30, low: 90, info: 180 };
+    expect(
+      remediationSla(entry, policy, new Date('2026-11-08T00:00:00.000Z'))[0]
+        ?.overdue
+    ).toBe(false);
+    expect(
+      remediationSla(entry, policy, new Date('2026-11-08T00:00:00.001Z'))[0]
+        ?.overdue
+    ).toBe(true);
+  });
+
   it('renders complete deltas as Markdown, escaped HTML and SARIF', () => {
     const baseline = historyEntry('base-1', ['fixed-fingerprint', 'same']);
     baseline.findingRecords = [

@@ -6,6 +6,17 @@ against a canonical SHA-256 digest. That digest detects corruption; it does not
 establish who produced the data. Signed snapshots use Ed25519 and bind the
 signature to the full snapshot payload and key identifier.
 
+Each generated file is also a versioned `toolip-advisory-bundle` v1 document.
+Its manifest lists the exact record count, covered package ecosystems, source
+versions, source record counts, oldest local capture timestamp, and oldest
+provider update time available in that source's records. Source versions are
+`v1` for OSV and EPSS, the CISA `catalogVersion` for KEV, and `unknown` when a
+local record cannot prove its source version. OSV records without a provider
+modification timestamp use the local capture timestamp. The JSON Schema is
+[`toolip-advisory-bundle-v1.schema.json`](schemas/toolip-advisory-bundle-v1.schema.json).
+Manifest fields are recomputed from the records and are included in the digest
+and signature, so editing them cannot claim unsupported coverage.
+
 Create a private key with owner-only permissions and export its public key:
 
 ```sh
@@ -44,12 +55,28 @@ requires the matching signing key. Signing with a new key does not carry forward
 records from an unsigned or unverified snapshot.
 
 `toolip intelligence snapshot verify --file ... --public-key ...` checks both
-the digest and signature. Without `--public-key`, the command reports digest
-integrity and the signature state separately. `--max-advisory-age-days` marks
-old OSV records and EPSS/KEV feeds stale; stale or missing records remain
-unknown and cannot support an all-clear result. The default storage is local to
-the path supplied by the user; Toolip does not publish snapshots or keys.
+the digest and signature. Add `--public-key-id ...` to pin the expected signer
+identifier as well as the public key. Without `--public-key`, the command
+reports digest integrity and the signature state separately. Its freshness
+check uses the oldest captured record, not only the time the bundle was
+rewritten; an empty bundle or one without declared ecosystem coverage is
+reported incomplete. The CLI reports ecosystems present in the manifest, but
+the verifier cannot infer which ecosystems a separate project requires.
+`--max-advisory-age-days` marks old records and feeds stale; stale or missing
+records remain unknown and cannot support an all-clear result. The default
+storage is local to the path supplied by the user; Toolip does not publish
+snapshots or keys.
 
 Snapshot refresh uses the selected lockfile graph, bounded provider responses,
 timeouts and retries. Unsupported ecosystems and unresolved package instances
 remain incomplete. Snapshot contents are capped at 64 MiB and 200,000 records.
+Offline scans still report each missing, stale or unsupported advisory record
+as incomplete; the manifest does not turn missing ecosystem coverage into a
+clean result.
+
+Manifest construction is O(R + V), where `R` is the record count and `V` is
+the total number of OSV vulnerability entries inspected for timestamps. Flush
+sorts record keys in O(R log R) time, then canonicalizes and hashes the bounded
+payload in O(B), where `B` is its serialized byte size. Peak additional space
+is O(B + R + V) for the merged record map, manifest, canonical payload and
+atomic replacement buffer; `B` is capped at 64 MiB and `R` at 200,000.

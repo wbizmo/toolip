@@ -24,18 +24,30 @@ currently queries npmjs.org only.
 
 Signals include release bursts, long periods without a release, new lifecycle
 scripts, version-to-version publisher or maintainer identity changes, source
-repository changes, and exact-version deprecation. Publisher and maintainer
-identities are never included in output; hashes are used only to compare
-metadata inside the process. A missing history is reported as unavailable,
-not as zero changes. Publisher, maintainer and repository changes have low
-confidence because package ownership, automation and release practices can
-change for benign reasons. No single signal is a compromise verdict, and the
-CLI does not automatically block or suppress a package.
+repository changes, and exact-version deprecation. When npm supplies
+per-version `_npmUser` or maintainer metadata, output includes at most the
+latest five dated publisher/maintainer events, each bound to the exact package,
+version, public registry and release timestamp. Publisher names and maintainer
+emails are not emitted; publisher identities and maintainer sets are represented
+by SHA-256 identifiers so changes can be reviewed without exposing raw
+identities; these stable hashes are pseudonyms, not an anonymity guarantee. A
+missing history is reported as unavailable, not as zero changes. Incomplete
+per-version metadata is reported as partial. Publisher, maintainer and
+repository changes have low confidence because
+package ownership, automation and release practices can change for benign
+reasons. No single signal is a compromise verdict, and the CLI does not
+automatically block or suppress a package.
 
 The provider evaluates at most the latest five dated releases when comparing
 publisher and maintainer identities, and relies on public packument metadata.
-It cannot prove a historical owner transfer, verify an npm provenance
-attestation, identify a private registry package, establish maintainer intent,
-or detect a compromise that leaves no registry-visible evidence. Treat missing
+For `V` packument versions the comparison costs O(V log V) time for release
+ordering and O(V) peak metadata space; the registry response is capped at 8 MiB
+and 10,000 versions. For `I` lock instances (capped at 1,000), exact provider
+requests are deduplicated and run with concurrency `C` (default 6), so the
+result join is O(I + F) for `F` emitted signals. Each response has an 8 MiB
+input cap; parsed-object memory depends on JSON shape. The tool cannot prove a
+historical owner transfer, verify an npm provenance attestation, identify a
+private registry package, establish maintainer intent, or detect a compromise
+that leaves no registry-visible evidence. Treat missing
 publisher, maintainer, release or repository history as unknown and confirm
 important changes against independently trusted project and registry records.

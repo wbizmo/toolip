@@ -31,6 +31,24 @@ export type PackageHealthSignal = {
   evidence: string;
 };
 
+export type NpmPublisherEvent = {
+  package: string;
+  version: string;
+  registry: typeof ENDPOINT;
+  publishedAt: string;
+  publisherIdentitySha256: string;
+  confidence: 'low';
+};
+
+export type NpmMaintainerEvent = {
+  package: string;
+  version: string;
+  registry: typeof ENDPOINT;
+  publishedAt: string;
+  maintainerSetSha256: string;
+  confidence: 'low';
+};
+
 export type NpmPackageHealth = {
   package: string;
   installedVersion: string;
@@ -40,8 +58,10 @@ export type NpmPackageHealth = {
   lastPublishedAt?: string;
   deprecated?: boolean;
   maintainersObserved?: number;
-  maintainerHistoryStatus: 'observed' | 'unavailable';
-  publisherHistoryStatus: 'observed' | 'unavailable';
+  maintainerHistoryStatus: 'observed' | 'partial' | 'unavailable';
+  publisherHistoryStatus: 'observed' | 'partial' | 'unavailable';
+  publisherEvents?: NpmPublisherEvent[];
+  maintainerEvents?: NpmMaintainerEvent[];
   publisherChangesObserved?: number;
   releaseHistoryStatus: 'observed' | 'unavailable';
   releaseCount7Days?: number;
@@ -119,22 +139,31 @@ function scriptNames(value: unknown): string[] {
 function publisher(value: unknown): string | undefined {
   if (!isRecord(value)) return undefined;
   const identity = value._npmUser;
-  return isRecord(identity) && typeof identity.name === 'string'
-    ? identity.name.slice(0, 128)
+  if (!isRecord(identity) || typeof identity.name !== 'string')
+    return undefined;
+  const name = identity.name.trim();
+  const hasControlCharacter = [...name].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint < 32 || codePoint === 127;
+  });
+  return name.length > 0 && name.length <= 128 && !hasControlCharacter
+    ? name
     : undefined;
 }
 
 function maintainerSet(value: unknown): string | undefined {
   if (!Array.isArray(value) || value.length === 0) return undefined;
-  const identities = value
-    .flatMap((entry) => {
-      if (!isRecord(entry)) return [];
-      const name = typeof entry.name === 'string' ? entry.name.trim() : '';
-      const email = typeof entry.email === 'string' ? entry.email.trim() : '';
-      const identity = `${name.toLowerCase()}\0${email.toLowerCase()}`;
-      return name || email ? [identity] : [];
-    })
-    .sort();
+  const identities = [
+    ...new Set(
+      value.flatMap((entry) => {
+        if (!isRecord(entry)) return [];
+        const name = typeof entry.name === 'string' ? entry.name.trim() : '';
+        const email = typeof entry.email === 'string' ? entry.email.trim() : '';
+        const identity = `${name.toLowerCase()}\0${email.toLowerCase()}`;
+        return name || email ? [identity] : [];
+      })
+    )
+  ].sort();
   if (identities.length === 0) return undefined;
   return createHash('sha256').update(identities.join('\0')).digest('hex');
 }
@@ -412,14 +441,20 @@ export class NpmPackageHealthClient {
     const installed = versions[installedVersion];
     const latestVersion = latest ? versions[latest] : undefined;
     if (!isRecord(installed)) throw new Error('installed-version-not-found');
+    assertVersionIdentity(installed, packageName, installedVersion);
 
     const published = Object.entries(times)
       .flatMap(([version, date]) => {
-        if (version === 'created' || version === 'modified' || !isDate(date)) {
-          return [];
+        if (version === 'created' || version === 'modified') return [];
+        if (
+          version.length === 0 ||
+          version.length > 256 ||
+          !isDate(date) ||
+          Date.parse(date) > now.getTime()
+        ) {
+          throw new Error('registry-packument-invalid');
         }
-        const timestamp = Date.parse(date);
-        return timestamp <= now.getTime() ? [{ version, date: timestamp }] : [];
+        return [{ version, date: Date.parse(date) }];
       })
       .sort(
         (left, right) =>
@@ -429,19 +464,55 @@ export class NpmPackageHealthClient {
     const lastSevenDays = published.filter(
       (release) => now.getTime() - release.date <= 7 * 86_400_000
     );
-    const recentPublisherIds = published
-      .slice(-5)
-      .map((release) => publisher(versions[release.version]))
-      .filter((value): value is string => Boolean(value));
-    const historicalMaintainerSets = published
-      .slice(-5)
-      .map((release) => {
-        const metadata = versions[release.version];
-        return isRecord(metadata)
-          ? maintainerSet(metadata.maintainers)
-          : undefined;
-      })
-      .filter((value): value is string => Boolean(value));
+    const recentReleases = published.slice(-5);
+    const publisherEvents = recentReleases.flatMap((release) => {
+      const metadata = versions[release.version];
+      if (metadata !== undefined) {
+        if (!isRecord(metadata)) throw new Error('registry-packument-invalid');
+        assertVersionIdentity(metadata, packageName, release.version);
+      }
+      const publisherId = publisher(metadata);
+      if (!publisherId) return [];
+      return [
+        {
+          package: packageName,
+          version: release.version,
+          registry: ENDPOINT as typeof ENDPOINT,
+          publishedAt: new Date(release.date).toISOString(),
+          publisherIdentitySha256: createHash('sha256')
+            .update(publisherId.toLowerCase())
+            .digest('hex'),
+          confidence: 'low' as const
+        }
+      ];
+    });
+    const maintainerEvents = recentReleases.flatMap((release) => {
+      const metadata = versions[release.version];
+      if (metadata !== undefined) {
+        if (!isRecord(metadata)) throw new Error('registry-packument-invalid');
+        assertVersionIdentity(metadata, packageName, release.version);
+      }
+      const maintainerSetSha256 = isRecord(metadata)
+        ? maintainerSet(metadata.maintainers)
+        : undefined;
+      if (!maintainerSetSha256) return [];
+      return [
+        {
+          package: packageName,
+          version: release.version,
+          registry: ENDPOINT as typeof ENDPOINT,
+          publishedAt: new Date(release.date).toISOString(),
+          maintainerSetSha256,
+          confidence: 'low' as const
+        }
+      ];
+    });
+    const recentPublisherIds = publisherEvents.map(
+      (event) => event.publisherIdentitySha256
+    );
+    const historicalMaintainerSets = maintainerEvents.map(
+      (event) => event.maintainerSetSha256
+    );
     const publisherChanges =
       recentPublisherIds.length >= 2
         ? recentPublisherIds
@@ -555,10 +626,16 @@ export class NpmPackageHealthClient {
         : undefined,
       deprecated,
       maintainersObserved: maintainerCount,
-      maintainerHistoryStatus:
-        historicalMaintainerSets.length >= 2 ? 'observed' : 'unavailable',
-      publisherHistoryStatus:
-        publisherChanges === undefined ? 'unavailable' : 'observed',
+      maintainerHistoryStatus: historyStatus(
+        maintainerEvents.length,
+        recentReleases.length
+      ),
+      publisherHistoryStatus: historyStatus(
+        publisherEvents.length,
+        recentReleases.length
+      ),
+      ...(publisherEvents.length > 0 ? { publisherEvents } : {}),
+      ...(maintainerEvents.length > 0 ? { maintainerEvents } : {}),
       publisherChangesObserved: publisherChanges,
       releaseHistoryStatus: published.length === 0 ? 'unavailable' : 'observed',
       releaseCount7Days:
@@ -566,7 +643,14 @@ export class NpmPackageHealthClient {
       installScripts: scripts,
       sourceRepository: repository,
       signals,
-      warnings: []
+      warnings: [
+        ...(publisherEvents.length < recentReleases.length
+          ? ['npm-publisher-history-incomplete']
+          : []),
+        ...(maintainerEvents.length < recentReleases.length
+          ? ['npm-maintainer-history-incomplete']
+          : [])
+      ]
     };
   }
 
@@ -605,7 +689,40 @@ function isPublicNpmRegistry(value: string | undefined): boolean {
 }
 
 function isDate(value: unknown): value is string {
-  return typeof value === 'string' && Number.isFinite(Date.parse(value));
+  if (typeof value !== 'string') return false;
+  const match = value.match(
+    /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?Z$/u
+  );
+  if (!match) return false;
+  const date = new Date(`${match[1]}T00:00:00.000Z`);
+  return (
+    Number.isFinite(date.getTime()) &&
+    date.toISOString().slice(0, 10) === match[1] &&
+    Number(match[2]) <= 23 &&
+    Number(match[3]) <= 59 &&
+    Number(match[4]) <= 59
+  );
+}
+
+function assertVersionIdentity(
+  metadata: Record<string, unknown>,
+  packageName: string,
+  version: string
+): void {
+  if (
+    (metadata.name !== undefined && metadata.name !== packageName) ||
+    (metadata.version !== undefined && metadata.version !== version)
+  ) {
+    throw new Error('registry-packument-invalid');
+  }
+}
+
+function historyStatus(
+  observed: number,
+  expected: number
+): 'observed' | 'partial' | 'unavailable' {
+  if (observed === 0) return 'unavailable';
+  return observed < expected ? 'partial' : 'observed';
 }
 
 function providerFailureReason(error: unknown): string {

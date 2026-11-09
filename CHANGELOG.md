@@ -42,6 +42,9 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 - Keep signature-verified WASM analyzer bytes in module-private storage so callers cannot mutate executable code after verification.
 - Preserve a pushed upgrade branch when `gh pr create` fails ambiguously; delete it only after GitHub confirms no pull request references that head.
 - Keep Composer branch labels such as `dev-main` in the graph with unknown resolution confidence instead of treating them as exact released versions.
+- Bind VEX suppression to a verified Ed25519 key, trusted authority, recognized justification, evidence, expiry and exact package instance; ignore preexisting suppression metadata and retain suppressed findings for review. Scope OSV fixed-version candidates to the exact ecosystem and package.
+- Add opt-in HMAC-SHA-256 integrity chains for local scan history, explicit unsigned-history migration, verification before deltas, atomic key rotation and bounded private key-file reads.
+- Add a versioned advisory-bundle manifest with authenticated source/ecosystem coverage metadata and a published JSON Schema; stale or absent coverage remains incomplete offline.
 - Omit matched Dockerfile instruction text from findings entirely; secret values no longer depend on a name-based evidence redactor.
 
 ### Security

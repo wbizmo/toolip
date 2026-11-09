@@ -77,7 +77,62 @@ describe('NpmPackageHealthClient', () => {
 
     expect(result.status).toBe('available');
     expect(result.publisherChangesObserved).toBeGreaterThan(0);
-    expect(result.maintainerHistoryStatus).toBe('observed');
+    expect(result.maintainerHistoryStatus).toBe('partial');
+    expect(result.warnings).toContain('npm-maintainer-history-incomplete');
+    expect(result.publisherEvents).toEqual([
+      {
+        package: 'safe-package',
+        version: '1.0.0',
+        registry: 'https://registry.npmjs.org',
+        publishedAt: '2026-10-28T12:00:00.000Z',
+        publisherIdentitySha256:
+          'a6f29c1b3fce7290a91d3907d3156d13bd2b67121e176021db2193e750477f19',
+        confidence: 'low'
+      },
+      {
+        package: 'safe-package',
+        version: '1.1.0',
+        registry: 'https://registry.npmjs.org',
+        publishedAt: '2026-11-03T12:00:00.000Z',
+        publisherIdentitySha256:
+          '7806545fdd7b02a70ec5c67c2da7f8f4f65771881becdc615c43214baab73fbb',
+        confidence: 'low'
+      },
+      {
+        package: 'safe-package',
+        version: '1.2.0',
+        registry: 'https://registry.npmjs.org',
+        publishedAt: '2026-11-04T12:00:00.000Z',
+        publisherIdentitySha256:
+          '7806545fdd7b02a70ec5c67c2da7f8f4f65771881becdc615c43214baab73fbb',
+        confidence: 'low'
+      },
+      {
+        package: 'safe-package',
+        version: '1.3.0',
+        registry: 'https://registry.npmjs.org',
+        publishedAt: '2026-11-05T12:00:00.000Z',
+        publisherIdentitySha256:
+          '7806545fdd7b02a70ec5c67c2da7f8f4f65771881becdc615c43214baab73fbb',
+        confidence: 'low'
+      },
+      {
+        package: 'safe-package',
+        version: '2.0.0',
+        registry: 'https://registry.npmjs.org',
+        publishedAt: '2026-11-06T12:00:00.000Z',
+        publisherIdentitySha256:
+          '7806545fdd7b02a70ec5c67c2da7f8f4f65771881becdc615c43214baab73fbb',
+        confidence: 'low'
+      }
+    ]);
+    expect(result.maintainerEvents).toHaveLength(3);
+    expect(
+      result.publisherEvents?.every(
+        (event) =>
+          event.package === result.package && event.registry === result.registry
+      )
+    ).toBe(true);
     expect(result.releaseCount7Days).toBe(4);
     expect(result.installScripts).toContain('postinstall');
     expect(result.signals.map(({ id }) => id)).toEqual(
@@ -89,6 +144,7 @@ describe('NpmPackageHealthClient', () => {
       ])
     );
     expect(JSON.stringify(result)).not.toContain('private@example.invalid');
+    expect(JSON.stringify(result)).not.toContain('publisher-a');
     expect(result.status).not.toBe('malicious');
     expect(
       result.signals.every(({ confidence }) => confidence !== 'high')
@@ -163,6 +219,39 @@ describe('NpmPackageHealthClient', () => {
     expect(observed.status).toBe('available');
     expect(observed.publisherHistoryStatus).toBe('unavailable');
     expect(observed.publisherChangesObserved).toBeUndefined();
+  });
+
+  it('rejects impossible registry dates and mismatched package-version history', async () => {
+    const invalidDate = new NpmPackageHealthClient({
+      fetchImplementation: async () =>
+        packument({
+          time: {
+            created: '2024-01-01T00:00:00.000Z',
+            modified: '2026-11-06T12:00:00.000Z',
+            '1.0.0': '2026-02-31T12:00:00.000Z'
+          }
+        }),
+      now: () => new Date('2026-11-06T12:00:00.000Z')
+    });
+    const badDate = await invalidDate.inspect('safe-package', '1.0.0');
+    expect(badDate.status).toBe('unavailable');
+    expect(badDate.warnings).toContain('registry-packument-invalid');
+
+    const source = await packument();
+    const metadata = (await source.json()) as Record<string, unknown>;
+    const versions = metadata.versions as Record<
+      string,
+      Record<string, unknown>
+    >;
+    versions['1.3.0'] = { ...versions['1.3.0'], version: '9.9.9' };
+    const mismatched = new NpmPackageHealthClient({
+      fetchImplementation: async () =>
+        new Response(JSON.stringify(metadata), { status: 200 }),
+      now: () => new Date('2026-11-06T12:00:00.000Z')
+    });
+    const identityMismatch = await mismatched.inspect('safe-package', '1.3.0');
+    expect(identityMismatch.status).toBe('unavailable');
+    expect(identityMismatch.warnings).toContain('registry-packument-invalid');
   });
 
   it('bounds parallel requests, deduplicates provider work and preserves install paths', async () => {

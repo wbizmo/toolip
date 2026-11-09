@@ -26,9 +26,25 @@ const maxEntries = 200_000;
 const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
 
 type StoredRecord = { storedAt: string; value: unknown };
+type SnapshotSource = {
+  id: 'osv' | 'epss' | 'kev' | 'other';
+  version: string;
+  recordCount: number;
+  capturedAt: string;
+  sourceUpdatedAt: string;
+};
+export type SnapshotManifest = {
+  format: 'toolip-advisory-bundle';
+  version: 1;
+  generatedAt: string;
+  recordCount: number;
+  ecosystems: string[];
+  sources: SnapshotSource[];
+};
 type SnapshotPayload = {
   schemaVersion: typeof schemaVersion;
   generatedAt: string;
+  manifest: SnapshotManifest;
   records: Record<string, StoredRecord>;
 };
 type SnapshotSignature = {
@@ -43,6 +59,7 @@ type SnapshotDocument = SnapshotPayload & {
 export type AdvisorySnapshotCacheOptions = {
   now?: () => Date;
   trustedPublicKeyPem?: string;
+  trustedKeyId?: string;
   signingPrivateKeyPem?: string;
   signingKeyId?: string;
   requireSignature?: boolean;
@@ -65,6 +82,126 @@ function canonicalJson(value: unknown): string {
 
 function digest(payload: SnapshotPayload): string {
   return createHash('sha256').update(canonicalJson(payload)).digest('hex');
+}
+
+function sourceId(key: string): SnapshotSource['id'] {
+  if (key.startsWith('osv:v1:')) return 'osv';
+  if (key.startsWith('exploit-intel:v1:epss:')) return 'epss';
+  if (key === 'exploit-intel:v1:kev') return 'kev';
+  return 'other';
+}
+
+function sourceTimestamp(key: string, record: StoredRecord): string {
+  const value = record.value;
+  if (key.startsWith('exploit-intel:v1:epss:')) {
+    const asOf = (value as { asOf?: unknown } | null)?.asOf;
+    const normalized = normalizeSourceDate(asOf);
+    if (normalized) return normalized;
+  }
+  if (key === 'exploit-intel:v1:kev') {
+    const asOf = (value as { asOf?: unknown } | null)?.asOf;
+    const normalized = normalizeSourceDate(asOf);
+    if (normalized) return normalized;
+  }
+  if (key.startsWith('osv:v1:')) {
+    const vulnerabilities = (value as { vulnerabilities?: unknown } | null)
+      ?.vulnerabilities;
+    if (Array.isArray(vulnerabilities)) {
+      let oldest: string | undefined;
+      for (const item of vulnerabilities) {
+        if (!item || typeof item !== 'object') continue;
+        const modified = (item as { modified?: unknown }).modified;
+        const normalized = normalizeSourceDate(modified);
+        if (normalized && (oldest === undefined || normalized < oldest))
+          oldest = normalized;
+      }
+      if (oldest) return oldest;
+    }
+  }
+  return record.storedAt;
+}
+
+function sourceVersion(key: string, record: StoredRecord): string {
+  if (key.startsWith('osv:v1:')) return 'v1';
+  if (key.startsWith('exploit-intel:v1:epss:')) return 'v1';
+  if (key === 'exploit-intel:v1:kev') {
+    const version = (record.value as { catalogVersion?: unknown } | null)
+      ?.catalogVersion;
+    return typeof version === 'string' &&
+      /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(version)
+      ? version
+      : 'unknown';
+  }
+  return 'unknown';
+}
+
+function normalizeSourceDate(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !Number.isFinite(Date.parse(value)))
+    return undefined;
+  return new Date(value).toISOString();
+}
+
+function buildManifest(
+  records: Record<string, StoredRecord>,
+  generatedAt: string
+): SnapshotManifest {
+  const bySource = new Map<
+    string,
+    {
+      id: SnapshotSource['id'];
+      version: string;
+      count: number;
+      capturedAt: string;
+      sourceUpdatedAt: string;
+    }
+  >();
+  const ecosystems = new Set<string>();
+  for (const [key, record] of Object.entries(records)) {
+    const id = sourceId(key);
+    const version = sourceVersion(key, record);
+    const sourceKey = `${id}\0${version}`;
+    const current = bySource.get(sourceKey) ?? {
+      id,
+      version,
+      count: 0,
+      capturedAt: record.storedAt,
+      sourceUpdatedAt: sourceTimestamp(key, record)
+    };
+    current.count++;
+    if (record.storedAt < current.capturedAt)
+      current.capturedAt = record.storedAt;
+    const sourceUpdatedAt = sourceTimestamp(key, record);
+    if (sourceUpdatedAt < current.sourceUpdatedAt)
+      current.sourceUpdatedAt = sourceUpdatedAt;
+    bySource.set(sourceKey, current);
+    if (id === 'osv') {
+      const ecosystem = key.slice('osv:v1:'.length).split(':', 1)[0];
+      if (ecosystem) ecosystems.add(ecosystem);
+    }
+  }
+  const sources = [...bySource.values()]
+    .sort(
+      (left, right) =>
+        left.id.localeCompare(right.id) ||
+        left.version.localeCompare(right.version)
+    )
+    .map((source) => ({
+      id: source.id,
+      version: source.version,
+      recordCount: source.count,
+      capturedAt: source.capturedAt,
+      sourceUpdatedAt: source.sourceUpdatedAt
+    }));
+  return {
+    format: 'toolip-advisory-bundle',
+    version: 1,
+    generatedAt,
+    recordCount: Object.keys(records).length,
+    ecosystems: [...ecosystems].sort((left, right) =>
+      left.localeCompare(right)
+    ),
+    sources
+  };
 }
 
 function isDate(value: unknown): value is string {
@@ -90,7 +227,7 @@ function parseDocument(
   raw: string,
   options: Pick<
     AdvisorySnapshotCacheOptions,
-    'trustedPublicKeyPem' | 'requireSignature'
+    'trustedPublicKeyPem' | 'trustedKeyId' | 'requireSignature' | 'now'
   > = {}
 ): { document: SnapshotDocument; signatureStatus: SnapshotSignatureStatus } {
   let parsed: unknown;
@@ -110,6 +247,20 @@ function parseDocument(
     throw new Error('Advisory snapshot has an unsupported or invalid schema.');
   }
   const document = parsed as SnapshotDocument;
+  const nowMs = (options.now ?? (() => new Date()))().getTime();
+  const futureLimit = nowMs + 5 * 60 * 1000;
+  if (Date.parse(document.generatedAt) > futureLimit)
+    throw new Error('Advisory snapshot generation time is in the future.');
+  const allowedKeys = new Set([
+    'schemaVersion',
+    'generatedAt',
+    'manifest',
+    'records',
+    'sha256',
+    'signature'
+  ]);
+  if (Object.keys(document).some((key) => !allowedKeys.has(key)))
+    throw new Error('Advisory snapshot contains unsupported top-level fields.');
   if (Object.keys(document.records).length > maxEntries) {
     throw new Error('Advisory snapshot exceeds the record limit.');
   }
@@ -120,6 +271,7 @@ function parseDocument(
       !value ||
       typeof value !== 'object' ||
       !isDate(value.storedAt) ||
+      Date.parse(value.storedAt) > futureLimit ||
       !('value' in value)
     ) {
       throw new Error('Advisory snapshot contains an invalid record.');
@@ -128,8 +280,21 @@ function parseDocument(
   const payload: SnapshotPayload = {
     schemaVersion,
     generatedAt: document.generatedAt,
+    manifest: document.manifest,
     records: document.records
   };
+  if (
+    !document.manifest ||
+    canonicalJson(document.manifest) !==
+      canonicalJson(buildManifest(document.records, document.generatedAt))
+  )
+    throw new Error('Advisory snapshot manifest does not match its records.');
+  if (
+    document.manifest.sources.some(
+      (source) => Date.parse(source.sourceUpdatedAt) > futureLimit
+    )
+  )
+    throw new Error('Advisory snapshot source timestamp is in the future.');
   const expected = Buffer.from(digest(payload), 'hex');
   const actual = Buffer.from(document.sha256, 'hex');
   if (!timingSafeEqual(expected, actual)) {
@@ -147,6 +312,12 @@ function parseDocument(
     )
   ) {
     throw new Error('Advisory snapshot signature metadata is invalid.');
+  }
+  if (
+    options.trustedKeyId &&
+    document.signature.keyId !== options.trustedKeyId
+  ) {
+    throw new Error('Advisory snapshot signing key ID does not match.');
   }
   if (!options.trustedPublicKeyPem) {
     if (options.requireSignature)
@@ -189,7 +360,7 @@ async function readDocument(
   filePath: string,
   options: Pick<
     AdvisorySnapshotCacheOptions,
-    'trustedPublicKeyPem' | 'requireSignature'
+    'trustedPublicKeyPem' | 'trustedKeyId' | 'requireSignature' | 'now'
   >
 ): Promise<
   | { document: SnapshotDocument; signatureStatus: SnapshotSignatureStatus }
@@ -238,12 +409,14 @@ async function readDocument(
 export class AdvisorySnapshotCache implements AnalyzerCache {
   readonly filePath: string;
   private _generatedAt?: string;
+  private _manifest?: SnapshotManifest;
   private readonly base = new Map<string, StoredRecord>();
   private readonly pending = new Map<string, StoredRecord>();
   private readonly now: () => Date;
   private readonly signingKey?: KeyObject;
   private readonly signingKeyId?: string;
   private readonly trustedPublicKeyPem?: string;
+  private readonly trustedKeyId?: string;
   private _signatureStatus: SnapshotSignatureStatus;
 
   private constructor(
@@ -255,6 +428,7 @@ export class AdvisorySnapshotCache implements AnalyzerCache {
   ) {
     this.filePath = filePath;
     this._generatedAt = document?.generatedAt;
+    this._manifest = document?.manifest;
     this.now = now;
     this._signatureStatus = signatureStatus;
     this.trustedPublicKeyPem =
@@ -264,6 +438,7 @@ export class AdvisorySnapshotCache implements AnalyzerCache {
             .export({ type: 'spki', format: 'pem' })
             .toString()
         : undefined);
+    this.trustedKeyId = options.trustedKeyId ?? options.signingKeyId;
     if (options.signingPrivateKeyPem) {
       try {
         this.signingKey = createPrivateKey(options.signingPrivateKeyPem);
@@ -286,6 +461,10 @@ export class AdvisorySnapshotCache implements AnalyzerCache {
     return this._generatedAt;
   }
 
+  get manifest(): SnapshotManifest | undefined {
+    return this._manifest ? structuredClone(this._manifest) : undefined;
+  }
+
   get recordCount(): number {
     return (
       this.base.size +
@@ -296,6 +475,16 @@ export class AdvisorySnapshotCache implements AnalyzerCache {
   get snapshotAgeMs(): number | undefined {
     return this._generatedAt
       ? Math.max(0, this.now().getTime() - Date.parse(this._generatedAt))
+      : undefined;
+  }
+
+  /** Age of the oldest captured source record, or undefined for an empty bundle. */
+  get oldestSourceAgeMs(): number | undefined {
+    const captures = this._manifest?.sources.map((source) => source.capturedAt);
+    if (!captures || captures.length === 0) return undefined;
+    const oldest = Math.min(...captures.map((value) => Date.parse(value)));
+    return Number.isFinite(oldest)
+      ? Math.max(0, this.now().getTime() - oldest)
       : undefined;
   }
 
@@ -335,22 +524,19 @@ export class AdvisorySnapshotCache implements AnalyzerCache {
             .export({ type: 'spki', format: 'pem' })
             .toString()
         : undefined);
+    const now = options.now ?? (() => new Date());
     const parsed = await readDocument(filePath, {
       trustedPublicKeyPem,
-      requireSignature: options.requireSignature
+      trustedKeyId: options.trustedKeyId ?? options.signingKeyId,
+      requireSignature: options.requireSignature,
+      now
     });
-    if (
-      parsed?.document.signature &&
-      options.signingKeyId &&
-      parsed.document.signature.keyId !== options.signingKeyId
-    )
-      throw new Error('Advisory snapshot signing key ID does not match.');
     if (options.requireSignature && !parsed)
       throw new Error('Advisory snapshot signature is required.');
     return new AdvisorySnapshotCache(
       filePath,
       parsed?.document,
-      options.now ?? (() => new Date()),
+      now,
       options,
       parsed?.signatureStatus ?? 'unsigned'
     );
@@ -408,7 +594,9 @@ export class AdvisorySnapshotCache implements AnalyzerCache {
     await withLocalStateLock(this.filePath, async (assertOwned) => {
       await assertDirectoryIdentity(directory, identity);
       const current = await readDocument(this.filePath, {
-        trustedPublicKeyPem: this.trustedPublicKeyPem
+        trustedPublicKeyPem: this.trustedPublicKeyPem,
+        trustedKeyId: this.trustedKeyId,
+        now: this.now
       });
       if (current?.document.signature && !this.signingKey) {
         throw new Error(
@@ -431,14 +619,17 @@ export class AdvisorySnapshotCache implements AnalyzerCache {
       if (records.size > maxEntries)
         throw new Error('Advisory snapshot record limit reached.');
 
+      const generatedAt = this.now().toISOString();
+      const sortedRecords = Object.fromEntries(
+        [...records.entries()].sort(([left], [right]) =>
+          left.localeCompare(right)
+        )
+      );
       const payload: SnapshotPayload = {
         schemaVersion,
-        generatedAt: this.now().toISOString(),
-        records: Object.fromEntries(
-          [...records.entries()].sort(([left], [right]) =>
-            left.localeCompare(right)
-          )
-        )
+        generatedAt,
+        manifest: buildManifest(sortedRecords, generatedAt),
+        records: sortedRecords
       };
       const document: SnapshotDocument = {
         ...payload,
@@ -469,6 +660,7 @@ export class AdvisorySnapshotCache implements AnalyzerCache {
       for (const [key, record] of records) this.base.set(key, record);
       this.pending.clear();
       this._generatedAt = payload.generatedAt;
+      this._manifest = payload.manifest;
       this._signatureStatus = this.signingKey ? 'verified' : 'unsigned';
     });
   }

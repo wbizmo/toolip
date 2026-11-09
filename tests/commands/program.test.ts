@@ -59,7 +59,7 @@ describe('Toolip CLI composition', () => {
     ['hook', ['install']],
     ['intelligence', ['snapshot']],
     ['sbom', ['verify']],
-    ['vex', ['export', 'validate']]
+    ['vex', ['export', 'sign', 'validate']]
   ] as const)('builds expected %s subcommands', (name, expected) => {
     const command = createProgram().commands.find(
       (item) => item.name() === name
@@ -90,6 +90,28 @@ describe('Toolip CLI composition', () => {
       'refresh',
       'verify'
     ]);
+    expect(
+      snapshot?.commands
+        .find((item) => item.name() === 'verify')
+        ?.options.map((option) => option.long)
+    ).toEqual(expect.arrayContaining(['--public-key', '--public-key-id']));
+  });
+
+  it('exposes explicit signer-ID pins on every advisory snapshot consumer', () => {
+    for (const name of ['scan', 'vulnerabilities']) {
+      const command = createProgram().commands.find(
+        (item) => item.name() === name
+      );
+      expect(command?.options.map((option) => option.long)).toContain(
+        '--snapshot-public-key-id'
+      );
+    }
+    const vex = createProgram().commands.find((item) => item.name() === 'vex');
+    expect(
+      vex?.commands
+        .find((item) => item.name() === 'export')
+        ?.options.map((option) => option.long)
+    ).toContain('--snapshot-public-key-id');
   });
 
   it('exposes report verification as a nested evidence command', () => {

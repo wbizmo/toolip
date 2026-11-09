@@ -8,9 +8,11 @@ import {
   exportCycloneDxVex,
   exportOpenVex,
   parseVexDocument,
+  signVexDocument,
   type VexFormat
 } from '../core/vex.js';
 import { AdvisorySnapshotCache } from '../providers/intelligence/snapshot-cache.js';
+import { readPemKeyFile } from '../core/secure-key-file.js';
 
 const maxInputBytes = 16 * 1024 * 1024;
 
@@ -21,7 +23,17 @@ type VexScanOptions = {
   format: string;
   offline?: boolean;
   dataSnapshot?: string;
+  snapshotPublicKey?: string;
+  snapshotPublicKeyId?: string;
   maxAdvisoryAgeDays: string;
+};
+
+type VexSignOptions = {
+  input: string;
+  output: string;
+  format: string;
+  signingKey: string;
+  keyId: string;
 };
 
 /** Registers VEX export and strict bounded document validation commands. */
@@ -43,6 +55,14 @@ export function registerVexCommand(program: Command): void {
       '--data-snapshot <file>',
       'Read and update a local advisory snapshot.'
     )
+    .option(
+      '--snapshot-public-key <file>',
+      'Verify a signed advisory snapshot before using cached records.'
+    )
+    .option(
+      '--snapshot-public-key-id <id>',
+      'Require the advisory snapshot signer key identifier.'
+    )
     .option('--max-advisory-age-days <days>', 'Maximum OSV snapshot age.', '30')
     .action(async (options: VexScanOptions) => {
       if (options.format !== 'openvex' && options.format !== 'cyclonedx')
@@ -50,8 +70,25 @@ export function registerVexCommand(program: Command): void {
       const maxDays = Number(options.maxAdvisoryAgeDays);
       if (!Number.isFinite(maxDays) || maxDays < 0)
         throw new Error('--max-advisory-age-days must be non-negative.');
+      if (options.snapshotPublicKeyId && !options.snapshotPublicKey)
+        throw new Error(
+          '--snapshot-public-key-id requires --snapshot-public-key.'
+        );
+      if (
+        (options.snapshotPublicKey || options.snapshotPublicKeyId) &&
+        !options.dataSnapshot
+      )
+        throw new Error(
+          'Snapshot verification options require --data-snapshot.'
+        );
       const cache = options.dataSnapshot
-        ? await AdvisorySnapshotCache.open(options.dataSnapshot)
+        ? await AdvisorySnapshotCache.open(options.dataSnapshot, {
+            trustedPublicKeyPem: options.snapshotPublicKey
+              ? await readPemKeyFile(options.snapshotPublicKey)
+              : undefined,
+            trustedKeyId: options.snapshotPublicKeyId,
+            requireSignature: Boolean(options.snapshotPublicKey)
+          })
         : undefined;
       const [result] = await new AnalyzerRunner({
         concurrency: 1,
@@ -86,10 +123,16 @@ export function registerVexCommand(program: Command): void {
     });
 
   vex
-    .command('validate')
-    .requiredOption('-i, --input <file>', 'VEX JSON input file.')
+    .command('sign')
+    .requiredOption('-i, --input <file>', 'Unsigned OpenVEX or CycloneDX JSON.')
+    .requiredOption(
+      '-o, --output <file>',
+      'Write the signed VEX JSON document.'
+    )
+    .requiredOption('--signing-key <file>', 'Owner-only Ed25519 private key.')
+    .requiredOption('--key-id <id>', 'Trusted signing key identifier.')
     .requiredOption('-f, --format <format>', 'openvex or cyclonedx.')
-    .action(async (options: { input: string; format: string }) => {
+    .action(async (options: VexSignOptions) => {
       if (options.format !== 'openvex' && options.format !== 'cyclonedx')
         throw new Error('VEX format must be openvex or cyclonedx.');
       const fileStat = await stat(options.input);
@@ -98,23 +141,77 @@ export function registerVexCommand(program: Command): void {
       const document = JSON.parse(
         await readFile(options.input, 'utf8')
       ) as unknown;
-      const assessments = parseVexDocument(
+      const signed = signVexDocument(
         document,
-        options.format as VexFormat
+        options.format as VexFormat,
+        await readPemKeyFile(options.signingKey, { privateKey: true }),
+        options.keyId
+      );
+      await writeFile(
+        path.resolve(options.output),
+        `${JSON.stringify(signed, null, 2)}\n`,
+        { encoding: 'utf8', mode: 0o600 }
       );
       console.log(
-        JSON.stringify(
-          {
-            state: 'valid',
-            format: options.format,
-            assessments: assessments.length,
-            notAffected: assessments.filter(
-              (assessment) => assessment.status === 'not_affected'
-            ).length
-          },
-          null,
-          2
-        )
+        `Signed VEX document written to ${path.resolve(options.output)}.`
       );
     });
+
+  vex
+    .command('validate')
+    .requiredOption('-i, --input <file>', 'VEX JSON input file.')
+    .requiredOption('-f, --format <format>', 'openvex or cyclonedx.')
+    .option('--trusted-public-key <file>', 'Verify the VEX Ed25519 signature.')
+    .option('--trusted-key-id <id>', 'Require this signing key identifier.')
+    .action(
+      async (options: {
+        input: string;
+        format: string;
+        trustedPublicKey?: string;
+        trustedKeyId?: string;
+      }) => {
+        if (options.format !== 'openvex' && options.format !== 'cyclonedx')
+          throw new Error('VEX format must be openvex or cyclonedx.');
+        if (options.trustedKeyId && !options.trustedPublicKey)
+          throw new Error('--trusted-key-id requires --trusted-public-key.');
+        const fileStat = await stat(options.input);
+        if (fileStat.size > maxInputBytes)
+          throw new Error('VEX input exceeds the 16 MiB limit.');
+        const document = JSON.parse(
+          await readFile(options.input, 'utf8')
+        ) as unknown;
+        const assessments = parseVexDocument(
+          document,
+          options.format as VexFormat,
+          {
+            ...(options.trustedPublicKey
+              ? {
+                  trustedPublicKeyPem: await readPemKeyFile(
+                    options.trustedPublicKey
+                  )
+                }
+              : {}),
+            ...(options.trustedKeyId
+              ? { trustedKeyId: options.trustedKeyId }
+              : {})
+          }
+        );
+        console.log(
+          JSON.stringify(
+            {
+              state: 'valid',
+              format: options.format,
+              assessments: assessments.length,
+              notAffected: assessments.filter(
+                (assessment) => assessment.status === 'not_affected'
+              ).length,
+              signatureStatus: assessments[0]?.signatureStatus ?? 'unsigned',
+              signatureKeyId: assessments[0]?.signatureKeyId
+            },
+            null,
+            2
+          )
+        );
+      }
+    );
 }

@@ -1,5 +1,15 @@
-import { createHash, randomUUID } from 'node:crypto';
+import {
+  createHash,
+  createPrivateKey,
+  createPublicKey,
+  randomUUID,
+  sign as signBytes,
+  verify as verifyBytes,
+  type KeyObject
+} from 'node:crypto';
 import type { Finding } from '../contracts/finding.js';
+import { PackageURL } from 'packageurl-js';
+import { canonicalJson } from './canonical-json.js';
 import { npmPurl } from './sbom/generate.js';
 
 export const vexStatuses = [
@@ -38,10 +48,19 @@ export type VexAssessment = {
   justification?: string;
   evidence?: string;
   actionStatement?: string;
+  signatureStatus: 'unsigned' | 'unverified' | 'verified';
+  signatureKeyId?: string;
+};
+
+export type VexSignature = {
+  algorithm: 'Ed25519';
+  keyId: string;
+  value: string;
 };
 
 export type VexApplicationResult = {
   findings: Finding[];
+  suppressed: Finding[];
   applied: number;
   rejected: Array<{ vulnerabilityId: string; reason: string }>;
 };
@@ -198,14 +217,31 @@ export function exportCycloneDxVex(
 
 export function parseVexDocument(
   input: unknown,
-  format: VexFormat
+  format: VexFormat,
+  options: { trustedPublicKeyPem?: string; trustedKeyId?: string } = {}
 ): VexAssessment[] {
   if (!input || typeof input !== 'object')
     throw new Error('VEX document must be a JSON object.');
+  const document = input as Record<string, unknown>;
+  const signature = readSignature(document, format);
+  let signatureStatus: VexAssessment['signatureStatus'] = signature
+    ? 'unverified'
+    : 'unsigned';
+  if (signature && options.trustedPublicKeyPem) {
+    if (options.trustedKeyId && signature.keyId !== options.trustedKeyId)
+      throw new Error('VEX signature key ID does not match the trusted key.');
+    const publicKey = parseVexPublicKey(options.trustedPublicKeyPem);
+    const unsignedDocument = withoutSignature(document, format);
+    const payload = signatureMessage(unsignedDocument, signature.keyId);
+    const bytes = Buffer.from(signature.value, 'base64');
+    if (bytes.length !== 64 || !verifyBytes(null, payload, publicKey, bytes))
+      throw new Error('VEX document signature verification failed.');
+    signatureStatus = 'verified';
+  }
   const assessments =
     format === 'openvex'
-      ? parseOpenVex(input as Record<string, unknown>)
-      : parseCycloneDx(input as Record<string, unknown>);
+      ? parseOpenVex(document, signatureStatus, signature?.keyId)
+      : parseCycloneDx(document, signatureStatus, signature?.keyId);
   const unique = new Map<string, VexAssessment>();
   for (const assessment of assessments) {
     const key = assessmentKey(
@@ -227,6 +263,60 @@ export function parseVexDocument(
   );
 }
 
+/** Signs a bounded JSON-compatible OpenVEX or CycloneDX document with Ed25519. */
+export function signVexDocument(
+  input: unknown,
+  format: VexFormat,
+  privateKeyPem: string,
+  keyId: string
+): Record<string, unknown> {
+  if (!input || typeof input !== 'object' || Array.isArray(input))
+    throw new Error('VEX document must be a JSON object.');
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(keyId))
+    throw new Error('VEX signing key ID is invalid.');
+  let privateKey: KeyObject;
+  try {
+    privateKey = createPrivateKey(privateKeyPem);
+  } catch {
+    throw new Error('VEX signing private key is invalid.');
+  }
+  if (privateKey.asymmetricKeyType !== 'ed25519')
+    throw new Error('VEX signing key must use Ed25519.');
+  const document = structuredClone(input) as Record<string, unknown>;
+  if (readSignature(document, format))
+    throw new Error(
+      'VEX document is already signed; verify or remove its signature first.'
+    );
+  const unsignedDocument = withoutSignature(document, format);
+  parseVexDocument(unsignedDocument, format);
+  const signature: VexSignature = {
+    algorithm: 'Ed25519',
+    keyId,
+    value: signBytes(
+      null,
+      signatureMessage(unsignedDocument, keyId),
+      privateKey
+    ).toString('base64')
+  };
+  if (format === 'openvex')
+    return { ...unsignedDocument, 'x-toolip-signature': signature };
+
+  const metadata = unsignedDocument.metadata as Record<string, unknown>;
+  const properties = Array.isArray(metadata.properties)
+    ? metadata.properties.filter(
+        (item) =>
+          !item ||
+          typeof item !== 'object' ||
+          (item as Record<string, unknown>).name !== 'toolip:signature'
+      )
+    : [];
+  metadata.properties = [
+    ...properties,
+    { name: 'toolip:signature', value: JSON.stringify(signature) }
+  ];
+  return unsignedDocument;
+}
+
 export function applyVexAssessments(
   findings: Finding[],
   assessments: VexAssessment[],
@@ -243,6 +333,7 @@ export function applyVexAssessments(
   }
   let applied = 0;
   const rejected: VexApplicationResult['rejected'] = [];
+  const suppressedFindings = new WeakSet<Finding>();
   const output = findings.map((finding) => {
     const identity = findingIdentity(finding);
     if (!identity) return finding;
@@ -272,7 +363,7 @@ export function applyVexAssessments(
       return finding;
     }
     applied++;
-    return {
+    const updatedFinding: Finding = {
       ...finding,
       metadata: {
         ...finding.metadata,
@@ -287,11 +378,26 @@ export function applyVexAssessments(
         }
       }
     };
+    if (assessment.status === 'not_affected')
+      suppressedFindings.add(updatedFinding);
+    return updatedFinding;
   });
-  return { findings: output, applied, rejected };
+  const suppressed = output.filter((finding) =>
+    suppressedFindings.has(finding)
+  );
+  return {
+    findings: output.filter((finding) => !suppressedFindings.has(finding)),
+    suppressed,
+    applied,
+    rejected
+  };
 }
 
-function parseOpenVex(document: Record<string, unknown>): VexAssessment[] {
+function parseOpenVex(
+  document: Record<string, unknown>,
+  signatureStatus: VexAssessment['signatureStatus'],
+  signatureKeyId?: string
+): VexAssessment[] {
   if (
     document['@context'] !== 'https://openvex.dev/ns/v0.2.0' ||
     document.version !== 1 ||
@@ -341,6 +447,8 @@ function parseOpenVex(document: Record<string, unknown>): VexAssessment[] {
         status,
         authority,
         assessedAt,
+        signatureStatus,
+        ...(signatureKeyId ? { signatureKeyId } : {}),
         ...(typeof expiresAt === 'string' ? { expiresAt } : {}),
         ...(typeof row.justification === 'string'
           ? { justification: row.justification }
@@ -359,7 +467,11 @@ function parseOpenVex(document: Record<string, unknown>): VexAssessment[] {
   return output;
 }
 
-function parseCycloneDx(document: Record<string, unknown>): VexAssessment[] {
+function parseCycloneDx(
+  document: Record<string, unknown>,
+  signatureStatus: VexAssessment['signatureStatus'],
+  signatureKeyId?: string
+): VexAssessment[] {
   if (
     document.bomFormat !== 'CycloneDX' ||
     !['1.5', '1.6'].includes(String(document.specVersion)) ||
@@ -374,16 +486,42 @@ function parseCycloneDx(document: Record<string, unknown>): VexAssessment[] {
     );
   }
   const components = new Map<string, { purl: string; version: string }>();
+  const componentRefs = new Set<string>();
+  if (
+    Array.isArray(document.components) &&
+    document.components.length > maxStatements
+  ) {
+    throw new Error('CycloneDX VEX exceeds the component limit.');
+  }
   if (Array.isArray(document.components)) {
     for (const component of document.components) {
       if (!component || typeof component !== 'object') continue;
       const row = component as Record<string, unknown>;
+      if (typeof row['bom-ref'] === 'string') {
+        if (!row['bom-ref'] || row['bom-ref'].length > 2048)
+          throw new Error('CycloneDX VEX component reference is invalid.');
+        if (componentRefs.has(row['bom-ref']))
+          throw new Error(
+            'CycloneDX VEX contains a duplicate component reference.'
+          );
+        componentRefs.add(row['bom-ref']);
+      }
       if (
         typeof row['bom-ref'] === 'string' &&
         typeof row.purl === 'string' &&
         validPurl(row.purl) &&
         typeof row.version === 'string'
       ) {
+        let purlVersion: string | undefined;
+        try {
+          purlVersion = PackageURL.fromString(row.purl).version;
+        } catch {
+          throw new Error('CycloneDX VEX component package URL is malformed.');
+        }
+        if (purlVersion !== row.version)
+          throw new Error(
+            'CycloneDX VEX component version does not match its package URL.'
+          );
         components.set(row['bom-ref'], {
           purl: row.purl,
           version: row.version
@@ -437,6 +575,8 @@ function parseCycloneDx(document: Record<string, unknown>): VexAssessment[] {
         status,
         authority,
         assessedAt,
+        signatureStatus,
+        ...(signatureKeyId ? { signatureKeyId } : {}),
         ...(expiresAt ? { expiresAt } : {}),
         ...(justification ? { justification } : {}),
         ...(typeof analysis?.detail === 'string'
@@ -561,6 +701,11 @@ function validateAssessment(
   now: Date
 ): string | undefined {
   if (!trusted.has(assessment.authority)) return 'authority is not trusted';
+  if (
+    assessment.status === 'not_affected' &&
+    assessment.signatureStatus !== 'verified'
+  )
+    return 'not_affected assessment is not signed by a trusted key';
   if (!isTimestamp(assessment.assessedAt))
     return 'assessment timestamp is invalid';
   if (Date.parse(assessment.assessedAt) > now.getTime())
@@ -603,10 +748,18 @@ function validPurl(value: string): boolean {
 }
 
 function isTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const match = value.match(
+    /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?Z$/u
+  );
+  if (!match) return false;
+  const date = new Date(`${match[1]}T00:00:00.000Z`);
   return (
-    typeof value === 'string' &&
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(value) &&
-    Number.isFinite(Date.parse(value))
+    Number.isFinite(date.getTime()) &&
+    date.toISOString().slice(0, 10) === match[1] &&
+    Number(match[2]) <= 23 &&
+    Number(match[3]) <= 59 &&
+    Number(match[4]) <= 59
   );
 }
 
@@ -632,6 +785,105 @@ function hashText(value: string): string {
 
 function hashJson(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+function readSignature(
+  document: Record<string, unknown>,
+  format: VexFormat
+): VexSignature | undefined {
+  let candidate: unknown;
+  if (format === 'openvex') {
+    candidate = document['x-toolip-signature'];
+  } else {
+    const metadata = document.metadata;
+    const properties =
+      metadata &&
+      typeof metadata === 'object' &&
+      Array.isArray((metadata as Record<string, unknown>).properties)
+        ? ((metadata as Record<string, unknown>).properties as unknown[])
+        : [];
+    const found = properties.filter(
+      (item) =>
+        item &&
+        typeof item === 'object' &&
+        (item as Record<string, unknown>).name === 'toolip:signature'
+    );
+    if (found.length > 1)
+      throw new Error('CycloneDX VEX contains duplicate Toolip signatures.');
+    const value = (found[0] as Record<string, unknown> | undefined)?.value;
+    if (typeof value === 'string') {
+      try {
+        candidate = JSON.parse(value) as unknown;
+      } catch {
+        throw new Error('CycloneDX VEX signature metadata is malformed.');
+      }
+    }
+  }
+  if (candidate === undefined) return undefined;
+  if (
+    !candidate ||
+    typeof candidate !== 'object' ||
+    (candidate as Record<string, unknown>).algorithm !== 'Ed25519' ||
+    typeof (candidate as Record<string, unknown>).keyId !== 'string' ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(
+      (candidate as Record<string, unknown>).keyId as string
+    ) ||
+    typeof (candidate as Record<string, unknown>).value !== 'string' ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(
+      (candidate as Record<string, unknown>).value as string
+    )
+  )
+    throw new Error('VEX signature metadata is invalid.');
+  return candidate as VexSignature;
+}
+
+function withoutSignature(
+  input: Record<string, unknown>,
+  format: VexFormat
+): Record<string, unknown> {
+  const document = structuredClone(input);
+  if (format === 'openvex') {
+    delete document['x-toolip-signature'];
+    return document;
+  }
+  const metadata = document.metadata;
+  if (metadata && typeof metadata === 'object') {
+    const row = metadata as Record<string, unknown>;
+    const properties = row.properties;
+    if (Array.isArray(properties)) {
+      const remaining = properties.filter(
+        (item) =>
+          !item ||
+          typeof item !== 'object' ||
+          (item as Record<string, unknown>).name !== 'toolip:signature'
+      );
+      if (remaining.length === 0) delete row.properties;
+      else row.properties = remaining;
+    }
+  }
+  return document;
+}
+
+function signatureMessage(
+  document: Record<string, unknown>,
+  keyId: string
+): Buffer {
+  return Buffer.from(
+    `toolip-vex-v1\0${keyId}\0${canonicalJson(document)}`,
+    'utf8'
+  );
+}
+
+function parseVexPublicKey(pem: string): KeyObject {
+  let publicKey: KeyObject;
+  try {
+    publicKey = createPublicKey(pem);
+  } catch {
+    throw new Error('VEX trusted public key is invalid.');
+  }
+  if (publicKey.asymmetricKeyType !== 'ed25519')
+    throw new Error('VEX trusted public key must use Ed25519.');
+  return publicKey;
 }
 
 function assessmentKey(vulnerabilityId: string, purl: string): string {

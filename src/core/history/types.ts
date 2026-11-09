@@ -40,4 +40,19 @@ export type HistoryFindingRecord = {
 export type HistoryStore = {
   schemaVersion: '1.0';
   entries: HistoryEntry[];
+  integrity?: HistoryIntegrity;
+};
+
+export type HistoryIntegrityRecord = {
+  sequence: number;
+  mac: string;
+};
+
+export type HistoryIntegrity = {
+  algorithm: 'HMAC-SHA-256';
+  keyId: string;
+  anchorSequence: number;
+  anchorMac: string | null;
+  records: HistoryIntegrityRecord[];
+  headMac: string | null;
 };

@@ -19,7 +19,7 @@ import { appendHistoryTransaction } from '../core/history/store.js';
 import { historyFindingRecords } from '../core/history/baseline.js';
 import { writeReport, writeSarifReport } from '../core/report-writer.js';
 import { AdvisorySnapshotCache } from '../providers/intelligence/snapshot-cache.js';
-import { readPemKeyFile } from '../core/secure-key-file.js';
+import { readHmacKeyFile, readPemKeyFile } from '../core/secure-key-file.js';
 import {
   scannerArtifactDigest,
   signReportEvidence
@@ -101,12 +101,20 @@ export function registerScanCommand(program: Command): void {
     )
     .option('--no-history', 'Do not append this scan to local history.')
     .option(
+      '--history-integrity-key <file>',
+      'Opt in to an authenticated local history chain using a private 256-bit hex key.'
+    )
+    .option(
       '--data-snapshot <file>',
       'Read and update this local advisory snapshot.'
     )
     .option(
       '--snapshot-public-key <file>',
       'Verify a signed advisory snapshot.'
+    )
+    .option(
+      '--snapshot-public-key-id <id>',
+      'Require the advisory snapshot signer key identifier.'
     )
     .option(
       '--snapshot-signing-key <file>',
@@ -147,6 +155,7 @@ export function registerScanCommand(program: Command): void {
         allowPublicScope?: boolean;
         dataSnapshot?: string;
         snapshotPublicKey?: string;
+        snapshotPublicKeyId?: string;
         snapshotSigningKey?: string;
         snapshotSigningKeyId?: string;
         evidenceSigningKey?: string;
@@ -154,6 +163,7 @@ export function registerScanCommand(program: Command): void {
         evidenceProjectId?: string;
         maxAdvisoryAgeDays?: string;
         history?: boolean;
+        historyIntegrityKey?: string;
         rulePack?: string;
         rulePackPublicKey?: string;
         rulePackKeyId?: string;
@@ -207,6 +217,10 @@ export function registerScanCommand(program: Command): void {
             exitCode: 1
           });
         }
+        const historyIntegrity =
+          options.history !== false && options.historyIntegrityKey
+            ? await readHmacKeyFile(options.historyIntegrityKey)
+            : undefined;
         if (options.snapshotSigningKey && !options.snapshotSigningKeyId)
           throw new ToolipError(
             '--snapshot-signing-key-id is required when signing snapshot updates.',
@@ -246,6 +260,7 @@ export function registerScanCommand(program: Command): void {
         if (
           !options.dataSnapshot &&
           (options.snapshotPublicKey ||
+            options.snapshotPublicKeyId ||
             options.snapshotSigningKey ||
             options.snapshotSigningKeyId)
         )
@@ -253,11 +268,17 @@ export function registerScanCommand(program: Command): void {
             'Snapshot key options require --data-snapshot.',
             { code: 'SNAPSHOT_FILE_REQUIRED', exitCode: 1 }
           );
+        if (options.snapshotPublicKeyId && !options.snapshotPublicKey)
+          throw new ToolipError(
+            '--snapshot-public-key-id requires --snapshot-public-key.',
+            { code: 'SNAPSHOT_KEY_ID_REQUIRES_KEY', exitCode: 1 }
+          );
         const snapshot = options.dataSnapshot
           ? await AdvisorySnapshotCache.open(options.dataSnapshot, {
               trustedPublicKeyPem: options.snapshotPublicKey
                 ? await readPemKeyFile(options.snapshotPublicKey)
                 : undefined,
+              trustedKeyId: options.snapshotPublicKeyId,
               signingPrivateKeyPem: options.snapshotSigningKey
                 ? await readPemKeyFile(options.snapshotSigningKey, {
                     privateKey: true
@@ -314,41 +335,46 @@ export function registerScanCommand(program: Command): void {
           try {
             const createdAt = new Date().toISOString();
             const counts = summarizeFindings(scorecard.findings);
-            await appendHistoryTransaction(context.root, (current) => {
-              const records = historyFindingRecords({
-                findings: scorecard.findings,
-                root: context.root,
-                createdAt,
-                previous: current.entries.at(-1)
-              });
-              return {
-                id: `scan:${createdAt}:${randomUUID()}`,
-                createdAt,
-                toolipVersion: TOOLIP_VERSION,
-                command: 'scan',
-                ...(scorecard.score.overall === null
-                  ? {}
-                  : { score: scorecard.score.overall }),
-                summary: {
-                  critical: counts.critical,
-                  high: counts.high,
-                  medium: counts.medium,
-                  low: counts.low,
-                  info: counts.info,
-                  total: counts.totalFindings
-                },
-                findingIds: scorecard.findings.map((finding) => finding.id),
-                findingFingerprints: records.map(
-                  (record) => record.fingerprint
-                ),
-                findingRecords: records,
-                coverage: scorecard.coverage,
-                metadata: {
-                  analysisState: scorecard.analysis.state,
-                  scoreComplete: scorecard.score.complete
-                }
-              };
-            });
+            await appendHistoryTransaction(
+              context.root,
+              (current) => {
+                const records = historyFindingRecords({
+                  findings: scorecard.findings,
+                  root: context.root,
+                  createdAt,
+                  previous: current.entries.at(-1)
+                });
+                return {
+                  id: `scan:${createdAt}:${randomUUID()}`,
+                  createdAt,
+                  toolipVersion: TOOLIP_VERSION,
+                  command: 'scan',
+                  ...(scorecard.score.overall === null
+                    ? {}
+                    : { score: scorecard.score.overall }),
+                  summary: {
+                    critical: counts.critical,
+                    high: counts.high,
+                    medium: counts.medium,
+                    low: counts.low,
+                    info: counts.info,
+                    total: counts.totalFindings
+                  },
+                  findingIds: scorecard.findings.map((finding) => finding.id),
+                  findingFingerprints: records.map(
+                    (record) => record.fingerprint
+                  ),
+                  findingRecords: records,
+                  coverage: scorecard.coverage,
+                  metadata: {
+                    analysisState: scorecard.analysis.state,
+                    scoreComplete: scorecard.score.complete
+                  }
+                };
+              },
+              undefined,
+              historyIntegrity
+            );
           } catch {
             historyWarning = 'Local scan history could not be updated.';
           }

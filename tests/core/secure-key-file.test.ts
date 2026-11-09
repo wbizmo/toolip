@@ -2,7 +2,10 @@ import { chmod, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { readPemKeyFile } from '../../src/core/secure-key-file.js';
+import {
+  readHmacKeyFile,
+  readPemKeyFile
+} from '../../src/core/secure-key-file.js';
 
 const roots: string[] = [];
 
@@ -44,5 +47,36 @@ describe('readPemKeyFile', () => {
     );
     await chmod(key, 0o600);
     expect(await readPemKeyFile(key, { privateKey: true })).toBe('private');
+  });
+});
+
+describe('readHmacKeyFile', () => {
+  it('loads a private 256-bit hex key and derives a stable non-secret key ID', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-hmac-key-'));
+    roots.push(root);
+    const file = path.join(root, 'history.key');
+    const hex = '11'.repeat(32);
+    await writeFile(file, `${hex}\n`, { mode: 0o600 });
+    const loaded = await readHmacKeyFile(file);
+    expect(loaded.key).toEqual(Buffer.alloc(32, 0x11));
+    expect(loaded.keyId).toMatch(/^local-[a-f0-9]{24}$/u);
+    expect(await readHmacKeyFile(file)).toEqual(loaded);
+  });
+
+  it('rejects shared-readable, symlinked and malformed HMAC keys', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-hmac-key-'));
+    roots.push(root);
+    const file = path.join(root, 'history.key');
+    await writeFile(file, '22'.repeat(32), { mode: 0o644 });
+    if (process.platform !== 'win32') {
+      await chmod(file, 0o644);
+      await expect(readHmacKeyFile(file)).rejects.toThrow('private 32-byte');
+      await chmod(file, 0o600);
+    }
+    const alias = path.join(root, 'alias.key');
+    await symlink(file, alias);
+    await expect(readHmacKeyFile(alias)).rejects.toThrow('non-symlink');
+    await writeFile(file, 'not-a-key', { mode: 0o600 });
+    await expect(readHmacKeyFile(file)).rejects.toThrow('private 32-byte hex');
   });
 });

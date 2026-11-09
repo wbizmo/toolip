@@ -15,6 +15,10 @@ export type OsvVulnerability = {
   severity?: Array<{ type?: string; score?: string }>;
   references?: Array<{ type?: string; url?: string }>;
   affected?: Array<{
+    package?: {
+      ecosystem?: string;
+      name?: string;
+    };
     ranges?: Array<{
       type?: string;
       events?: Array<{

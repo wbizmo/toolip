@@ -1,5 +1,11 @@
 import type { Command } from 'commander';
-import { clearHistory, readHistory } from '../core/history/store.js';
+import {
+  clearHistory,
+  protectHistoryIntegrity,
+  readHistory,
+  rotateHistoryIntegrityKey
+} from '../core/history/store.js';
+import type { HistoryIntegrityOptions } from '../core/history/store.js';
 import {
   compareHistoryEntries,
   remediationSla
@@ -8,11 +14,13 @@ import {
   renderHistoryDelta,
   type HistoryDeltaFormat
 } from '../core/history/report.js';
+import { readHmacKeyFile } from '../core/secure-key-file.js';
 
 type HistoryOptions = {
   path: string;
   json?: boolean;
   limit: string;
+  integrityKey?: string;
 };
 
 export function registerHistoryCommand(program: Command): void {
@@ -24,9 +32,14 @@ export function registerHistoryCommand(program: Command): void {
     .command('list')
     .option('-p, --path <path>', 'Project path.', process.cwd())
     .option('-l, --limit <number>', 'Maximum entries.', '20')
+    .option('--integrity-key <file>', 'Verify authenticated local history.')
     .option('--json', 'Print JSON.')
     .action(async (options: HistoryOptions) => {
-      const history = await readHistory(options.path);
+      const history = await readHistory(
+        options.path,
+        await loadHistoryKey(options.integrityKey)
+      );
+      reportUnsignedHistory(history.integrity !== undefined);
       const limit = Math.max(1, Number.parseInt(options.limit, 10) || 20);
 
       const entries = history.entries.slice(-limit);
@@ -36,6 +49,7 @@ export function registerHistoryCommand(program: Command): void {
           JSON.stringify(
             {
               schemaVersion: history.schemaVersion,
+              integrityStatus: history.integrity ? 'verified' : 'unsigned',
               entries
             },
             null,
@@ -73,8 +87,13 @@ export function registerHistoryCommand(program: Command): void {
     .command('trend')
     .option('-p, --path <path>', 'Project path.', process.cwd())
     .option('-l, --limit <number>', 'Maximum entries.', '10')
+    .option('--integrity-key <file>', 'Verify authenticated local history.')
     .action(async (options: HistoryOptions) => {
-      const history = await readHistory(options.path);
+      const history = await readHistory(
+        options.path,
+        await loadHistoryKey(options.integrityKey)
+      );
+      reportUnsignedHistory(history.integrity !== undefined);
       const limit = Math.max(2, Number.parseInt(options.limit, 10) || 10);
 
       const entries = history.entries
@@ -106,6 +125,7 @@ export function registerHistoryCommand(program: Command): void {
       'Baseline history entry ID; defaults to previous scan.'
     )
     .option('--json', 'Print the fingerprint delta as JSON.')
+    .option('--integrity-key <file>', 'Verify authenticated local history.')
     .option(
       '--format <format>',
       'Output json, markdown, html or sarif.',
@@ -117,8 +137,13 @@ export function registerHistoryCommand(program: Command): void {
         base?: string;
         json?: boolean;
         format?: string;
+        integrityKey?: string;
       }) => {
-        const history = await readHistory(options.path);
+        const history = await readHistory(
+          options.path,
+          await loadHistoryKey(options.integrityKey)
+        );
+        reportUnsignedHistory(history.integrity !== undefined);
         const current = history.entries.at(-1);
         if (!current) {
           console.log('No scan history is available.');
@@ -134,7 +159,21 @@ export function registerHistoryCommand(program: Command): void {
               : 'At least two history entries are required for a baseline comparison.'
           );
         }
-        const delta = compareHistoryEntries(current, baseline);
+        const delta = history.integrity
+          ? compareHistoryEntries(current, baseline)
+          : {
+              new: [],
+              fixed: [],
+              unchanged: [],
+              unknown: [
+                ...new Set([
+                  ...(current.findingFingerprints ?? []),
+                  ...(baseline.findingFingerprints ?? [])
+                ])
+              ].sort(),
+              comparisonBase: baseline.id,
+              coverageComparable: false
+            };
         const format = options.json ? 'json' : (options.format ?? 'json');
         if (!['json', 'markdown', 'html', 'sarif'].includes(format)) {
           throw new Error(
@@ -166,6 +205,7 @@ export function registerHistoryCommand(program: Command): void {
       '180'
     )
     .option('--json', 'Print JSON.')
+    .option('--integrity-key <file>', 'Verify authenticated local history.')
     .action(
       async (options: {
         path: string;
@@ -175,8 +215,13 @@ export function registerHistoryCommand(program: Command): void {
         lowDays: string;
         infoDays: string;
         json?: boolean;
+        integrityKey?: string;
       }) => {
-        const history = await readHistory(options.path);
+        const history = await readHistory(
+          options.path,
+          await loadHistoryKey(options.integrityKey)
+        );
+        reportUnsignedHistory(history.integrity !== undefined);
         const latest = history.entries.at(-1);
         if (!latest) {
           console.log('No scan history is available.');
@@ -195,6 +240,7 @@ export function registerHistoryCommand(program: Command): void {
             JSON.stringify(
               {
                 coverage: latest.coverage,
+                integrityStatus: history.integrity ? 'verified' : 'unsigned',
                 entries,
                 overdue: entries.filter((entry) => entry.overdue).length
               },
@@ -223,12 +269,63 @@ export function registerHistoryCommand(program: Command): void {
     );
 
   command
+    .command('protect')
+    .description('Add an authenticated HMAC chain to legacy local history.')
+    .option('-p, --path <path>', 'Project path.', process.cwd())
+    .requiredOption('--integrity-key <file>', 'Private 256-bit hex HMAC key.')
+    .action(async (options: { path: string; integrityKey: string }) => {
+      const key = await loadHistoryKey(options.integrityKey);
+      if (!key) throw new Error('A history integrity key is required.');
+      await protectHistoryIntegrity(options.path, key);
+      console.log('Toolip history integrity protection enabled.');
+    });
+
+  command
+    .command('rotate-key')
+    .description('Rotate the HMAC key on an authenticated local history chain.')
+    .option('-p, --path <path>', 'Project path.', process.cwd())
+    .requiredOption('--current-key <file>', 'Current private 256-bit hex key.')
+    .requiredOption('--new-key <file>', 'New private 256-bit hex key.')
+    .action(
+      async (options: { path: string; currentKey: string; newKey: string }) => {
+        const current = await loadHistoryKey(options.currentKey);
+        const next = await loadHistoryKey(options.newKey);
+        if (!current || !next)
+          throw new Error(
+            'Current and new history integrity keys are required.'
+          );
+        await rotateHistoryIntegrityKey(options.path, current, next);
+        console.log('Toolip history integrity key rotated.');
+      }
+    );
+
+  command
     .command('clear')
     .option('-p, --path <path>', 'Project path.', process.cwd())
-    .action(async (options: { path: string }) => {
-      await clearHistory(options.path);
+    .option(
+      '--integrity-key <file>',
+      'Verify and preserve authenticated history.'
+    )
+    .action(async (options: { path: string; integrityKey?: string }) => {
+      await clearHistory(
+        options.path,
+        await loadHistoryKey(options.integrityKey)
+      );
       console.log('Toolip history cleared.');
     });
+}
+
+async function loadHistoryKey(
+  keyFile?: string
+): Promise<HistoryIntegrityOptions | undefined> {
+  return keyFile ? readHmacKeyFile(keyFile) : undefined;
+}
+
+function reportUnsignedHistory(authenticated: boolean): void {
+  if (!authenticated)
+    console.error(
+      'Warning: local history is unsigned; this output is not an authenticated security timeline.'
+    );
 }
 
 function parseSlaDays(value: string): number {

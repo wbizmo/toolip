@@ -11,6 +11,7 @@ type SnapshotOptions = {
   signingKey?: string;
   signingKeyId?: string;
   publicKey?: string;
+  publicKeyId?: string;
 };
 
 function ageLimitMs(days: string): number {
@@ -88,6 +89,7 @@ export function registerIntelligenceCommand(program: Command): void {
             file: cache.filePath,
             records: cache.recordCount,
             generatedAt: cache.generatedAt,
+            manifest: cache.manifest,
             signatureStatus: cache.signatureStatus,
             advisories: result.metadata?.dependenciesChecked,
             warnings: result.warnings ?? []
@@ -110,38 +112,59 @@ export function registerIntelligenceCommand(program: Command): void {
       '--public-key <file>',
       'Trusted Ed25519 PEM key for signature verification.'
     )
+    .option(
+      '--public-key-id <id>',
+      'Require the snapshot signer key identifier.'
+    )
     .action(
       async (
         options: Pick<
           SnapshotOptions,
-          'file' | 'maxAdvisoryAgeDays' | 'publicKey'
+          'file' | 'maxAdvisoryAgeDays' | 'publicKey' | 'publicKeyId'
         >
       ) => {
         const maxAgeMs = ageLimitMs(options.maxAdvisoryAgeDays);
+        if (options.publicKeyId && !options.publicKey)
+          throw new Error('--public-key-id requires --public-key.');
         const cache = await AdvisorySnapshotCache.open(options.file, {
           trustedPublicKeyPem: options.publicKey
             ? await readPemKeyFile(options.publicKey)
             : undefined,
+          trustedKeyId: options.publicKeyId,
           requireSignature: Boolean(options.publicKey)
         });
-        const ageMs = cache.snapshotAgeMs;
+        const generatedAtAgeMs = cache.snapshotAgeMs;
+        const oldestSourceAgeMs = cache.oldestSourceAgeMs;
+        const ageMs = oldestSourceAgeMs ?? generatedAtAgeMs;
+        const manifest = cache.manifest;
+        const hasCoverage = (manifest?.ecosystems.length ?? 0) > 0;
         const stale = ageMs === undefined || ageMs > maxAgeMs;
         console.log(
           JSON.stringify(
             {
-              state: stale ? 'stale' : 'verified',
+              state: stale
+                ? 'stale'
+                : !hasCoverage
+                  ? 'incomplete'
+                  : cache.signatureStatus === 'verified'
+                    ? 'verified'
+                    : 'integrity-only',
               integrity: 'sha256',
               signature: cache.signatureStatus,
               file: cache.filePath,
               records: cache.recordCount,
               generatedAt: cache.generatedAt,
-              ageMs
+              coverage: hasCoverage ? 'declared' : 'unknown',
+              ecosystems: manifest?.ecosystems ?? [],
+              manifest,
+              ageMs,
+              generatedAtAgeMs
             },
             null,
             2
           )
         );
-        if (stale) process.exitCode = 3;
+        if (stale || !hasCoverage) process.exitCode = 3;
       }
     );
 }

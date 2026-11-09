@@ -1,11 +1,27 @@
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile
+} from 'node:fs/promises';
+import { execFile } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
+import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, describe, expect, it } from 'vitest';
 import { generateKeyPairSync } from 'node:crypto';
+import Ajv2020 from 'ajv/dist/2020.js';
+import addFormats from 'ajv-formats';
 import { AdvisorySnapshotCache } from '../../src/providers/intelligence/snapshot-cache.js';
 
 const directories: string[] = [];
+const execFileAsync = promisify(execFile);
+const snapshotWorkerPath = path.resolve(
+  'tests/helpers/advisory-snapshot-worker.ts'
+);
 
 async function tempDirectory(): Promise<string> {
   const root = await mkdtemp(
@@ -27,16 +43,26 @@ describe('AdvisorySnapshotCache', () => {
   it('persists deterministic integrity-checked records with private file mode', async () => {
     const root = await tempDirectory();
     const file = path.join(root, 'advisories.json');
-    const now = () => new Date('2026-11-06T12:00:00.000Z');
+    let current = new Date('2026-11-06T12:00:00.000Z');
+    const now = () => current;
     const cache = await AdvisorySnapshotCache.open(file, { now });
     await cache.set('osv:v1:npm:example@1.0.0', {
       query: {
         package: { ecosystem: 'npm', name: 'example' },
         version: '1.0.0'
       },
-      vulnerabilities: []
+      vulnerabilities: [
+        { id: 'OSV-test', modified: '2026-11-04T00:00:00.000Z' }
+      ]
+    });
+    await cache.set('exploit-intel:v1:epss:CVE-2026-12345', {
+      probability: 0.2,
+      percentile: 0.8,
+      asOf: '2026-11-05',
+      fetchedAt: now().toISOString()
     });
     await cache.set('exploit-intel:v1:kev', {
+      catalogVersion: '1.0',
       fetchedAt: now().toISOString(),
       asOf: '2026-11-06T00:00:00.000Z',
       entries: {}
@@ -44,9 +70,26 @@ describe('AdvisorySnapshotCache', () => {
     await cache.flush();
 
     const raw = await readFile(file, 'utf8');
-    const document = JSON.parse(raw) as { sha256: string; records: object };
+    const document = JSON.parse(raw) as {
+      sha256: string;
+      records: object;
+      [key: string]: unknown;
+    };
     expect(document.sha256).toMatch(/^[a-f0-9]{64}$/u);
+    const schema = JSON.parse(
+      await readFile(
+        new URL(
+          '../../docs/schemas/toolip-advisory-bundle-v1.schema.json',
+          import.meta.url
+        ),
+        'utf8'
+      )
+    ) as Record<string, unknown>;
+    const ajv = new Ajv2020({ allErrors: true, strict: false });
+    addFormats(ajv);
+    expect(ajv.validate(schema, document)).toBe(true);
     expect(Object.keys(document.records)).toEqual([
+      'exploit-intel:v1:epss:CVE-2026-12345',
       'exploit-intel:v1:kev',
       'osv:v1:npm:example@1.0.0'
     ]);
@@ -56,8 +99,32 @@ describe('AdvisorySnapshotCache', () => {
     }
 
     const reopened = await AdvisorySnapshotCache.open(file, { now });
-    expect(reopened.recordCount).toBe(2);
+    expect(reopened.recordCount).toBe(3);
+    expect(reopened.manifest).toMatchObject({
+      format: 'toolip-advisory-bundle',
+      version: 1,
+      recordCount: 3,
+      ecosystems: ['npm'],
+      sources: [
+        {
+          id: 'epss',
+          version: 'v1',
+          recordCount: 1,
+          sourceUpdatedAt: '2026-11-05T00:00:00.000Z'
+        },
+        { id: 'kev', version: '1.0', recordCount: 1 },
+        {
+          id: 'osv',
+          version: 'v1',
+          recordCount: 1,
+          sourceUpdatedAt: '2026-11-04T00:00:00.000Z'
+        }
+      ]
+    });
     expect(reopened.ageMs('osv:v1:npm:example@1.0.0')).toBe(0);
+    expect(reopened.oldestSourceAgeMs).toBe(0);
+    current = new Date(current.getTime() + 31 * 24 * 60 * 60 * 1000);
+    expect(reopened.oldestSourceAgeMs).toBe(31 * 24 * 60 * 60 * 1000);
     expect(await reopened.get('exploit-intel:v1:kev')).toMatchObject({
       asOf: '2026-11-06T00:00:00.000Z'
     });
@@ -88,6 +155,23 @@ describe('AdvisorySnapshotCache', () => {
     );
   });
 
+  it('rejects future-dated snapshot generation metadata', async () => {
+    const root = await tempDirectory();
+    const file = path.join(root, 'future.json');
+    const now = () => new Date('2026-11-06T12:00:00.000Z');
+    const cache = await AdvisorySnapshotCache.open(file, { now });
+    await cache.set('fixture:record', { value: 'safe' });
+    await cache.flush();
+    const document = JSON.parse(await readFile(file, 'utf8')) as {
+      generatedAt: string;
+    };
+    document.generatedAt = '2026-11-07T12:00:00.000Z';
+    await writeFile(file, JSON.stringify(document));
+    await expect(AdvisorySnapshotCache.open(file, { now })).rejects.toThrow(
+      'generation time is in the future'
+    );
+  });
+
   it('merges concurrent updates instead of losing another writer record', async () => {
     const root = await tempDirectory();
     const file = path.join(root, 'advisories.json');
@@ -106,6 +190,72 @@ describe('AdvisorySnapshotCache', () => {
     expect(await merged.get('source:first')).toEqual({ value: 1 });
     expect(await merged.get('source:second')).toEqual({ value: 2 });
   });
+
+  it('merges concurrent refresh processes after both snapshot stale bases', async () => {
+    const root = await tempDirectory();
+    const file = path.join(root, 'advisories.json');
+    const startFile = path.join(root, 'start');
+    const readyFiles = [
+      path.join(root, 'first.ready'),
+      path.join(root, 'second.ready')
+    ];
+    const workers = readyFiles.map((readyFile, index) =>
+      execFileAsync(
+        process.execPath,
+        [
+          '--v8-pool-size=1',
+          '--import',
+          'tsx',
+          snapshotWorkerPath,
+          file,
+          `process:${index}`,
+          readyFile,
+          startFile
+        ],
+        {
+          cwd: process.cwd(),
+          env: { ...process.env, UV_THREADPOOL_SIZE: '1' },
+          timeout: 30_000
+        }
+      ).then(
+        () => undefined,
+        (error: unknown) => error
+      )
+    );
+
+    try {
+      const deadline = Date.now() + 20_000;
+      while (true) {
+        const ready = await Promise.all(
+          readyFiles.map(async (readyFile) => {
+            try {
+              await stat(readyFile);
+              return true;
+            } catch {
+              return false;
+            }
+          })
+        );
+        if (ready.every(Boolean)) break;
+        if (Date.now() > deadline)
+          throw new Error('Timed out waiting for advisory snapshot workers.');
+        await delay(10);
+      }
+      await writeFile(startFile, 'go', 'utf8');
+      const workerResults = await Promise.all(workers);
+      const workerError = workerResults.find(
+        (result): result is Error => result instanceof Error
+      );
+      if (workerError) throw workerError;
+
+      const merged = await AdvisorySnapshotCache.open(file);
+      expect(merged.recordCount).toBe(2);
+      expect(await merged.get('process:0')).toEqual({ writer: 'process:0' });
+      expect(await merged.get('process:1')).toEqual({ writer: 'process:1' });
+    } finally {
+      await rm(startFile, { force: true });
+    }
+  }, 45_000);
 
   it('signs snapshots with Ed25519 and requires an explicit trusted key', async () => {
     const root = await tempDirectory();
@@ -127,12 +277,20 @@ describe('AdvisorySnapshotCache', () => {
 
     const verified = await AdvisorySnapshotCache.open(file, {
       trustedPublicKeyPem: publicKey,
+      trustedKeyId: 'release-key-1',
       requireSignature: true
     });
     expect(verified.signatureStatus).toBe('verified');
     expect(await verified.get('osv:v1:npm:example@1.0.0')).toEqual({
       vulnerabilities: []
     });
+    await expect(
+      AdvisorySnapshotCache.open(file, {
+        trustedPublicKeyPem: publicKey,
+        trustedKeyId: 'different-trust-root',
+        requireSignature: true
+      })
+    ).rejects.toThrow('signing key ID does not match');
 
     const otherKeys = generateKeyPairSync('ed25519');
     await expect(
@@ -153,6 +311,20 @@ describe('AdvisorySnapshotCache', () => {
         requireSignature: true
       })
     ).rejects.toThrow('signature is required');
+  });
+
+  it('ignores an interrupted-write orphan and retains the last committed snapshot', async () => {
+    const root = await tempDirectory();
+    const file = path.join(root, 'advisories.json');
+    const cache = await AdvisorySnapshotCache.open(file);
+    await cache.set('committed', { value: 'old' });
+    await cache.flush();
+    await writeFile(`${file}.orphan.tmp`, '{partial', 'utf8');
+
+    const reopened = await AdvisorySnapshotCache.open(file);
+
+    expect(await reopened.get('committed')).toEqual({ value: 'old' });
+    expect(reopened.recordCount).toBe(1);
   });
 
   it('does not silently remove a signature during an update without its key', async () => {

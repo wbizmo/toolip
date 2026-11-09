@@ -49,6 +49,10 @@ export function registerVulnerabilitiesCommand(
       'Verify a signed advisory snapshot.'
     )
     .option(
+      '--snapshot-public-key-id <id>',
+      'Require the advisory snapshot signer key identifier.'
+    )
+    .option(
       '--snapshot-signing-key <file>',
       'Owner-only Ed25519 PEM key used to sign snapshot updates.'
     )
@@ -63,8 +67,13 @@ export function registerVulnerabilitiesCommand(
     .option('--vex-format <format>', 'OpenVEX or CycloneDX.', 'openvex')
     .option(
       '--trust-vex-authority <authorities...>',
-      'Explicitly trust these authority names for VEX annotations.'
+      'Allow these signed VEX authority names after signature verification.'
     )
+    .option(
+      '--vex-trusted-public-key <file>',
+      'Verify imported VEX signatures with this trusted Ed25519 public key.'
+    )
+    .option('--vex-trusted-key-id <id>', 'Require this VEX signing key ID.')
     .option(
       '--max-advisory-age-days <days>',
       'Maximum OSV snapshot age before it is reported stale.',
@@ -88,12 +97,15 @@ export function registerVulnerabilitiesCommand(
         allowPublicScope?: boolean;
         dataSnapshot?: string;
         snapshotPublicKey?: string;
+        snapshotPublicKeyId?: string;
         snapshotSigningKey?: string;
         snapshotSigningKeyId?: string;
         maxAdvisoryAgeDays?: string;
         vexFile?: string;
         vexFormat?: string;
         trustVexAuthority?: string[];
+        vexTrustedPublicKey?: string;
+        vexTrustedKeyId?: string;
         failOn?: string;
         failOnIncomplete?: boolean;
       }) => {
@@ -121,9 +133,18 @@ export function registerVulnerabilitiesCommand(
             '--snapshot-signing-key-id requires --snapshot-signing-key.',
             { code: 'SNAPSHOT_SIGNING_KEY_REQUIRED', exitCode: 1 }
           );
+        if (options.vexTrustedKeyId && !options.vexTrustedPublicKey)
+          throw new ToolipError(
+            '--vex-trusted-key-id requires --vex-trusted-public-key.',
+            { code: 'INVALID_VEX_TRUST', exitCode: 1 }
+          );
+        const vexTrustedPublicKeyPem = options.vexTrustedPublicKey
+          ? await readPemKeyFile(options.vexTrustedPublicKey)
+          : undefined;
         if (
           !options.dataSnapshot &&
           (options.snapshotPublicKey ||
+            options.snapshotPublicKeyId ||
             options.snapshotSigningKey ||
             options.snapshotSigningKeyId)
         )
@@ -131,11 +152,17 @@ export function registerVulnerabilitiesCommand(
             'Snapshot key options require --data-snapshot.',
             { code: 'SNAPSHOT_FILE_REQUIRED', exitCode: 1 }
           );
+        if (options.snapshotPublicKeyId && !options.snapshotPublicKey)
+          throw new ToolipError(
+            '--snapshot-public-key-id requires --snapshot-public-key.',
+            { code: 'SNAPSHOT_KEY_ID_REQUIRES_KEY', exitCode: 1 }
+          );
         const snapshot = options.dataSnapshot
           ? await AdvisorySnapshotCache.open(options.dataSnapshot, {
               trustedPublicKeyPem: options.snapshotPublicKey
                 ? await readPemKeyFile(options.snapshotPublicKey)
                 : undefined,
+              trustedKeyId: options.snapshotPublicKeyId,
               signingPrivateKeyPem: options.snapshotSigningKey
                 ? await readPemKeyFile(options.snapshotSigningKey, {
                     privateKey: true
@@ -157,7 +184,6 @@ export function registerVulnerabilitiesCommand(
             maxAdvisoryAgeMs: maxAdvisoryAgeDays * 24 * 60 * 60 * 1000
           }
         });
-
         await snapshot?.flush();
 
         if (!result) throw new Error('OSV analyzer returned no result.');
@@ -189,7 +215,14 @@ export function registerVulnerabilitiesCommand(
           ) as unknown;
           vexResult = applyVexAssessments(
             findings,
-            parseVexDocument(document, options.vexFormat as VexFormat),
+            parseVexDocument(document, options.vexFormat as VexFormat, {
+              ...(vexTrustedPublicKeyPem
+                ? { trustedPublicKeyPem: vexTrustedPublicKeyPem }
+                : {}),
+              ...(options.vexTrustedKeyId
+                ? { trustedKeyId: options.vexTrustedKeyId }
+                : {})
+            }),
             { trustedAuthorities: options.trustVexAuthority ?? [] }
           );
           findings = vexResult.findings;
@@ -206,6 +239,7 @@ export function registerVulnerabilitiesCommand(
                   ? {
                       vex: {
                         applied: vexResult.applied,
+                        suppressed: vexResult.suppressed,
                         rejected: vexResult.rejected
                       }
                     }
@@ -231,6 +265,9 @@ export function registerVulnerabilitiesCommand(
           if (vexResult) {
             console.log(`VEX assessments applied: ${vexResult.applied}`);
             console.log(
+              `VEX not_affected findings suppressed: ${vexResult.suppressed.length}`
+            );
+            console.log(
               `VEX assessments rejected: ${vexResult.rejected.length}`
             );
           }
@@ -249,7 +286,15 @@ export function registerVulnerabilitiesCommand(
             console.log('');
           }
 
-          if (findings.length === 0 && assessment.state === 'complete') {
+          if (
+            findings.length === 0 &&
+            vexResult &&
+            vexResult.suppressed.length > 0
+          ) {
+            console.log(
+              'All matched findings were suppressed by trusted, signed, unexpired not_affected assessments.'
+            );
+          } else if (findings.length === 0 && assessment.state === 'complete') {
             console.log(
               'No disclosed vulnerabilities matched the resolved supported-ecosystem dependency versions.'
             );

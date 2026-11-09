@@ -506,3 +506,47 @@ test-helper safety cleanup changed; scanner behavior was unchanged. These are
 one cold sample per size, not repeated p50/p95 measurements, a memory bound, a
 cross-platform result, or release qualification. Earlier raw benchmark
 artifacts remain preserved and were not overwritten.
+
+## Batch 10 threat-intelligence and history paths (2026-11-09)
+
+- EPSS/KEV input is normalized and sorted for `K ≤ 200` CVEs in
+  `O(K log K)` time and `O(K)` space. EPSS requests use batches of 20 and two
+  workers; one KEV request may run alongside them, with at most three active
+  requests, three attempts per request and a 4 MiB cap per response. Parsing,
+  alias joins and audit breakdown construction are linear in accepted source
+  bytes, CVE aliases and findings, plus bounded sorting. Unavailable or stale
+  feeds remain explicit unknown factors in each priority record.
+- OSV path indexing builds adjacency, BFS parents and bounded root-prefix
+  pointers in expected `O(V + E)` time and `O(V + E)` space. A path lookup
+  emits at most 64 package instances, so `F` vulnerability findings add
+  `O(64F)` output work/space instead of materializing every ancestor path for
+  every dependency. Findings are sorted in `O(F log F)` time. A 70-instance
+  chain regression verifies the first 64 nodes and truncation marker. A path
+  is labeled verified only when the exact edge path exists and the involved
+  dependency inventories are complete. Fixed-version candidates are filtered
+  against the exact OSV ecosystem/package identity; only a single matching
+  candidate is offered as a direct upgrade suggestion.
+- Advisory snapshot manifest generation visits `R` records and `V` OSV
+  vulnerability entries in `O(R + V)` time; flush sorts `R` keys in
+  `O(R log R)`, canonicalizes `B` bytes in `O(B)`, and uses `O(B + R + V)`
+  peak additional space. The document is capped at 64 MiB and 200,000 records.
+  Signer ID, source version, oldest captured-record age and declared ecosystems
+  are validated or reported; the CLI cannot prove what ecosystems an external
+  project requires.
+- Authenticated history validates and rewrites at most 5,000 entries and 32
+  MiB per transaction. Append, read, migration and rotation are `O(Bₕ + H)`
+  time and `O(Bₕ + H)` additional space for serialized history bytes `Bₕ` and
+  entries `H`. The HMAC itself adds `O(Bₑ)` work for the new serialized entry.
+- npm package history sorts at most 10,000 dated releases in `O(V log V)` time
+  and keeps `O(V)` version/date/event references. Lock instances are capped at
+  1,000, provider concurrency defaults to six, and each packument is capped at
+  8 MiB. Provider result joins are `O(I + F)` for instances `I` and signals
+  `F`; parsed JSON object expansion is runtime-dependent. The latest five
+  dated publisher/maintainer events carry exact version timestamps and
+  pseudonymous identifiers; incomplete source history stays explicitly
+  partial/unavailable.
+
+These bounds are source-derived and backed by focused regression tests; they do
+not replace cross-platform 1k/10k/50k resource measurements, a whole-process
+memory profile, independent provider review or external ecosystem calibration.
+No new large benchmark campaign was run for this code change.

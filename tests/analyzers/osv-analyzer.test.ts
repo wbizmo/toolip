@@ -72,7 +72,15 @@ describe('OsvVulnerabilityAnalyzer', () => {
           queryCount += body.queries.length;
           return new Response(
             JSON.stringify({
-              results: body.queries.map(() => ({ vulns: [] }))
+              results: body.queries.map(() => ({
+                vulns: [
+                  {
+                    id: 'GHSA-test-path',
+                    summary: 'Partial graph path fixture',
+                    database_specific: { severity: 'HIGH' }
+                  }
+                ]
+              }))
             }),
             { status: 200 }
           );
@@ -84,6 +92,12 @@ describe('OsvVulnerabilityAnalyzer', () => {
       expect(queryCount).toBe(1);
       expect(result.metadata?.dependenciesChecked).toBe(1);
       expect(result.coverage?.state).toBe('partial');
+      expect(result.findings[0]?.metadata?.remediationPath).toMatchObject({
+        dependencyPathStatus: 'partial',
+        dependencyPath: [
+          { package: 'resolved', version: '1.2.3', direct: true }
+        ]
+      });
       expect(result.warnings).toContainEqual(
         expect.stringContaining('unresolved npm dependency missing')
       );
@@ -100,7 +114,11 @@ describe('OsvVulnerabilityAnalyzer', () => {
         JSON.stringify({
           lockfileVersion: 3,
           packages: {
-            '': { name: 'fixture', version: '1.0.0' },
+            '': {
+              name: 'fixture',
+              version: '1.0.0',
+              dependencies: { 'example-package': '1.0.0' }
+            },
             'node_modules/example-package': {
               version: '1.0.0',
               ...publicNpmSource('example-package', '1.0.0')
@@ -120,7 +138,51 @@ describe('OsvVulnerabilityAnalyzer', () => {
                       id: 'GHSA-test-0001',
                       summary: 'Test vulnerability',
                       database_specific: { severity: 'HIGH' },
-                      affected: [{ ranges: [{ events: [{ fixed: '1.0.1' }] }] }]
+                      affected: [
+                        {
+                          package: {
+                            ecosystem: 'npm',
+                            name: 'example-package'
+                          },
+                          ranges: [{ events: [{ fixed: '1.0.1' }] }]
+                        }
+                      ]
+                    },
+                    {
+                      id: 'GHSA-test-0002',
+                      summary: 'Multiple fixed release lines',
+                      database_specific: { severity: 'MEDIUM' },
+                      affected: [
+                        {
+                          package: {
+                            ecosystem: 'npm',
+                            name: 'example-package'
+                          },
+                          ranges: [
+                            {
+                              events: [{ fixed: '1.0.2' }, { fixed: '2.0.0' }]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      id: 'GHSA-test-0003',
+                      summary: 'Unrelated package has a different fix',
+                      database_specific: { severity: 'LOW' },
+                      affected: [
+                        {
+                          package: { ecosystem: 'npm', name: 'other-package' },
+                          ranges: [{ events: [{ fixed: '99.0.0' }] }]
+                        },
+                        {
+                          package: {
+                            ecosystem: 'npm',
+                            name: 'example-package'
+                          },
+                          ranges: [{ events: [{ introduced: '0' }] }]
+                        }
+                      ]
                     }
                   ]
                 }
@@ -135,10 +197,19 @@ describe('OsvVulnerabilityAnalyzer', () => {
         cache: new MemoryCache()
       });
 
-      expect(result.findings).toHaveLength(1);
-      expect(result.findings[0]?.severity).toBe('high');
-      expect(result.findings[0]?.remediation?.fixedVersion).toBe('1.0.1');
-      expect(result.findings[0]?.metadata?.remediationPath).toMatchObject({
+      expect(result.findings).toHaveLength(3);
+      const singleFix = result.findings.find(
+        (finding) => finding.metadata?.vulnerabilityId === 'GHSA-test-0001'
+      );
+      const multipleFixes = result.findings.find(
+        (finding) => finding.metadata?.vulnerabilityId === 'GHSA-test-0002'
+      );
+      const unrelatedFix = result.findings.find(
+        (finding) => finding.metadata?.vulnerabilityId === 'GHSA-test-0003'
+      );
+      expect(singleFix?.severity).toBe('high');
+      expect(singleFix?.remediation?.fixedVersion).toBe('1.0.1');
+      expect(singleFix?.metadata?.remediationPath).toMatchObject({
         target: {
           package: 'example-package',
           installedVersion: '1.0.0',
@@ -151,12 +222,89 @@ describe('OsvVulnerabilityAnalyzer', () => {
             installPath: 'node_modules/example-package'
           }
         ],
+        dependencyPathStatus: 'verified',
         fixedVersions: ['1.0.1'],
         verificationSteps: expect.arrayContaining([
           expect.stringContaining('frozen install'),
           expect.stringContaining('tests')
         ])
       });
+      expect(multipleFixes?.remediation?.fixedVersion).toBeUndefined();
+      expect(multipleFixes?.metadata?.remediationPath).toMatchObject({
+        fixedVersions: ['1.0.2', '2.0.0']
+      });
+      expect(unrelatedFix?.remediation?.fixedVersion).toBeUndefined();
+      expect(unrelatedFix?.metadata?.remediationPath).toMatchObject({
+        fixedVersions: []
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds deep remediation paths while keeping the shortest root prefix', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-deep-path-'));
+    try {
+      const packageCount = 70;
+      const packages: Record<string, Record<string, unknown>> = {
+        '': { name: 'fixture', version: '1.0.0', dependencies: { p0: '1.0.0' } }
+      };
+      let installPath = 'node_modules/p0';
+      for (let index = 0; index < packageCount; index += 1) {
+        const name = `p${index}`;
+        packages[installPath] = {
+          version: '1.0.0',
+          ...publicNpmSource(name, '1.0.0'),
+          ...(index + 1 < packageCount
+            ? { dependencies: { [`p${index + 1}`]: '1.0.0' } }
+            : {})
+        };
+        if (index + 1 < packageCount)
+          installPath += `/node_modules/p${index + 1}`;
+      }
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({ lockfileVersion: 3, packages })
+      );
+      const client = new OsvClient({
+        fetchImplementation: async (_input, init) => {
+          const body = JSON.parse(String(init?.body)) as {
+            queries: Array<{ package: { name: string } }>;
+          };
+          return new Response(
+            JSON.stringify({
+              results: body.queries.map((query) => ({
+                vulns:
+                  query.package.name === `p${packageCount - 1}`
+                    ? [
+                        {
+                          id: 'GHSA-deep-path',
+                          summary: 'Deep dependency path fixture'
+                        }
+                      ]
+                    : []
+              }))
+            }),
+            { status: 200 }
+          );
+        }
+      });
+
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({
+        root
+      });
+      const pathMetadata = result.findings[0]?.metadata?.remediationPath as
+        | {
+            dependencyPath: Array<{ package: string }>;
+            dependencyPathTruncated: boolean;
+            dependencyPathStatus: string;
+          }
+        | undefined;
+      expect(pathMetadata?.dependencyPathStatus).toBe('verified');
+      expect(pathMetadata?.dependencyPath).toHaveLength(64);
+      expect(pathMetadata?.dependencyPath[0]?.package).toBe('p0');
+      expect(pathMetadata?.dependencyPath.at(-1)?.package).toBe('p63');
+      expect(pathMetadata?.dependencyPathTruncated).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -561,7 +709,9 @@ describe('OsvVulnerabilityAnalyzer', () => {
       });
       expect(finding?.metadata?.riskPriority).toMatchObject({
         knownExploited: true,
-        epssProbability: 0.8
+        epssProbability: 0.8,
+        dataCompleteness: 'complete',
+        unknownFactors: []
       });
       expect(
         Number(
@@ -572,6 +722,77 @@ describe('OsvVulnerabilityAnalyzer', () => {
       expect(result.metadata?.exploitIntel).toMatchObject({
         status: 'available',
         cvesChecked: 1
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('labels unavailable exploit-intelligence factors instead of implying zero risk', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-osv-intel-unknown-')
+    );
+    try {
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': { name: 'fixture', version: '1.0.0' },
+            'node_modules/example-package': {
+              version: '1.0.0',
+              ...publicNpmSource('example-package', '1.0.0')
+            }
+          }
+        })
+      );
+      const osv = new OsvClient({
+        fetchImplementation: async () =>
+          new Response(
+            JSON.stringify({
+              results: [
+                {
+                  vulns: [
+                    {
+                      id: 'GHSA-test-unknown',
+                      aliases: ['CVE-2026-12345'],
+                      summary: 'Known advisory with unavailable exploit data',
+                      database_specific: { severity: 'HIGH' }
+                    }
+                  ]
+                }
+              ]
+            }),
+            { status: 200 }
+          )
+      });
+      const unavailableIntel = {
+        lookup: async (cves: string[]) => ({
+          status: 'unavailable' as const,
+          fetchedAt: 'unknown',
+          epssStatus: 'unavailable' as const,
+          kevStatus: 'unavailable' as const,
+          queriedCves: cves.length,
+          records: new Map(),
+          warnings: ['provider-outage']
+        })
+      } as unknown as ExploitIntelClient;
+
+      const result = await new OsvVulnerabilityAnalyzer(
+        osv,
+        unavailableIntel
+      ).analyze({ root });
+
+      expect(result.findings[0]?.metadata?.riskPriority).toMatchObject({
+        epssStatus: 'unavailable',
+        kevStatus: 'unavailable',
+        dataCompleteness: 'unknown',
+        unknownFactors: ['epss:unavailable', 'kev:unavailable'],
+        context: {
+          direct: false,
+          development: false,
+          optional: false
+        }
       });
     } finally {
       await rm(root, { recursive: true, force: true });
