@@ -8,6 +8,45 @@ import {
 } from '../src/core/dependencies/inventory.js';
 
 describe('npm dependency inventory', () => {
+  it('marks malformed package-map shapes and records incomplete instead of empty graphs', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-inventory-shape-')
+    );
+    try {
+      const malformedLockfiles = [
+        { lockfileVersion: 3, packages: 7 },
+        {
+          lockfileVersion: 3,
+          packages: {
+            'node_modules/broken': { version: '1.0.0', dependencies: 'bad' }
+          }
+        },
+        { lockfileVersion: 3, packages: { 'node_modules/broken': null } }
+      ];
+
+      for (const lockfile of malformedLockfiles) {
+        await writeFile(
+          path.join(root, 'package-lock.json'),
+          JSON.stringify(lockfile)
+        );
+        if (typeof lockfile.packages !== 'object' || lockfile.packages === null)
+          await expect(readNpmDependencyGraph(root)).rejects.toThrow(
+            'packages object'
+          );
+        else {
+          const graph = await readNpmDependencyGraph(root);
+          expect(graph.complete).toBe(false);
+          expect(graph.warnings).toContain(
+            'npm-lockfile-package-entry-invalid'
+          );
+          expect(graph.packages).toEqual([]);
+        }
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('rejects range-shaped lock versions and removes credentials from resolved URLs', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-inventory-origin-')

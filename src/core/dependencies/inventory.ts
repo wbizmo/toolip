@@ -102,6 +102,47 @@ type PackageLockV2 = {
   packages?: Record<string, PackageLockEntry>;
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function validPackageLockEntry(value: unknown): value is PackageLockEntry {
+  if (!isRecord(value)) return false;
+  for (const field of [
+    'dependencies',
+    'devDependencies',
+    'optionalDependencies',
+    'peerDependencies'
+  ]) {
+    const dependencies = value[field];
+    if (
+      dependencies !== undefined &&
+      (!isRecord(dependencies) ||
+        Object.values(dependencies).some(
+          (requirement) => typeof requirement !== 'string'
+        ))
+    )
+      return false;
+  }
+  for (const field of ['version', 'resolved', 'integrity']) {
+    if (value[field] !== undefined && typeof value[field] !== 'string')
+      return false;
+  }
+  for (const field of ['dev', 'optional', 'link']) {
+    if (value[field] !== undefined && typeof value[field] !== 'boolean')
+      return false;
+  }
+  for (const field of ['os', 'cpu', 'libc']) {
+    if (
+      value[field] !== undefined &&
+      (!Array.isArray(value[field]) ||
+        value[field].some((item) => typeof item !== 'string'))
+    )
+      return false;
+  }
+  return true;
+}
+
 function readCapturedDependencyText(
   fileSource: DependencyFileSource,
   relativePath: string
@@ -291,22 +332,35 @@ export async function readNpmDependencyGraph(
   const raw = fileSource
     ? readCapturedDependencyText(fileSource, 'package-lock.json')
     : await readBoundedDependencyText(path.join(root, 'package-lock.json'));
-  const lockfile = JSON.parse(raw) as PackageLockV2;
+  const parsed: unknown = JSON.parse(raw);
 
   if (
-    ![2, 3].includes(lockfile.lockfileVersion ?? 0) ||
-    !lockfile.packages ||
-    Array.isArray(lockfile.packages)
+    !isRecord(parsed) ||
+    ![2, 3].includes(parsed.lockfileVersion as number) ||
+    !isRecord(parsed.packages)
   ) {
     throw new Error(
-      'Toolip requires a package-lock.json lockfileVersion 2 or 3.'
+      'Toolip requires a package-lock.json lockfileVersion 2 or 3 with a packages object.'
     );
   }
 
-  const identitiesByPath = new Map<string, DependencyIdentity>();
+  const lockfile = parsed as PackageLockV2;
   const warnings: string[] = [];
+  const packageLockEntries = Object.create(null) as Record<
+    string,
+    PackageLockEntry
+  >;
+  for (const [installPath, entry] of Object.entries(lockfile.packages ?? {})) {
+    if (!validPackageLockEntry(entry)) {
+      warnings.push('npm-lockfile-package-entry-invalid');
+      continue;
+    }
+    packageLockEntries[installPath] = entry;
+  }
 
-  for (const [installPath, entry] of Object.entries(lockfile.packages)) {
+  const identitiesByPath = new Map<string, DependencyIdentity>();
+
+  for (const [installPath, entry] of Object.entries(packageLockEntries)) {
     if (installPath === '' || !entry.version) continue;
     if (
       path.posix.isAbsolute(installPath) ||
@@ -354,7 +408,7 @@ export async function readNpmDependencyGraph(
   const unresolvedDependencies: UnresolvedDependencyEdge[] = [];
   const rootTargets = new Set<string>();
   const seenEdges = new Set<string>();
-  for (const [fromPath, entry] of Object.entries(lockfile.packages)) {
+  for (const [fromPath, entry] of Object.entries(packageLockEntries)) {
     const fromIdentity =
       fromPath === '' ? undefined : identitiesByPath.get(fromPath);
 
@@ -362,7 +416,7 @@ export async function readNpmDependencyGraph(
 
     for (const requirement of requirements(entry, fromPath === '')) {
       const targetPath = resolveInstalledPath(
-        lockfile.packages,
+        packageLockEntries,
         fromPath,
         requirement.name
       );
