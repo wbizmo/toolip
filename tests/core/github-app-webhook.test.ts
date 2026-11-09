@@ -502,6 +502,53 @@ describe('read-only GitHub App webhook integration', () => {
     finishers.shift()?.();
   });
 
+  it('releases timed-out queue capacity when a scanner ignores cancellation', async () => {
+    const scanIds: string[] = [];
+    const audit: Array<Record<string, unknown>> = [];
+    const service = new GitHubAppWebhookService({
+      webhookSecret: secret,
+      repositories: [
+        {
+          name: 'acme/service',
+          installationId: 42,
+          repositoryId: 123,
+          root: '/tmp/acme-service'
+        }
+      ],
+      maxConcurrentScans: 1,
+      maxQueuedScans: 2,
+      scanTimeoutMs: 10,
+      scan: async (work) => {
+        scanIds.push(work.deliveryId);
+        if (work.deliveryId === 'never-finishes')
+          return new Promise(() => undefined);
+        return { status: 'complete', findingCount: 0 };
+      },
+      audit: (entry) => audit.push({ ...entry })
+    });
+    roots.push(() => service.close());
+
+    expect(
+      (await request(service, 'push', 'never-finishes', payload())).status
+    ).toBe(202);
+    expect(
+      (await request(service, 'push', 'queued-after-timeout', payload())).status
+    ).toBe(202);
+    await viWaitFor(() =>
+      expect(scanIds).toEqual(['never-finishes', 'queued-after-timeout'])
+    );
+    await viWaitFor(() =>
+      expect(audit).toContainEqual(
+        expect.objectContaining({
+          event: 'scan-finished',
+          deliveryId: 'never-finishes',
+          status: 'incomplete',
+          reason: 'scan-cancelled-or-timed-out'
+        })
+      )
+    );
+  });
+
   it('passes only bounded result summaries to the GitHub check publisher', async () => {
     const published: Array<{
       work: GitHubAppScanWork;

@@ -104,6 +104,42 @@ function positiveInteger(value: number, fallback: number, max: number): number {
   return selected;
 }
 
+function settleOnAbort<T>(
+  operation: Promise<T>,
+  signal: AbortSignal,
+  fallback: T
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const cleanup = (): void => signal.removeEventListener('abort', onAbort);
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(fallback);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    operation.then(
+      (value) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(value);
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      }
+    );
+  });
+}
+
 function sendJson(
   response: ServerResponse,
   status: number,
@@ -676,7 +712,13 @@ export class GitHubAppWebhookService {
       );
       void Promise.resolve()
         .then(() =>
-          this.options.scan(item.work, item.repository, controller.signal)
+          settleOnAbort(
+            Promise.resolve().then(() =>
+              this.options.scan(item.work, item.repository, controller.signal)
+            ),
+            controller.signal,
+            { status: 'incomplete', findingCount: 0 }
+          )
         )
         .then(async (summary) => {
           clearTimeout(deadline);
