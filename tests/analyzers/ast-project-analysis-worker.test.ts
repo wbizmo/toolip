@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   analyzeAstProjectInWorker,
-  planAstProjectInWorker
+  planAstProjectInWorker,
+  getAstWorkerQueueMetrics
 } from '../../src/analyzers/ast/project-analysis-worker-client.js';
 import {
   analyzeAstProjectByComponents,
@@ -111,6 +112,32 @@ describe('killable AST project analysis', () => {
       ...inline.dependencyDigests
     ]);
   }, 25_000);
+
+  it('bounds process-wide AST workers, cancels queued work, and rejects excess queueing', async () => {
+    const first = analyzeAstProjectInWorker(inputs, { timeoutMs: 20_000 });
+    expect(getAstWorkerQueueMetrics()).toMatchObject({
+      active: 1,
+      queued: 0,
+      maxActive: 1,
+      maxQueued: 1
+    });
+
+    const controller = new AbortController();
+    const queued = analyzeAstProjectInWorker(inputs, {
+      signal: controller.signal,
+      timeoutMs: 20_000
+    });
+    expect(getAstWorkerQueueMetrics()).toMatchObject({ active: 1, queued: 1 });
+    await expect(
+      analyzeAstProjectInWorker(inputs, { timeoutMs: 20_000 })
+    ).rejects.toMatchObject({ name: 'CapacityError' });
+
+    controller.abort();
+    await expect(queued).rejects.toMatchObject({ name: 'AbortError' });
+    expect(getAstWorkerQueueMetrics()).toMatchObject({ active: 1, queued: 0 });
+    await expect(first).resolves.toHaveProperty('findingsByPath');
+    expect(getAstWorkerQueueMetrics()).toMatchObject({ active: 0, queued: 0 });
+  }, 30_000);
 
   it('matches inline import-component plans in the bounded worker', async () => {
     const expected = planAstProjectComponents(inputs);

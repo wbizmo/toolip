@@ -18,6 +18,9 @@ export type TaskOutcome<T> =
 export class AnalysisResultCache {
   private readonly values = new Map<string, Buffer>();
   private currentBytes = 0;
+  private cacheHits = 0;
+  private cacheMisses = 0;
+  private cacheEvictions = 0;
 
   constructor(
     private readonly maxEntries = 10_000,
@@ -41,8 +44,23 @@ export class AnalysisResultCache {
     taskId: string,
     taskVersion: string
   ): T | undefined {
-    const value = this.values.get(cacheKey(snapshotId, taskId, taskVersion));
-    return value === undefined ? undefined : (deserialize(value) as T);
+    const key = cacheKey(snapshotId, taskId, taskVersion);
+    const value = this.values.get(key);
+    if (value === undefined) {
+      this.cacheMisses++;
+      return undefined;
+    }
+    try {
+      const decoded = deserialize(value) as T;
+      this.cacheHits++;
+      return decoded;
+    } catch {
+      this.values.delete(key);
+      this.currentBytes -= value.byteLength;
+      this.cacheEvictions++;
+      this.cacheMisses++;
+      return undefined;
+    }
   }
 
   has(snapshotId: string, taskId: string, taskVersion: string): boolean {
@@ -61,6 +79,7 @@ export class AnalysisResultCache {
       if (!previous) return;
       this.values.delete(key);
       this.currentBytes -= previous.byteLength;
+      this.cacheEvictions++;
     };
     let encoded: Buffer;
     try {
@@ -85,7 +104,10 @@ export class AnalysisResultCache {
       if (oldest === undefined) break;
       const evicted = this.values.get(oldest);
       this.values.delete(oldest);
-      if (evicted) this.currentBytes -= evicted.byteLength;
+      if (evicted) {
+        this.currentBytes -= evicted.byteLength;
+        this.cacheEvictions++;
+      }
     }
   }
 
@@ -95,6 +117,22 @@ export class AnalysisResultCache {
 
   get byteSize(): number {
     return this.currentBytes;
+  }
+
+  get metrics(): Readonly<{
+    hits: number;
+    misses: number;
+    evictions: number;
+    entries: number;
+    retainedSerializedBytes: number;
+  }> {
+    return Object.freeze({
+      hits: this.cacheHits,
+      misses: this.cacheMisses,
+      evictions: this.cacheEvictions,
+      entries: this.values.size,
+      retainedSerializedBytes: this.currentBytes
+    });
   }
 }
 
@@ -313,8 +351,16 @@ export async function runIncrementalTaskDag<T>(
   const wrapped = tasks.map((task) => ({
     ...task,
     run: async (signal: AbortSignal): Promise<T> => {
-      if (options.cache.has(snapshotId, task.id, task.version))
-        return options.cache.get<T>(snapshotId, task.id, task.version) as T;
+      if (options.cache.has(snapshotId, task.id, task.version)) {
+        const cached = options.cache.get<T>(snapshotId, task.id, task.version);
+        // `undefined` can be a valid serialized task value. A second has()
+        // distinguishes it from a corrupt entry that get() evicted.
+        if (
+          cached !== undefined ||
+          options.cache.has(snapshotId, task.id, task.version)
+        )
+          return cached as T;
+      }
       const value = await task.run(signal);
       if (!signal.aborted)
         options.cache.set(snapshotId, task.id, task.version, value);

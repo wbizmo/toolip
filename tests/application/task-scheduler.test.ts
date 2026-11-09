@@ -180,6 +180,51 @@ describe('analysis DAG scheduler', () => {
     expect(cache.size).toBe(1);
     expect(cache.has('one', 'task', '1')).toBe(false);
     expect(cache.get('two', 'task', '1')).toBe('second');
+    expect(cache.metrics).toMatchObject({
+      hits: 1,
+      misses: 0,
+      evictions: 1,
+      entries: 1
+    });
+  });
+
+  it('evicts corrupt serialized entries and treats them as cache misses', () => {
+    const cache = new AnalysisResultCache();
+    const values = (cache as unknown as { values: Map<string, Buffer> }).values;
+    cache.set('snapshot', 'task', '1', 'temporary');
+    values.set(
+      ['snapshot', 'task', '1'].join('\0'),
+      Buffer.alloc(cache.byteSize, 0)
+    );
+
+    expect(cache.get('snapshot', 'task', '1')).toBeUndefined();
+    expect(cache.metrics).toMatchObject({
+      hits: 0,
+      misses: 1,
+      evictions: 1,
+      entries: 0,
+      retainedSerializedBytes: 0
+    });
+  });
+
+  it('recomputes a task after evicting a corrupt cached value', async () => {
+    const cache = new AnalysisResultCache();
+    cache.set('snapshot', 'task', '1', 'temporary');
+    const values = (cache as unknown as { values: Map<string, Buffer> }).values;
+    values.set(
+      ['snapshot', 'task', '1'].join('\0'),
+      Buffer.alloc(cache.byteSize, 0)
+    );
+    let executions = 0;
+    const outcomes = await runIncrementalTaskDag(
+      'snapshot',
+      [{ id: 'task', version: '1', run: async () => ++executions }],
+      { cache }
+    );
+
+    expect(outcomes[0]).toMatchObject({ state: 'complete', value: 1 });
+    expect(executions).toBe(1);
+    expect(cache.metrics.evictions).toBe(1);
   });
 
   it('bounds retained cache bytes and skips individually oversized results', () => {

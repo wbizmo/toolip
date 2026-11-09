@@ -429,3 +429,29 @@ the warm path. The prior single-run 50k samples were 4.52 s / 1,047 MiB warm
 and 4.57 s / 1,260 MiB incremental. Current five-run ranges overlap those
 single points, so this is not a causal speedup claim or a bound. Raw rows:
 [`full cache-cycle JSONL`](benchmarks/toolip-v3.2.1-ast-cache-cycle-repeat-2026-11-08-linux-node24.jsonl).
+
+## Batch 07 cache and AST worker bounds (2026-11-09)
+
+After adding corrupt-cache fallback and a process-wide AST worker gate, one
+Linux Node 24.22.1 synthetic 50k run completed every full-scorecard pass with
+complete coverage and zero provider requests. The result cache held 53,129
+entries and 13.34 MiB of serialized payload at cold/warm, with zero evictions;
+the reported serialized bytes exclude JavaScript map/key overhead.
+
+| Pass                      | Wall time |  RSS peak |             AST cache | Result cache hits / misses |
+| ------------------------- | --------: | --------: | --------------------: | -------------------------: |
+| Cold                      |   18.29 s |   857 MiB |             0 / 3,125 |                 0 / 50,003 |
+| Warm                      |    4.36 s | 1,075 MiB |             3,125 / 0 |                 53,128 / 0 |
+| One-file incremental      |    4.87 s | 1,275 MiB |             3,124 / 1 |                 53,127 / 1 |
+| Two concurrent scorecards |    9.39 s | 1,098 MiB | 3,125 misses per scan |        0 / 50,003 per scan |
+
+The process-wide AST gate permits one worker and one queued request; further
+queued work fails closed. The concurrent-pair sample peaked at 1,098 MiB RSS,
+compared with 1,366 MiB in the earlier single-run two-worker sample. These are
+one run each, not a p50/p95 or a causal performance result. The incremental
+sample remains above 1 GiB RSS. Removing a separate `O(F)` findings-map copy on
+that path has no measurable reduction within the previously observed sample
+range. Raw current rows are in
+[`Batch 07 worker-pool JSONL`](benchmarks/toolip-v3.2.1-batch07-50k-worker-pool-linux-node24.jsonl);
+the preceding cache-map sample is preserved in
+[`Batch 07 cache-copy JSONL`](benchmarks/toolip-v3.2.1-batch07-50k-post-cache-copy-removal-linux-node24.jsonl).

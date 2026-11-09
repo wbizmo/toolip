@@ -1,15 +1,18 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   evaluatePolicyAsCode,
+  loadTrustedOrganizationPolicy,
   loadPolicyAsCode,
   mergePolicyLayers,
   parsePolicyAsCode,
   type PolicyAsCode,
   type PolicyLayer
 } from '../../src/core/policy-as-code.js';
+import { canonicalJson } from '../../src/core/canonical-json.js';
 
 const temporaryRoots: string[] = [];
 async function policyFile(contents: string): Promise<string> {
@@ -188,6 +191,28 @@ describe('versioned policy-as-code evaluation', () => {
     );
   });
 
+  it('does not let a local fail-on override weaken signed organization severity', () => {
+    const result = evaluatePolicyAsCode({
+      policy: {
+        version: 1,
+        minimumSeverity: 'high',
+        rules: {},
+        suppressions: []
+      },
+      trust: {
+        trusted: true,
+        source: 'signed',
+        identity: 'security.example/toolip:org-key-v1:policy-digest'
+      },
+      findings: [finding],
+      analysisState: 'complete',
+      minimumSeverity: 'critical'
+    });
+
+    expect(result.decision).toBe('fail');
+    expect(result.findings).toContainEqual(finding);
+  });
+
   it('fails closed below minimum coverage and gates only selected rule sets', () => {
     const belowCoverage = evaluatePolicyAsCode({
       policy: { version: 1, minimumCoverage: 0.9, rules: {}, suppressions: [] },
@@ -254,9 +279,20 @@ describe('versioned policy-as-code evaluation', () => {
     expect(untrusted.policy.minimumCoverage).toBe(0.8);
     expect(untrusted.policy.suppressions).toEqual([]);
 
-    const approved = mergePolicyLayers(repository, {
+    const selfAsserted = mergePolicyLayers(repository, {
       ...organization,
       trust: { trusted: true, source: 'user-config' }
+    });
+    expect(selfAsserted.policy.suppressions).toEqual([]);
+    expect(selfAsserted.trust.trusted).toBe(false);
+
+    const approved = mergePolicyLayers(repository, {
+      ...organization,
+      trust: {
+        trusted: true,
+        source: 'signed',
+        identity: 'example-issuer:test-key:verified-envelope'
+      }
     });
     const result = evaluatePolicyAsCode({
       policy: approved.policy,
@@ -268,6 +304,99 @@ describe('versioned policy-as-code evaluation', () => {
     });
     expect(result.decision).toBe('pass');
     expect(result.suppressed).toEqual(['org-suppression']);
+  });
+
+  it('requires a valid unexpired Ed25519 organization envelope and trusted issuer', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-org-policy-'));
+    temporaryRoots.push(root);
+    const filePath = path.join(root, 'organization-policy.json');
+    const publicKeyPath = path.join(root, 'organization-policy.pub');
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    await writeFile(
+      publicKeyPath,
+      publicKey.export({ type: 'spki', format: 'pem' })
+    );
+    const payload = {
+      schema: 'toolip.dev/organization-policy/v1',
+      issuer: 'security.example/toolip',
+      keyId: 'org-policy-v3',
+      issuedAt: '2030-01-01T00:00:00.000Z',
+      expiresAt: '2030-02-01T00:00:00.000Z',
+      policy: {
+        version: 1,
+        minimumSeverity: 'high',
+        rules: {},
+        suppressions: []
+      }
+    };
+    const makeEnvelope = (value = payload) => ({
+      ...value,
+      signature: {
+        algorithm: 'Ed25519',
+        value: cryptoSign(
+          null,
+          Buffer.from(canonicalJson(value)),
+          privateKey
+        ).toString('base64')
+      }
+    });
+    await writeFile(filePath, JSON.stringify(makeEnvelope()));
+    const verified = await loadTrustedOrganizationPolicy({
+      filePath,
+      publicKeyPath,
+      trustedKeyId: 'org-policy-v3',
+      trustedIssuer: 'security.example/toolip',
+      now: Date.parse('2030-01-15T00:00:00.000Z')
+    });
+    expect(verified.policy.minimumSeverity).toBe('high');
+    expect(verified.identity).toContain(
+      'security.example/toolip:org-policy-v3:'
+    );
+    await expect(
+      loadTrustedOrganizationPolicy({
+        filePath,
+        publicKeyPath,
+        trustedKeyId: 'attacker-key',
+        trustedIssuer: 'security.example/toolip',
+        now: Date.parse('2030-01-15T00:00:00.000Z')
+      })
+    ).rejects.toThrow('signer or issuer is not trusted');
+    await expect(
+      loadTrustedOrganizationPolicy({
+        filePath,
+        publicKeyPath,
+        trustedKeyId: 'org-policy-v3',
+        trustedIssuer: 'security.example/toolip',
+        now: Date.parse('2030-03-01T00:00:00.000Z')
+      })
+    ).rejects.toThrow('expired or has invalid validity dates');
+    const changed = {
+      ...payload,
+      policy: { ...payload.policy, minimumSeverity: 'info' }
+    };
+    await writeFile(filePath, JSON.stringify(makeEnvelope(changed)));
+    const { privateKey: otherPrivateKey } = generateKeyPairSync('ed25519');
+    const forged = {
+      ...payload,
+      signature: {
+        algorithm: 'Ed25519',
+        value: cryptoSign(
+          null,
+          Buffer.from(canonicalJson(payload)),
+          otherPrivateKey
+        ).toString('base64')
+      }
+    };
+    await writeFile(filePath, JSON.stringify(forged));
+    await expect(
+      loadTrustedOrganizationPolicy({
+        filePath,
+        publicKeyPath,
+        trustedKeyId: 'org-policy-v3',
+        trustedIssuer: 'security.example/toolip',
+        now: Date.parse('2030-01-15T00:00:00.000Z')
+      })
+    ).rejects.toThrow('signature verification failed');
   });
 
   it('does not honor expired or path-mismatched suppressions', () => {

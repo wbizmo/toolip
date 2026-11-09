@@ -9,6 +9,7 @@ describe('GitHub Action integration contract', () => {
     const document = parseDocument(text);
     expect(document.errors).toEqual([]);
     const action = document.toJS() as {
+      inputs?: Record<string, { required?: boolean; default?: string }>;
       runs?: {
         using?: string;
         steps?: Array<{
@@ -29,6 +30,11 @@ describe('GitHub Action integration contract', () => {
     expect(commands).toContain('npm audit signatures --ignore-scripts');
     expect(commands).toContain('policy check');
     expect(commands).toContain('--sarif');
+    expect(commands).toContain('--organization-policy-public-key');
+    expect(commands).toContain('--require-organization-policy');
+    expect(action.inputs?.['organization-policy-file']?.default).toBe('');
+    expect(action.inputs?.['organization-policy-key-id']?.default).toBe('');
+    expect(action.inputs?.['organization-policy-issuer']?.default).toBe('');
     expect(commands).not.toMatch(
       /\b(?:npm|pnpm|yarn)\s+(?:install|ci)(?![^\n]*--ignore-scripts)/u
     );

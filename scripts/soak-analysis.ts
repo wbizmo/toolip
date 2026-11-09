@@ -49,6 +49,10 @@ let totalSnapshotReads = 0;
 let totalSnapshotReuses = 0;
 let totalCacheHits = 0;
 let totalCacheMisses = 0;
+let totalResultCacheHits = 0;
+let totalResultCacheMisses = 0;
+let totalResultCacheEvictions = 0;
+let peakRetainedCacheBytes = 0;
 
 try {
   await writeFile(
@@ -140,6 +144,13 @@ try {
     totalSnapshotReuses += snapshot.metrics.filesReused;
     totalCacheHits += result.cacheMetrics.hits;
     totalCacheMisses += result.cacheMetrics.misses;
+    totalResultCacheHits += result.cacheMetrics.resultCache.hits;
+    totalResultCacheMisses += result.cacheMetrics.resultCache.misses;
+    totalResultCacheEvictions += result.cacheMetrics.resultCache.evictions;
+    peakRetainedCacheBytes = Math.max(
+      peakRetainedCacheBytes,
+      result.cacheMetrics.resultCache.retainedSerializedBytes
+    );
     peakRssBytes = Math.max(peakRssBytes, process.memoryUsage().rss);
     if (peakRssBytes > maxRssBytes)
       throw new Error(`RSS budget exceeded at iteration ${iteration}`);
@@ -167,6 +178,10 @@ try {
       snapshotFilesReused: totalSnapshotReuses,
       analysisCacheHits: totalCacheHits,
       analysisCacheMisses: totalCacheMisses,
+      resultCacheHits: totalResultCacheHits,
+      resultCacheMisses: totalResultCacheMisses,
+      resultCacheEvictions: totalResultCacheEvictions,
+      peakRetainedCacheBytes,
       analysisComplete: true,
       coverageComplete: true,
       externalProviderRequests: 0

@@ -52,6 +52,88 @@ function timeoutError(message: string): Error {
   return error;
 }
 
+const maximumConcurrentAstWorkers = 1;
+const maximumQueuedAstWorkers = 1;
+let activeAstWorkers = 0;
+type AstWorkerWaiter = {
+  signal?: AbortSignal;
+  resolve: (release: () => void) => void;
+  reject: (error: Error) => void;
+  onAbort?: () => void;
+  timeout?: ReturnType<typeof setTimeout>;
+};
+const astWorkerQueue: AstWorkerWaiter[] = [];
+
+function createAstWorkerRelease(): () => void {
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const next = astWorkerQueue.shift();
+    if (next) {
+      if (next.timeout) clearTimeout(next.timeout);
+      if (next.onAbort) next.signal?.removeEventListener('abort', next.onAbort);
+      next.resolve(createAstWorkerRelease());
+      return;
+    }
+    activeAstWorkers--;
+  };
+}
+
+async function acquireAstWorkerSlot(
+  signal: AbortSignal | undefined,
+  timeoutMs: number
+): Promise<() => void> {
+  if (signal?.aborted)
+    throw abortError('AST project analysis was cancelled while queued.');
+  if (activeAstWorkers < maximumConcurrentAstWorkers) {
+    activeAstWorkers++;
+    return createAstWorkerRelease();
+  }
+  if (astWorkerQueue.length >= maximumQueuedAstWorkers) {
+    const error = new Error(
+      'AST worker queue is full; retry after analysis completes.'
+    );
+    error.name = 'CapacityError';
+    throw error;
+  }
+  return await new Promise<() => void>((resolve, reject) => {
+    const waiter: AstWorkerWaiter = { signal, resolve, reject };
+    const remove = (): void => {
+      const index = astWorkerQueue.indexOf(waiter);
+      if (index >= 0) astWorkerQueue.splice(index, 1);
+      if (waiter.timeout) clearTimeout(waiter.timeout);
+      if (waiter.onAbort) signal?.removeEventListener('abort', waiter.onAbort);
+    };
+    waiter.onAbort = () => {
+      remove();
+      reject(abortError('AST project analysis was cancelled while queued.'));
+    };
+    waiter.timeout = setTimeout(() => {
+      remove();
+      reject(timeoutError('AST worker queue wait exceeded its time budget.'));
+    }, timeoutMs);
+    signal?.addEventListener('abort', waiter.onAbort, { once: true });
+    astWorkerQueue.push(waiter);
+    if (signal?.aborted) waiter.onAbort();
+  });
+}
+
+/** Process-wide AST resource guard, also used by focused concurrency tests. */
+export function getAstWorkerQueueMetrics(): Readonly<{
+  active: number;
+  queued: number;
+  maxActive: number;
+  maxQueued: number;
+}> {
+  return Object.freeze({
+    active: activeAstWorkers,
+    queued: astWorkerQueue.length,
+    maxActive: maximumConcurrentAstWorkers,
+    maxQueued: maximumQueuedAstWorkers
+  });
+}
+
 function analyzeInline(
   inputs: readonly AstProjectInput[]
 ): AstProjectWorkerResult {
@@ -114,29 +196,49 @@ export async function planAstProjectInWorker(
     throw new RangeError(
       'AST project worker timeout is outside the supported range.'
     );
-  const extension = import.meta.url.endsWith('.ts') ? 'ts' : 'js';
-  const worker = new Worker(
-    new URL(
-      extension === 'ts'
-        ? './project-analysis-worker-bootstrap.mjs'
-        : `./project-analysis-worker.${extension}`,
-      import.meta.url
-    ),
-    {
-      workerData: { mode: 'plan', inputs },
-      ...(extension === 'ts' ? { execArgv: [] } : {}),
-      resourceLimits: {
-        maxOldGenerationSizeMb: 1024,
-        maxYoungGenerationSizeMb: 128,
-        stackSizeMb: 16
-      }
-    }
+  const workerDeadline = Date.now() + timeoutMs;
+  const releaseWorkerSlot = await acquireAstWorkerSlot(
+    options.signal,
+    timeoutMs
   );
+  if (options.signal?.aborted) {
+    releaseWorkerSlot();
+    throw abortError('AST project planning was cancelled.');
+  }
+  const remainingTimeoutMs = workerDeadline - Date.now();
+  if (remainingTimeoutMs <= 0) {
+    releaseWorkerSlot();
+    throw timeoutError('AST project planning exceeded its time budget.');
+  }
+  const extension = import.meta.url.endsWith('.ts') ? 'ts' : 'js';
+  let worker: Worker;
+  try {
+    worker = new Worker(
+      new URL(
+        extension === 'ts'
+          ? './project-analysis-worker-bootstrap.mjs'
+          : `./project-analysis-worker.${extension}`,
+        import.meta.url
+      ),
+      {
+        workerData: { mode: 'plan', inputs },
+        ...(extension === 'ts' ? { execArgv: [] } : {}),
+        resourceLimits: {
+          maxOldGenerationSizeMb: 1024,
+          maxYoungGenerationSizeMb: 128,
+          stackSizeMb: 16
+        }
+      }
+    );
+  } catch (error) {
+    releaseWorkerSlot();
+    throw error;
+  }
   return new Promise<AstProjectComponentPlan>((resolve, reject) => {
     let settled = false;
     const timeout = setTimeout(() => {
       stop(timeoutError('AST project planning exceeded its time budget.'));
-    }, timeoutMs);
+    }, remainingTimeoutMs);
     const cleanup = (): void => {
       clearTimeout(timeout);
       options.signal?.removeEventListener('abort', onAbort);
@@ -256,7 +358,7 @@ export async function planAstProjectInWorker(
     });
     options.signal?.addEventListener('abort', onAbort, { once: true });
     if (options.signal?.aborted) onAbort();
-  });
+  }).finally(releaseWorkerSlot);
 }
 
 /** Run synchronous TypeScript analysis in a killable, memory-bounded worker. */
@@ -284,30 +386,50 @@ export async function analyzeAstProjectInWorker(
     throw new RangeError(
       'AST project worker timeout is outside the supported range.'
     );
-  const extension = import.meta.url.endsWith('.ts') ? 'ts' : 'js';
-  const worker = new Worker(
-    new URL(
-      extension === 'ts'
-        ? './project-analysis-worker-bootstrap.mjs'
-        : `./project-analysis-worker.${extension}`,
-      import.meta.url
-    ),
-    {
-      workerData: inputs,
-      ...(extension === 'ts' ? { execArgv: [] } : {}),
-      resourceLimits: {
-        maxOldGenerationSizeMb: 1024,
-        maxYoungGenerationSizeMb: 128,
-        stackSizeMb: 16
-      }
-    }
+  const workerDeadline = Date.now() + timeoutMs;
+  const releaseWorkerSlot = await acquireAstWorkerSlot(
+    options.signal,
+    timeoutMs
   );
+  if (options.signal?.aborted) {
+    releaseWorkerSlot();
+    throw abortError('AST project analysis was cancelled.');
+  }
+  const remainingTimeoutMs = workerDeadline - Date.now();
+  if (remainingTimeoutMs <= 0) {
+    releaseWorkerSlot();
+    throw timeoutError('AST project analysis exceeded its time budget.');
+  }
+  const extension = import.meta.url.endsWith('.ts') ? 'ts' : 'js';
+  let worker: Worker;
+  try {
+    worker = new Worker(
+      new URL(
+        extension === 'ts'
+          ? './project-analysis-worker-bootstrap.mjs'
+          : `./project-analysis-worker.${extension}`,
+        import.meta.url
+      ),
+      {
+        workerData: inputs,
+        ...(extension === 'ts' ? { execArgv: [] } : {}),
+        resourceLimits: {
+          maxOldGenerationSizeMb: 1024,
+          maxYoungGenerationSizeMb: 128,
+          stackSizeMb: 16
+        }
+      }
+    );
+  } catch (error) {
+    releaseWorkerSlot();
+    throw error;
+  }
 
   return new Promise<AstProjectWorkerResult>((resolve, reject) => {
     let settled = false;
     const timeout = setTimeout(() => {
       stop(timeoutError('AST project analysis exceeded its time budget.'));
-    }, timeoutMs);
+    }, remainingTimeoutMs);
     const cleanup = (): void => {
       clearTimeout(timeout);
       options.signal?.removeEventListener('abort', onAbort);
@@ -428,5 +550,5 @@ export async function analyzeAstProjectInWorker(
     });
     options.signal?.addEventListener('abort', onAbort, { once: true });
     if (options.signal?.aborted) onAbort();
-  });
+  }).finally(releaseWorkerSlot);
 }

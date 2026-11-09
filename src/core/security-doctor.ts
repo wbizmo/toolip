@@ -90,6 +90,13 @@ export type SecurityDoctorResult = {
     misses: number;
     astProjectHits: number;
     astProjectMisses: number;
+    resultCache: {
+      hits: number;
+      misses: number;
+      evictions: number;
+      entries: number;
+      retainedSerializedBytes: number;
+    };
   };
   analyzerPlugins: Array<{
     id: string;
@@ -213,6 +220,7 @@ function astAnalysisFailureKind(error: unknown): string {
   if (!(error instanceof Error)) return 'unknown failure';
   if (error.name === 'TimeoutError') return 'worker timed out';
   if (error.name === 'AbortError') return 'worker cancelled';
+  if (error.name === 'CapacityError') return 'worker capacity exhausted';
   if (
     /worker exited before (?:analysis|planning) \(code \d+\)/u.test(
       error.message
@@ -334,6 +342,13 @@ export async function runSecurityDoctor(
   rootOrContext: string | ScannerContext,
   options: SecurityDoctorOptions = {}
 ): Promise<SecurityDoctorResult> {
+  const resultCacheBefore = options.analysisCache?.metrics ?? {
+    hits: 0,
+    misses: 0,
+    evictions: 0,
+    entries: 0,
+    retainedSerializedBytes: 0
+  };
   const suppliedContext =
     typeof rootOrContext === 'string' ? undefined : rootOrContext;
   let snapshot = options.snapshot;
@@ -519,10 +534,9 @@ export async function runSecurityDoctor(
               if (componentDigestsToAnalyze.has(digest))
                 pathsToAnalyze.add(filePath);
 
-            const cachedFindingsByPath =
-              pathsToAnalyze.size === 0
-                ? cachedAst.findingsByPath
-                : new Map(cachedAst.findingsByPath);
+            // readAstProjectCache owns this materialized map, so invalidation
+            // can delete stale paths in place without a second O(F) map copy.
+            const cachedFindingsByPath = cachedAst.findingsByPath;
             for (const filePath of pathsToAnalyze)
               cachedFindingsByPath.delete(filePath);
             astDependencyDigests = plan.dependencyDigests;
@@ -984,7 +998,17 @@ export async function runSecurityDoctor(
       hits: cacheHits,
       misses: cacheMisses,
       astProjectHits: astProjectCacheHits,
-      astProjectMisses: astProjectCacheMisses
+      astProjectMisses: astProjectCacheMisses,
+      resultCache: (() => {
+        const current = options.analysisCache?.metrics ?? resultCacheBefore;
+        return {
+          hits: current.hits - resultCacheBefore.hits,
+          misses: current.misses - resultCacheBefore.misses,
+          evictions: current.evictions - resultCacheBefore.evictions,
+          entries: current.entries,
+          retainedSerializedBytes: current.retainedSerializedBytes
+        };
+      })()
     },
     analyzerPlugins
   };

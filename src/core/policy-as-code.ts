@@ -1,9 +1,10 @@
-import { createHash } from 'node:crypto';
+import { createHash, verify as cryptoVerify } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
 import { parseDocument } from 'yaml';
 import { z } from 'zod';
 import { canonicalJson } from './canonical-json.js';
+import { readPemKeyFile } from './secure-key-file.js';
 import type { AnalysisState } from '../contracts/analysis.js';
 import type { Finding, FindingSeverity } from '../contracts/finding.js';
 
@@ -108,6 +109,8 @@ export type PolicyAsCode = z.infer<typeof policySchema>;
 export type PolicyTrust = {
   trusted: boolean;
   source: 'repository' | 'user-config' | 'signed';
+  /** Stable signer and envelope identity; required for privileged policy. */
+  identity?: string;
 };
 export type PolicyDecision =
   'pass' | 'fail' | 'incomplete' | 'misconfigured' | 'error';
@@ -160,7 +163,11 @@ export function mergePolicyLayers(
       trust: { trusted: false, source: 'repository' }
     };
   }
-  const trusted = organization.trust.trusted === true;
+  const trusted =
+    organization.trust.trusted === true &&
+    organization.trust.source === 'signed' &&
+    typeof organization.trust.identity === 'string' &&
+    organization.trust.identity.length > 0;
   const severityOrder: Record<z.infer<typeof severity>, number> = {
     critical: 0,
     high: 1,
@@ -226,13 +233,16 @@ export type PolicyEvaluation = Readonly<{
 export async function loadPolicyAsCode(
   filePath: string
 ): Promise<{ policy: PolicyAsCode; sha256: string }> {
+  return parsePolicyAsCode(await readBoundedPolicySource(filePath));
+}
+
+async function readBoundedPolicySource(filePath: string): Promise<string> {
   const maximumBytes = 1_048_576;
   const before = await lstat(filePath, { bigint: true });
   if (!before.isFile() || before.size > BigInt(maximumBytes))
     throw new Error('policy file is not a bounded regular file');
   const noFollow = constants.O_NOFOLLOW ?? 0;
   const handle = await open(filePath, constants.O_RDONLY | noFollow);
-  let source: string;
   try {
     const opened = await handle.stat({ bigint: true });
     if (
@@ -242,30 +252,167 @@ export async function loadPolicyAsCode(
       opened.size !== before.size
     )
       throw new Error('policy file changed while opening');
-    const bytes = await handle.readFile();
-    if (bytes.byteLength > maximumBytes)
+    const bytes = Buffer.alloc(maximumBytes + 1);
+    let byteLength = 0;
+    while (byteLength < bytes.length) {
+      const { bytesRead } = await handle.read(
+        bytes,
+        byteLength,
+        Math.min(64 * 1024, bytes.length - byteLength),
+        null
+      );
+      if (bytesRead === 0) break;
+      byteLength += bytesRead;
+    }
+    if (byteLength > maximumBytes)
       throw new Error('policy file exceeds the size budget');
     const after = await handle.stat({ bigint: true });
+    const afterPath = await lstat(filePath, { bigint: true });
     if (
       opened.dev !== after.dev ||
       opened.ino !== after.ino ||
       opened.size !== after.size ||
       opened.mtimeNs !== after.mtimeNs ||
-      opened.ctimeNs !== after.ctimeNs
+      opened.ctimeNs !== after.ctimeNs ||
+      afterPath.isSymbolicLink() ||
+      afterPath.dev !== opened.dev ||
+      afterPath.ino !== opened.ino
     )
       throw new Error('policy file changed while reading');
-    source = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    if (BigInt(byteLength) !== opened.size)
+      throw new Error('policy file changed while reading');
+    return new TextDecoder('utf-8', { fatal: true }).decode(
+      bytes.subarray(0, byteLength)
+    );
   } finally {
     await handle.close();
   }
-  const afterPath = await lstat(filePath, { bigint: true });
+}
+
+/**
+ * Loads an organization profile only when its canonical envelope verifies
+ * against an independently configured Ed25519 key ID and issuer. The caller
+ * must source these trust settings outside the scanned repository.
+ */
+export async function loadTrustedOrganizationPolicy(input: {
+  filePath: string;
+  publicKeyPath: string;
+  trustedKeyId: string;
+  trustedIssuer: string;
+  now?: number;
+}): Promise<{
+  policy: PolicyAsCode;
+  sha256: string;
+  identity: string;
+  issuer: string;
+  keyId: string;
+}> {
+  const source = await readBoundedPolicySource(input.filePath);
+  const document = parseDocument(source, {
+    uniqueKeys: true,
+    prettyErrors: false
+  });
+  if (document.errors.length)
+    throw new Error(
+      'organization policy envelope is malformed or has duplicate keys'
+    );
+  const parsed = document.toJS() as unknown;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+    throw new Error('organization policy envelope is invalid');
+  const envelope = parsed as Record<string, unknown>;
+  const signature = envelope.signature;
+  const validKeySet = (value: Record<string, unknown>, keys: string[]) =>
+    Object.keys(value).length === keys.length &&
+    Object.keys(value).every((key) => keys.includes(key));
   if (
-    afterPath.isSymbolicLink() ||
-    afterPath.dev !== before.dev ||
-    afterPath.ino !== before.ino
+    !validKeySet(envelope, [
+      'schema',
+      'issuer',
+      'keyId',
+      'issuedAt',
+      'expiresAt',
+      'policy',
+      'signature'
+    ]) ||
+    envelope.schema !== 'toolip.dev/organization-policy/v1' ||
+    typeof envelope.issuer !== 'string' ||
+    typeof envelope.keyId !== 'string' ||
+    typeof envelope.issuedAt !== 'string' ||
+    typeof envelope.expiresAt !== 'string' ||
+    !envelope.policy ||
+    typeof envelope.policy !== 'object' ||
+    Array.isArray(envelope.policy) ||
+    !signature ||
+    typeof signature !== 'object' ||
+    Array.isArray(signature)
   )
-    throw new Error('policy file path changed while reading');
-  return parsePolicyAsCode(source);
+    throw new Error('organization policy envelope is invalid or unsupported');
+  const signatureRecord = signature as Record<string, unknown>;
+  if (
+    !validKeySet(signatureRecord, ['algorithm', 'value']) ||
+    signatureRecord.algorithm !== 'Ed25519' ||
+    typeof signatureRecord.value !== 'string' ||
+    !/^[A-Za-z0-9+/]{86}==$/u.test(signatureRecord.value)
+  )
+    throw new Error('organization policy signature envelope is invalid');
+  if (
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(input.trustedKeyId) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u.test(input.trustedIssuer) ||
+    envelope.keyId !== input.trustedKeyId ||
+    envelope.issuer !== input.trustedIssuer
+  )
+    throw new Error('organization policy signer or issuer is not trusted');
+  const issuedAt = Date.parse(envelope.issuedAt);
+  const expiresAt = Date.parse(envelope.expiresAt);
+  const now = input.now ?? Date.now();
+  const maxLifetime = 180 * 24 * 60 * 60 * 1000;
+  if (
+    !Number.isFinite(issuedAt) ||
+    !Number.isFinite(expiresAt) ||
+    new Date(issuedAt).toISOString() !== envelope.issuedAt ||
+    new Date(expiresAt).toISOString() !== envelope.expiresAt ||
+    issuedAt > now + 5 * 60 * 1000 ||
+    expiresAt <= now ||
+    expiresAt <= issuedAt ||
+    expiresAt - issuedAt > maxLifetime
+  )
+    throw new Error(
+      'organization policy is expired or has invalid validity dates'
+    );
+  const { signature: _signature, ...payload } = envelope;
+  let validSignature = false;
+  try {
+    const signatureBytes = Buffer.from(signatureRecord.value, 'base64');
+    if (
+      signatureBytes.length !== 64 ||
+      signatureBytes.toString('base64') !== signatureRecord.value
+    )
+      throw new Error('invalid Ed25519 signature encoding');
+    validSignature = cryptoVerify(
+      null,
+      Buffer.from(canonicalJson(payload)),
+      await readPemKeyFile(input.publicKeyPath),
+      signatureBytes
+    );
+  } catch {
+    throw new Error('organization policy signature verification failed');
+  }
+  if (!validSignature)
+    throw new Error('organization policy signature verification failed');
+  const encodedPolicy = JSON.stringify(envelope.policy);
+  if (encodedPolicy === undefined)
+    throw new Error('organization policy payload is invalid');
+  const loaded = parsePolicyAsCode(encodedPolicy);
+  const sha256 = createHash('sha256')
+    .update(canonicalJson(payload))
+    .digest('hex');
+  return {
+    policy: loaded.policy,
+    sha256,
+    identity: `${envelope.issuer}:${envelope.keyId}:${sha256}`,
+    issuer: envelope.issuer,
+    keyId: envelope.keyId
+  };
 }
 
 /** Parses policy bytes captured by the caller's immutable project snapshot. */
@@ -324,8 +471,17 @@ export function evaluatePolicyAsCode(input: {
     low: 3,
     info: 4
   };
-  const minimum =
-    order[input.minimumSeverity ?? policy.minimumSeverity ?? 'high'];
+  const configuredMinimumSeverity = policy.minimumSeverity ?? 'high';
+  const requestedMinimumSeverity = input.minimumSeverity;
+  // A trusted organization gate may be strengthened by the caller, never
+  // weakened by a local --fail-on override.
+  const effectiveMinimumSeverity = trust.trusted
+    ? order[requestedMinimumSeverity ?? configuredMinimumSeverity] >=
+      order[configuredMinimumSeverity]
+      ? (requestedMinimumSeverity ?? configuredMinimumSeverity)
+      : configuredMinimumSeverity
+    : (requestedMinimumSeverity ?? configuredMinimumSeverity);
+  const minimum = order[effectiveMinimumSeverity];
   const kept: Finding[] = [];
   const suppressed: string[] = [];
   const selectedRuleSets = policy.ruleSets ?? ['all'];
@@ -435,7 +591,15 @@ export function evaluatePolicyAsCode(input: {
     findings: Object.freeze(kept),
     suppressed: Object.freeze(suppressed),
     policySha256: createHash('sha256')
-      .update(canonicalJson(policy))
+      .update(
+        canonicalJson({
+          policy,
+          effectiveMinimumSeverity,
+          trust: trust.trusted
+            ? { source: trust.source, identity: trust.identity ?? null }
+            : { source: trust.source, identity: null }
+        })
+      )
       .digest('hex'),
     reasons: Object.freeze(reasons)
   });

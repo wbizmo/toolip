@@ -4,7 +4,7 @@ import path from 'node:path';
 import { buildSecurityScorecard } from '../application/security-scorecard.js';
 import { createProjectSnapshot } from '../application/project-snapshot.js';
 import {
-  loadPolicyAsCode,
+  loadTrustedOrganizationPolicy,
   parsePolicyAsCode,
   evaluatePolicyAsCode,
   mergePolicyLayers
@@ -18,7 +18,10 @@ type PolicyCommandOptions = {
   path: string;
   file: string;
   organizationPolicy?: string;
-  trustOrganizationPolicy?: boolean;
+  organizationPolicyPublicKey?: string;
+  organizationPolicyKeyId?: string;
+  organizationPolicyIssuer?: string;
+  requireOrganizationPolicy?: boolean;
   offline?: boolean;
   allowPublicScope?: boolean;
   sarif?: string;
@@ -36,11 +39,23 @@ function registerEvaluation(command: Command, explain: boolean): void {
     )
     .option(
       '--organization-policy <file>',
-      'Optional independently managed organization policy file.'
+      'Optional signed organization policy envelope, stored outside the project.'
     )
     .option(
-      '--trust-organization-policy',
-      'Confirm the supplied organization policy is independently approved and may authorize suppressions.'
+      '--organization-policy-public-key <file>',
+      'Operator-configured Ed25519 public key for the organization policy signer.'
+    )
+    .option(
+      '--organization-policy-key-id <id>',
+      'Expected organization policy signing key ID.'
+    )
+    .option(
+      '--organization-policy-issuer <issuer>',
+      'Expected organization policy issuer identity.'
+    )
+    .option(
+      '--require-organization-policy',
+      'Fail closed if a trusted organization policy is not configured.'
     )
     .option('--offline', 'Disable registry and advisory network requests.')
     .option(
@@ -61,6 +76,8 @@ function registerEvaluation(command: Command, explain: boolean): void {
       'Write policy findings and decision as SARIF 2.1.0.'
     )
     .action(async (options: PolicyCommandOptions) => {
+      let failureDecision: 'incomplete' | 'misconfigured' | 'error' =
+        'misconfigured';
       try {
         const allowedSeverities = new Set<FindingSeverity>([
           'critical',
@@ -84,6 +101,7 @@ function registerEvaluation(command: Command, explain: boolean): void {
         )
           throw new Error('--timeout-ms must be between 1000 and 600000');
         const projectSnapshot = await createProjectSnapshot(options.path);
+        failureDecision = 'incomplete';
         const root = projectSnapshot.root;
         const policyPath = path.resolve(root, options.file);
         const canonicalPolicyPath = await realpath(policyPath);
@@ -105,14 +123,28 @@ function registerEvaluation(command: Command, explain: boolean): void {
           throw new Error(
             'repository policy was not captured as bounded text in the project snapshot'
           );
+        failureDecision = 'misconfigured';
         const loaded = parsePolicyAsCode(policyFile.content);
-        if (options.trustOrganizationPolicy && !options.organizationPolicy)
+        const hasOrganizationTrustOption = Boolean(
+          options.organizationPolicyPublicKey ||
+          options.organizationPolicyKeyId ||
+          options.organizationPolicyIssuer
+        );
+        if (options.requireOrganizationPolicy && !options.organizationPolicy)
           throw new Error(
-            '--trust-organization-policy requires --organization-policy'
+            '--require-organization-policy requires --organization-policy'
           );
         let organization:
-          Awaited<ReturnType<typeof loadPolicyAsCode>> | undefined;
+          Awaited<ReturnType<typeof loadTrustedOrganizationPolicy>> | undefined;
         if (options.organizationPolicy) {
+          if (
+            !options.organizationPolicyPublicKey ||
+            !options.organizationPolicyKeyId ||
+            !options.organizationPolicyIssuer
+          )
+            throw new Error(
+              'organization policy requires an independently configured public key, key ID and issuer'
+            );
           const organizationPath = await realpath(
             path.resolve(options.organizationPolicy)
           );
@@ -127,7 +159,30 @@ function registerEvaluation(command: Command, explain: boolean): void {
               'organization policy must resolve outside the scanned project root'
             );
           }
-          organization = await loadPolicyAsCode(organizationPath);
+          const publicKeyPath = await realpath(
+            path.resolve(options.organizationPolicyPublicKey)
+          );
+          const keyRelative = path.relative(root, publicKeyPath);
+          if (
+            !path.isAbsolute(keyRelative) &&
+            (keyRelative === '' ||
+              (keyRelative !== '..' &&
+                !keyRelative.startsWith(`..${path.sep}`)))
+          ) {
+            throw new Error(
+              'organization policy trust key must resolve outside the scanned project root'
+            );
+          }
+          organization = await loadTrustedOrganizationPolicy({
+            filePath: organizationPath,
+            publicKeyPath: options.organizationPolicyPublicKey,
+            trustedKeyId: options.organizationPolicyKeyId,
+            trustedIssuer: options.organizationPolicyIssuer
+          });
+        } else if (hasOrganizationTrustOption) {
+          throw new Error(
+            'organization policy trust options require --organization-policy'
+          );
         }
         const effective = mergePolicyLayers(
           loaded.policy,
@@ -135,12 +190,14 @@ function registerEvaluation(command: Command, explain: boolean): void {
             ? {
                 policy: organization.policy,
                 trust: {
-                  trusted: options.trustOrganizationPolicy === true,
-                  source: 'user-config'
+                  trusted: true,
+                  source: 'signed',
+                  identity: organization.identity
                 }
               }
             : undefined
         );
+        failureDecision = 'error';
         const scan = await buildSecurityScorecard(
           root,
           {},
@@ -175,10 +232,14 @@ function registerEvaluation(command: Command, explain: boolean): void {
           });
         const output = {
           decision: evaluation.decision,
+          decisionSha256: evaluation.policySha256,
           policy: {
             version: effective.policy.version,
             sourceSha256: loaded.sha256,
             organizationSha256: organization?.sha256,
+            organizationIssuer: organization?.issuer,
+            organizationKeyId: organization?.keyId,
+            organizationIdentity: organization?.identity,
             organizationTrusted: effective.trust.trusted,
             ruleSets: effective.policy.ruleSets ?? ['all'],
             minimumCoverage: effective.policy.minimumCoverage
@@ -216,9 +277,9 @@ function registerEvaluation(command: Command, explain: boolean): void {
             ? error.message
             : 'policy evaluation failed';
         process.stdout.write(
-          `${JSON.stringify({ decision: 'misconfigured', reasons: [message] })}\n`
+          `${JSON.stringify({ decision: failureDecision, reasons: [message] })}\n`
         );
-        process.exitCode = 1;
+        process.exitCode = failureDecision === 'incomplete' ? 3 : 1;
       }
     });
 }

@@ -826,7 +826,12 @@ function validPythonMarkerExpression(value: string): boolean {
       const operator = /^(===|==|!=|<=|>=|~=|<|>)/u.exec(value.slice(index));
       if (operator?.[1]) {
         index += operator[1].length;
-        tokens.push({ kind: 'operator', value: operator[1], start, end: index });
+        tokens.push({
+          kind: 'operator',
+          value: operator[1],
+          start,
+          end: index
+        });
       } else {
         const word = /^[A-Za-z_][A-Za-z0-9_]*/u.exec(value.slice(index));
         if (!word?.[0]) return false;
@@ -845,8 +850,10 @@ function validPythonMarkerExpression(value: string): boolean {
   let position = 0;
   const peek = (): (typeof tokens)[number] | undefined => tokens[position];
   const take = (): (typeof tokens)[number] | undefined => tokens[position++];
-  const separated = (left: (typeof tokens)[number], right: (typeof tokens)[number]): boolean =>
-    /\s/u.test(value.slice(left.end, right.start));
+  const separated = (
+    left: (typeof tokens)[number],
+    right: (typeof tokens)[number]
+  ): boolean => /\s/u.test(value.slice(left.end, right.start));
   const parseOperand = (): (typeof tokens)[number] | undefined => {
     const token = take();
     return token &&

@@ -244,12 +244,8 @@ describe('non-npm lockfile inventory', () => {
     expect(graph.warnings).toContain(
       'python-requirement-marker-invalid:shared'
     );
-    expect(graph.warnings).toContain(
-      'python-requirement-marker-invalid:other'
-    );
-    expect(graph.warnings).toContain(
-      'python-requirement-marker-invalid:tight'
-    );
+    expect(graph.warnings).toContain('python-requirement-marker-invalid:other');
+    expect(graph.warnings).toContain('python-requirement-marker-invalid:tight');
     expect(
       graph.edges.some((edge) => edge.from === 'root' && edge.name === 'shared')
     ).toBe(false);
@@ -1521,9 +1517,8 @@ describe('non-npm lockfile inventory', () => {
       'example.test/lib v1.2.3 not-a-valid-checksum\n'
     );
 
-    const { readOtherEcosystemInventoryDetailed } = await import(
-      '../../src/core/dependencies/ecosystem-inventory.js'
-    );
+    const { readOtherEcosystemInventoryDetailed } =
+      await import('../../src/core/dependencies/ecosystem-inventory.js');
     const graph = await readOtherEcosystemInventoryDetailed(root);
 
     expect(graph.complete).toBe(false);

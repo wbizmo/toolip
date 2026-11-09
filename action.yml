@@ -9,6 +9,26 @@ inputs:
     description: Versioned policy file relative to the project directory.
     required: false
     default: .toolip/policy.yaml
+  organization-policy-file:
+    description: Signed organization policy envelope from operator-controlled configuration.
+    required: false
+    default: ''
+  organization-policy-public-key:
+    description: Operator-configured Ed25519 public key path for organization policy verification.
+    required: false
+    default: ''
+  organization-policy-key-id:
+    description: Expected organization policy signer key ID from protected workflow configuration.
+    required: false
+    default: ''
+  organization-policy-issuer:
+    description: Expected organization policy issuer from protected workflow configuration.
+    required: false
+    default: ''
+  require-organization-policy:
+    description: Fail closed when the signed organization policy or trust configuration is missing.
+    required: false
+    default: 'false'
   sarif-output:
     description: SARIF output path relative to the workflow workspace.
     required: false
@@ -68,6 +88,11 @@ runs:
       env:
         INPUT_REPOSITORY_PATH: ${{ inputs.repository-path }}
         INPUT_POLICY_FILE: ${{ inputs.policy-file }}
+        INPUT_ORGANIZATION_POLICY_FILE: ${{ inputs.organization-policy-file }}
+        INPUT_ORGANIZATION_POLICY_PUBLIC_KEY: ${{ inputs.organization-policy-public-key }}
+        INPUT_ORGANIZATION_POLICY_KEY_ID: ${{ inputs.organization-policy-key-id }}
+        INPUT_ORGANIZATION_POLICY_ISSUER: ${{ inputs.organization-policy-issuer }}
+        INPUT_REQUIRE_ORGANIZATION_POLICY: ${{ inputs.require-organization-policy }}
         INPUT_SARIF_OUTPUT: ${{ inputs.sarif-output }}
         INPUT_FAIL_ON: ${{ inputs.fail-on }}
         INPUT_OFFLINE: ${{ inputs.offline }}
@@ -76,6 +101,24 @@ runs:
       run: |
         set -euo pipefail
         args=(policy check --path "$INPUT_REPOSITORY_PATH" --file "$INPUT_POLICY_FILE" --sarif "$INPUT_SARIF_OUTPUT" --fail-on "$INPUT_FAIL_ON" --timeout-ms "$INPUT_TIMEOUT_MS")
+        if [[ -n "$INPUT_ORGANIZATION_POLICY_FILE" ]]; then
+          args+=(--organization-policy "$INPUT_ORGANIZATION_POLICY_FILE")
+        fi
+        if [[ -n "$INPUT_ORGANIZATION_POLICY_PUBLIC_KEY" ]]; then
+          args+=(--organization-policy-public-key "$INPUT_ORGANIZATION_POLICY_PUBLIC_KEY")
+        fi
+        if [[ -n "$INPUT_ORGANIZATION_POLICY_KEY_ID" ]]; then
+          args+=(--organization-policy-key-id "$INPUT_ORGANIZATION_POLICY_KEY_ID")
+        fi
+        if [[ -n "$INPUT_ORGANIZATION_POLICY_ISSUER" ]]; then
+          args+=(--organization-policy-issuer "$INPUT_ORGANIZATION_POLICY_ISSUER")
+        fi
+        if [[ "$INPUT_REQUIRE_ORGANIZATION_POLICY" == "true" ]]; then
+          args+=(--require-organization-policy)
+        elif [[ "$INPUT_REQUIRE_ORGANIZATION_POLICY" != "false" ]]; then
+          echo "require-organization-policy must be true or false" >&2
+          exit 1
+        fi
         if [[ "$INPUT_OFFLINE" == "true" ]]; then
           args+=(--offline)
         elif [[ "$INPUT_OFFLINE" != "false" ]]; then

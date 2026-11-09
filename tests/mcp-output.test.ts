@@ -38,6 +38,11 @@ describe('MCP output sanitization', () => {
     );
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result)).toContain('MCP_RESPONSE_LIMIT');
+    expect(JSON.parse(result.content[0]?.text ?? '{}')).toMatchObject({
+      decision: 'incomplete',
+      incomplete: true,
+      outputTruncated: true
+    });
     await expect(boundedMcpTextResponse({}, 0)).rejects.toThrow(
       '1 KiB and 16 MiB'
     );
@@ -70,6 +75,26 @@ describe('MCP output sanitization', () => {
     expect(response.isError).toBe(true);
     expect(JSON.stringify(response)).toContain('MCP_RESPONSE_LIMIT');
     expect(getterCalls).toBe(0);
+  });
+
+  it('reports cyclic or over-deep output as incomplete instead of silently truncating it', async () => {
+    const cycle: Record<string, unknown> = {};
+    cycle.self = cycle;
+    const cyclic = await boundedMcpTextResponse(cycle, 4_096);
+    expect(cyclic.isError).toBe(true);
+    expect(JSON.parse(cyclic.content[0]?.text ?? '{}')).toMatchObject({
+      decision: 'incomplete',
+      outputTruncated: true
+    });
+
+    let nested: unknown = 'end';
+    for (let index = 0; index < 40; index++) nested = { next: nested };
+    const deep = await boundedMcpTextResponse(nested, 4_096);
+    expect(deep.isError).toBe(true);
+    expect(JSON.parse(deep.content[0]?.text ?? '{}')).toMatchObject({
+      decision: 'incomplete',
+      outputTruncated: true
+    });
   });
 
   it('cancels bounded response serialization while traversing a large result', async () => {
@@ -106,6 +131,9 @@ describe('MCP output sanitization', () => {
         ).toBe(false);
       }
     }
+    expect(isMcpToolAuthorized('repository_instructions', defaults)).toBe(
+      false
+    );
   });
 
   it('rejects unknown, non-boolean and non-plain capability configuration', () => {

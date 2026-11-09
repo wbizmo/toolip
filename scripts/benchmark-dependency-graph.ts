@@ -424,6 +424,7 @@ async function benchmarkRepositoryScan(
           cacheMisses: scorecard.cacheMetrics.misses,
           astProjectCacheHits: scorecard.cacheMetrics.astProjectHits,
           astProjectCacheMisses: scorecard.cacheMetrics.astProjectMisses,
+          resultCache: scorecard.cacheMetrics.resultCache,
           findings: scorecard.findings.length,
           filesDiscovered: context.summary.totalFiles,
           scorecardState: scorecard.analysis.state,
@@ -438,7 +439,8 @@ async function benchmarkRepositoryScan(
         cacheHits: measurement.result.cacheHits,
         cacheMisses: measurement.result.cacheMisses,
         astProjectCacheHits: measurement.result.astProjectCacheHits,
-        astProjectCacheMisses: measurement.result.astProjectCacheMisses
+        astProjectCacheMisses: measurement.result.astProjectCacheMisses,
+        resultCache: measurement.result.resultCache
       });
     }
   } finally {
@@ -524,7 +526,8 @@ async function benchmarkConcurrentRepositoryScans(size: number): Promise<void> {
         analysis: scorecard.analysis.state,
         coverage: scorecard.coverage.state,
         scanned: scorecard.coverage.scanned,
-        astProjectCacheMisses: scorecard.cacheMetrics.astProjectMisses
+        astProjectCacheMisses: scorecard.cacheMetrics.astProjectMisses,
+        resultCache: scorecard.cacheMetrics.resultCache
       }));
     });
     emit('repository-security-scorecard-concurrent-pair', size, 'cold', {

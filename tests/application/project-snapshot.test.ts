@@ -55,6 +55,19 @@ describe('immutable project snapshots', () => {
     ).rejects.toThrow('snapshot incomplete');
   });
 
+  it('distinguishes cancellation from an invalid snapshot during capture and verification', async () => {
+    const root = await project();
+    const snapshot = await createProjectSnapshot(root);
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      createProjectSnapshot(root, { signal: controller.signal })
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(
+      verifyProjectSnapshot(snapshot, { signal: controller.signal })
+    ).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
   it('freezes the complete shared scanner context derived from a snapshot', async () => {
     const root = await project();
     const snapshot = await createProjectSnapshot(root);
@@ -106,11 +119,17 @@ describe('immutable project snapshots', () => {
       snapshot: first,
       analysisCache: cache
     });
-    expect(cold.cacheMetrics).toEqual({
+    expect(cold.cacheMetrics).toMatchObject({
       hits: 0,
       misses: 2,
       astProjectHits: 0,
       astProjectMisses: 1
+    });
+    expect(cold.cacheMetrics.resultCache).toMatchObject({
+      hits: 0,
+      misses: 2,
+      evictions: 0,
+      entries: 3
     });
 
     const warmSnapshot = await createProjectSnapshot(root, { previous: first });
@@ -122,12 +141,16 @@ describe('immutable project snapshots', () => {
       snapshot: warmSnapshot,
       analysisCache: cache
     });
-    expect(warm.cacheMetrics).toEqual({
+    expect(warm.cacheMetrics).toMatchObject({
       hits: 2,
       misses: 0,
       astProjectHits: 1,
       astProjectMisses: 0
     });
+    expect(warm.cacheMetrics.resultCache.hits).toBeGreaterThan(0);
+    expect(
+      warm.cacheMetrics.resultCache.retainedSerializedBytes
+    ).toBeGreaterThan(0);
     expect(JSON.stringify(warm.findings)).toBe(JSON.stringify(cold.findings));
 
     await writeFile(
@@ -146,12 +169,15 @@ describe('immutable project snapshots', () => {
       analysisCache: cache
     });
     // With no import edge, only the edited source file needs a fresh result.
-    expect(changed.cacheMetrics).toEqual({
+    expect(changed.cacheMetrics).toMatchObject({
       hits: 1,
       misses: 1,
       astProjectHits: 0,
       astProjectMisses: 1
     });
+    expect(
+      changed.cacheMetrics.resultCache.retainedSerializedBytes
+    ).toBeGreaterThan(0);
     expect(changed.findings).toHaveLength(warm.findings.length);
   }, 30_000);
 
@@ -450,7 +476,7 @@ describe('immutable project snapshots', () => {
       analysisCache: cache
     });
 
-    expect(changed.cacheMetrics).toEqual({
+    expect(changed.cacheMetrics).toMatchObject({
       hits: 0,
       misses: 2,
       astProjectHits: 1,

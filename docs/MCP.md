@@ -14,6 +14,27 @@ capabilities are enabled by default; `external-network`, `write-reports`,
 `create-pr`, and `vault-access` are disabled by default. Unknown capability
 names and non-boolean settings are rejected at server startup.
 
+An organization policy is optional and is configured only at server startup,
+outside the scanned workspaces:
+
+```bash
+toolip mcp \
+  --allow-root /workspace/project \
+  --organization-policy /etc/toolip/org-policy.json \
+  --organization-policy-public-key /etc/toolip/org-policy.pub \
+  --organization-policy-key-id org-policy-v3 \
+  --organization-policy-issuer security.example/toolip \
+  --require-organization-policy
+```
+
+The server checks the signature, key ID, issuer, and expiration before applying
+the organization policy. Tool arguments and repository files cannot select or
+change these trust values. The policy envelope and public key must resolve
+outside every approved workspace. Stdio is a local process transport; these
+settings do not authenticate a remote MCP client or establish an HTTP trust
+boundary. Any future remote transport needs separate authentication and
+authorization.
+
 Toolip starts only the stdio transport; the SDK's HTTP/session/OAuth features are not used. `package.json` declares the SDK at `^1.32.2`; the lockfile advisory gate rejects any installed version below `1.32.0` (the advisory boundary); see [Runtime and Dependency Security](RUNTIME-AND-DEPENDENCY-SECURITY.md).
 
 ## Git revisions
@@ -58,10 +79,16 @@ timeout can interrupt serialization after the snapshot has been captured. A
 timed-out uncooperative operation retains its active slot until it settles, so
 repeated requests cannot create unbounded background work. Hard ceilings cap concurrency at 32 tools,
 the server lifetime at 100,000 accepted/rejected calls, and each operation at
-15 minutes. Responses carry the protocol request ID in `_meta` when the SDK
+15 minutes. TypeScript AST work has a separate process-wide limit of one active
+worker and one queued request; queued cancellation is immediate, and further
+requests fail closed as incomplete rather than retaining an unbounded number of
+project snapshots. Responses carry the protocol request ID in `_meta` when the SDK
 provides a valid ID; error bodies also include it. `toolip_policy_check` parses the versioned
 policy captured in the same immutable project snapshot as the scan. Repository
 policy remains untrusted, so its suppressions cannot grant a passing result.
+When a response exceeds its byte, node, or structure budget, MCP returns an
+explicit `incomplete` decision with `outputTruncated: true`; truncated analysis
+output is never represented as complete.
 Policy checks default to `offline: true`. A caller must explicitly request
 `offline: false`, and the local server must enable the `external-network`
 capability, before advisory lookups can leave the workspace. Other read-only

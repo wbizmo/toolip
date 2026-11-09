@@ -70,6 +70,13 @@ export type ProjectSnapshotOptions = {
   previous?: ProjectSnapshot;
 };
 
+function throwIfSnapshotCancelled(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const error = new Error('snapshot cancelled');
+  error.name = 'AbortError';
+  throw error;
+}
+
 /** Dependency resolvers consume lockfiles and manifests from the same captured input. */
 export function dependencyFileSourceFromSnapshot(snapshot: ProjectSnapshot): {
   files: readonly string[];
@@ -185,8 +192,9 @@ export async function createProjectSnapshot(
   root: string,
   options: ProjectSnapshotOptions = {}
 ): Promise<ProjectSnapshot> {
-  if (options.signal?.aborted) throw new Error('snapshot cancelled');
+  throwIfSnapshotCancelled(options.signal);
   const rootPath = await realpath(path.resolve(root));
+  throwIfSnapshotCancelled(options.signal);
   const files = options.discoveredFiles
     ? [...options.discoveredFiles]
     : await walkProjectFiles(rootPath, {
@@ -251,7 +259,7 @@ export async function createProjectSnapshot(
     content?: string;
   }> = [];
   for (const file of files) {
-    if (options.signal?.aborted) throw new Error('snapshot cancelled');
+    throwIfSnapshotCancelled(options.signal);
     const prior = reusable.get(file.relativePath);
     if (prior) {
       content.push(prior);
@@ -392,10 +400,14 @@ export async function createProjectSnapshot(
 
 /** Verifies that a snapshot's files still match current bytes before use. */
 export async function verifyProjectSnapshot(
-  snapshot: ProjectSnapshot
+  snapshot: ProjectSnapshot,
+  options: { signal?: AbortSignal } = {}
 ): Promise<boolean> {
+  throwIfSnapshotCancelled(options.signal);
   const root = await realpath(snapshot.root).catch(() => undefined);
+  throwIfSnapshotCancelled(options.signal);
   if (!root) return false;
+  throwIfSnapshotCancelled(options.signal);
   const git = await readGitIndexDigest(root);
   if (
     git.status !== snapshot.gitIndexStatus ||
@@ -407,9 +419,11 @@ export async function verifyProjectSnapshot(
   try {
     discovered = await walkProjectFiles(root, {
       maxFiles: Math.max(1, snapshot.files.length),
+      signal: options.signal,
       includeTrackedIgnored: true
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') throw error;
     return false;
   }
   if (discovered.length !== snapshot.files.length) return false;
@@ -435,6 +449,7 @@ export async function verifyProjectSnapshot(
     { root }
   );
   for (const file of snapshot.files) {
+    throwIfSnapshotCancelled(options.signal);
     try {
       const discoveredFile = discoveredByPath.get(file.path);
       if (
@@ -447,9 +462,10 @@ export async function verifyProjectSnapshot(
         return false;
       const read = await reader.read(
         path.join(root, file.path),
-        undefined,
+        options.signal,
         discoveredFile.snapshot
       );
+      if (read.status === 'cancelled') throwIfSnapshotCancelled(options.signal);
       if (file.binary) {
         if (
           read.status !== 'binary' ||
@@ -464,7 +480,8 @@ export async function verifyProjectSnapshot(
       ) {
         return false;
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') throw error;
       return false;
     }
   }

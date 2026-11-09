@@ -330,6 +330,38 @@ and 4.65 s / 1,199 MiB incremental. Ranges overlap prior single-run samples;
 there is no causal improvement claim or memory bound. Raw data is in
 `docs/benchmarks/toolip-v3.2.1-ast-cache-cycle-repeat-2026-11-08-linux-node24.jsonl`.
 
+### Batch 07 cache capacity and worker memory gate (2026-11-09)
+
+`AnalysisResultCache.get()` now treats V8 deserialization errors as misses,
+evicts the corrupt payload, and lets the task scheduler recompute it. Cache
+operations expose cumulative hits, misses and evictions, entry count, and
+retained serialized payload bytes; counters add `O(1)` time and the retained
+payload remains bounded by the existing 64 MiB aggregate and 4 MiB per-entry
+caps. The byte counter excludes JavaScript `Map`, key and object overhead, so
+process RSS/heap remain separate measurements.
+
+The AST worker client now admits at most one worker and one waiting request per
+process. A further request fails with an incomplete capacity reason. A queued
+request has the same end-to-end timeout deadline as its worker and can be
+removed immediately on cancellation. This bounds AST worker copies and queue
+retention to at most one active input set plus one already-captured waiting
+snapshot. Each worker still has V8 limits of 1,024 MiB old generation, 128 MiB
+young generation and a 16 MiB stack; those V8 limits do not cap total process
+RSS. Expected planning/analysis work remains `O(B + N + V + E)` time and
+`O(B + N + V + E)` worker live space for source bytes `B`, AST nodes `N`, files
+`V` and import edges `E`.
+
+On a validated incremental cache read, the findings map is now modified in
+place instead of copied. That removes an additional `O(F)` map allocation and
+copy for `F` AST files. The 50k incremental sample still peaked at 1,275 MiB
+RSS, within the prior repeated range; this single sample does not show a
+measurable memory reduction from that map change. The 50k concurrent-pair sample
+under the one-worker gate peaked at 1,098 MiB RSS, compared with 1,366 MiB in
+the earlier two-worker sample. These are single-run synthetic observations,
+not a stable memory bound or release evidence. Raw current data is
+`docs/benchmarks/toolip-v3.2.1-batch07-50k-worker-pool-linux-node24.jsonl`;
+the immediately preceding cache-copy sample is also retained separately.
+
 ### Dependency lock graph trust checks (2026-11-09)
 
 The npm v2/v3 package map is now shape-validated in one pass over package

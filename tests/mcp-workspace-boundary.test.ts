@@ -1,4 +1,11 @@
-import { mkdtemp, mkdir, realpath, rm, symlink } from 'node:fs/promises';
+import {
+  mkdtemp,
+  mkdir,
+  realpath,
+  rm,
+  symlink,
+  unlink
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -75,6 +82,28 @@ describe('MCP workspace boundary', () => {
     const boundary = await createWorkspaceBoundary([allowed]);
 
     await expect(boundary.resolve(link)).rejects.toMatchObject({
+      code: 'MCP_WORKSPACE_DENIED'
+    });
+  });
+
+  it('rechecks a workspace alias after it is swapped to an outside symlink', async () => {
+    const { allowed, nested, outside } = await fixture();
+    const alias = path.join(allowed, 'alias');
+    await symlink(
+      nested,
+      alias,
+      process.platform === 'win32' ? 'junction' : 'dir'
+    );
+    const boundary = await createWorkspaceBoundary([allowed]);
+    await expect(boundary.resolve(alias)).resolves.toBe(await realpath(nested));
+
+    await unlink(alias);
+    await symlink(
+      outside,
+      alias,
+      process.platform === 'win32' ? 'junction' : 'dir'
+    );
+    await expect(boundary.resolve(alias)).rejects.toMatchObject({
       code: 'MCP_WORKSPACE_DENIED'
     });
   });

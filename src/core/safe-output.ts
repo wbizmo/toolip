@@ -230,7 +230,8 @@ export async function serializeSanitizedOutputBounded(
     depth: number
   ): Promise<void> => {
     await checkpoint();
-    if (depth > 32) return writeString('[truncated]');
+    if (depth > 32)
+      throw new RangeError('Serialized output exceeds its depth limit.');
     if (typeof item === 'string') {
       if (item.length > maxBytes)
         throw new RangeError(
@@ -242,7 +243,8 @@ export async function serializeSanitizedOutputBounded(
       return writeString(safe);
     }
     if (Array.isArray(item)) {
-      if (ancestors.has(item)) return writeString('[truncated]');
+      if (ancestors.has(item))
+        throw new RangeError('Serialized output contains a cycle.');
       ancestors.add(item);
       try {
         append('[');
@@ -263,7 +265,8 @@ export async function serializeSanitizedOutputBounded(
       return;
     }
     if (item && typeof item === 'object') {
-      if (ancestors.has(item)) return writeString('[truncated]');
+      if (ancestors.has(item))
+        throw new RangeError('Serialized output contains a cycle.');
       ancestors.add(item);
       try {
         append('{');
@@ -300,7 +303,8 @@ export async function serializeSanitizedOutputBounded(
     arrayElement = false
   ): Promise<void> => {
     await checkpoint();
-    if (depth > 32) return writeString('[truncated]');
+    if (depth > 32)
+      throw new RangeError('Serialized output exceeds its depth limit.');
     if (sensitiveContext && typeof item === 'string')
       return writeString('[redacted]');
     if (typeof item === 'string') {
@@ -334,7 +338,8 @@ export async function serializeSanitizedOutputBounded(
       append('null');
       return;
     }
-    if (ancestors.has(item)) return writeString('[truncated]');
+    if (ancestors.has(item))
+      throw new RangeError('Serialized output contains a cycle.');
     ancestors.add(item);
     try {
       if (item instanceof Error) {

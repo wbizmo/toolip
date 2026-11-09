@@ -15,13 +15,16 @@ import {
 import { buildSecurityScorecard } from '../application/security-scorecard.js';
 import {
   evaluatePolicyAsCode,
-  parsePolicyAsCode
+  parsePolicyAsCode,
+  loadTrustedOrganizationPolicy,
+  mergePolicyLayers
 } from '../core/policy-as-code.js';
 import {
   sanitizeOutput,
   serializeSanitizedOutputBounded
 } from '../core/safe-output.js';
 import { createWorkspaceBoundary } from './workspace-boundary.js';
+import type { PolicyDecision } from '../core/policy-as-code.js';
 
 export type McpServerOptions = {
   allowedRoots?: readonly string[];
@@ -33,6 +36,14 @@ export type McpServerOptions = {
   maxFiles?: number;
   maxFileBytes?: number;
   maxTotalBytes?: number;
+  /** Out-of-band organization policy trust configuration. Never read from the repository. */
+  organizationPolicy?: {
+    filePath: string;
+    publicKeyPath: string;
+    trustedKeyId: string;
+    trustedIssuer: string;
+  };
+  requireOrganizationPolicy?: boolean;
 };
 
 export const mcpCapabilityNames = [
@@ -49,7 +60,7 @@ export type McpCapability = (typeof mcpCapabilityNames)[number];
 /** Closed, deeply immutable authorization matrix: new tools need an entry. */
 export const mcpToolCapabilities = Object.freeze({
   toolip_doctor: Object.freeze(['read-code', 'scan']),
-  toolip_policy_check: Object.freeze(['read-code', 'scan']),
+  toolip_policy_check: Object.freeze(['read-code', 'read-git', 'scan']),
   toolip_sbom: Object.freeze(['read-code', 'scan']),
   toolip_diff: Object.freeze(['read-code', 'read-git', 'scan'])
 } as const satisfies Record<string, readonly McpCapability[]>);
@@ -195,11 +206,24 @@ function requestIdValue(value: unknown): string | number | undefined {
   return undefined;
 }
 
+function responseLimitPayload() {
+  return {
+    error: {
+      code: 'MCP_RESPONSE_LIMIT',
+      message: 'Tool response exceeds the configured byte or structure limit.'
+    },
+    decision: 'incomplete',
+    incomplete: true,
+    outputTruncated: true
+  };
+}
+
 function mcpFailure(
   code: string,
   message: string,
   maxResponseBytes: number,
-  requestId?: string | number
+  requestId?: string | number,
+  decision?: PolicyDecision
 ) {
   const id = requestIdValue(requestId);
   const metadata =
@@ -208,11 +232,13 @@ function mcpFailure(
     error: {
       code: code.slice(0, 128),
       message: message.slice(0, 512),
-      ...(id === undefined ? {} : { requestId: id })
+      ...(id === undefined ? {} : { requestId: id }),
+      ...(decision ? { decision } : {})
     }
   });
   return {
     ...metadata,
+    ...(decision ? { decision } : {}),
     isError: true,
     content: [
       {
@@ -220,12 +246,7 @@ function mcpFailure(
         text:
           Buffer.byteLength(text) <= maxResponseBytes
             ? text
-            : JSON.stringify({
-                error: {
-                  code: 'MCP_RESPONSE_LIMIT',
-                  message: 'Tool response exceeds the configured byte limit.'
-                }
-              })
+            : JSON.stringify(responseLimitPayload())
       }
     ]
   };
@@ -264,11 +285,25 @@ function capabilityDenied(
   return required.some((capability) => capabilities[capability] !== true);
 }
 
+function isWithinRoot(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return (
+    relative === '' ||
+    (!path.isAbsolute(relative) &&
+      relative !== '..' &&
+      !relative.startsWith(`..${path.sep}`))
+  );
+}
+
 export function isMcpToolAuthorized(
-  toolName: keyof typeof mcpToolCapabilities,
+  toolName: string,
   capabilities: Readonly<Record<McpCapability, boolean>>
 ): boolean {
-  return !capabilityDenied(capabilities, mcpToolCapabilities[toolName]);
+  if (!Object.hasOwn(mcpToolCapabilities, toolName)) return false;
+  return !capabilityDenied(
+    capabilities,
+    mcpToolCapabilities[toolName as keyof typeof mcpToolCapabilities]
+  );
 }
 
 export async function boundedMcpTextResponse(
@@ -309,12 +344,7 @@ export async function boundedMcpTextResponse(
     content: [
       {
         type: 'text' as const,
-        text: JSON.stringify({
-          error: {
-            code: 'MCP_RESPONSE_LIMIT',
-            message: 'Tool response exceeds the configured byte limit.'
-          }
-        })
+        text: JSON.stringify(responseLimitPayload())
       }
     ]
   };
@@ -364,9 +394,28 @@ export async function startMcpServer(
     maxToolCalls,
     toolTimeoutMs
   });
+  if (options.requireOrganizationPolicy && !options.organizationPolicy)
+    throw new Error(
+      'MCP requires an independently configured organization policy.'
+    );
   const boundary = await createWorkspaceBoundary(
     options.allowedRoots ?? [process.cwd()]
   );
+  const organizationPolicy = options.organizationPolicy;
+  if (organizationPolicy) {
+    const trustedPaths = await Promise.all([
+      realpath(path.resolve(organizationPolicy.filePath)),
+      realpath(path.resolve(organizationPolicy.publicKeyPath))
+    ]);
+    if (
+      trustedPaths.some((candidate) =>
+        boundary.allowedRoots.some((root) => isWithinRoot(root, candidate))
+      )
+    )
+      throw new Error(
+        'MCP organization policy and trust key must resolve outside approved workspaces.'
+      );
+  }
   const defaultRoot = boundary.allowedRoots[0];
 
   if (!defaultRoot) {
@@ -452,9 +501,10 @@ export async function startMcpServer(
       if (!isMcpToolAuthorized('toolip_policy_check', capabilities)) {
         return mcpFailure(
           'MCP_CAPABILITY_DENIED',
-          'Tool requires read-code and scan capabilities.',
+          'Tool requires read-code, read-git and scan capabilities.',
           maxResponseBytes,
-          requestIdValue(extra.requestId)
+          requestIdValue(extra.requestId),
+          'error'
         );
       }
       if (
@@ -465,7 +515,8 @@ export async function startMcpServer(
           'MCP_POLICY_PATH_DENIED',
           'Policy file must be a relative path inside the approved workspace.',
           maxResponseBytes,
-          requestIdValue(extra.requestId)
+          requestIdValue(extra.requestId),
+          'misconfigured'
         );
       }
       if (!offline && capabilities['external-network'] !== true) {
@@ -473,9 +524,11 @@ export async function startMcpServer(
           'MCP_CAPABILITY_DENIED',
           'Networked policy checks require the external-network capability.',
           maxResponseBytes,
-          requestIdValue(extra.requestId)
+          requestIdValue(extra.requestId),
+          'misconfigured'
         );
       }
+      let failureDecision: PolicyDecision = 'error';
       try {
         return await toolBudget.run(async (signal) => {
           const approvedRoot = await boundary.resolve(root);
@@ -491,9 +544,11 @@ export async function startMcpServer(
               'MCP_POLICY_PATH_DENIED',
               'Policy file must stay inside the approved workspace.',
               maxResponseBytes,
-              requestIdValue(extra.requestId)
+              requestIdValue(extra.requestId),
+              'misconfigured'
             );
           }
+          failureDecision = 'incomplete';
           const snapshot = await createProjectSnapshot(approvedRoot, {
             signal,
             maxFiles,
@@ -511,7 +566,25 @@ export async function startMcpServer(
             throw new Error(
               'repository policy was not captured as bounded text in the project snapshot'
             );
+          failureDecision = 'misconfigured';
           const loaded = parsePolicyAsCode(capturedPolicyFile.content);
+          const organization = organizationPolicy
+            ? await loadTrustedOrganizationPolicy(organizationPolicy)
+            : undefined;
+          const effective = mergePolicyLayers(
+            loaded.policy,
+            organization
+              ? {
+                  policy: organization.policy,
+                  trust: {
+                    trusted: true,
+                    source: 'signed',
+                    identity: organization.identity
+                  }
+                }
+              : undefined
+          );
+          failureDecision = 'error';
           const scan = await buildSecurityScorecard(
             approvedRoot,
             {},
@@ -522,8 +595,8 @@ export async function startMcpServer(
             }
           );
           const evaluation = evaluatePolicyAsCode({
-            policy: loaded.policy,
-            trust: { trusted: false, source: 'repository' },
+            policy: effective.policy,
+            trust: effective.trust,
             findings: scan.findings,
             analysisState: scan.analysis.state,
             coverage: scan.coverage
@@ -531,11 +604,14 @@ export async function startMcpServer(
           return await boundedMcpTextResponse(
             {
               decision: evaluation.decision,
+              decisionSha256: evaluation.policySha256,
               policy: {
                 version: loaded.policy.version,
                 sha256: loaded.sha256,
-                trusted: false,
-                ruleSets: loaded.policy.ruleSets ?? ['all']
+                organizationSha256: organization?.sha256,
+                organizationIdentity: organization?.identity,
+                trusted: effective.trust.trusted,
+                ruleSets: effective.policy.ruleSets ?? ['all']
               },
               analysis: {
                 state: scan.analysis.state,
@@ -562,13 +638,15 @@ export async function startMcpServer(
             error.code,
             error.message,
             maxResponseBytes,
-            requestIdValue(extra.requestId)
+            requestIdValue(extra.requestId),
+            'incomplete'
           );
         return mcpFailure(
           'MCP_POLICY_FAILED',
           'Policy validation or scan failed; no pass decision was issued.',
           maxResponseBytes,
-          requestIdValue(extra.requestId)
+          requestIdValue(extra.requestId),
+          failureDecision
         );
       }
     }

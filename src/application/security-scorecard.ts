@@ -106,6 +106,13 @@ export type SecurityScorecardResult = {
     misses: number;
     astProjectHits: number;
     astProjectMisses: number;
+    resultCache: {
+      hits: number;
+      misses: number;
+      evictions: number;
+      entries: number;
+      retainedSerializedBytes: number;
+    };
   };
   analyzerPlugins: Array<{
     id: string;
@@ -639,7 +646,23 @@ export async function buildSecurityScorecard(
       astProjectMisses:
         doctorOutcome.status === 'fulfilled'
           ? (doctorOutcome.value.cacheMetrics?.astProjectMisses ?? 0)
-          : 0
+          : 0,
+      resultCache:
+        doctorOutcome.status === 'fulfilled'
+          ? (doctorOutcome.value.cacheMetrics?.resultCache ?? {
+              hits: 0,
+              misses: 0,
+              evictions: 0,
+              entries: 0,
+              retainedSerializedBytes: 0
+            })
+          : {
+              hits: 0,
+              misses: 0,
+              evictions: 0,
+              entries: 0,
+              retainedSerializedBytes: 0
+            }
     }
   };
 }
