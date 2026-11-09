@@ -32,6 +32,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
+function isRepositoryName(value: string): boolean {
+  return (
+    REPOSITORY_NAME.test(value) &&
+    value.split('/').every((part) => part !== '.' && part !== '..')
+  );
+}
+
 function checkAnnotations(value: unknown): Array<Record<string, unknown>> {
   if (!Array.isArray(value)) return [];
   const allowedSeverities = new Set([
@@ -162,6 +169,7 @@ export class GitHubAppApiClient {
       work.installationId !== repository.installationId ||
       work.repository !== repository.name.toLowerCase() ||
       work.repositoryId !== repository.repositoryId ||
+      !isRepositoryName(repository.name) ||
       !/^[A-Za-z0-9-]{1,128}$/u.test(work.deliveryId) ||
       !['complete', 'incomplete', 'failed'].includes(summary.status) ||
       !Number.isSafeInteger(summary.findingCount) ||
@@ -171,10 +179,9 @@ export class GitHubAppApiClient {
     const headSha = summary.revision ?? work.revision;
     if (!headSha || !SHA.test(headSha))
       throw new Error('github-check-revision-unavailable');
-    const token = await this.installationToken(repository, signal);
     const [owner, name] = repository.name.split('/');
-    if (!owner || !name || !REPOSITORY_NAME.test(repository.name))
-      throw new Error('github-check-repository-invalid');
+    if (!owner || !name) throw new Error('github-check-repository-invalid');
+    const token = await this.installationToken(repository, signal);
     const conclusion =
       summary.status === 'complete' && summary.findingCount === 0
         ? 'success'

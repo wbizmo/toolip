@@ -210,6 +210,28 @@ describe('least-privilege GitHub App check-run API', () => {
     ).toThrow('at least 2048 bits');
   });
 
+  it('rejects dot-segment repository names before requesting an installation token', async () => {
+    let requests = 0;
+    const client = new GitHubAppApiClient({
+      appId: '12345',
+      privateKey,
+      now: () => now,
+      fetchImplementation: async () => {
+        requests += 1;
+        return response({}, 201);
+      }
+    });
+    const unsafeRepository = { ...repository, name: 'acme/..' };
+    await expect(
+      client.createSecurityCheck(
+        { ...work, repository: unsafeRepository.name },
+        unsafeRepository,
+        { status: 'incomplete', findingCount: 0, revision: work.revision }
+      )
+    ).rejects.toThrow('github-check-identity-mismatch');
+    expect(requests).toBe(0);
+  });
+
   it('keeps cancellation and timeout active while reading an API response body', async () => {
     const client = new GitHubAppApiClient({
       appId: '12345',
