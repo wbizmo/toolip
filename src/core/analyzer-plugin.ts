@@ -20,18 +20,6 @@ const MAX_FILES = 20_000;
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_TIMEOUT_MS = 10_000;
 const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
-const wasmApi = (
-  globalThis as unknown as {
-    WebAssembly: {
-      compile: (bytes: Uint8Array) => Promise<object>;
-      Module: {
-        imports: (module: object) => Array<{ name: string; kind: string }>;
-        exports: (module: object) => Array<{ name: string; kind: string }>;
-      };
-    };
-  }
-).WebAssembly;
-
 const signatureSchema = z
   .object({
     algorithm: z.literal('Ed25519'),
@@ -240,6 +228,82 @@ function validateManifestPath(value: string): boolean {
   );
 }
 
+const wasmInspectionWorkerSource = `
+const { parentPort, workerData } = require('node:worker_threads');
+try {
+  const module = new WebAssembly.Module(workerData.moduleBytes);
+  if (WebAssembly.Module.imports(module).length !== 0) {
+    parentPort.postMessage({ ok: false, reason: 'imports' });
+  } else {
+    const exports = new Map(WebAssembly.Module.exports(module).map((item) => [item.name, item.kind]));
+    const valid = exports.get('memory') === 'memory' &&
+      exports.get('toolip_alloc') === 'function' &&
+      exports.get('toolip_analyze') === 'function' &&
+      exports.get('toolip_output_len') === 'function';
+    parentPort.postMessage({ ok: valid, reason: valid ? undefined : 'abi' });
+  }
+} catch {
+  parentPort.postMessage({ ok: false, reason: 'compile' });
+}
+`;
+
+async function inspectWasmModuleInWorker(
+  moduleBytes: Uint8Array
+): Promise<'ok' | 'imports' | 'abi' | 'compile' | 'timeout'> {
+  let worker: Worker;
+  try {
+    worker = new Worker(wasmInspectionWorkerSource, {
+      eval: true,
+      workerData: { moduleBytes },
+      resourceLimits: {
+        maxOldGenerationSizeMb: 32,
+        maxYoungGenerationSizeMb: 8,
+        stackSizeMb: 2
+      }
+    });
+  } catch {
+    return 'compile';
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (
+      result: 'ok' | 'imports' | 'abi' | 'compile' | 'timeout'
+    ): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      void worker.terminate().then(
+        () => resolve(result),
+        () => resolve(result)
+      );
+    };
+    const timeout = setTimeout(() => finish('timeout'), MAX_TIMEOUT_MS);
+    worker.once('message', (message: unknown) => {
+      if (
+        message &&
+        typeof message === 'object' &&
+        'ok' in message &&
+        message.ok === true
+      )
+        finish('ok');
+      else if (
+        message &&
+        typeof message === 'object' &&
+        'reason' in message &&
+        (message.reason === 'imports' ||
+          message.reason === 'abi' ||
+          message.reason === 'compile')
+      )
+        finish(message.reason);
+      else finish('compile');
+    });
+    worker.once('error', () => finish('compile'));
+    worker.once('exit', () => {
+      if (!settled) finish('compile');
+    });
+  });
+}
+
 /** Loads a signed plugin whose WebAssembly module has no ambient imports. */
 export async function loadWasmAnalyzerPlugin(
   manifestPath: string,
@@ -309,21 +373,17 @@ export async function loadWasmAnalyzerPlugin(
       'Analyzer plugin module digest does not match its signature.'
     );
   validateMemorySection(moduleBytes, manifest.limits.memoryPages);
-  const compiled = await wasmApi.compile(moduleBytes);
-  if (wasmApi.Module.imports(compiled).length !== 0)
+  const inspection = await inspectWasmModuleInWorker(moduleBytes);
+  if (inspection === 'imports')
     throw new Error('Analyzer plugin WASM imports are denied.');
-  const exports = new Map(
-    wasmApi.Module.exports(compiled).map((item) => [item.name, item.kind])
-  );
-  if (
-    exports.get('memory') !== 'memory' ||
-    exports.get('toolip_alloc') !== 'function' ||
-    exports.get('toolip_analyze') !== 'function' ||
-    exports.get('toolip_output_len') !== 'function'
-  )
+  if (inspection === 'abi')
     throw new Error(
       'Analyzer plugin does not implement the Toolip WASM ABI v1.'
     );
+  if (inspection === 'timeout')
+    throw new Error('Analyzer plugin WASM validation timed out.');
+  if (inspection !== 'ok')
+    throw new Error('Analyzer plugin WASM module could not be validated.');
   const plugin: WasmAnalyzerPlugin = Object.freeze({
     id: manifest.id,
     apiVersion: 1,

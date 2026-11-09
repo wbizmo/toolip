@@ -40,11 +40,16 @@ cannot echo source credentials into reports.
 
 The signed limits cap each plugin at 10 seconds, 256 64-KiB WASM pages, 8 MiB
 of input, and 1 MiB of output; smaller limits are recommended. Toolip runs the
-module in a terminable worker with a 32 MiB V8 old-generation limit. Infinite
-loops, cancellation, traps, invalid output, path escapes, and budget exhaustion
-produce failed or incomplete plugin coverage, which makes the enclosing
-Doctor/scorecard result incomplete or failed. Findings and clean results both
-include the plugin digest, signer key ID and coverage state in reports.
+module in a terminable worker with a 32 MiB V8 old-generation limit. After
+signature and digest verification, WASM compilation, import inspection and ABI
+export inspection also run in a separate terminable worker with a 32 MiB
+old-generation limit and a 10-second deadline. This keeps attacker-controlled
+module compilation off the caller's event loop; it does not provide an OS
+memory or CPU sandbox. Infinite loops, cancellation, traps, invalid output,
+path escapes, and budget exhaustion produce failed or incomplete plugin
+coverage, which makes the enclosing Doctor/scorecard result incomplete or
+failed. Findings and clean results both include the plugin digest, signer key
+ID and coverage state in reports.
 After signature verification, module bytes are retained in module-private
 state rather than exposed on the public plugin object. This prevents callers
 from mutating a typed array and executing code that no longer matches the
@@ -55,9 +60,12 @@ and validates output in O(F+B) time with O(B+M+O) additional space, where `M`
 is the declared WASM memory cap (at most 16 MiB) and `O` is the 1 MiB response
 cap. Plugin execution is bounded by its signed deadline; its own worst-case
 instruction cost is not predictable, so timeout termination is part of the
-contract. The worker is a capability boundary for the no-import WASM module;
-it is not an OS sandbox for arbitrary native code. Node workers and WebAssembly
-are required. The cross-platform Node matrix still needs to verify this path.
+contract. Module hashing, linear section validation and worker transfer setup
+are bounded by the 8 MiB module cap; compilation and ABI enumeration are
+isolated in the validation worker. The worker is a capability boundary for the
+no-import WASM module; it is not an OS sandbox for arbitrary native code. Node
+workers and WebAssembly are required. The cross-platform Node matrix still
+needs to verify this path.
 
 Declarative signed JSON rule packs remain the preferred extension format for
 literal checks. They run in-process without executable code. Plugins should be

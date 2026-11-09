@@ -27,6 +27,15 @@ describe('npm dependency inventory', () => {
             'node_modules/broken': { name: 7, version: '1.0.0' }
           }
         },
+        {
+          lockfileVersion: 3,
+          packages: {
+            'node_modules/broken': {
+              version: '1.0.0',
+              peerDependenciesMeta: { optionalPeer: { optional: 'yes' } }
+            }
+          }
+        },
         { lockfileVersion: 3, packages: { 'node_modules/broken': null } }
       ];
 
@@ -68,6 +77,92 @@ describe('npm dependency inventory', () => {
       expect(graph.warnings).toContain('npm-lockfile-package-name-unresolved');
       expect(graph.packages).toEqual([]);
       expect(Object.prototype).not.toHaveProperty('version');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('marks unreferenced versionless packages incomplete but accepts valid links', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-inventory-version-')
+    );
+    try {
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': { dependencies: {} },
+            'node_modules/unresolved': {},
+            'node_modules/workspace-link': {
+              link: true,
+              resolved: 'packages/workspace-link'
+            },
+            'packages/workspace-link': {
+              name: 'workspace-link',
+              version: '1.0.0'
+            }
+          }
+        })
+      );
+      const graph = await readNpmDependencyGraph(root);
+
+      expect(graph.complete).toBe(false);
+      expect(graph.warnings).toContain('npm-lockfile-version-unresolved');
+      expect(graph.packages.map((item) => item.name)).toEqual([
+        'workspace-link'
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not report an absent optional peer as a missing installed package', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-inventory-peer-')
+    );
+    try {
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': { dependencies: { 'optional-peer-owner': '1.0.0' } },
+            'node_modules/optional-peer-owner': {
+              version: '1.0.0',
+              peerDependencies: { optionalPeer: '^2.0.0' },
+              peerDependenciesMeta: { optionalPeer: { optional: true } }
+            }
+          }
+        })
+      );
+      const graph = await readNpmDependencyGraph(root);
+
+      expect(graph.complete).toBe(true);
+      expect(graph.packages.map((item) => item.name)).toEqual([
+        'optional-peer-owner'
+      ]);
+      expect(graph.edges).toHaveLength(1);
+      expect(graph.unresolvedDependencies).toEqual([]);
+
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': { dependencies: { 'required-peer-owner': '1.0.0' } },
+            'node_modules/required-peer-owner': {
+              version: '1.0.0',
+              peerDependencies: { requiredPeer: '^2.0.0' }
+            }
+          }
+        })
+      );
+      const requiredPeerGraph = await readNpmDependencyGraph(root);
+      expect(requiredPeerGraph.complete).toBe(false);
+      expect(requiredPeerGraph.unresolvedDependencies).toContainEqual(
+        expect.objectContaining({ name: 'requiredPeer' })
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }

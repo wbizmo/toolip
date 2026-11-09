@@ -210,6 +210,73 @@ describe('non-npm lockfile inventory', () => {
     expect(graph.complete).toBe(true);
   });
 
+  it('marks malformed Python environment markers incomplete instead of resolving them', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'pyproject.toml'),
+      [
+        '[project]',
+        'name = "consumer"',
+        'version = "1.0.0"',
+        'dependencies = ["shared>=1.0; python_version ??? \'3.12\'", "other==1.0; python_version = \'3.12\'", "tight==1.0; python_version<\'3.12\'"]'
+      ].join('\n')
+    );
+    await writeFile(
+      path.join(root, 'poetry.lock'),
+      [
+        '[[package]]',
+        'name = "shared"',
+        'version = "1.2.0"',
+        '',
+        '[[package]]',
+        'name = "other"',
+        'version = "1.0.0"',
+        '',
+        '[[package]]',
+        'name = "tight"',
+        'version = "1.0.0"'
+      ].join('\n')
+    );
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain(
+      'python-requirement-marker-invalid:shared'
+    );
+    expect(graph.warnings).toContain(
+      'python-requirement-marker-invalid:other'
+    );
+    expect(graph.warnings).toContain(
+      'python-requirement-marker-invalid:tight'
+    );
+    expect(
+      graph.edges.some((edge) => edge.from === 'root' && edge.name === 'shared')
+    ).toBe(false);
+
+    await writeFile(
+      path.join(root, 'pyproject.toml'),
+      '[project]\nname = "consumer"\nversion = "1.0.0"\n'
+    );
+    await writeFile(
+      path.join(root, 'uv.lock'),
+      [
+        'version = 1',
+        '',
+        '[[package]]',
+        'name = "shared"',
+        'version = "1.2.0"',
+        'source = { registry = "https://pypi.org/simple" }',
+        'resolution-markers = ["python_version ??? \'3.12\'"]'
+      ].join('\n')
+    );
+    const invalidLockContext = await readOtherEcosystemInventoryDetailed(root);
+    expect(invalidLockContext.complete).toBe(false);
+    expect(invalidLockContext.warnings).toContain(
+      'python-lock-marker-context-invalid:uv.lock'
+    );
+  });
+
   it('resolves declared uv workspace members and connects exact member dependencies', async () => {
     const root = await fixture();
     await mkdir(path.join(root, 'packages', 'worker'), { recursive: true });
@@ -638,6 +705,78 @@ describe('non-npm lockfile inventory', () => {
     expect(graph.packages).toEqual([]);
     expect(graph.complete).toBe(false);
     expect(graph.warnings).toContain('cargo-lock-version-unsupported');
+  });
+
+  it('marks duplicate exact lock identities with conflicting checksums unknown', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'Cargo.lock'),
+      [
+        'version = 3',
+        '',
+        '[[package]]',
+        'name = "serde"',
+        'version = "1.0.188"',
+        'source = "registry+https://github.com/rust-lang/crates.io-index"',
+        `checksum = "${'a'.repeat(64)}"`,
+        '',
+        '[[package]]',
+        'name = "serde"',
+        'version = "1.0.188"',
+        'source = "registry+https://github.com/rust-lang/crates.io-index"',
+        `checksum = "${'b'.repeat(64)}"`
+      ].join('\n')
+    );
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain(
+      'ecosystem-lock-identity-conflict:crates.io:serde'
+    );
+    expect(graph.packages).toHaveLength(1);
+    expect(graph.packages[0]).toMatchObject({
+      name: 'serde',
+      resolutionConfidence: 'unknown'
+    });
+    expect(graph.packages[0]?.integrity).toBeUndefined();
+  });
+
+  it('marks duplicate exact lock identities with conflicting dependency edges unknown', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'Cargo.lock'),
+      [
+        'version = 3',
+        '',
+        '[[package]]',
+        'name = "serde"',
+        'version = "1.0.188"',
+        'source = "registry+https://github.com/rust-lang/crates.io-index"',
+        `checksum = "${'a'.repeat(64)}"`,
+        'dependencies = ["itoa 1.0.9"]',
+        '',
+        '[[package]]',
+        'name = "serde"',
+        'version = "1.0.188"',
+        'source = "registry+https://github.com/rust-lang/crates.io-index"',
+        `checksum = "${'a'.repeat(64)}"`,
+        'dependencies = ["ryu 1.0.15"]'
+      ].join('\n')
+    );
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain(
+      'ecosystem-lock-identity-conflict:crates.io:serde'
+    );
+    expect(graph.packages).toHaveLength(1);
+    expect(graph.packages[0]).toMatchObject({
+      name: 'serde',
+      resolutionConfidence: 'unknown'
+    });
+    expect(graph.packages[0]?.integrity).toBeUndefined();
   });
 
   it('resolves hashed pip-tools pins without merging extras or marker variants', async () => {
@@ -1366,6 +1505,29 @@ describe('non-npm lockfile inventory', () => {
       await import('../../src/core/dependencies/ecosystem-inventory.js');
     const graph = await readOtherEcosystemInventoryDetailed(root);
     expect(graph.packages[0]?.integrity).toBeUndefined();
+    expect(graph.warnings).toContain(
+      'go-checksum-unavailable:example.test/lib@v1.2.3'
+    );
+  });
+
+  it('marks malformed Go checksum entries incomplete instead of silently skipping them', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'go.mod'),
+      'module example.test/app\nrequire example.test/lib v1.2.3\n'
+    );
+    await writeFile(
+      path.join(root, 'go.sum'),
+      'example.test/lib v1.2.3 not-a-valid-checksum\n'
+    );
+
+    const { readOtherEcosystemInventoryDetailed } = await import(
+      '../../src/core/dependencies/ecosystem-inventory.js'
+    );
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain('go-checksum-format-invalid');
     expect(graph.warnings).toContain(
       'go-checksum-unavailable:example.test/lib@v1.2.3'
     );

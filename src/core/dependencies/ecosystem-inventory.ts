@@ -377,6 +377,14 @@ function fromTomlLock(
           : typeof dep?.markers === 'string'
             ? dep.markers
             : undefined;
+      if (
+        ecosystem === 'PyPI' &&
+        marker &&
+        !validPythonMarkerExpression(marker)
+      ) {
+        warnings.push(`python-lock-marker-invalid:${source}`);
+        return;
+      }
       const extras = Array.isArray(dep?.extras)
         ? dep.extras
             .filter((item): item is string => typeof item === 'string')
@@ -454,6 +462,19 @@ function fromTomlLock(
             providesExtras: pkg.provides_extras
           }
         : undefined;
+    if (ecosystem === 'PyPI' && markerFields?.markers !== undefined) {
+      const markers = Array.isArray(markerFields.markers)
+        ? markerFields.markers
+        : [markerFields.markers];
+      if (
+        markers.length === 0 ||
+        markers.some(
+          (marker) =>
+            typeof marker !== 'string' || !validPythonMarkerExpression(marker)
+        )
+      )
+        warnings.push(`python-lock-marker-context-invalid:${source}`);
+    }
     const markerContext = markerFields
       ? Object.fromEntries(
           Object.entries(markerFields).filter(
@@ -740,6 +761,171 @@ function pythonRequirementMatches(
     normalized.push(semverRange);
   }
   return normalized.every((range) => semver.satisfies(candidate, range));
+}
+
+function validPythonMarkerExpression(value: string): boolean {
+  if (!value || value.length > 1_024) return false;
+  const variables = new Set([
+    'implementation_name',
+    'implementation_version',
+    'os_name',
+    'platform_machine',
+    'platform_python_implementation',
+    'platform_release',
+    'platform_system',
+    'platform_version',
+    'python_full_version',
+    'python_version',
+    'sys_platform',
+    'extra',
+    'extras',
+    'dependency_groups'
+  ]);
+  const tokens: Array<{
+    kind: 'word' | 'string' | 'operator' | 'paren';
+    value: string;
+    start: number;
+    end: number;
+  }> = [];
+  for (let index = 0; index < value.length;) {
+    const character = value[index] ?? '';
+    if (/\s/u.test(character)) {
+      index++;
+      continue;
+    }
+    const start = index;
+    if (character === '(' || character === ')') {
+      index++;
+      tokens.push({ kind: 'paren', value: character, start, end: index });
+    } else if (character === "'" || character === '"') {
+      const quote = character;
+      let text = '';
+      index++;
+      let closed = false;
+      while (index < value.length) {
+        const current = value[index] ?? '';
+        if (current === '\\') {
+          const escaped = value[index + 1];
+          if (escaped === undefined) return false;
+          text += escaped;
+          index += 2;
+        } else if (current === quote) {
+          index++;
+          closed = true;
+          break;
+        } else if (current === '\n' || current === '\r' || current === '\0') {
+          return false;
+        } else {
+          text += current;
+          index++;
+        }
+      }
+      if (!closed) return false;
+      tokens.push({ kind: 'string', value: text, start, end: index });
+    } else {
+      const operator = /^(===|==|!=|<=|>=|~=|<|>)/u.exec(value.slice(index));
+      if (operator?.[1]) {
+        index += operator[1].length;
+        tokens.push({ kind: 'operator', value: operator[1], start, end: index });
+      } else {
+        const word = /^[A-Za-z_][A-Za-z0-9_]*/u.exec(value.slice(index));
+        if (!word?.[0]) return false;
+        index += word[0].length;
+        tokens.push({
+          kind: 'word',
+          value: word[0].toLowerCase(),
+          start,
+          end: index
+        });
+      }
+    }
+    if (tokens.length > 256) return false;
+  }
+
+  let position = 0;
+  const peek = (): (typeof tokens)[number] | undefined => tokens[position];
+  const take = (): (typeof tokens)[number] | undefined => tokens[position++];
+  const separated = (left: (typeof tokens)[number], right: (typeof tokens)[number]): boolean =>
+    /\s/u.test(value.slice(left.end, right.start));
+  const parseOperand = (): (typeof tokens)[number] | undefined => {
+    const token = take();
+    return token &&
+      (token.kind === 'string' ||
+        (token.kind === 'word' && variables.has(token.value)))
+      ? token
+      : undefined;
+  };
+  const parseOr = (depth: number): boolean => {
+    if (depth > 32 || !parseAnd(depth)) return false;
+    while (peek()?.kind === 'word' && peek()?.value === 'or') {
+      const previous = tokens[position - 1];
+      const operator = take();
+      const next = peek();
+      if (
+        !previous ||
+        !operator ||
+        !next ||
+        !separated(previous, operator) ||
+        !separated(operator, next)
+      )
+        return false;
+      if (!parseAnd(depth)) return false;
+    }
+    return true;
+  };
+  const parseAnd = (depth: number): boolean => {
+    if (depth > 32 || !parseAtom(depth)) return false;
+    while (peek()?.kind === 'word' && peek()?.value === 'and') {
+      const previous = tokens[position - 1];
+      const operator = take();
+      const next = peek();
+      if (
+        !previous ||
+        !operator ||
+        !next ||
+        !separated(previous, operator) ||
+        !separated(operator, next)
+      )
+        return false;
+      if (!parseAtom(depth)) return false;
+    }
+    return true;
+  };
+  const parseAtom = (depth: number): boolean => {
+    if (peek()?.kind === 'paren' && peek()?.value === '(') {
+      take();
+      if (
+        !parseOr(depth + 1) ||
+        peek()?.kind !== 'paren' ||
+        peek()?.value !== ')'
+      )
+        return false;
+      take();
+      return true;
+    }
+    const left = parseOperand();
+    if (!left) return false;
+    const operator = peek();
+    const inOperator = tokens[position + 1];
+    if (!operator || !separated(left, operator)) return false;
+    if (operator.kind === 'operator') take();
+    else if (operator.kind === 'word' && operator.value === 'in') take();
+    else if (
+      operator.kind === 'word' &&
+      operator.value === 'not' &&
+      inOperator?.kind === 'word' &&
+      inOperator.value === 'in' &&
+      separated(operator, inOperator)
+    ) {
+      take();
+      take();
+    } else return false;
+    const right = parseOperand();
+    const finalOperator = tokens[position - 2];
+    return Boolean(right && finalOperator && separated(finalOperator, right));
+  };
+
+  return tokens.length > 0 && parseOr(0) && position === tokens.length;
 }
 
 function cargoDependencyDeclarations(
@@ -1680,17 +1866,27 @@ function goSumChecksums(text: string, warnings: string[]): Map<string, string> {
   const checksums = new Map<string, string>();
   const conflicting = new Set<string>();
   for (const line of text.split(/\r?\n/u)) {
-    const fields = line.trim().split(/\s+/u);
-    if (fields.length !== 3 || fields[1]?.endsWith('/go.mod')) continue;
-    const match = fields[1]?.match(/^(v?\d[^\s]*)$/u);
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const fields = trimmed.split(/\s+/u);
+    const rawVersion = fields[1] ?? '';
+    const moduleManifestSum = rawVersion.endsWith('/go.mod');
+    const version = moduleManifestSum
+      ? rawVersion.slice(0, -'/go.mod'.length)
+      : rawVersion;
+    const match = version.match(/^(v?\d[^\s]*)$/u);
     const checksum = fields[2] ?? '';
     const encoded = /^h1:([A-Za-z0-9+/]+={0,2})$/u.exec(checksum)?.[1];
-    if (!fields[0] || !match?.[1] || !encoded) continue;
+    if (fields.length !== 3 || !fields[0] || !match?.[1] || !encoded) {
+      warnings.push('go-checksum-format-invalid');
+      continue;
+    }
     const digest = Buffer.from(encoded, 'base64');
     if (digest.length !== 32 || digest.toString('base64') !== encoded) {
       warnings.push('go-checksum-format-invalid');
       continue;
     }
+    if (moduleManifestSum) continue;
     const key = `${decodeGoModulePath(fields[0])}@${match[1].replace(/^v/u, '')}`;
     if (conflicting.has(key)) continue;
     const prior = checksums.get(key);
@@ -3515,6 +3711,29 @@ export async function readOtherEcosystemInventoryDetailed(
       warnings.push('ecosystem-workspace-graph-incomplete');
   }
   const unique = new Map<string, DependencyIdentity>();
+  const lockRecordById = new Map<
+    string,
+    { record: LockedPackage; dependencyFingerprint: string }
+  >();
+  const dependencyFingerprint = (record: LockedPackage): string =>
+    (record.dependencies ?? [])
+      .map((edge) =>
+        JSON.stringify({
+          name: edge.name,
+          requirement: edge.requirement,
+          section: edge.section,
+          module: edge.module,
+          marker: edge.marker,
+          extras: edge.extras ? [...edge.extras].sort() : undefined,
+          alias: edge.alias,
+          target: edge.target,
+          requestedFeatures: edge.requestedFeatures
+            ? [...edge.requestedFeatures].sort()
+            : undefined
+        })
+      )
+      .sort()
+      .join('\0');
   for (const item of output) {
     if (item.source === 'composer.lock:path-unverified')
       warnings.push(`composer-path-source-unverified:${item.name}`);
@@ -3525,6 +3744,33 @@ export async function readOtherEcosystemInventoryDetailed(
     )
       warnings.push(`composer-branch-version-unverified:${item.name}`);
     const dependency = identity(item);
+    const priorRecord = lockRecordById.get(dependency.id);
+    if (priorRecord) {
+      const currentFingerprint = dependencyFingerprint(item);
+      if (
+        priorRecord.record.integrity !== item.integrity ||
+        priorRecord.dependencyFingerprint !== currentFingerprint ||
+        (priorRecord.record.resolutionConfidence ?? 'lockfile') !==
+          (item.resolutionConfidence ?? 'lockfile') ||
+        priorRecord.record.resolutionContext !== item.resolutionContext
+      ) {
+        warnings.push(
+          `ecosystem-lock-identity-conflict:${item.ecosystem}:${item.name}`
+        );
+        const priorIdentity = unique.get(dependency.id);
+        if (priorIdentity) {
+          priorIdentity.resolutionConfidence = 'unknown';
+          delete priorIdentity.integrity;
+        }
+        priorRecord.record.resolutionConfidence = 'unknown';
+        delete priorRecord.record.integrity;
+      }
+      continue;
+    }
+    lockRecordById.set(dependency.id, {
+      record: item,
+      dependencyFingerprint: dependencyFingerprint(item)
+    });
     unique.set(dependency.id, dependency);
   }
   const packages = [...unique.values()].sort((a, b) =>
@@ -3894,6 +4140,13 @@ export async function readOtherEcosystemInventoryDetailed(
     });
   }
   for (const requirement of pythonRootRequirements) {
+    if (
+      requirement.marker &&
+      !validPythonMarkerExpression(requirement.marker)
+    ) {
+      warnings.push(`python-requirement-marker-invalid:${requirement.name}`);
+      continue;
+    }
     const target = resolveTarget(
       'PyPI',
       requirement.name,

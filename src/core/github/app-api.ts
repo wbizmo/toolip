@@ -176,6 +176,8 @@ export class GitHubAppApiClient {
       summary.findingCount < 0
     )
       throw new Error('github-check-identity-mismatch');
+    if (work.revision && !summary.revision)
+      throw new Error('github-check-revision-unavailable');
     const headSha = summary.revision ?? work.revision;
     if (!headSha || !SHA.test(headSha))
       throw new Error('github-check-revision-unavailable');

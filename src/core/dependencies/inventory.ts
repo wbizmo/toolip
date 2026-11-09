@@ -95,6 +95,7 @@ type PackageLockEntry = {
   devDependencies?: Record<string, string>;
   optionalDependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
+  peerDependenciesMeta?: Record<string, { optional?: boolean }>;
 };
 
 type PackageLockV2 = {
@@ -123,6 +124,17 @@ function validPackageLockEntry(value: unknown): value is PackageLockEntry {
         ))
     )
       return false;
+  }
+  if (value.peerDependenciesMeta !== undefined) {
+    if (!isRecord(value.peerDependenciesMeta)) return false;
+    for (const metadata of Object.values(value.peerDependenciesMeta)) {
+      if (
+        !isRecord(metadata) ||
+        (metadata.optional !== undefined &&
+          typeof metadata.optional !== 'boolean')
+      )
+        return false;
+    }
   }
   for (const field of ['name', 'version', 'resolved', 'integrity']) {
     if (value[field] !== undefined && typeof value[field] !== 'string')
@@ -265,24 +277,30 @@ function requirements(
   name: string;
   requirement: string;
   section: DependencyEdge['section'];
+  optional?: boolean;
 }> {
-  const sections: Array<
-    [DependencyEdge['section'], Record<string, string> | undefined]
-  > = [
-    ['dependency', entry.dependencies],
-    ['optionalDependency', entry.optionalDependencies],
-    ['peerDependency', entry.peerDependencies]
+  const sections: Array<{
+    section: DependencyEdge['section'];
+    values: Record<string, string> | undefined;
+  }> = [
+    { section: 'dependency', values: entry.dependencies },
+    { section: 'optionalDependency', values: entry.optionalDependencies },
+    { section: 'peerDependency', values: entry.peerDependencies }
   ];
 
   if (includeDevelopment) {
-    sections.push(['devDependency', entry.devDependencies]);
+    sections.push({ section: 'devDependency', values: entry.devDependencies });
   }
 
-  return sections.flatMap(([section, values]) =>
+  return sections.flatMap(({ section, values }) =>
     Object.entries(values ?? {}).map(([name, requirement]) => ({
       name,
       requirement,
-      section
+      section,
+      ...(section === 'peerDependency' &&
+      entry.peerDependenciesMeta?.[name]?.optional === true
+        ? { optional: true }
+        : {})
     }))
   );
 }
@@ -361,7 +379,13 @@ export async function readNpmDependencyGraph(
   const identitiesByPath = new Map<string, DependencyIdentity>();
 
   for (const [installPath, entry] of Object.entries(packageLockEntries)) {
-    if (installPath === '' || !entry.version) continue;
+    if (installPath === '') continue;
+    if (!entry.version) {
+      if (!entry.link) warnings.push('npm-lockfile-version-unresolved');
+      else if (!entry.resolved)
+        warnings.push('npm-lockfile-link-target-unresolved');
+      continue;
+    }
     if (
       path.posix.isAbsolute(installPath) ||
       /^[A-Za-z]:/u.test(installPath) ||
@@ -424,6 +448,7 @@ export async function readNpmDependencyGraph(
         requirement.name
       );
       if (!targetPath) {
+        if (requirement.optional) continue;
         unresolvedDependencies.push({
           from: fromIdentity?.id ?? 'root',
           name: requirement.name,

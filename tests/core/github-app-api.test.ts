@@ -232,7 +232,7 @@ describe('least-privilege GitHub App check-run API', () => {
     expect(requests).toBe(0);
   });
 
-  it('rejects a check summary for a revision different from its webhook work', async () => {
+  it('requires a scan revision and rejects one different from its webhook work', async () => {
     let requests = 0;
     const client = new GitHubAppApiClient({
       appId: '12345',
@@ -243,6 +243,13 @@ describe('least-privilege GitHub App check-run API', () => {
         return response({}, 201);
       }
     });
+    await expect(
+      client.createSecurityCheck(work, repository, {
+        status: 'complete',
+        findingCount: 0
+      })
+    ).rejects.toThrow('github-check-revision-unavailable');
+    expect(requests).toBe(0);
     await expect(
       client.createSecurityCheck(work, repository, {
         status: 'complete',

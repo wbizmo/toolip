@@ -89,6 +89,10 @@ bytes, `Q` source import/file path bytes and `D` dependency declarations:
   `O(G)` time/space; import and source ownership queries are `O(path bytes)`
   each, for `O(G + Q)` total before parsing/import collection. This replaces
   sorting/scanning all modules per imported path or source file.
+- Offline Go checksum parsing scans `go.sum` in `O(Bg)` time for `Bg` bytes
+  and retains `O(P)` exact module/version checksum entries. Malformed nonblank
+  records and invalid hashes now produce explicit incomplete-coverage warnings;
+  archive checksums remain distinct from `/go.mod` checksums.
 - Cargo workspace glob matching uses dynamic programming over pattern and
   candidate path lengths, with a shared 16,000,000-cell work cap. The matching
   pass is bounded by that cap; per-match live DP space is `O(pattern length +
@@ -128,6 +132,20 @@ finding accuracy; and exact baseline/artifact identity. The dedicated 100k and
 250k campaign must wait until combined Batches 07–16 are accepted and merged.
 1M/2M qualification and bounded 5M/10M stress attempts belong to final release
 qualification, not this batch.
+
+## Signed WASM validation isolation
+
+For a signed analyzer plugin, manifest and module reads are capped at 64 KiB
+and 8 MiB. Digesting and linear memory-section validation take `O(Bm)` time
+and `O(1)` additional parser space for module bytes `Bm`; compilation, import
+enumeration and ABI export inspection run in a terminating worker with a
+10-second deadline and 32 MiB V8 old-generation limit. Worker message transfer
+may temporarily retain another `O(Bm)` byte copy. Node's worker resource limit
+is not an OS-level memory or CPU limit, so platform behavior and process-wide
+resource accounting remain open. Runtime execution has its own signed
+input/output/memory/time caps and terminable worker. This is isolation from
+event-loop blocking and ambient host APIs, not a claim that arbitrary native
+code is sandboxed.
 
 ## Open work before sign-off
 
@@ -311,3 +329,30 @@ measured median wall/RSS of 18.09 s / 866 MiB cold, 4.35 s / 1,006 MiB warm,
 and 4.65 s / 1,199 MiB incremental. Ranges overlap prior single-run samples;
 there is no causal improvement claim or memory bound. Raw data is in
 `docs/benchmarks/toolip-v3.2.1-ast-cache-cycle-repeat-2026-11-08-linux-node24.jsonl`.
+
+### Dependency lock graph trust checks (2026-11-09)
+
+The npm v2/v3 package map is now shape-validated in one pass over package
+records and their declared dependency maps. Construction uses a null-prototype
+lookup so lock paths such as `__proto__` cannot mutate object inheritance.
+Absent version records are surfaced as incomplete unless they are valid links;
+`peerDependenciesMeta.optional` is validated, and only an explicitly optional
+missing peer is omitted from unresolved edges. For `P` lock entries and `D`
+dependency declarations, this validation and graph-index construction is
+expected `O(P + D)` time and `O(P + D)` additional space.
+
+Cross-ecosystem duplicate identities are checked once per record. Each record's
+normalized dependency fingerprint sorts its `K` edges in `O(K log K)` time;
+the total work is `O(sum(K_i log K_i))` over all `P` records, with `O(P + D)`
+retained identity/fingerprint space and `O(max K_i)` temporary fingerprint
+storage. Conflicting checksums, dependency edges or normalized resolution
+confidence/context mark the package unknown and remove its trusted integrity
+field. Python marker syntax is parsed
+under a 1,024-character, 256-token and depth-32 limit; the current tokenizer's
+bounded suffix matching has an `O(L^2)` worst-case character-copy bound per
+marker for `L <= 1,024`. The grammar requires PEP 508 whitespace around binary
+comparisons and boolean operators and rejects nonstandard `=` comparisons.
+This validates marker syntax but does not evaluate the expression against a
+target Python/OS matrix; those variants remain retained
+as explicit lock contexts or incomplete coverage. These changes have focused
+regressions; the full ecosystem/platform matrix remains open.

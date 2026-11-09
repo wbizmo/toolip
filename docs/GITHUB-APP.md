@@ -63,7 +63,9 @@ delivery unacknowledged for GitHub retry. `--state-file` can place this file on
 an administrator-managed private filesystem.
 
 The runner creates a GitHub check run for the exact scanned commit and fails it
-when findings exist or scan coverage is incomplete. It does not upload SARIF,
+when findings exist or scan coverage is incomplete. The scan callback must
+return the exact revision it scanned; a missing or different revision is
+rejected before requesting an installation token or creating a check. It does not upload SARIF,
 post PR comments, or create pull requests, and it does not provision remote
 commits. Use the separate GitHub Action workflow for SARIF upload. The host
 must provision remote commits before the scan request is accepted; this service
