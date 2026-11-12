@@ -141,6 +141,103 @@ describe('SBOM generation', () => {
     return root;
   }
 
+  it.each([
+    {
+      manager: 'pnpm',
+      lockName: 'pnpm-lock.yaml',
+      lock: [
+        "lockfileVersion: '9.0'",
+        'importers:',
+        '  .:',
+        '    dependencies:',
+        "      '@scope/tool':",
+        '        specifier: ^1.0.0',
+        '        version: 1.2.0',
+        'packages:',
+        "  '@scope/tool@1.2.0':",
+        '    resolution: {}',
+        'snapshots:',
+        "  '@scope/tool@1.2.0': {}"
+      ].join('\n')
+    },
+    {
+      manager: 'Yarn Classic',
+      lockName: 'yarn.lock',
+      lock: [
+        '# yarn lockfile v1',
+        '',
+        '"@scope/tool@^1.0.0":',
+        '  version "1.2.0"'
+      ].join('\n')
+    },
+    {
+      manager: 'Yarn Berry',
+      lockName: 'yarn.lock',
+      lock: [
+        '__metadata:',
+        '  version: 8',
+        '  cacheKey: 10c0',
+        '',
+        '"@scope/tool@npm:^1.0.0":',
+        '  version: 1.2.0',
+        '  resolution: "@scope/tool@npm:1.2.0"'
+      ].join('\n')
+    }
+  ])(
+    'round-trips canonical scoped PURLs in both SBOM formats for $manager',
+    async ({ lockName, lock }) => {
+      const root = await mkdtemp(
+        path.join(os.tmpdir(), 'toolip-sbom-scoped-matrix-')
+      );
+      try {
+        await writeFile(
+          path.join(root, 'package.json'),
+          JSON.stringify({
+            name: 'workspace-root',
+            version: '1.0.0',
+            dependencies: { '@scope/tool': '^1.0.0' }
+          })
+        );
+        await writeFile(path.join(root, lockName), lock);
+        const cyclonedx = await generateSbom(root, 'cyclonedx');
+        const spdx = await generateSbom(root, 'spdx');
+        await expectValidCycloneDx(cyclonedx);
+        expectValidSpdx(spdx);
+        const exact = 'pkg:npm/%40scope/tool@1.2.0';
+        const components = cyclonedx.components as Array<{
+          name: string;
+          purl?: string;
+        }>;
+        const scoped = components.filter(
+          (component) => component.name === '@scope/tool'
+        );
+        expect(scoped.map((component) => component.purl)).toEqual([exact]);
+        const packageRefs = (
+          spdx.packages as Array<{
+            name: string;
+            externalRefs?: Array<{
+              referenceType: string;
+              referenceLocator: string;
+            }>;
+          }>
+        )
+          .filter((pkg) => pkg.name === '@scope/tool')
+          .flatMap((pkg) => pkg.externalRefs ?? [])
+          .filter((ref) => ref.referenceType === 'purl')
+          .map((ref) => ref.referenceLocator);
+        expect(packageRefs).toEqual([exact]);
+        expect(PackageURL.fromString(exact)).toMatchObject({
+          type: 'npm',
+          namespace: '@scope',
+          name: 'tool',
+          version: '1.2.0'
+        });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
   it('generates CycloneDX 1.5 JSON with resolved relationships', async () => {
     const root = await fixture();
 

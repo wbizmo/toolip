@@ -138,6 +138,50 @@ function behaviorSignals(source: string): string[] {
   return signals;
 }
 
+/**
+ * Discover statically assigned local command targets without evaluating shell.
+ * Deliberately ignores ambiguous/reassigned, late and nonliteral values.
+ * Each bounded file is walked twice: O(B) time and O(A + R) space for
+ * B source units, A assignments and R references.
+ */
+function staticShellTargets(source: string): string[] {
+  const assignments = new Map<
+    string,
+    { ambiguous?: boolean; value?: string; position?: number }
+  >();
+  const assignmentPattern =
+    /(?:^|[;\n])\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(["']?)(\.{1,2}\/[A-Za-z0-9_./-]+)\2(?=\s*(?:;|\n|$))/gmu;
+  for (const match of source.matchAll(assignmentPattern)) {
+    const name = match[1];
+    if (!name) continue;
+    const previous = assignments.get(name);
+    assignments.set(
+      name,
+      previous
+        ? { ambiguous: true }
+        : {
+            value: match[3],
+            position: match.index ?? 0
+          }
+    );
+  }
+  const targets = new Set<string>();
+  const executionPattern =
+    /\b(?:node(?:\.exe)?|bash|sh|zsh|python(?:3)?|ruby|perl|php|bun)(?:\.exe)?\s+(?:"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))"|\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*))(?=\s|[;&|]|$)/gmu;
+  for (const match of source.matchAll(executionPattern)) {
+    const name = match[1] ?? match[2] ?? match[3] ?? match[4];
+    const assignment = assignments.get(name);
+    if (
+      !assignment?.ambiguous &&
+      assignment?.value &&
+      assignment.position !== undefined &&
+      assignment.position < (match.index ?? 0)
+    )
+      targets.add(assignment.value);
+  }
+  return [...targets].sort();
+}
+
 /** Reuses source-derived signals and path-neutral references by exact content hash. */
 function contentAnalysis(source: string): Readonly<{
   references?: readonly string[];
@@ -174,6 +218,7 @@ function contentAnalysis(source: string): Readonly<{
     }
     if (references.size > MAX_CACHED_REFERENCES_PER_CONTENT) break;
   }
+  for (const target of staticShellTargets(source)) references.add(target);
   const result = Object.freeze({
     ...(references.size <= MAX_CACHED_REFERENCES_PER_CONTENT
       ? { references: Object.freeze([...references].sort()) }
@@ -390,6 +435,8 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
       for (const match of source.matchAll(pattern))
         addReference(references, match[2] ?? '');
     }
+    for (const target of staticShellTargets(source))
+      addReference(references, target);
   };
   for (const file of files) {
     if (file.path !== 'package.json' && !file.path.endsWith('/package.json'))
@@ -863,6 +910,8 @@ export function analyzeMaliciousContent(
             if (nested && !enqueue(target, nested)) break;
           }
         }
+        for (const nested of staticShellTargets(targetText))
+          if (!enqueue(target, nested)) break;
       }
     }
     // Unknown references stay review leads unless suspicious behavior is also

@@ -1064,6 +1064,27 @@ describe('trusted Stage A Git-object scanner', () => {
     );
   });
 
+  it('blocks a wrapper that executes a uniquely assigned local shell variable', async () => {
+    const fixture = await repo({
+      'package.json': JSON.stringify({
+        scripts: { prepare: 'sh ./runner.sh' }
+      }),
+      'runner.sh': 'target=./payload.orc; node "$target"',
+      'payload.orc': 'const decoded = atob(encoded); eval(decoded);'
+    });
+    const result = scanGitTree(fixture.root, fixture.sha, {
+      changedPaths: ['package.json']
+    });
+    expect(result.status).toBe('blocked');
+    expect(result.findings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(
+          'execution-chain:package.json -> runner.sh -> payload.orc'
+        )
+      ])
+    );
+  });
+
   it('blocks Node preload loaders before an npm lifecycle script can execute', async () => {
     const fixture = await repo({
       'package.json': JSON.stringify({

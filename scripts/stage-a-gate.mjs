@@ -2837,6 +2837,46 @@ function workspacePackageTarget(selector, cwd, packagesByName, texts) {
   return texts.has(target) ? target : undefined;
 }
 
+/**
+ * Discover statically assigned local command targets without evaluating shell.
+ * Deliberately ignores ambiguous/reassigned, late and nonliteral values.
+ * Each bounded file is walked twice: O(B) time and O(A + R) space for
+ * B source units, A assignments and R references.
+ */
+function staticShellTargets(source) {
+  const assignments = new Map();
+  const assignmentPattern =
+    /(?:^|[;\n])\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(["']?)(\.{1,2}\/[A-Za-z0-9_./-]+)\2(?=\s*(?:;|\n|$))/gmu;
+  for (const match of source.matchAll(assignmentPattern)) {
+    const name = match[1];
+    if (!name) continue;
+    const previous = assignments.get(name);
+    assignments.set(
+      name,
+      previous
+        ? { ambiguous: true }
+        : {
+            value: match[3],
+            position: match.index ?? 0
+          }
+    );
+  }
+  const targets = new Set();
+  const executionPattern =
+    /\b(?:node(?:\.exe)?|bash|sh|zsh|python(?:3)?|ruby|perl|php|bun)(?:\.exe)?\s+(?:"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))"|\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*))(?=\s|[;&|]|$)/gmu;
+  for (const match of source.matchAll(executionPattern)) {
+    const name = match[1] ?? match[2] ?? match[3] ?? match[4];
+    const assignment = assignments.get(name);
+    if (
+      !assignment?.ambiguous &&
+      assignment?.value &&
+      assignment.position < (match.index ?? 0)
+    )
+      targets.add(assignment.value);
+  }
+  return [...targets].sort();
+}
+
 function localReferences(source, sourcePath, packagesByName, texts) {
   const refs = new Map();
   const commands = [];
@@ -2855,6 +2895,11 @@ function localReferences(source, sourcePath, packagesByName, texts) {
       if (value && !value.startsWith('-') && !value.includes(':'))
         refs.set(`${value}\0source`, { value, rootRelative: false });
     }
+  for (const target of staticShellTargets(source))
+    refs.set(target + '\\0static-shell', {
+      value: target,
+      rootRelative: false
+    });
   if (sourcePath === 'package.json' || sourcePath.endsWith('/package.json')) {
     try {
       const parsed = JSON.parse(source);

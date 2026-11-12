@@ -23,6 +23,79 @@ describe('non-executing malicious content chain analysis', () => {
     ]);
   });
 
+  it('traces a uniquely assigned shell script path through a wrapper without executing it', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({ scripts: { prepare: 'sh ./runner.sh' } })
+      },
+      { path: 'runner.sh', content: 'target=./payload.orc; node "$target"' },
+      {
+        path: 'payload.orc',
+        content: 'const decoded = atob(encoded); eval(decoded);'
+      }
+    ]);
+    const finding = result.findings.find(
+      (item) => item.location.file === 'package.json'
+    );
+    expect(finding?.metadata?.trace).toEqual([
+      'package.json',
+      'runner.sh',
+      'payload.orc'
+    ]);
+  });
+
+  it('does not claim a single target when shell assignment is ambiguous', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({ scripts: { prepare: 'sh ./runner.sh' } })
+      },
+      {
+        path: 'runner.sh',
+        content: 'target=./first.js; target=./second.js; node "$target"'
+      },
+      {
+        path: 'first.js',
+        content: 'const decoded = atob(encoded); eval(decoded);'
+      },
+      { path: 'second.js', content: 'console.log("ok")' }
+    ]);
+    const finding = result.findings.find(
+      (item) => item.location.file === 'package.json'
+    );
+    expect(finding?.metadata?.completeness).toBe('unknown');
+    expect(finding?.metadata?.trace).not.toContain('first.js');
+  });
+
+  it('retains shell-variable targets when more than 256 other references exhaust the content cache slice', () => {
+    const safeFiles = Array.from({ length: 270 }, (_, index) => ({
+      path: 'safe-' + index + '.sh',
+      content: '#!/bin/sh\n:'
+    }));
+    const wrapper = [
+      ...safeFiles.map((file) => 'source ./' + file.path),
+      'target=./payload.orc; node "$target"'
+    ].join('\n');
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({ scripts: { prepare: 'sh ./runner.sh' } })
+      },
+      { path: 'runner.sh', content: wrapper },
+      {
+        path: 'payload.orc',
+        content: 'const payload = atob(encoded); eval(payload);'
+      },
+      ...safeFiles
+    ]);
+    const finding = result.findings.find(
+      (item) => item.location.file === 'package.json'
+    );
+    expect(finding?.ruleId).toBe('TLP-MAL-001');
+    expect(finding?.metadata?.trace).toContain('payload.orc');
+  });
+
   it('traces Node preload flags to local files before a lifecycle script starts', () => {
     const result = analyzeMaliciousContent([
       {

@@ -11,7 +11,14 @@
     "manifest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["format", "version", "generatedAt", "recordCount", "ecosystems", "sources"],
+      "required": [
+        "format",
+        "version",
+        "generatedAt",
+        "recordCount",
+        "ecosystems",
+        "sources"
+      ],
       "properties": {
         "format": { "const": "toolip-advisory-bundle" },
         "version": { "const": 1 },
@@ -27,11 +34,21 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["id", "version", "recordCount", "capturedAt", "sourceUpdatedAt"],
+            "required": [
+              "id",
+              "version",
+              "recordCount",
+              "capturedAt",
+              "sourceUpdatedAt"
+            ],
             "properties": {
               "id": { "enum": ["osv", "epss", "kev", "other"] },
               "version": { "type": "string", "minLength": 1, "maxLength": 256 },
-              "recordCount": { "type": "integer", "minimum": 1, "maximum": 200000 },
+              "recordCount": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200000
+              },
               "capturedAt": { "type": "string", "format": "date-time" },
               "sourceUpdatedAt": { "type": "string", "format": "date-time" }
             }
