@@ -1650,6 +1650,9 @@ describe('trusted Stage A Git-object scanner', () => {
     });
     expect(checked.coverage.checked).toBe(1);
     expect(checked.reasons).toEqual([]);
+    expect(checked.verifiedArtifactSha512ByLocation).toEqual({
+      'node_modules/alias': createHash('sha512').update(archive).digest('hex')
+    });
   });
 
   it('verifies tarball integrity and never queries unapproved scoped packages', async () => {

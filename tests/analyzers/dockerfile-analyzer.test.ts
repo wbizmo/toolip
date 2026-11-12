@@ -290,7 +290,9 @@ describe('DockerfileAnalyzer', () => {
   });
 
   it('inherits USER and HEALTHCHECK metadata through a named build stage', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-inherit-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-inherit-')
+    );
     try {
       await writeFile(
         path.join(root, 'Dockerfile'),
@@ -346,15 +348,19 @@ describe('DockerfileAnalyzer', () => {
   });
 
   it('keeps unknown external image metadata incomplete and distinguishes scratch defaults', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-unknown-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-unknown-')
+    );
     try {
       await writeFile(path.join(root, 'Dockerfile'), 'FROM example/base:1\n');
       const external = await new DockerfileAnalyzer().analyze({ root });
       expect(external.coverage.state).toBe('partial');
       expect(
-        external.findings.filter((finding) =>
-          ['TLP-DOCKER-001', 'TLP-DOCKER-006'].includes(finding.ruleId)
-        ).map((finding) => finding.confidence)
+        external.findings
+          .filter((finding) =>
+            ['TLP-DOCKER-001', 'TLP-DOCKER-006'].includes(finding.ruleId)
+          )
+          .map((finding) => finding.confidence)
       ).toEqual(['low', 'low']);
 
       await writeFile(path.join(root, 'Dockerfile'), 'FROM scratch\n');
@@ -369,7 +375,9 @@ describe('DockerfileAnalyzer', () => {
   });
 
   it('does not infer a non-root identity from a username alone', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-user-name-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-user-name-')
+    );
     try {
       await writeFile(
         path.join(root, 'Dockerfile'),
@@ -391,7 +399,9 @@ describe('DockerfileAnalyzer', () => {
   });
 
   it('scans every Docker ENV assignment and ignores empty ARGs and secret mounts', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-env-list-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-env-list-')
+    );
     try {
       await writeFile(
         path.join(root, 'Dockerfile'),
@@ -426,7 +436,9 @@ describe('DockerfileAnalyzer', () => {
   });
 
   it('detects remote ADD in JSON form and remote shell execution in a heredoc', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-heredoc-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-heredoc-')
+    );
     try {
       await writeFile(
         path.join(root, 'Dockerfile'),
@@ -473,7 +485,9 @@ describe('DockerfileAnalyzer', () => {
   });
 
   it('fails closed on invalid FROM references and unknown Dockerfile instructions', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-invalid-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-invalid-')
+    );
     try {
       await writeFile(
         path.join(root, 'Dockerfile'),
@@ -507,7 +521,9 @@ describe('DockerfileAnalyzer', () => {
   });
 
   it('marks dynamic built-in FROM references as unresolved', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-builtin-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-builtin-')
+    );
     try {
       await writeFile(
         path.join(root, 'Dockerfile'),
@@ -533,7 +549,9 @@ describe('DockerfileAnalyzer', () => {
   });
 
   it('does not trust inherited metadata when a base stage has ONBUILD triggers', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-onbuild-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-onbuild-')
+    );
     try {
       await writeFile(
         path.join(root, 'Dockerfile'),

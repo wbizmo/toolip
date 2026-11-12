@@ -36,7 +36,7 @@ budget controls the entire scorecard or repository process.
 | Secret match locations              | Repeated prefix splitting cost `O(B × M)` and could become quadratic.                                                  | `src/core/secret-utils.ts` scans line starts once and advances a cursor across matches: `O(B + M + matched bytes)` for the match-location pass.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | `O(lines + M + returned match bytes)` because locations and matches are materialized. 1k/10k comparison data is in `docs/BENCHMARKS.md`; broad matcher-count and maximum-byte coverage remains open (#40/#86).                                                                                                                                                                                                                      |
 | Dependency graph summary            | Converging paths could enqueue the same vertex repeatedly before its first dequeue; queue records grew with edges.     | `src/core/dependency-tree.ts` marks vertices when enqueued. The summary traversal is expected `O(V + E)` and has a deterministic 131,072-edge regression asserting 768 unique enqueues and a vertex-bounded peak queue. Topological depth and cyclic shortest-distance fallback each scan reachable vertices and edges.                                                                                                                                                                                                                                                                                                                                                                                                                         | `O(V)` additional traversal state, excluding caller-owned `O(V + E)` adjacency; `buildDependencyTree` also builds an `O(V + E)` tree representation. Hash-based identity operations are expected-time. The high-fan-in regression is local only; whole ecosystem graph limits and scale coverage remain open (#40/#86).                                                                                                             |
 | Task DAG scheduler                  | Prior scheduler used repeated ready-list sorting.                                                                      | `src/application/task-scheduler.ts` builds dependency/dependent indexes in expected `O(V + E)` and uses a deterministic binary min-heap, giving expected `O(V log V + E + W)` scheduling plus task work `W`. Concurrency is capped at 32.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | `O(V + E + C + retained outcome bytes)` for graph indexes, queue, outcomes and active tasks. Large-task output-size bounds and complete invalidation-storm accounting remain open (#56).                                                                                                                                                                                                                                            |
-| Immutable snapshots and cache       | Repeated discovery, content hashing, parsing, retention and eviction have cross-feature costs.                         | Snapshot reads and the shared analysis cache have explicit file/byte and entry/byte caps; the result cache is limited to 64 MiB total and 4 MiB per entry. Cold/warm 1k/10k/50k scorecard and a bounded invalidation soak are recorded in `docs/BENCHMARKS.md`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Snapshot, AST, analyzer result and serialized-output lifetimes are not yet audited together. Full cache churn, simultaneous scans and invalidation-storm peak space remain blockers (#40/#56/#86).                                                                                                                                                                                                                                  |
+| Immutable snapshots and cache       | Repeated discovery, content hashing, parsing, retention and eviction have cross-feature costs.                         | Snapshot reads and the shared analysis cache have explicit file/byte and entry/byte caps; the result cache is limited to 64 MiB total and 4 MiB per entry. Cold/warm 1k/10k/50k scorecard and a bounded invalidation soak are recorded in `docs/BENCHMARKS.md`. Signed evidence now binds a stable digest over sorted captured paths, byte counts, binary flags and SHA-256 content identities.                                                                                                                                                                                                                                                                                                                                                 | Snapshot, AST, analyzer result and serialized-output lifetimes are not yet audited together. The added digest costs `O(F log F + P)` time and `O(F)` temporary path-reference space for `F` files and `P` total path bytes, on top of the existing `O(B)` bounded reads and snapshot retention. Full cache churn, simultaneous scans and invalidation-storm peak space remain blockers (#40/#56/#86).                               |
 | AST compiler-host directory lookup  | `getDirectories` scanned every known source directory for each TypeScript resolver query: `O(L × Q)` candidate visits. | `src/analyzers/ast/source-analysis.ts` builds a parent-to-child directory index in expected `O(L)` time/space and serves each query with expected `O(1)` lookup plus returned children. A 512-directory cross-import test verifies resolution and importer digest invalidation. The synthetic 1k/10k/50k fixture records exact candidate/index visits and timings in `docs/BENCHMARKS.md`.                                                                                                                                                                                                                                                                                                                                                      | Additional index space is `O(L)`; queried child lists are returned as arrays to TypeScript. Hash-map lookup is expected-time. This correction addresses one resolver hot path; worker AST retention and whole-scan memory remain under audit (#39/#40/#56/#86).                                                                                                                                                                     |
 | Lockfile/ecosystem resolution       | Repeated candidate filtering, context parsing and workspace matching can multiply package and declaration counts.      | Python workspace identities, Cargo lock candidates, Composer locked names and Cargo workspace file membership use one-pass indexes. Resolver marker contexts are parsed once per package and marker lookup is indexed. Go import/vendor ownership uses component tries instead of scanning all modules per import/file. Cargo member/exclude glob matching uses bounded dynamic programming with a shared 16M work-cell budget and explicit incomplete status on exhaustion. Exact pnpm name/version/peer resolution now uses indexes; Yarn's fallback is name-indexed and has a 250,000-candidate budget; ecosystem version matching and Cargo declaration joins each have a separate 250,000-candidate budget and explicit incomplete status. | The indexed joins and explicit candidate-work limits have focused regression coverage, including Cargo declaration-budget exhaustion. Remaining audit work includes parser/output materialization and cross-feature retention in `src/core/dependencies/ecosystem-inventory.ts` and `src/core/dependencies/lockfile-resolvers.ts`; add operation counters for every cap and dense-version/peer-variant cases (#40/#64/#79–#83/#86). |
 | Provider clients                    | Unbounded requests/retries or responses would multiply CPU, latency and retained bytes.                                | Shared scan budgets cap provider concurrency at 32, request and whole-scan deadlines at 600,000 ms, retries at five, and retry delay at 60 seconds.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Per-provider response parsing, queued request count, decompression and retained result bytes still require a cross-client census. A timeout budget alone does not bound response size (#38/#48/#58/#67/#77/#89).                                                                                                                                                                                                                    |
@@ -596,3 +596,87 @@ analysis. Regression cases cover arbitrary `limit` wrappers, opaque external
 callbacks, a shadowed `p-limit` factory, dynamic/over-cap/mutated pools and a
 statically bounded pool. These focused cases establish behavior, not a whole
 repository performance or memory bound.
+
+## Signed scan subject digests added on 2026-11-12
+
+For `F` captured files, `B` captured bytes, `P` total path bytes, `V` resolved
+package instances, `E` dependency edges and `G` serialized graph bytes:
+
+- `ProjectSnapshot.sourceTreeDigest` hashes sorted, normalized path/content
+  identities after snapshot capture. The added pass is `O(F log F + P)` time
+  and `O(F)` temporary path-reference space. Snapshot reads and file hashing
+  remain `O(F + B)`; the existing snapshot retains captured text up to its
+  configured byte budget.
+- `scanDependencies` canonicalizes and sorts resolved package instances,
+  edges, unresolved edges and warnings before hashing the exact graph. This
+  costs `O((V + E) log(V + E) + G)` time and `O(V + E + G)` temporary space,
+  in addition to the graph itself. Canonical serialization is capped at 32 MiB;
+  exceeding that limit follows the existing incomplete graph path and omits
+  the graph digest.
+- Signed report subjects bind both digests, the lock/config digests, selected
+  rule-pack identity/trust/signer, and the report's finding and coverage data.
+  Verification can require the expected source-tree digest to reject a valid
+  signature for a stale source snapshot. This does not authenticate the
+  external trust policy or prove scan coverage beyond the report's explicit
+  status.
+
+## Opt-in npm provenance verification added on 2026-11-12
+
+For one exact npm identity, verification performs up to three sequential
+public-registry requests: packument, exact lock-resolved tarball, and
+attestation. Packument and attestation bodies each have an 8 MiB cap; the
+tarball is SHA-512 hashed as a stream with a 32 MiB total cap and is not
+retained as a complete archive. The signed statement is capped at 1 MiB and at
+most 100 attestation records are examined. Work is `O(P + T + A)` for packument
+bytes `P`, tarball bytes `T`, and attestation bytes `A`. Peak live space is
+`O(P + A + C)`, where `C` is the current streamed response chunk/queue and is
+bounded by the 32 MiB tarball limit; parsed JSON objects add space proportional
+to their capped input bodies. Sigstore verification runs
+in a disposable worker with a 64 MiB V8 old-generation limit, a 20-second hard
+stop and a 5-second per-provider request timeout. Worker and native memory are
+additional to that V8 old-generation cap and are not a strict process RSS
+bound. Scan concurrency is limited by the shared provider budget (maximum 32);
+SBOM generation uses concurrency 8. The policy is capped at 1 MiB and 5,000
+package rules. Scoped package names are withheld unless the caller grants
+public-scope consent. Failed, missing, mismatched and cancelled verification
+never produces a verified status. A `verified` artifact result now requires
+the downloaded tarball bytes, lock SHA-512, and signed SLSA subject digest to
+match. Stage A reuses the SHA-512 digest from its exact archive scan and applies
+a protected repository variable's package issuer, certificate identity and
+source repository policy before installing the PR lock graph. Missing policy or
+any unverified package blocks Stage A. Non-npm publisher provenance remains
+incomplete; live GitHub Actions execution of this policy path and host-side
+Stage A bootstrap/ruleset enforcement remain external.
+
+For the Stage A fast path, the archive SHA-512 is reused, so each package needs
+only packument and attestation requests. Canonical policy serialization and
+hashing cost `O(P + N log N)` time and `O(P + N)` additional space for policy
+bytes `P` and object nodes `N`, including key sorting. The 1 MiB policy cap,
+5,000 package-rule cap, 100,000-node serializer budget and depth-64 limit bound
+both Stage A and Stage B policy handling. Stage B recomputes the current policy
+hash before accepting the approval artifact; a missing, malformed or changed
+policy invalidates the prior approval.
+
+## Exact npm release tarball attestation added on 2026-11-12
+
+`readNpmTarballIdentity` gunzips the bounded archive and streams the tar parser
+without extracting entries or executing package scripts. It limits compressed
+bytes to 32 MiB, uncompressed tar bytes to 128 MiB, declared unpacked entry
+bytes to 128 MiB, entries to 100,000, and `package/package.json` to 1 MiB. Tar
+decompression, traversal, manifest parsing and SHA-512 hashing are `O(T + U)`
+time for compressed bytes `T` and uncompressed tar bytes `U`; live archive
+buffers are bounded by `T + U`, and manifest parsing by 1 MiB. The DSSE statement is capped at 1 MiB and
+the bundle file at 16 MiB. Certificate verification runs in an isolated worker
+with 64 MiB maximum V8 old-generation space and a 20-second deadline. That V8
+limit excludes worker/native overhead and is not a total RSS guarantee. The
+protected publish workflow signs and verifies the release `.tgz`, preserves
+the bundle, and passes the same archive path to npm publish; local checks have
+not exercised GitHub OIDC, the npm trusted publisher, or a live publication.
+
+The operator evidence trust store is strict versioned JSON capped at 1 MiB and
+100 Ed25519 key records. Parsing and PEM validation are `O(S + K)` time and
+space for store bytes `S` and keys `K`; selection by exact key ID is expected
+`O(1)`. Key activation windows, expiry, project identity, maximum evidence age
+and immediate revocation are checked before report or SBOM signature
+verification. Direct one-off key arguments remain available for explicit
+migration, but do not provide rotation or revocation policy.

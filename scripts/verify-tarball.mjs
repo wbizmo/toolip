@@ -26,6 +26,8 @@ const requiredFiles = [
   'package/README.md',
   'package/LICENSE',
   'package/dist/src/index.js',
+  'package/dist/src/commands/npm-attestation.js',
+  'package/dist/src/core/npm-package-attestation.js',
   // Worker entry for isolated analyzers (deadline-enforced AST analysis).
   'package/dist/src/application/analyzer-worker.js'
 ];
@@ -79,6 +81,14 @@ try {
   });
 
   execFileSync(binary, ['--help'], {
+    cwd: root,
+    stdio: 'pipe'
+  });
+  execFileSync(binary, ['npm-attestation', '--help'], {
+    cwd: root,
+    stdio: 'pipe'
+  });
+  execFileSync(binary, ['npm-attestation', 'verify', '--help'], {
     cwd: root,
     stdio: 'pipe'
   });

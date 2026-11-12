@@ -15,6 +15,11 @@ import {
 } from '../application/project-snapshot.js';
 import { generateSbom, type SbomFormat } from '../core/sbom/generate.js';
 import type { GoCommandRunner } from '../core/dependencies/go-module-graph.js';
+import { readNpmProvenancePolicy } from '../providers/npm/provenance.js';
+import {
+  readEvidenceTrustStore,
+  resolveEvidenceTrust
+} from '../core/evidence-trust-store.js';
 
 type SbomOptions = {
   path: string;
@@ -25,6 +30,8 @@ type SbomOptions = {
   projectId?: string;
   attestationOutput?: string;
   allowGoToolExecution?: boolean;
+  allowPublicScope?: boolean;
+  npmProvenancePolicy?: string;
   goCommandRunner?: GoCommandRunner;
 };
 
@@ -84,6 +91,14 @@ export function registerSbomCommand(program: Command): void {
       'Explicitly run Go module graph commands on the captured metadata; may query proxy.golang.org and sum.golang.org.'
     )
     .option(
+      '--allow-public-scope',
+      'Consent to sending scoped npm package names to the public npm registry for provenance verification.'
+    )
+    .option(
+      '--npm-provenance-policy <file>',
+      'Opt in to exact npm provenance verification with an operator policy stored outside the scanned project.'
+    )
+    .option(
       '--signing-key <file>',
       'Owner-only Ed25519 private key for a DSSE attestation.'
     )
@@ -123,6 +138,12 @@ export function registerSbomCommand(program: Command): void {
         throw new Error('--attestation-output requires SBOM signing options.');
 
       const snapshot = await createProjectSnapshot(options.path);
+      const npmProvenancePolicy = options.npmProvenancePolicy
+        ? await readNpmProvenancePolicy(
+            options.npmProvenancePolicy,
+            snapshot.root
+          )
+        : undefined;
       if (options.allowGoToolExecution)
         console.error(
           'Go MVS resolution is enabled and may contact the official Go module proxy and checksum database.'
@@ -130,6 +151,8 @@ export function registerSbomCommand(program: Command): void {
       const document = await generateSbom(snapshot.root, options.format, {
         fileSource: dependencyFileSourceFromSnapshot(snapshot),
         allowGoToolExecution: options.allowGoToolExecution,
+        allowPublicScope: options.allowPublicScope,
+        npmProvenancePolicy,
         goCommandRunner: options.goCommandRunner
       });
 
@@ -150,6 +173,7 @@ export function registerSbomCommand(program: Command): void {
             ...(snapshot.gitHeadRevision
               ? { gitRevision: snapshot.gitHeadRevision }
               : {}),
+            sourceTreeDigest: snapshot.sourceTreeDigest,
             ...(snapshot.lockGraphDigest
               ? { lockGraphDigest: snapshot.lockGraphDigest }
               : {}),
@@ -201,41 +225,74 @@ export function registerSbomCommand(program: Command): void {
       '--attestation <file>',
       'Detached DSSE/in-toto sidecar file.'
     )
-    .requiredOption(
-      '--public-key <file>',
-      'Trusted Ed25519 public key PEM file.'
-    )
+    .option('--public-key <file>', 'Trusted Ed25519 public key PEM file.')
     .requiredOption('--key-id <id>', 'Expected signing key identifier.')
-    .requiredOption('--project-id <id>', 'Expected stable project identity.')
+    .option('--project-id <id>', 'Expected stable project identity.')
+    .option(
+      '--project-root <path>',
+      'Verified project root used to keep the trust store outside project-controlled files.',
+      process.cwd()
+    )
+    .option(
+      '--trust-store <file>',
+      'External versioned trust store with active, expired and revoked key IDs.'
+    )
     .option(
       '--scanner-artifact-sha256 <digest>',
       'Require this exact trusted Toolip runtime artifact digest.'
     )
-    .option('--max-age-days <days>', 'Maximum accepted attestation age.', '90')
+    .option(
+      '--max-age-days <days>',
+      'Maximum accepted attestation age (direct-key mode).'
+    )
     .action(
       async (
         file: string,
         options: {
           attestation: string;
-          publicKey: string;
+          publicKey?: string;
           keyId: string;
-          projectId: string;
+          projectId?: string;
+          projectRoot: string;
+          trustStore?: string;
           scannerArtifactSha256?: string;
-          maxAgeDays: string;
+          maxAgeDays?: string;
         }
       ) => {
-        const maxAgeDays = Number(options.maxAgeDays);
+        let publicKeyPem: string;
+        let projectId: string;
+        let maxAgeDays = options.maxAgeDays ? Number(options.maxAgeDays) : 90;
+        if (options.trustStore) {
+          if (options.publicKey || options.projectId || options.maxAgeDays)
+            throw new Error(
+              '--trust-store cannot be combined with --public-key, --project-id, or --max-age-days.'
+            );
+          const store = await readEvidenceTrustStore(
+            options.trustStore,
+            options.projectRoot
+          );
+          const trust = resolveEvidenceTrust(store, options.keyId);
+          publicKeyPem = trust.publicKeyPem;
+          projectId = trust.expectedProjectId;
+          maxAgeDays = store.maxAgeDays;
+        } else {
+          if (!options.publicKey || !options.projectId)
+            throw new Error(
+              'Direct-key verification requires --public-key, --key-id, and --project-id; use --trust-store for managed key lifecycle.'
+            );
+          publicKeyPem = await readPemKeyFile(options.publicKey);
+          projectId = options.projectId;
+        }
         if (!Number.isFinite(maxAgeDays) || maxAgeDays < 0 || maxAgeDays > 365)
           throw new Error('--max-age-days must be between 0 and 365.');
-        const [document, attestation, publicKeyPem] = await Promise.all([
+        const [document, attestation] = await Promise.all([
           readBoundedJson(file),
-          readBoundedJson(options.attestation),
-          readPemKeyFile(options.publicKey)
+          readBoundedJson(options.attestation)
         ]);
         const verification = verifySbomAttestation(document, attestation, {
           publicKeyPem,
           trustedKeyId: options.keyId,
-          expectedProjectId: options.projectId,
+          expectedProjectId: projectId,
           expectedScannerArtifactSha256: options.scannerArtifactSha256,
           maxAgeMs: maxAgeDays * 24 * 60 * 60 * 1000
         });

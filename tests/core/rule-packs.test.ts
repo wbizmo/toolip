@@ -226,7 +226,9 @@ describe('signed declarative rule packs', () => {
     };
     const packPath = await writePack(packRoot, JSON.stringify(envelope));
     const pack = await loadRulePackFile(packPath, {
-      publicKeyPem: publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+      publicKeyPem: publicKey
+        .export({ type: 'spki', format: 'pem' })
+        .toString(),
       trustedKeyId: 'iac-policy-v1',
       now: Date.parse('2026-11-07T00:00:00.000Z')
     });
@@ -241,9 +243,9 @@ describe('signed declarative rule packs', () => {
       'main.tf',
       'manifests/deployment.yaml'
     ]);
-    expect(findings.every((finding) => finding.source === 'signed-rule-pack:example')).toBe(
-      true
-    );
+    expect(
+      findings.every((finding) => finding.source === 'signed-rule-pack:example')
+    ).toBe(true);
     expect(JSON.stringify(findings)).not.toContain('SIGNED_IAC_POLICY_MARKER');
   }, 15_000);
 

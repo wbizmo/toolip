@@ -67,9 +67,11 @@ For the integrated repository analyzer, let F be candidate files, B the accepted
 
 The `Stage A Trusted Pre-execution Gate` workflow runs from the protected base
 revision on `pull_request_target`. It checks out only that trusted base,
-uses a self-contained scanner whose bundled YAML parser and gate source are
-covered together by a SHA-256 pin in the trusted workflow. No dependency install
-occurs before the exact PR trees and artifacts have been scanned. The scanner runs on
+verifies a SHA-256 pin over the Stage A scanner, provenance gate, verification
+tools, Toolip TypeScript sources, package manifest and lockfile. It installs
+and builds only protected-base scanner dependencies with lifecycle scripts
+disabled and verifies their registry signatures. No PR dependency install or
+build occurs before the exact PR trees and artifacts have been scanned. The scanner runs on
 exact Node.js `24.22.1` (the runtime pin is checked against the supported engine
 range) and fetches the event's PR merge ref into a temporary **bare Git
 object database**. It never checks out PR files or runs repository code in this
@@ -82,11 +84,14 @@ manifest alignment. Every exact artifact in a supported npm lockfile is fetched
 from the public registry, integrity-verified, and scanned in memory before
 installation; checking only changed entries would leave unchanged install hooks
 outside the gate. Scoped names are fetched only for explicitly allowlisted
-public scopes. After content inspection, Stage A performs a scripts-disabled
-`npm ci` in a temporary directory containing only the captured manifest and
-lockfile, then verifies registry signatures and available provenance
-attestations before Stage B. This is the only Stage A install and it consumes
-only the captured PR manifest and lockfile after approval.
+public scopes. Issuer/source attestations are then checked against the protected
+repository variable `TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY`, using the same
+SHA-512 archive digests already computed by the scanner. Missing policy,
+missing package rules, or any unavailable, untrusted or invalid attestation
+blocks Stage B. Only then does Stage A perform a scripts-disabled `npm ci` in a
+temporary directory containing the captured manifest and lockfile and verify
+npm registry signatures. This PR dependency install consumes only the captured
+manifest and lockfile after exact scans and provenance checks pass.
 Unsupported scope policy, package-manager
 lockfiles and archives also block Stage B.
 The inspected tarball's embedded package name and exact version must match its
@@ -167,12 +172,18 @@ recomputes the required complexity disclosure from the live PR body, so a
 body-only edit cannot reuse stale review evidence. Stage A runs on `edited`
 events, and delayed runs after a force-push, base update, body edit, close or
 merge are rejected as stale. Each Stage B workflow performs that check using
-only `pull-requests:read`. A failed, cancelled or otherwise non-successful
-Stage A run produces an explicit failing Stage B verifier job; it is not
+only `pull-requests:read`. For dependency-bearing scans, the verifier also
+hashes the current protected repository npm provenance policy and requires it
+to match the policy digest in Stage A's approval. A missing, malformed or
+changed policy makes that approval stale, so policy rotation cannot leave an
+older approval usable. A failed, cancelled or otherwise non-successful Stage A
+run produces an explicit failing Stage B verifier job; it is not
 represented by skipped checks, which GitHub may treat as successful for
 required-check purposes.
-npm install, build, test and audit steps depend on the verified artifact. This
-keeps PR checkout and execution out of the `pull_request_target` workflow.
+Any PR checkout, install, build, test and PR-dependency audit steps depend on
+the verified artifact. The earlier dependency setup/build applies only to the
+protected-base scanner with lifecycle scripts disabled. This keeps PR checkout
+and execution out of the `pull_request_target` workflow.
 
 The scanner reads exact Git objects with explicit file, tree, per-file and
 aggregate byte limits and bounded `git cat-file --batch` reads. For F tree
@@ -197,10 +208,11 @@ not a current benchmark.
 This is an integrated Stage A boundary, but **issue #96 remains incomplete**.
 The scanner uses bounded heuristics rather than a complete execution-chain
 graph. Tarballs containing binary files, install lifecycle hooks, unsupported
-entries or unapproved scopes remain incomplete. The scripts-disabled install
-and registry signature/provenance check run only after exact lock entries and
-tarball bytes pass the inert scan; any install or signature failure blocks
-approval. Non-npm artifact provenance verification, force-push continuity, and
+entries or unapproved scopes remain incomplete. The PR scripts-disabled install
+and registry signature check run only after exact lock entries, tarball bytes
+and every configured npm issuer/source check pass; any missing policy, partial
+coverage, signature failure or install failure blocks approval. Non-npm
+artifact provenance verification, force-push continuity, and
 several #95 behaviors remain outside this implementation. A diff rename is only a path relationship and
 does not prove semantic equivalence. Stage A `approved` means the implemented
 bounded checks completed without a known signal; it is not proof that a

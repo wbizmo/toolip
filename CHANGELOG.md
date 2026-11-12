@@ -6,6 +6,9 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 
 ## Unreleased
 
+- Add opt-in bounded npm SLSA provenance verification against an external per-package issuer, certificate-identity and source-repository policy; unverified results remain explicit, and SBOM integrity stays declared until archive bytes are checked.
+- Add exact packed npm tarball Sigstore attest/create/verify commands and make the protected publish workflow attest, verify, preserve and publish the same archive under its exact GitHub Actions OIDC identity.
+- Add strict operator-managed Ed25519 trust stores for report and SBOM verification, with project binding, external-path enforcement, maximum age, activation/expiry windows, rotation and immediate key revocation; preserve explicit one-off verification for migration.
 - Extend bounded AST taint propagation through computed request fields, Promise callbacks and cross-file async wrappers; apply sink-specific HTML encoding and conservative literal Fetch host-allowlist checks while retaining path-containment and dynamic-policy uncertainty.
 - Keep BOLA candidates visible when code proves only authentication or a role; trust cross-file route middleware only after resolving and inspecting its resource-specific guard body.
 - Follow same-file callback wrappers in unbounded Promise.all mutation checks, require the read entity's version in optimistic update predicates, and recognize explicitly serializable database transactions.
@@ -18,7 +21,7 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 - Serialize vault and history mutations across processes, reject unsafe local-state symlinks and foreign-owned POSIX paths with actionable vault-read errors, atomically flush replacements, and reclaim lock leases left by terminated owners after lease expiry.
 - Reconcile security-watch directories after filename-less events and directory replacement so recreated subtrees remain monitored; keep the recursive watcher on Linux and use reconciled per-directory watches on macOS and Windows.
 - Set the package homepage metadata to `https://www.zivoralabs.xyz/open-source/toolip/`.
-- Add signed declarative literal-rule packs to `doctor` and `scan`, with explicit unsigned local override, redacted evidence, expiry and bounded output; executable third-party plugins remain disabled pending OS-level isolation.
+- Keep signed declarative literal-rule packs inert and add opt-in executable plugins restricted to signed, bounded no-import WASM; use an operator-managed key trust store with rotation, expiry and revocation, and document that workers are not an OS sandbox.
 - Add an opt-in read-only GitHub App runner with signed webhooks, delivery deduplication, allowlisted schedules, and single-repository `checks:write` status publication.
 - Require explicit `--allow-project-tests` authorization before an upgrade worktree runs repository-defined test commands; dependency installs continue to skip lifecycle scripts.
 - Add deterministic randomized line-location fuzzing and full offline scorecard benchmarks at 1k, 10k and 50k generated repository files; retain the 1m release run for final release validation.
@@ -45,6 +48,7 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 - Keep Go `go.mod` requirements unknown until Minimal Version Selection is resolved; add explicit bounded Go-tool resolution against captured metadata with fresh checksum-database verification for scan and SBOM.
 - Scan captured local Terraform modules and report remote, dynamic, missing, or escaping module sources as incomplete infrastructure coverage.
 - Omit matched Dockerfile instruction text from findings entirely; secret values no longer depend on a name-based evidence redactor.
+- Bind signed scan and SBOM evidence to stable captured source-tree and resolved dependency-graph digests, and bind selected rule-pack digest/trust/signer identities into report signatures; `report verify --source-tree-sha256` can require the expected source snapshot.
 - Build an indexed Dockerfile stage graph so named and numeric stage bases inherit `USER` and `HEALTHCHECK` metadata; report unknown external-image metadata, username-to-UID mappings, unresolved arguments and unsupported parser paths as incomplete, while detecting remote `ADD` variants and heredoc shell execution without exposing source text.
 - Exercise trusted signed declarative rule packs against Terraform and YAML files through Security Doctor; these are literal source matches, not semantic custom IaC policy evaluation.
 - Keep signature-verified WASM analyzer bytes in module-private storage so callers cannot mutate executable code after verification.

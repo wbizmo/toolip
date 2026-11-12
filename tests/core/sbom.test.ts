@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { PackageURL } from 'packageurl-js';
 import Ajv2019 from 'ajv/dist/2019.js';
 import addFormats from 'ajv-formats';
@@ -11,6 +11,10 @@ import {
 } from '@cyclonedx/cyclonedx-library';
 import { generateSbom } from '../../src/core/sbom/generate.js';
 import { npmPurl } from '../../src/core/sbom/generate.js';
+import {
+  npmProvenanceIdentityDigest,
+  parseNpmProvenancePolicy
+} from '../../src/providers/npm/provenance.js';
 
 const spdxSchema = JSON.parse(
   await readFile(
@@ -164,6 +168,150 @@ describe('SBOM generation', () => {
         recursive: true,
         force: true
       });
+    }
+  });
+
+  it('separates declared artifact hashes from publisher trust and code safety', async () => {
+    const root = await fixture();
+    try {
+      const initialSpdx = await generateSbom(root, 'spdx');
+      const lockPath = path.join(root, 'package-lock.json');
+      const lock = JSON.parse(await readFile(lockPath, 'utf8')) as {
+        packages: Record<string, { integrity?: string }>;
+      };
+      const express = lock.packages['node_modules/express'];
+      if (!express) throw new Error('fixture needs an express package');
+      express.integrity = `sha512-${Buffer.alloc(64, 0x42).toString('base64')}`;
+      await writeFile(lockPath, JSON.stringify(lock));
+
+      const cyclonedx = await generateSbom(root, 'cyclonedx');
+      await expectValidCycloneDx(cyclonedx);
+      const components = cyclonedx.components as Array<{
+        name: string;
+        properties: Array<{ name: string; value: string }>;
+      }>;
+      const expressComponent = components.find(
+        (item) => item.name === 'express'
+      );
+      expect(expressComponent?.properties).toEqual(
+        expect.arrayContaining([
+          {
+            name: 'toolip:artifactIntegrityStatus',
+            value: 'declared-not-verified'
+          },
+          { name: 'toolip:publisherTrustStatus', value: 'unknown' },
+          { name: 'toolip:codeSafetyStatus', value: 'not-asserted' },
+          {
+            name: 'toolip:declaredIntegrity',
+            value: express.integrity
+          }
+        ])
+      );
+      const routerComponent = components.find((item) => item.name === 'router');
+      expect(routerComponent?.properties).toContainEqual({
+        name: 'toolip:artifactIntegrityStatus',
+        value: 'unknown'
+      });
+
+      const spdx = await generateSbom(root, 'spdx');
+      expectValidSpdx(spdx);
+      expect(spdx.documentNamespace).not.toBe(initialSpdx.documentNamespace);
+      const packages = spdx.packages as Array<{
+        name: string;
+        sourceInfo: string;
+      }>;
+      expect(
+        packages.find((item) => item.name === 'express')?.sourceInfo
+      ).toContain(
+        'artifact integrity: declared-not-verified; publisher trust: unknown; code safety: not asserted'
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('emits verified publisher identity only when the opt-in trust result matches the exact lock identity', async () => {
+    const root = await fixture();
+    try {
+      const lockPath = path.join(root, 'package-lock.json');
+      const lock = JSON.parse(await readFile(lockPath, 'utf8')) as {
+        packages: Record<string, { integrity?: string; resolved?: string }>;
+      };
+      const express = lock.packages['node_modules/express'];
+      if (!express) throw new Error('fixture needs an express package');
+      express.integrity = `sha512-${Buffer.alloc(64, 0x42).toString('base64')}`;
+      express.resolved =
+        'https://registry.npmjs.org/express/-/express-5.0.0.tgz';
+      await writeFile(lockPath, JSON.stringify(lock));
+      const trust = {
+        certificateIssuer: 'https://token.actions.githubusercontent.com',
+        certificateIdentity:
+          'https://github.com/expressjs/express/.github/workflows/release.yml@refs/tags/v5.0.0',
+        sourceRepository: 'https://github.com/expressjs/express'
+      };
+      const policy = parseNpmProvenancePolicy({
+        version: 1,
+        packages: { express: trust }
+      });
+      const verifier = vi.fn(async (identity) => ({
+        identityDigest: npmProvenanceIdentityDigest(identity),
+        name: identity.name,
+        version: identity.version,
+        status: 'verified' as const,
+        reason: 'verified' as const,
+        sourceRepository: trust.sourceRepository,
+        certificateIssuer: trust.certificateIssuer,
+        certificateIdentity: trust.certificateIdentity,
+        artifactIntegrity: 'verified' as const
+      }));
+
+      const cyclonedx = await generateSbom(root, 'cyclonedx', {
+        npmProvenancePolicy: policy,
+        allowPublicScope: true,
+        npmProvenanceVerifier: verifier
+      });
+      const component = (
+        cyclonedx.components as Array<{
+          name: string;
+          properties: Array<{ name: string; value: string }>;
+        }>
+      ).find((item) => item.name === 'express');
+      expect(component?.properties).toEqual(
+        expect.arrayContaining([
+          { name: 'toolip:publisherTrustStatus', value: 'verified' },
+          { name: 'toolip:provenanceVerificationStatus', value: 'verified' },
+          {
+            name: 'toolip:verifiedSourceRepository',
+            value: trust.sourceRepository
+          },
+          {
+            name: 'toolip:artifactIntegrityStatus',
+            value: 'verified'
+          },
+          { name: 'toolip:codeSafetyStatus', value: 'not-asserted' }
+        ])
+      );
+      await expectValidCycloneDx(cyclonedx);
+
+      const spdx = await generateSbom(root, 'spdx', {
+        npmProvenancePolicy: policy,
+        allowPublicScope: true,
+        npmProvenanceVerifier: verifier
+      });
+      const expressPackage = (
+        spdx.packages as Array<{ name: string; sourceInfo?: string }>
+      ).find((item) => item.name === 'express');
+      expect(expressPackage?.sourceInfo).toContain('publisher trust: verified');
+      expect(expressPackage?.sourceInfo).toContain(
+        'artifact integrity: verified'
+      );
+      expect(expressPackage?.sourceInfo).toContain('code safety: not asserted');
+      expect(expressPackage?.sourceInfo).toContain(
+        `verified source repository: ${trust.sourceRepository}`
+      );
+      expectValidSpdx(spdx);
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 

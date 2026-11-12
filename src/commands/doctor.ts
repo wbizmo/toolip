@@ -61,7 +61,11 @@ export function registerDoctorCommand(program: Command): void {
     )
     .option(
       '--analyzer-plugin-public-key <file>',
-      'Trusted Ed25519 public key for the analyzer plugin.'
+      'One-off trusted Ed25519 public key for plugin migration.'
+    )
+    .option(
+      '--analyzer-plugin-trust-store <file>',
+      'Operator-owned plugin key trust store outside the scanned project.'
     )
     .option(
       '--analyzer-plugin-key-id <id>',
@@ -83,6 +87,7 @@ export function registerDoctorCommand(program: Command): void {
         allowUnsignedRulePack?: boolean;
         analyzerPlugin?: string;
         analyzerPluginPublicKey?: string;
+        analyzerPluginTrustStore?: string;
         analyzerPluginKeyId?: string;
         enableExecutablePlugins?: boolean;
       }) => {
@@ -109,7 +114,9 @@ export function registerDoctorCommand(program: Command): void {
           analyzerPlugin = await loadWasmAnalyzerPluginForCli({
             manifestPath: options.analyzerPlugin,
             publicKeyPath: options.analyzerPluginPublicKey,
+            trustStorePath: options.analyzerPluginTrustStore,
             trustedKeyId: options.analyzerPluginKeyId,
+            projectRoot: options.path,
             enabled: options.enableExecutablePlugins
           });
         } catch (error) {

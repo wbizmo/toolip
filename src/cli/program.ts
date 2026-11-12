@@ -22,6 +22,7 @@ import { registerLearnCommand } from '../commands/learn.js';
 import { registerLicensesCommand } from '../commands/licenses.js';
 import { registerMcpCommand } from '../commands/mcp.js';
 import { registerMonorepoCommand } from '../commands/monorepo.js';
+import { registerNpmAttestationCommand } from '../commands/npm-attestation.js';
 import { registerPackageHealthCommand } from '../commands/package-health.js';
 import { registerPreCommitCommand } from '../commands/pre-commit.js';
 import { registerPolicyCommand } from '../commands/policy.js';
@@ -82,7 +83,8 @@ const registrations: Array<(program: Command) => void> = [
   registerReportCommand,
   registerWatchCommand,
   registerAnnounceCommand,
-  registerMcpCommand
+  registerMcpCommand,
+  registerNpmAttestationCommand
 ];
 
 export function createProgram(): Command {

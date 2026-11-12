@@ -10,6 +10,7 @@ import {
   appendFile,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   rm,
   writeFile
@@ -1136,9 +1137,11 @@ export async function inspectNpmArtifacts(
     return Object.freeze({
       reasons: Object.freeze(['artifact-count-budget-exceeded']),
       findings: Object.freeze([]),
-      coverage: Object.freeze(coverage)
+      coverage: Object.freeze(coverage),
+      verifiedArtifactSha512ByLocation: Object.freeze({})
     });
   const startedAt = Date.now();
+  const verifiedArtifactSha512ByLocation = new Map();
   for (
     let start = 0;
     start < artifacts.length;
@@ -1193,14 +1196,14 @@ export async function inspectNpmArtifacts(
             response,
             MAX_ARTIFACT_BYTES
           );
-          const actualIntegrity = createHash('sha512')
-            .update(archive)
-            .digest('base64');
-          if (actualIntegrity !== sha512)
+          const actualDigest = createHash('sha512').update(archive).digest();
+          if (actualDigest.toString('base64') !== sha512)
             throw new Error('artifact-integrity-mismatch');
           const inspected = inspectNpmTarball(archive, artifact);
           return {
             ...inspected,
+            location: artifact.location,
+            artifactSha512: actualDigest.toString('hex'),
             networkBytes: archive.length,
             reasons: inspected.reasons.map(
               (reason) => `${reason}:${artifact.location}`
@@ -1223,6 +1226,14 @@ export async function inspectNpmArtifacts(
     for (const result of results) {
       reasons.push(...(result.reasons ?? []));
       findings.push(...(result.findings ?? []));
+      if (
+        typeof result.location === 'string' &&
+        typeof result.artifactSha512 === 'string'
+      )
+        verifiedArtifactSha512ByLocation.set(
+          result.location,
+          result.artifactSha512
+        );
       if (result.files !== undefined) {
         coverage.checked++;
         coverage.files += result.files;
@@ -1247,7 +1258,14 @@ export async function inspectNpmArtifacts(
   return Object.freeze({
     reasons: Object.freeze([...new Set(reasons)].sort()),
     findings: Object.freeze([...new Set(findings)].sort()),
-    coverage: Object.freeze(coverage)
+    coverage: Object.freeze(coverage),
+    verifiedArtifactSha512ByLocation: Object.freeze(
+      Object.fromEntries(
+        [...verifiedArtifactSha512ByLocation.entries()].sort(
+          ([left], [right]) => left.localeCompare(right)
+        )
+      )
+    )
   });
 }
 
@@ -2672,6 +2690,8 @@ export async function scanGithubPullRequest({
       reviewSignals: authorship.signals,
       exceptionPolicySha256,
       appliedExceptions: Object.freeze(appliedExceptions),
+      verifiedArtifactSha512ByLocation:
+        dependencyArtifacts.verifiedArtifactSha512ByLocation,
       coverage: Object.freeze({
         changedFiles: changedPaths.length,
         head: head.coverage,
@@ -3060,11 +3080,44 @@ async function main() {
   if (result.status !== 'approved') process.exitCode = 1;
 }
 
-async function trustedScannerDigest() {
+export async function trustedScannerDigest() {
   const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
   const repositoryRoot = path.resolve(scriptDirectory, '..');
-  const files = ['scripts/stage-a-gate.mjs', 'vendor/stage-a-yaml-parser.mjs'];
-  const digest = createHash('sha256').update('toolip-stage-a-scanner-v2\0');
+  const files = [
+    'scripts/stage-a-gate.mjs',
+    'scripts/stage-a-npm-provenance.mjs',
+    'scripts/stage-a-canonical-json.mjs',
+    'scripts/verify-stage-a-scanner.mjs',
+    'scripts/verify-node.mjs',
+    'scripts/write-stage-a-artifact.mjs',
+    'scripts/verify-stage-a-artifact.mjs',
+    'scripts/verify-workflows.mjs',
+    'vendor/stage-a-yaml-parser.mjs',
+    'package.json',
+    'package-lock.json',
+    'tsconfig.json',
+    'security/runtime-floors.json'
+  ];
+  const visit = async (directory) => {
+    const entries = await readdir(path.join(repositoryRoot, directory), {
+      withFileTypes: true
+    });
+    const found = [];
+    for (const entry of entries.sort((left, right) =>
+      left.name.localeCompare(right.name)
+    )) {
+      const relativePath = path.posix.join(directory, entry.name);
+      if (entry.isSymbolicLink())
+        throw new Error('Trusted Stage A source contains a symlink.');
+      if (entry.isDirectory()) found.push(...(await visit(relativePath)));
+      else if (entry.isFile() && entry.name.endsWith('.ts'))
+        found.push(relativePath);
+    }
+    return found;
+  };
+  files.push(...(await visit('src')));
+  files.sort();
+  const digest = createHash('sha256').update('toolip-stage-a-scanner-v3\0');
   for (const relativePath of files) {
     const bytes = await readFile(path.join(repositoryRoot, relativePath));
     digest

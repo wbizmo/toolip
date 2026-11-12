@@ -72,10 +72,12 @@ function isRemoteAddInstruction(line: string): boolean {
       const parsed: unknown = JSON.parse(argument);
       return (
         Array.isArray(parsed) &&
-        parsed.slice(0, -1).some(
-          (source) =>
-            typeof source === 'string' && /^https?:\/\//iu.test(source)
-        )
+        parsed
+          .slice(0, -1)
+          .some(
+            (source) =>
+              typeof source === 'string' && /^https?:\/\//iu.test(source)
+          )
       );
     } catch {
       return false;
@@ -93,13 +95,15 @@ function declaresLiteralSecret(line: string): boolean {
     const declaration = content.match(/^([A-Za-z_][\w-]*)(?:=(.*))?$/u);
     return Boolean(
       declaration?.[1] &&
-        isSecretName(declaration[1]) &&
-        unquoteLiteral(declaration[2] ?? '').length > 0
+      isSecretName(declaration[1]) &&
+      unquoteLiteral(declaration[2] ?? '').length > 0
     );
   }
 
   const assignments = [
-    ...content.matchAll(/(?:^|\s)([A-Za-z_][\w-]*)=("[^"\n]*"|'[^'\n]*'|[^\s]+)/gu)
+    ...content.matchAll(
+      /(?:^|\s)([A-Za-z_][\w-]*)=("[^"\n]*"|'[^'\n]*'|[^\s]+)/gu
+    )
   ];
   if (
     assignments.some(
@@ -112,8 +116,8 @@ function declaresLiteralSecret(line: string): boolean {
   const legacy = content.match(/^([A-Za-z_][\w-]*)\s+(.+)$/u);
   return Boolean(
     legacy?.[1] &&
-      isSecretName(legacy[1]) &&
-      unquoteLiteral(legacy[2] ?? '').length > 0
+    isSecretName(legacy[1]) &&
+    unquoteLiteral(legacy[2] ?? '').length > 0
   );
 }
 
@@ -323,8 +327,7 @@ function resolveFromImage(
   while (tokens[imageIndex]?.startsWith('--')) {
     const option = tokens[imageIndex] ?? '';
     if (option.startsWith('--platform=')) {
-      if (seenPlatform || !option.slice('--platform='.length))
-        return undefined;
+      if (seenPlatform || !option.slice('--platform='.length)) return undefined;
       seenPlatform = true;
       imageIndex += 1;
     } else if (option === '--platform') {
@@ -376,8 +379,7 @@ function parseInstructions(source: string): {
       `${line}: invalid Dockerfile escape directive; default escape semantics were used`
     );
   }
-  const escapeChar =
-    escapeLine?.[1] ?? '\\';
+  const escapeChar = escapeLine?.[1] ?? '\\';
   const instructions: DockerInstruction[] = [];
   const supportedCommands = new Set([
     'ADD',
@@ -437,19 +439,19 @@ function parseInstructions(source: string): {
           );
       }
     }
-    const heredocs =
-      ['RUN', 'COPY', 'ADD'].includes(command ?? '')
-        ? [...buffer.matchAll(/<<(-?)\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_]+))/gu)].map(
-            (match) => ({
-              delimiter: match[2] ?? match[3] ?? match[4] ?? '',
-              stripTabs: Boolean(match[1])
-            })
+    const heredocs = ['RUN', 'COPY', 'ADD'].includes(command ?? '')
+      ? [
+          ...buffer.matchAll(
+            /<<(-?)\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_]+))/gu
           )
-        : [];
-    const heredocOperators =
-      ['RUN', 'COPY', 'ADD'].includes(command ?? '')
-        ? (buffer.match(/<</gu) ?? []).length
-        : 0;
+        ].map((match) => ({
+          delimiter: match[2] ?? match[3] ?? match[4] ?? '',
+          stripTabs: Boolean(match[1])
+        }))
+      : [];
+    const heredocOperators = ['RUN', 'COPY', 'ADD'].includes(command ?? '')
+      ? (buffer.match(/<</gu) ?? []).length
+      : 0;
     if (heredocOperators > heredocs.length)
       warnings.push(
         `${startLine}: unsupported or malformed Dockerfile heredoc marker; instruction semantics are unknown`
@@ -547,10 +549,7 @@ function buildDockerStageGraph(
   const stages: DockerStage[] = [];
   const aliases = new Map<string, number>();
   const ambiguousAliases = new Set<string>();
-  const baseKindByFrom = new Map<
-    DockerInstruction,
-    DockerStage['baseKind']
-  >();
+  const baseKindByFrom = new Map<DockerInstruction, DockerStage['baseKind']>();
   const warnings: string[] = [];
   let current: DockerStage | undefined;
 
@@ -656,20 +655,19 @@ function buildDockerStageGraph(
   for (const stage of stages) {
     const inherited =
       stage.baseStage === undefined ? undefined : states[stage.baseStage];
-    let state: DockerStageState =
-      inherited
-        ? { ...inherited }
-        : stage.baseKind === 'scratch'
-          ? {
-              user: '0',
-              userKnown: true,
-              healthCheck: 'none',
-              healthCheckKnown: true
-            }
-          : {
-              userKnown: false,
-              healthCheckKnown: false
-            };
+    let state: DockerStageState = inherited
+      ? { ...inherited }
+      : stage.baseKind === 'scratch'
+        ? {
+            user: '0',
+            userKnown: true,
+            healthCheck: 'none',
+            healthCheckKnown: true
+          }
+        : {
+            userKnown: false,
+            healthCheckKnown: false
+          };
     if (
       inherited &&
       stage.baseStage !== undefined &&
@@ -738,7 +736,8 @@ function buildDockerStageGraph(
             break;
           }
           if (option.includes('=')) {
-            if (!option.split('=').slice(1).join('=')) healthSyntaxValid = false;
+            if (!option.split('=').slice(1).join('='))
+              healthSyntaxValid = false;
             cursor += 1;
           } else if (healthTokens[cursor + 1]) cursor += 2;
           else {
@@ -747,8 +746,10 @@ function buildDockerStageGraph(
           }
         }
         const healthCommand = healthTokens[cursor]?.toUpperCase();
-        const isNone = cursor === 0 && healthCommand === 'NONE' && healthTokens.length === 1;
-        const isCommand = healthCommand === 'CMD' && cursor + 1 < healthTokens.length;
+        const isNone =
+          cursor === 0 && healthCommand === 'NONE' && healthTokens.length === 1;
+        const isCommand =
+          healthCommand === 'CMD' && cursor + 1 < healthTokens.length;
         if (!healthSyntaxValid || (!isNone && !isCommand)) {
           warnings.push(
             `${instruction.line}: HEALTHCHECK syntax is unsupported; active state is unknown`
@@ -839,9 +840,7 @@ export class DockerfileAnalyzer implements Analyzer {
       const instructions = parsed.instructions;
       if (parsed.warnings.length > 0) stageMetadataIncomplete = true;
       warnings.push(
-        ...parsed.warnings.map(
-          (warning) => `${file.relativePath}:${warning}`
-        )
+        ...parsed.warnings.map((warning) => `${file.relativePath}:${warning}`)
       );
       const rootRule = rules[0];
       const healthCheckRule = rules[5];
@@ -877,9 +876,9 @@ export class DockerfileAnalyzer implements Analyzer {
                 ? `${file.relativePath}:${finalState.userLine ?? finalStage.from.line}: final stage USER uses an unresolved variable; non-root execution could not be verified`
                 : finalState.userUnknownReason === 'syntax'
                   ? `${file.relativePath}:${finalState.userLine ?? finalStage.from.line}: final stage USER syntax is unsupported; non-root execution could not be verified`
-                : finalState.userUnknownReason === 'name'
-                  ? `${file.relativePath}:${finalState.userLine ?? finalStage.from.line}: final stage USER is a name whose numeric identity could not be verified`
-                  : `${file.relativePath}:${finalStage.from.line}: inherited/default USER metadata is unknown; non-root execution could not be verified`
+                  : finalState.userUnknownReason === 'name'
+                    ? `${file.relativePath}:${finalState.userLine ?? finalStage.from.line}: final stage USER is a name whose numeric identity could not be verified`
+                    : `${file.relativePath}:${finalStage.from.line}: inherited/default USER metadata is unknown; non-root execution could not be verified`
             );
             if (rootRule)
               fileFindings.push(

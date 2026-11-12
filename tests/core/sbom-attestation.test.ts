@@ -27,7 +27,11 @@ function signed(document = sbom) {
     toolipVersion: '3.2.1-rc',
     scannerArtifactSha256: 'd'.repeat(64),
     issuedAt: '2026-11-07T00:00:00.000Z',
-    source: { gitRevision: 'a'.repeat(40), lockGraphDigest: 'b'.repeat(64) }
+    source: {
+      gitRevision: 'a'.repeat(40),
+      sourceTreeDigest: 'c'.repeat(64),
+      lockGraphDigest: 'b'.repeat(64)
+    }
   });
 }
 
@@ -48,6 +52,10 @@ describe('DSSE SBOM attestations', () => {
     );
     const attestation = signed();
     expect(attestation.payloadType).toBe('application/vnd.in-toto+json');
+    const statement = JSON.parse(
+      Buffer.from(attestation.payload, 'base64').toString('utf8')
+    ) as { predicate: { source: Record<string, string> } };
+    expect(statement.predicate.source.sourceTreeDigest).toBe('c'.repeat(64));
     expect(verify(sbom, attestation)).toMatchObject({
       status: 'verified',
       projectId: 'acme/payments',

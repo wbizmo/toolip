@@ -3,6 +3,7 @@ import { mapConcurrent } from '../application/concurrency.js';
 import { coverageOf, type AnalysisCoverage } from '../contracts/analysis.js';
 import type { Finding } from '../contracts/finding.js';
 import { analyzePackage } from './analyze-package.js';
+import { digestDependencyGraph } from './dependencies/graph-digest.js';
 import {
   readNpmDependencyGraph,
   type DependencyFileSource,
@@ -11,6 +12,13 @@ import {
 import type { DependencyInfo, PackageHealth } from './dependency-types.js';
 import { readDependencies } from './read-dependencies.js';
 import { ProviderError, type ScanBudget } from './scan-budget.js';
+import {
+  npmProvenanceIdentityDigest,
+  verifyNpmProvenance,
+  type NpmProvenanceOptions,
+  type NpmProvenancePolicy,
+  type NpmProvenanceVerification
+} from '../providers/npm/provenance.js';
 
 export type DependencyLookupFailure = {
   name: string;
@@ -47,11 +55,19 @@ export type DependencyScanOptions = {
   };
   /** Digest of manifests, lockfiles and package-manager settings in the snapshot. */
   inventoryCacheKey?: string;
+  /** Operator-owned exact npm issuer, certificate identity and repository trust rules. */
+  npmProvenancePolicy?: NpmProvenancePolicy;
+  /** Injectable verifier for deterministic provider tests. */
+  npmProvenanceVerifier?: typeof verifyNpmProvenance;
 };
 
 export type DependencyScanResult = {
   /** Exact lockfile instances, including path and registry, reused by downstream analyzers. */
   identities?: DependencyIdentity[];
+  /** Opt-in exact npm provenance results. Non-verified results remain unknown/untrusted. */
+  npmProvenance?: NpmProvenanceVerification[];
+  /** Digest of the exact resolved package/edge graph, absent when no lock graph resolves. */
+  dependencyGraphDigest?: string;
   packages: PackageHealth[];
   findings: Finding[];
   /** Packages whose registry lookup did not complete. Never counted as healthy. */
@@ -72,6 +88,7 @@ export type DependencyScanResult = {
 type DependencyScanInputs = {
   dependencies: DependencyInfo[];
   identities: DependencyIdentity[];
+  dependencyGraphDigest?: string;
   totalDependencies: number;
   unresolvedDependencies: DependencyInfo[];
   graphWarnings: string[];
@@ -131,6 +148,7 @@ async function readDependencyScanInputs(
       return {
         dependencies: [...uniqueDependencies.values()],
         identities: graph.packages,
+        dependencyGraphDigest: digestDependencyGraph(graph),
         totalDependencies:
           graph.packages.length + graph.unresolvedDependencies.length,
         unresolvedDependencies: graph.unresolvedDependencies.map((edge) => ({
@@ -258,6 +276,32 @@ export async function scanDependencies(
   const packages = outcomes.flatMap((outcome) =>
     outcome.ok ? [outcome.health] : []
   );
+  let npmProvenance: NpmProvenanceVerification[] | undefined;
+  if (options.npmProvenancePolicy) {
+    const candidates = new Map<string, DependencyIdentity>();
+    for (const identity of inputs.identities) {
+      if (identity.ecosystem !== 'npm') continue;
+      candidates.set(npmProvenanceIdentityDigest(identity), identity);
+    }
+    const verifier = options.npmProvenanceVerifier ?? verifyNpmProvenance;
+    npmProvenance = await mapConcurrent(
+      [...candidates.values()],
+      budget?.maxConcurrentRequests ?? options.concurrency ?? 8,
+      async (identity) => {
+        const verifierOptions: NpmProvenanceOptions = {
+          policy: options.npmProvenancePolicy,
+          allowPublicScope: options.allowPublicScope,
+          ...(budget
+            ? {
+                signal: budget.signal,
+                requestTimeoutMs: budget.requestTimeoutMs
+              }
+            : {})
+        };
+        return verifier(identity, verifierOptions);
+      }
+    );
+  }
   const failures: DependencyLookupFailure[] = [
     ...inputs.unresolvedDependencies.map((dependency) => ({
       name: dependency.name,
@@ -281,6 +325,30 @@ export async function scanDependencies(
     ...outcomes.flatMap((outcome) => (outcome.ok ? [] : [outcome.failure]))
   ];
   const findings = packages.flatMap(packageToFindings);
+  if (npmProvenance) {
+    findings.push(
+      ...npmProvenance
+        .filter((verification) => verification.status !== 'verified')
+        .map((verification) => ({
+          id: `TOOLIP-NPM-PROVENANCE-${verification.name}-${verification.version}`
+            .toUpperCase()
+            .replaceAll(/[^A-Z0-9]/gu, '-'),
+          ruleId: 'TOOLIP-NPM-PROVENANCE-UNVERIFIED',
+          title: `npm provenance not verified: ${verification.name}`,
+          category: 'supply-chain',
+          severity: 'info' as const,
+          confidence: 'high' as const,
+          message: `Publisher provenance for ${verification.name}@${verification.version} is ${verification.status} (${verification.reason}); no publisher trust is asserted.`,
+          source: 'npm-provenance',
+          metadata: {
+            package: verification.name,
+            version: verification.version,
+            status: verification.status,
+            reason: verification.reason
+          }
+        }))
+    );
+  }
   const cancelled = failures.some((failure) => failure.kind === 'cancelled');
   const coverage = coverageOf({
     eligible:
@@ -304,6 +372,10 @@ export async function scanDependencies(
 
   return {
     identities: inputs.identities,
+    ...(npmProvenance ? { npmProvenance } : {}),
+    ...(inputs.dependencyGraphDigest
+      ? { dependencyGraphDigest: inputs.dependencyGraphDigest }
+      : {}),
     packages,
     findings,
     failures,

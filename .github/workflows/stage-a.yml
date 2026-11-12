@@ -13,7 +13,7 @@ jobs:
   scan:
     name: Scan exact PR Git blobs before Stage B
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 40
     steps:
       - name: Checkout protected base revision containing the trusted scanner
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -27,10 +27,29 @@ jobs:
           check-latest: false
       - name: Enforce supported, patched scanner runtime
         run: node scripts/verify-node.mjs
+      - name: Verify protected scanner source digest before dependency setup
+        env:
+          TOOLIP_STAGE_A_SHA256: 5a8c1e879173901f532ad92207c33ac1e19e4b6189d391e8500f187c4bbb41d5
+        run: node scripts/verify-stage-a-scanner.mjs
+      - name: Install protected scanner dependencies without scripts
+        env:
+          npm_config_registry: https://registry.npmjs.org/
+          npm_config_userconfig: /dev/null
+          npm_config_globalconfig: /dev/null
+          npm_config_cache: ${{ runner.temp }}/toolip-stage-a-scanner-cache
+          npm_config_ignore_scripts: 'true'
+          CI: 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/dev/null
+          npm audit signatures --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/dev/null
+      - name: Build protected scanner sources
+        run: npm run build
       - name: Verify trusted scanner digest and fetch/scan exact PR Git objects
         id: gate
         env:
-          TOOLIP_STAGE_A_SHA256: d95a041a38db357d51614b8f10bfa205e4294906c5bd6ee9061101c5cf2ce41a
+          TOOLIP_STAGE_A_SHA256: 5a8c1e879173901f532ad92207c33ac1e19e4b6189d391e8500f187c4bbb41d5
           TOOLIP_STAGE_A_PUBLIC_SCOPES: '@babel,@bcoe,@biomejs,@esbuild,@gar,@hono,@isaacs,@jridgewell,@modelcontextprotocol,@nodelib,@npmcli,@oxc-project,@rolldown,@sigstore,@tufjs,@types,@vitest'
           GITHUB_TOKEN: ${{ github.token }}
           STAGE_A_REPOSITORY: ${{ github.repository }}
@@ -44,12 +63,21 @@ jobs:
           STAGE_A_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           STAGE_A_MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
         run: node scripts/stage-a-gate.mjs
+      - name: Verify exact scanned npm archives against operator issuer/source policy
+        if: steps.gate.outputs.status == 'approved' && steps.gate.outputs.dependency_audit_required == 'true'
+        env:
+          TOOLIP_STAGE_A_DEPENDENCY_DIRECTORY: ${{ runner.temp }}/toolip-stage-a-dependency-audit
+          TOOLIP_STAGE_A_PUBLIC_SCOPES: '@babel,@bcoe,@biomejs,@esbuild,@gar,@hono,@isaacs,@jridgewell,@modelcontextprotocol,@nodelib,@npmcli,@oxc-project,@rolldown,@sigstore,@tufjs,@types,@vitest'
+          TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY: ${{ vars.TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY }}
+        run: node scripts/stage-a-npm-provenance.mjs
       - name: Upload redacted Stage A diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: stage-a-diagnostics-${{ github.run_id }}
-          path: ${{ runner.temp }}/stage-a-results.sarif
+          path: |
+            ${{ runner.temp }}/stage-a-results.sarif
+            ${{ runner.temp }}/stage-a-npm-provenance.json
           if-no-files-found: warn
           retention-days: 1
       - name: Install the scanned lock graph without scripts and verify registry signatures
@@ -78,7 +106,7 @@ jobs:
         run: echo 'TOOLIP_STAGE_A_SIGNATURE_AUDIT=not-applicable' >> "$GITHUB_ENV"
       - name: Write immutable Stage A run metadata
         env:
-          TOOLIP_STAGE_A_SHA256: d95a041a38db357d51614b8f10bfa205e4294906c5bd6ee9061101c5cf2ce41a
+          TOOLIP_STAGE_A_SHA256: 5a8c1e879173901f532ad92207c33ac1e19e4b6189d391e8500f187c4bbb41d5
         run: node scripts/write-stage-a-artifact.mjs
       - name: Publish Stage A approval metadata for gated CI
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

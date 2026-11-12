@@ -71,7 +71,17 @@ describe('release isolation policy (regression for Batch 00)', () => {
     const installs = stageASteps.flatMap((step, index) =>
       /\bnpm\s+ci\b/u.test(String(step.run ?? '')) ? [index] : []
     );
-    const installIndex = installs[0] ?? -1;
+    const protectedInstallIndex = installs[0] ?? -1;
+    const installIndex = installs[1] ?? -1;
+    const scannerDigestIndex = stageASteps.findIndex((step) =>
+      String(step.run ?? '').includes('scripts/verify-stage-a-scanner.mjs')
+    );
+    const protectedBuildIndex = stageASteps.findIndex(
+      (step) => String(step.run ?? '').trim() === 'npm run build'
+    );
+    const provenanceIndex = stageASteps.findIndex((step) =>
+      String(step.run ?? '').includes('scripts/stage-a-npm-provenance.mjs')
+    );
     const artifactIndex = stageASteps.findIndex((step) =>
       String(step.run ?? '').includes('scripts/write-stage-a-artifact.mjs')
     );
@@ -87,11 +97,29 @@ describe('release isolation policy (regression for Batch 00)', () => {
       'persist-credentials': false
     });
     expect(scannerIndex).toBeGreaterThan(0);
-    expect(installs).toHaveLength(1);
+    expect(installs).toHaveLength(2);
+    expect(scannerDigestIndex).toBeGreaterThan(0);
+    expect(scannerDigestIndex).toBeLessThan(protectedInstallIndex);
+    expect(protectedInstallIndex).toBeLessThan(protectedBuildIndex);
+    expect(protectedBuildIndex).toBeLessThan(scannerIndex);
+    expect(stageASteps[protectedInstallIndex]?.name).toContain(
+      'protected scanner dependencies'
+    );
+    expect(stageASteps[protectedInstallIndex]?.run).toContain(
+      'npm ci --ignore-scripts'
+    );
+    expect(
+      stageASteps[protectedInstallIndex]?.env?.GITHUB_TOKEN
+    ).toBeUndefined();
     expect(installIndex).toBeGreaterThan(scannerIndex);
+    expect(provenanceIndex).toBeGreaterThan(scannerIndex);
+    expect(provenanceIndex).toBeLessThan(installIndex);
     expect(artifactIndex).toBeGreaterThan(installIndex);
     expect(stageASteps[installIndex]?.if).toContain(
       "steps.gate.outputs.status == 'approved'"
+    );
+    expect(stageASteps[installIndex]?.if).toContain(
+      "steps.gate.outputs.dependency_audit_required == 'true'"
     );
     expect(stageASteps[installIndex]?.run).toContain('npm ci --ignore-scripts');
 
@@ -125,6 +153,13 @@ describe('release isolation policy (regression for Batch 00)', () => {
           String(step.run ?? '').includes('verify-stage-a-artifact.mjs')
         )?.env?.GITHUB_TOKEN
       ).toEqual(['${{', ' github.token }}'].join(''));
+      expect(
+        stageB.jobs['stage-a-result'].steps.find((step) =>
+          String(step.run ?? '').includes('verify-stage-a-artifact.mjs')
+        )?.env?.TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY
+      ).toEqual(
+        ['${{ vars.TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY ', '}}'].join('')
+      );
       for (const [name, job] of Object.entries(stageB.jobs)) {
         if (
           name !== 'stage-a-result' &&

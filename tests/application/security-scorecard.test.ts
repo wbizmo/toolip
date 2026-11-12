@@ -1,3 +1,4 @@
+import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,6 +17,13 @@ import { coverageOf } from '../../src/contracts/analysis.js';
 import type { DependencyIdentity } from '../../src/core/dependencies/inventory.js';
 import type { PackageHealthAnalysis } from '../../src/core/package-health-analysis.js';
 import { analyzeLicenses } from '../../src/core/license-analysis.js';
+import {
+  canonicalEvidenceJson,
+  signReportEvidence,
+  verifyReportEvidence
+} from '../../src/core/report-signature.js';
+import { loadRulePackFile } from '../../src/core/rule-packs.js';
+import { parseNpmProvenancePolicy } from '../../src/providers/npm/provenance.js';
 
 const cleanSummary = {
   totalDependencies: 1,
@@ -88,6 +96,157 @@ const cleanGit = async () => ({
 });
 
 describe('buildSecurityScorecard', () => {
+  it('binds verified rule-pack identity into the signed scorecard subject', async () => {
+    const root = await fixture();
+    const now = Date.now();
+    const payload = {
+      schema: 'toolip.dev/rule-pack/v1',
+      id: 'scorecard',
+      apiVersion: 1,
+      issuedAt: new Date(now - 1_000).toISOString(),
+      expiresAt: new Date(now + 60_000).toISOString(),
+      rules: [
+        {
+          id: 'TLP-SCORECARD-001',
+          title: 'Scorecard integration marker',
+          severity: 'low',
+          confidence: 'high',
+          literal: 'SCORECARD_RULEPACK_MARKER',
+          fileExtensions: ['.ts'],
+          remediation: 'Remove the marker.'
+        }
+      ]
+    };
+    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+    const publicKeyPem = publicKey
+      .export({ type: 'spki', format: 'pem' })
+      .toString();
+    const privateKeyPem = privateKey
+      .export({ type: 'pkcs8', format: 'pem' })
+      .toString();
+    const keyId = 'scorecard-policy-v1';
+    const dependencyGraphDigest = 'b'.repeat(64);
+    const packPath = path.join(root, 'rule-pack.json');
+    await writeFile(
+      packPath,
+      JSON.stringify({
+        ...payload,
+        signature: {
+          algorithm: 'Ed25519',
+          keyId,
+          value: cryptoSign(
+            null,
+            Buffer.from(canonicalEvidenceJson(payload)),
+            privateKey
+          ).toString('base64')
+        }
+      })
+    );
+    const rulePack = await loadRulePackFile(packPath, {
+      publicKeyPem,
+      trustedKeyId: keyId,
+      now
+    });
+    const scannerContext = await createScannerContext(root);
+    const projectSnapshot = await createProjectSnapshot(root, {
+      discoveredFiles: scannerContext.files
+    });
+    const analyzer: Analyzer = {
+      id: 'test-vulns',
+      version: '1',
+      analyze: async () => ({
+        analyzer: 'test-vulns',
+        durationMs: 0,
+        findings: [],
+        coverage: {
+          state: 'complete',
+          eligible: 0,
+          scanned: 0,
+          skipped: 0,
+          failed: 0
+        }
+      })
+    };
+
+    try {
+      const scorecard = await buildSecurityScorecard(
+        root,
+        {
+          dependencyScan: async () => ({
+            packages: [],
+            findings: [],
+            failures: [],
+            dependencyGraphDigest,
+            coverage: {
+              state: 'complete',
+              eligible: 0,
+              scanned: 0,
+              skipped: 0,
+              failed: 0
+            },
+            summary: {
+              totalDependencies: 0,
+              outdated: 0,
+              deprecated: 0,
+              highRisk: 0,
+              mediumRisk: 0,
+              lowRisk: 0,
+              averageRiskScore: 0
+            }
+          }),
+          doctor: cleanDoctor as never,
+          gitAudit: cleanGit as never,
+          vulnerabilityAnalyzer: analyzer
+        },
+        {
+          offline: true,
+          scannerContext,
+          projectSnapshot,
+          rulePacks: [rulePack]
+        }
+      );
+      expect(scorecard.evidenceSubject).toMatchObject({
+        dependencyGraphDigest,
+        rulePacks: [
+          {
+            id: rulePack.id,
+            sha256: rulePack.sha256,
+            trust: 'signature',
+            keyId
+          }
+        ]
+      });
+
+      const signed = signReportEvidence(
+        createReport({
+          version: '3.2.1-rc',
+          command: 'scan',
+          root,
+          findings: scorecard.findings,
+          analysis: { ...scorecard.analysis, coverage: scorecard.coverage }
+        }),
+        {
+          privateKeyPem,
+          keyId: 'evidence-key-v1',
+          projectId: 'org/project',
+          scannerArtifactSha256: 'd'.repeat(64),
+          issuedAt: '2026-11-01T00:00:00.000Z',
+          subject: scorecard.evidenceSubject
+        }
+      );
+      expect(
+        verifyReportEvidence(signed, {
+          publicKeyPem,
+          trustedKeyId: 'evidence-key-v1',
+          expectedProjectId: 'org/project',
+          now: Date.parse('2026-11-02T00:00:00.000Z')
+        }).status
+      ).toBe('verified');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('runs cold and warm analyses over one immutable snapshot with identical findings', async () => {
     const root = await fixture();
     await writeFile(path.join(root, 'src.ts'), 'export const stable = true;\n');
@@ -595,6 +754,71 @@ describe('buildSecurityScorecard', () => {
       expect(result.packageHealth).toEqual(health);
       expect(result.findings).toContainEqual(reviewSignal);
       expect(result.analysis.state).toBe('complete');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('marks an opted-in scorecard incomplete when package provenance is untrusted', async () => {
+    const root = await fixture();
+    const verification = {
+      identityDigest: 'd'.repeat(64),
+      name: 'example',
+      version: '1.0.0',
+      status: 'untrusted' as const,
+      reason: 'repository_mismatch' as const,
+      artifactIntegrity: 'declared-not-verified' as const
+    };
+    const npmProvenancePolicy = parseNpmProvenancePolicy({
+      version: 1,
+      packages: {
+        example: {
+          certificateIssuer: 'https://token.actions.githubusercontent.com',
+          certificateIdentity:
+            'https://github.com/acme/example/.github/workflows/release.yml@refs/tags/v1.0.0',
+          sourceRepository: 'https://github.com/acme/example'
+        }
+      }
+    });
+    try {
+      const result = await buildSecurityScorecard(
+        root,
+        {
+          dependencyScan: async () => ({
+            identities: [],
+            packages: [packageHealth],
+            findings: [],
+            failures: [],
+            npmProvenance: [verification],
+            coverage: coverageOf({
+              eligible: 1,
+              scanned: 1,
+              skipped: 0,
+              failed: 0
+            }),
+            summary: cleanSummary
+          }),
+          doctor: cleanDoctor as never,
+          gitAudit: cleanGit as never,
+          vulnerabilityAnalyzer: {
+            id: 'clean-vulns',
+            version: '1',
+            analyze: async () => ({
+              analyzer: 'clean-vulns',
+              durationMs: 0,
+              findings: []
+            })
+          }
+        },
+        { npmProvenancePolicy }
+      );
+
+      expect(result.npmProvenance).toEqual([verification]);
+      expect(result.analysis.state).toBe('partial');
+      expect(result.score.complete).toBe(false);
+      expect(result.score.dimensions.dependencyHealth.status).toBe(
+        'unavailable'
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -25,6 +25,7 @@ const expectedCommands = [
   'licenses',
   'mcp',
   'monorepo',
+  'npm-attestation',
   'package-health',
   'policy',
   'pr-scan',
@@ -59,6 +60,7 @@ describe('Toolip CLI composition', () => {
     ['hook', ['install']],
     ['intelligence', ['snapshot']],
     ['sbom', ['verify']],
+    ['npm-attestation', ['create', 'verify']],
     ['vex', ['export', 'sign', 'validate']]
   ] as const)('builds expected %s subcommands', (name, expected) => {
     const command = createProgram().commands.find(
@@ -119,6 +121,22 @@ describe('Toolip CLI composition', () => {
       (item) => item.name() === 'report'
     );
     expect(command?.commands.map((item) => item.name())).toEqual(['verify']);
+    expect(
+      command?.commands
+        .find((item) => item.name() === 'verify')
+        ?.options.map((option) => option.long)
+    ).toContain('--project-root');
+  });
+
+  it('requires project-root context when resolving SBOM trust stores', () => {
+    const command = createProgram().commands.find(
+      (item) => item.name() === 'sbom'
+    );
+    expect(
+      command?.commands
+        .find((item) => item.name() === 'verify')
+        ?.options.map((option) => option.long)
+    ).toContain('--project-root');
   });
 
   it('exposes signed declarative rule-pack loading through doctor and scan', () => {
@@ -133,6 +151,21 @@ describe('Toolip CLI composition', () => {
           '--rule-pack-public-key',
           '--rule-pack-key-id',
           '--allow-unsigned-rule-pack'
+        ])
+      );
+    }
+  });
+
+  it('exposes operator plugin trust stores through doctor and scan', () => {
+    for (const name of ['doctor', 'scan']) {
+      const command = createProgram().commands.find(
+        (item) => item.name() === name
+      );
+      expect(command?.options.map((option) => option.long)).toEqual(
+        expect.arrayContaining([
+          '--analyzer-plugin-trust-store',
+          '--analyzer-plugin-key-id',
+          '--enable-executable-plugins'
         ])
       );
     }

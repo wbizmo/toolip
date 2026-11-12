@@ -3,13 +3,21 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { PackageURL } from 'packageurl-js';
+import { mapConcurrent } from '../../application/concurrency.js';
 import {
   readNpmDependencyGraph,
   type DependencyFileSource,
   type DependencyIdentity
 } from '../dependencies/inventory.js';
+import { digestDependencyGraph } from '../dependencies/graph-digest.js';
 import { readOtherEcosystemInventoryDetailed } from '../dependencies/ecosystem-inventory.js';
 import type { GoCommandRunner } from '../dependencies/go-module-graph.js';
+import {
+  npmProvenanceIdentityDigest,
+  verifyNpmProvenance,
+  type NpmProvenancePolicy,
+  type NpmProvenanceVerification
+} from '../../providers/npm/provenance.js';
 
 export type SbomFormat = 'cyclonedx' | 'spdx';
 
@@ -126,6 +134,126 @@ function namespace(name: string, version: string, graphDigest: string): string {
   )}/${version}/${digest}`;
 }
 
+function hasValidStrongSri(value: string): boolean {
+  return value.split(/\s+/u).some((part) => {
+    const match = /^(sha512|sha384|sha256)-([A-Za-z0-9+/]+={0,2})$/u.exec(part);
+    if (!match) return false;
+    const algorithm = match[1];
+    const encoded = match[2];
+    if (!algorithm || !encoded) return false;
+    const digest = Buffer.from(encoded, 'base64');
+    const expectedBytes =
+      algorithm === 'sha512' ? 64 : algorithm === 'sha384' ? 48 : 32;
+    return (
+      digest.length === expectedBytes && digest.toString('base64') === encoded
+    );
+  });
+}
+
+function artifactIntegrityStatus(
+  dependency: DependencyIdentity,
+  verification?: NpmProvenanceVerification
+): 'verified' | 'declared-not-verified' | 'unknown' | 'mismatch' {
+  if (dependency.ecosystem === 'npm' && verification)
+    return verification.artifactIntegrity;
+  const integrity = dependency.integrity;
+  if (!integrity) return 'unknown';
+  if (
+    dependency.ecosystem === 'Go' &&
+    dependency.source === 'go-tool:mvs-sumdb-verified' &&
+    /^h1:[A-Za-z0-9+/]{43}=$/u.test(integrity)
+  )
+    return 'verified';
+  if (
+    (dependency.ecosystem === 'npm' && hasValidStrongSri(integrity)) ||
+    (dependency.ecosystem === 'crates.io' &&
+      /^[a-f0-9]{64}$/iu.test(integrity)) ||
+    (dependency.ecosystem === 'Go' &&
+      /^h1:[A-Za-z0-9+/]{43}=$/u.test(integrity))
+  )
+    return 'declared-not-verified';
+  return 'unknown';
+}
+
+function provenanceProperties(
+  dependency: DependencyIdentity,
+  verification?: NpmProvenanceVerification
+) {
+  const publisherTrustStatus =
+    verification?.status === 'verified'
+      ? 'verified'
+      : verification && ['untrusted', 'invalid'].includes(verification.status)
+        ? 'untrusted'
+        : 'unknown';
+  return [
+    {
+      name: 'toolip:artifactIntegrityStatus',
+      value: artifactIntegrityStatus(dependency, verification)
+    },
+    { name: 'toolip:publisherTrustStatus', value: publisherTrustStatus },
+    { name: 'toolip:codeSafetyStatus', value: 'not-asserted' },
+    ...(verification
+      ? [
+          {
+            name: 'toolip:provenanceVerificationStatus',
+            value: verification.status
+          },
+          {
+            name: 'toolip:provenanceVerificationReason',
+            value: verification.reason
+          },
+          ...(verification.sourceRepository
+            ? [
+                {
+                  name: 'toolip:verifiedSourceRepository',
+                  value: verification.sourceRepository
+                },
+                {
+                  name: 'toolip:verifiedCertificateIssuer',
+                  value: verification.certificateIssuer ?? ''
+                },
+                {
+                  name: 'toolip:verifiedCertificateIdentity',
+                  value: verification.certificateIdentity ?? ''
+                }
+              ]
+            : [])
+        ]
+      : []),
+    ...(dependency.registry
+      ? [{ name: 'toolip:registryOrigin', value: dependency.registry }]
+      : []),
+    ...(dependency.integrity
+      ? [{ name: 'toolip:declaredIntegrity', value: dependency.integrity }]
+      : [])
+  ];
+}
+
+function spdxSourceInfo(
+  dependency: DependencyIdentity,
+  verification?: NpmProvenanceVerification
+): string {
+  return [
+    `Toolip resolution confidence: ${dependency.resolutionConfidence ?? 'lockfile'}`,
+    `source: ${dependency.source}`,
+    `artifact integrity: ${artifactIntegrityStatus(dependency, verification)}`,
+    `publisher trust: ${verification?.status === 'verified' ? 'verified' : verification && ['untrusted', 'invalid'].includes(verification.status) ? 'untrusted' : 'unknown'}`,
+    'code safety: not asserted',
+    ...(verification
+      ? [
+          `provenance verification: ${verification.status} (${verification.reason})`
+        ]
+      : []),
+    ...(verification?.sourceRepository
+      ? [`verified source repository: ${verification.sourceRepository}`]
+      : []),
+    ...(dependency.registry ? [`registry: ${dependency.registry}`] : []),
+    ...(dependency.integrity
+      ? [`declared integrity: ${dependency.integrity}`]
+      : [])
+  ].join('; ');
+}
+
 /** SPDX 2.3's timestamp grammar accepts whole-second UTC values only. */
 function spdxTimestamp(now = new Date()): string {
   return now.toISOString().replace(/\.\d{3}Z$/u, 'Z');
@@ -164,6 +292,9 @@ export async function generateSbom(
     allowGoToolExecution?: boolean;
     goCommandRunner?: GoCommandRunner;
     signal?: AbortSignal;
+    npmProvenancePolicy?: NpmProvenancePolicy;
+    allowPublicScope?: boolean;
+    npmProvenanceVerifier?: typeof verifyNpmProvenance;
   } = {}
 ): Promise<Record<string, unknown>> {
   throwIfAborted(options.signal);
@@ -224,29 +355,42 @@ export async function generateSbom(
   const dependencies = [...graph.packages, ...otherEcosystems.packages].sort(
     (a, b) => a.id.localeCompare(b.id)
   );
+  const npmProvenance = new Map<string, NpmProvenanceVerification>();
+  if (options.npmProvenancePolicy) {
+    const candidates = new Map<string, DependencyIdentity>();
+    for (const dependency of dependencies) {
+      if (dependency.ecosystem !== 'npm') continue;
+      candidates.set(npmProvenanceIdentityDigest(dependency), dependency);
+    }
+    const verifier = options.npmProvenanceVerifier ?? verifyNpmProvenance;
+    const verifications = await mapConcurrent(
+      [...candidates.values()],
+      8,
+      (dependency) =>
+        verifier(dependency, {
+          policy: options.npmProvenancePolicy,
+          allowPublicScope: options.allowPublicScope,
+          requestTimeoutMs: 5000,
+          signal: options.signal
+        })
+    );
+    for (const verification of verifications) {
+      npmProvenance.set(verification.identityDigest, verification);
+    }
+  }
   const graphWarnings = [
     ...new Set([...graph.warnings, ...otherEcosystems.warnings])
   ].sort();
   const allEdges = [...graph.edges, ...otherEcosystems.edges];
   const graphComplete = graph.complete && otherEcosystems.complete;
-  const graphDigest = createHash('sha256')
-    .update(
-      JSON.stringify({
-        packages: dependencies.map((dependency) => dependency.id).sort(),
-        edges: allEdges
-          .map((edge) => [
-            edge.from,
-            edge.to,
-            edge.name,
-            edge.requirement,
-            edge.section,
-            edge.marker,
-            edge.extras
-          ])
-          .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
-      })
-    )
-    .digest('hex');
+  const graphDigest = digestDependencyGraph({
+    manager: graph.manager,
+    complete: graphComplete,
+    packages: dependencies,
+    edges: allEdges,
+    unresolvedDependencies: graph.unresolvedDependencies,
+    warnings: graphWarnings
+  });
   const byId = new Map(
     dependencies.map((dependency) => [dependency.id, dependency])
   );
@@ -308,7 +452,11 @@ export async function generateSbom(
           {
             name: 'toolip:installPath',
             value: dependency.installPath
-          }
+          },
+          ...provenanceProperties(
+            dependency,
+            npmProvenance.get(npmProvenanceIdentityDigest(dependency))
+          )
         ]
       }),
       options.signal
@@ -390,7 +538,10 @@ export async function generateSbom(
       filesAnalyzed: false,
       licenseConcluded: 'NOASSERTION',
       licenseDeclared: 'NOASSERTION',
-      sourceInfo: `Toolip resolution confidence: ${dependency.resolutionConfidence ?? 'lockfile'}; source: ${dependency.source}`,
+      sourceInfo: spdxSourceInfo(
+        dependency,
+        npmProvenance.get(npmProvenanceIdentityDigest(dependency))
+      ),
       externalRefs: [
         {
           referenceCategory: 'PACKAGE-MANAGER',

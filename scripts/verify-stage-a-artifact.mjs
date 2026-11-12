@@ -2,6 +2,7 @@
 import { appendFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { npmProvenancePolicyDigest } from './stage-a-canonical-json.mjs';
 
 function complexityEvidence(body) {
   const text = typeof body === 'string' ? body.toLowerCase() : '';
@@ -17,7 +18,12 @@ function complexityEvidence(body) {
   );
 }
 
-export function verifyStageAArtifact(record, event, expectedRepository) {
+export function verifyStageAArtifact(
+  record,
+  event,
+  expectedRepository,
+  { expectedNpmProvenancePolicySha256 } = {}
+) {
   const run = event?.workflow_run;
   const associatedPrs = Array.isArray(run?.pull_requests)
     ? run.pull_requests.filter((pr) => pr?.number === record?.pullRequest)
@@ -26,7 +32,7 @@ export function verifyStageAArtifact(record, event, expectedRepository) {
   const nonnegativeSafeInteger = (value) =>
     Number.isSafeInteger(value) && value >= 0;
   if (
-    record?.version !== 5 ||
+    record?.version !== 6 ||
     record.status !== 'approved' ||
     record.repository !== expectedRepository ||
     event?.repository?.full_name !== expectedRepository ||
@@ -104,6 +110,31 @@ export function verifyStageAArtifact(record, event, expectedRepository) {
       (record.coverage.dependencyArtifactCount > 0
         ? 'verified'
         : 'not-applicable') ||
+    record.npmProvenanceStatus !==
+      (record.coverage.dependencyArtifactCount > 0
+        ? 'verified'
+        : 'not-applicable') ||
+    !(record.coverage.dependencyArtifactCount > 0
+      ? /^[0-9a-f]{64}$/iu.test(record.npmProvenancePolicySha256 ?? '')
+      : record.npmProvenancePolicySha256 === null) ||
+    record.npmProvenanceArtifactCount !==
+      record.coverage.dependencyArtifactCount ||
+    record.npmProvenanceVerifiedCount !==
+      record.coverage.dependencyArtifactCount ||
+    (record.coverage.dependencyArtifactCount > 0 &&
+      (typeof expectedNpmProvenancePolicySha256 !== 'string' ||
+        record.npmProvenancePolicySha256 !==
+          expectedNpmProvenancePolicySha256)) ||
+    !record.verifiedArtifactSha512ByLocation ||
+    typeof record.verifiedArtifactSha512ByLocation !== 'object' ||
+    Array.isArray(record.verifiedArtifactSha512ByLocation) ||
+    Object.keys(record.verifiedArtifactSha512ByLocation).length !==
+      record.coverage.dependencyArtifactCount ||
+    Object.entries(record.verifiedArtifactSha512ByLocation).some(
+      ([location, digest]) =>
+        !/^node_modules\/(?!.*(?:^|\/)\.\.(?:\/|$))[^\\\0]+$/u.test(location) ||
+        !/^[a-f0-9]{128}$/iu.test(digest ?? '')
+    ) ||
     [record.baseSha, record.headSha, record.mergeSha].some(
       (sha) => !/^[0-9a-f]{40}$/iu.test(sha ?? '')
     )
@@ -120,6 +151,11 @@ export function verifyStageAArtifact(record, event, expectedRepository) {
     mergeSha: record.mergeSha,
     complexityEvidence: record.complexityEvidence,
     registrySignatureAudit: record.registrySignatureAudit,
+    npmProvenanceStatus: record.npmProvenanceStatus,
+    npmProvenancePolicySha256: record.npmProvenancePolicySha256,
+    npmProvenanceArtifactCount: record.npmProvenanceArtifactCount,
+    npmProvenanceVerifiedCount: record.npmProvenanceVerifiedCount,
+    verifiedArtifactSha512ByLocation: record.verifiedArtifactSha512ByLocation,
     coverage: record.coverage,
     exceptionPolicySha256: record.exceptionPolicySha256,
     appliedExceptions: record.appliedExceptions
@@ -222,10 +258,17 @@ async function main() {
   const event = JSON.parse(
     await readFile(process.env.GITHUB_EVENT_PATH, 'utf8')
   );
+  const expectedNpmProvenancePolicySha256 =
+    record?.coverage?.dependencyArtifactCount > 0
+      ? npmProvenancePolicyDigest(
+          process.env.TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY
+        )
+      : undefined;
   const approval = verifyStageAArtifact(
     record,
     event,
-    process.env.GITHUB_REPOSITORY
+    process.env.GITHUB_REPOSITORY,
+    { expectedNpmProvenancePolicySha256 }
   );
   await verifyCurrentPullRequestIdentity(
     record,
@@ -243,6 +286,10 @@ async function main() {
       `merge_sha=${approval.mergeSha}`,
       `complexity_evidence=${approval.complexityEvidence}`,
       `registry_signature_audit=${approval.registrySignatureAudit}`,
+      `npm_provenance_status=${approval.npmProvenanceStatus}`,
+      `npm_provenance_policy_sha256=${approval.npmProvenancePolicySha256 ?? 'not-applicable'}`,
+      `npm_provenance_artifact_count=${approval.npmProvenanceArtifactCount}`,
+      `npm_provenance_verified_count=${approval.npmProvenanceVerifiedCount}`,
       `stage_a_exception_count=${approval.appliedExceptions.length}`,
       `stage_a_exception_policy_sha256=${approval.exceptionPolicySha256 ?? 'none'}`
     ].join('\n')}\n`

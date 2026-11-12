@@ -7,6 +7,7 @@ import {
   signReportEvidence,
   verifyReportEvidence
 } from '../../src/core/report-signature.js';
+import type { ReportEvidenceSubject } from '../../src/core/report-signature.js';
 import type { Finding } from '../../src/contracts/finding.js';
 import { fileURLToPath } from 'node:url';
 
@@ -172,6 +173,112 @@ describe('signed report evidence', () => {
     expect(verify(coverageChanged)).toEqual({
       status: 'invalid',
       reason: 'payload-mismatch'
+    });
+  });
+
+  it('binds immutable signed rule-pack identity, digest, trust and signer', () => {
+    const pack = {
+      id: 'example',
+      sha256: 'e'.repeat(64),
+      trust: 'signature' as const,
+      keyId: 'policy-key-v1'
+    };
+    const subject: ReportEvidenceSubject = { rulePacks: [pack] };
+    const signed = signReportEvidence(report(), {
+      privateKeyPem,
+      keyId: 'test-key-1',
+      projectId: 'org/repository',
+      scannerArtifactSha256: 'd'.repeat(64),
+      issuedAt: '2026-01-01T00:00:00.000Z',
+      subject
+    });
+    const envelope = signed.evidenceSignature;
+    if (!envelope) throw new Error('fixture report must be signed');
+
+    expect(envelope.subject.rulePacks).toEqual([
+      {
+        id: 'example',
+        sha256: 'e'.repeat(64),
+        trust: 'signature',
+        keyId: 'policy-key-v1'
+      }
+    ]);
+    expect(Object.isFrozen(envelope.subject.rulePacks)).toBe(true);
+    expect(Object.isFrozen(envelope.subject.rulePacks?.[0])).toBe(true);
+    pack.sha256 = 'f'.repeat(64);
+    expect(verify(signed).status).toBe('verified');
+
+    const originalPack = envelope.subject.rulePacks?.[0];
+    if (!originalPack) throw new Error('fixture subject must include a pack');
+    for (const alteredPack of [
+      { ...originalPack, sha256: 'f'.repeat(64) },
+      { ...originalPack, trust: 'unsigned-local-override' as const },
+      { ...originalPack, keyId: 'attacker-key' }
+    ]) {
+      const altered = {
+        ...signed,
+        evidenceSignature: {
+          ...envelope,
+          subject: { rulePacks: [alteredPack] }
+        }
+      };
+      expect(verify(altered)).toEqual({
+        status: 'invalid',
+        reason: 'payload-mismatch'
+      });
+    }
+  });
+
+  it('rejects malformed or accessor-backed evidence subjects', () => {
+    const accessorSubject = Object.defineProperty({}, 'gitRevision', {
+      enumerable: true,
+      get: () => 'a'.repeat(40)
+    });
+    expect(() =>
+      signReportEvidence(report(), {
+        privateKeyPem,
+        keyId: 'test-key-1',
+        projectId: 'org/repository',
+        scannerArtifactSha256: 'd'.repeat(64),
+        subject: accessorSubject as ReportEvidenceSubject
+      })
+    ).toThrow(/unsupported fields/u);
+    const nonEnumerableSubject = Object.defineProperty({}, 'gitRevision', {
+      configurable: true,
+      value: 'a'.repeat(40)
+    });
+    expect(() =>
+      signReportEvidence(report(), {
+        privateKeyPem,
+        keyId: 'test-key-1',
+        projectId: 'org/repository',
+        scannerArtifactSha256: 'd'.repeat(64),
+        subject: nonEnumerableSubject as ReportEvidenceSubject
+      })
+    ).toThrow(/unsupported fields/u);
+
+    const signed = signer();
+    const envelope = signed.evidenceSignature;
+    if (!envelope) throw new Error('fixture report must be signed');
+    const malformed = {
+      ...signed,
+      evidenceSignature: {
+        ...envelope,
+        subject: {
+          rulePacks: [
+            {
+              id: 'bad id',
+              sha256: 'e'.repeat(64),
+              trust: 'signature',
+              keyId: 'policy-key'
+            }
+          ]
+        }
+      }
+    };
+    expect(verify(malformed)).toEqual({
+      status: 'invalid',
+      reason: 'malformed-signature'
     });
   });
 

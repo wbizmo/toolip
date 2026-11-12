@@ -1,11 +1,12 @@
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { canonicalEvidenceJson } from '../../src/core/report-signature.js';
 import {
   loadWasmAnalyzerPlugin,
+  loadWasmAnalyzerPluginForCli,
   runWasmAnalyzerPlugin
 } from '../../src/core/analyzer-plugin.js';
 
@@ -101,7 +102,11 @@ function testModule(
     infinite?: boolean;
     imports?: boolean;
     unboundedMemory?: boolean;
+    memoryFlags?: number;
+    memoryMaximum?: number;
+    missingAbiExport?: boolean;
     oversizedOutput?: boolean;
+    trap?: boolean;
   } = {}
 ): Uint8Array {
   const output = Buffer.from(
@@ -135,23 +140,38 @@ function testModule(
       ])
     : [];
   const functions = wasmSection(3, [...wasmLeb(3), 0x00, 0x01, 0x02]);
+  const memoryFlags = options.memoryFlags ?? 1;
+  const memoryMaximum = options.memoryMaximum ?? 2;
   const memory = options.unboundedMemory
     ? wasmSection(5, [...wasmLeb(1), 0x00, ...wasmLeb(2)])
-    : wasmSection(5, [...wasmLeb(1), 0x01, ...wasmLeb(2), ...wasmLeb(2)]);
+    : wasmSection(5, [
+        ...wasmLeb(1),
+        ...wasmLeb(memoryFlags),
+        ...wasmLeb(2),
+        ...wasmLeb(memoryMaximum)
+      ]);
   const indexOffset = options.imports ? 1 : 0;
-  const exports = wasmSection(
-    7,
-    wasmVector([
-      [...wasmString('memory'), 0x02, ...wasmLeb(0)],
-      [...wasmString('toolip_alloc'), 0x00, ...wasmLeb(indexOffset)],
-      [...wasmString('toolip_analyze'), 0x00, ...wasmLeb(indexOffset + 1)],
-      [...wasmString('toolip_output_len'), 0x00, ...wasmLeb(indexOffset + 2)]
-    ])
-  );
+  const exportItems = [
+    [...wasmString('memory'), 0x02, ...wasmLeb(0)],
+    [...wasmString('toolip_alloc'), 0x00, ...wasmLeb(indexOffset)],
+    [...wasmString('toolip_analyze'), 0x00, ...wasmLeb(indexOffset + 1)],
+    ...(!options.missingAbiExport
+      ? [
+          [
+            ...wasmString('toolip_output_len'),
+            0x00,
+            ...wasmLeb(indexOffset + 2)
+          ]
+        ]
+      : [])
+  ];
+  const exports = wasmSection(7, wasmVector(exportItems));
   const allocBody = wasmFunction([0x00, 0x41, 0x80, 0x10, 0x0b]);
   const analyzeBody = options.infinite
     ? wasmFunction([0x00, 0x03, 0x40, 0x0c, 0x00, 0x0b, 0x41, 0x00, 0x0b])
-    : wasmFunction([0x00, 0x41, 0x00, 0x0b]);
+    : options.trap
+      ? wasmFunction([0x00, 0x00, 0x0b])
+      : wasmFunction([0x00, 0x41, 0x00, 0x0b]);
   const outputLength = options.oversizedOutput ? 65_537 : output.length;
   const outputLengthBody = wasmFunction([
     0x00,
@@ -202,6 +222,60 @@ afterEach(async () => {
 });
 
 describe('signed capability-limited WASM analyzer plugins', () => {
+  it('resolves plugin signers from an external rotatable trust store', async () => {
+    const fixture = await pluginFixture();
+    const trustRoot = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-plugin-trust-')
+    );
+    directories.push(trustRoot);
+    const storePath = path.join(trustRoot, 'plugins.json');
+    await writeFile(
+      storePath,
+      JSON.stringify({
+        version: 1,
+        keys: {
+          'fixture-key': {
+            publicKeyPem: fixture.publicKeyPem,
+            status: 'active',
+            validFrom: '2026-11-01T00:00:00.000Z',
+            expiresAt: '2026-12-01T00:00:00.000Z'
+          }
+        }
+      })
+    );
+    const plugin = await loadWasmAnalyzerPluginForCli({
+      manifestPath: fixture.manifest,
+      trustStorePath: storePath,
+      trustedKeyId: 'fixture-key',
+      projectRoot: fixture.root,
+      enabled: true
+    });
+    expect(plugin?.keyId).toBe('fixture-key');
+
+    await writeFile(
+      storePath,
+      JSON.stringify({
+        version: 1,
+        keys: {
+          'fixture-key': {
+            publicKeyPem: fixture.publicKeyPem,
+            status: 'revoked',
+            revokedAt: '2026-11-10T00:00:00.000Z'
+          }
+        }
+      })
+    );
+    await expect(
+      loadWasmAnalyzerPluginForCli({
+        manifestPath: fixture.manifest,
+        trustStorePath: storePath,
+        trustedKeyId: 'fixture-key',
+        projectRoot: fixture.root,
+        enabled: true
+      })
+    ).rejects.toThrow('is revoked');
+  });
+
   it('runs a valid signed plugin and binds sanitized findings to snapshot paths', async () => {
     const output = JSON.stringify({
       schemaVersion: 1,
@@ -244,12 +318,51 @@ describe('signed capability-limited WASM analyzer plugins', () => {
 
   it('denies unsigned, changed, imported, unbounded-memory and untrusted-path plugins', async () => {
     const fixture = await pluginFixture();
+    const unsignedManifest = JSON.parse(
+      await readFile(fixture.manifest, 'utf8')
+    ) as Record<string, unknown>;
+    delete unsignedManifest.signature;
+    await writeFile(fixture.manifest, JSON.stringify(unsignedManifest));
     await expect(
       loadWasmAnalyzerPlugin(fixture.manifest, {
         publicKeyPem: fixture.publicKeyPem,
+        trustedKeyId: 'fixture-key'
+      })
+    ).rejects.toThrow('Analyzer plugin manifest is invalid');
+
+    const changed = await pluginFixture();
+    await writeFile(
+      path.join(changed.root, 'plugin.wasm'),
+      testModule({
+        output: JSON.stringify({
+          schemaVersion: 1,
+          findings: [{ changed: true }]
+        })
+      })
+    );
+    await expect(
+      loadWasmAnalyzerPlugin(changed.manifest, {
+        publicKeyPem: changed.publicKeyPem,
+        trustedKeyId: 'fixture-key'
+      })
+    ).rejects.toThrow('digest does not match');
+
+    const untrusted = await pluginFixture();
+    await expect(
+      loadWasmAnalyzerPlugin(untrusted.manifest, {
+        publicKeyPem: untrusted.publicKeyPem,
         trustedKeyId: 'wrong-key'
       })
     ).rejects.toThrow('not trusted');
+
+    const expired = await pluginFixture();
+    await expect(
+      loadWasmAnalyzerPlugin(expired.manifest, {
+        publicKeyPem: expired.publicKeyPem,
+        trustedKeyId: 'fixture-key',
+        now: Date.parse('2027-01-01T00:00:00.000Z')
+      })
+    ).rejects.toThrow('expired');
 
     const imported = await pluginFixture({
       module: testModule({ imports: true })
@@ -270,6 +383,39 @@ describe('signed capability-limited WASM analyzer plugins', () => {
         trustedKeyId: 'fixture-key'
       })
     ).rejects.toThrow('explicitly bounded');
+
+    for (const memoryFlags of [3, 5]) {
+      const unsupportedMemory = await pluginFixture({
+        module: testModule({ memoryFlags })
+      });
+      await expect(
+        loadWasmAnalyzerPlugin(unsupportedMemory.manifest, {
+          publicKeyPem: unsupportedMemory.publicKeyPem,
+          trustedKeyId: 'fixture-key'
+        })
+      ).rejects.toThrow('32-bit, unshared');
+    }
+
+    const excessiveMemory = await pluginFixture({
+      module: testModule({ memoryMaximum: 3 }),
+      memoryPages: 2
+    });
+    await expect(
+      loadWasmAnalyzerPlugin(excessiveMemory.manifest, {
+        publicKeyPem: excessiveMemory.publicKeyPem,
+        trustedKeyId: 'fixture-key'
+      })
+    ).rejects.toThrow('exceeds the signed plugin limit');
+
+    const unsupportedAbi = await pluginFixture({
+      module: testModule({ missingAbiExport: true })
+    });
+    await expect(
+      loadWasmAnalyzerPlugin(unsupportedAbi.manifest, {
+        publicKeyPem: unsupportedAbi.publicKeyPem,
+        trustedKeyId: 'fixture-key'
+      })
+    ).rejects.toThrow('does not implement the Toolip WASM ABI v1');
   });
 
   it('terminates infinite loops and rejects oversized or out-of-snapshot results as incomplete', async () => {
@@ -286,6 +432,19 @@ describe('signed capability-limited WASM analyzer plugins', () => {
     ]);
     expect(timedOut.coverage.state).toBe('failed');
     expect(timedOut.warnings).toContain('plugin-timeout');
+
+    const crashing = await pluginFixture({
+      module: testModule({ trap: true })
+    });
+    const crashingPlugin = await loadWasmAnalyzerPlugin(crashing.manifest, {
+      publicKeyPem: crashing.publicKeyPem,
+      trustedKeyId: 'fixture-key'
+    });
+    const crashed = await runWasmAnalyzerPlugin(crashingPlugin, [
+      { path: 'index.ts', content: 'x' }
+    ]);
+    expect(crashed.coverage.state).toBe('failed');
+    expect(crashed.warnings).toContain('plugin-execution-failed');
 
     const cancellation = new AbortController();
     const cancellablePlugin = await pluginFixture({

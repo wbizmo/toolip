@@ -9,6 +9,10 @@ import type { Finding } from '../contracts/finding.js';
 import { canonicalEvidenceJson } from './report-signature.js';
 import { readPemKeyFile } from './secure-key-file.js';
 import { sanitizeOutput } from './safe-output.js';
+import {
+  readPluginTrustStore,
+  resolvePluginTrustKey
+} from './plugin-trust-store.js';
 
 const MAX_MANIFEST_BYTES = 64 * 1024;
 const MAX_MODULE_BYTES = 8 * 1024 * 1024;
@@ -57,22 +61,47 @@ const verifiedPluginModuleBytes = new WeakMap<WasmAnalyzerPlugin, Uint8Array>();
 export async function loadWasmAnalyzerPluginForCli(options: {
   manifestPath?: string;
   publicKeyPath?: string;
+  trustStorePath?: string;
   trustedKeyId?: string;
+  projectRoot?: string;
   enabled?: boolean;
 }): Promise<WasmAnalyzerPlugin | undefined> {
   const supplied = Boolean(
-    options.manifestPath || options.publicKeyPath || options.trustedKeyId
+    options.manifestPath ||
+    options.publicKeyPath ||
+    options.trustStorePath ||
+    options.trustedKeyId
   );
   if (!supplied && options.enabled !== true) return undefined;
   if (options.enabled !== true)
     throw new Error(
       '--enable-executable-plugins is required to run a WASM analyzer plugin.'
     );
-  if (!options.manifestPath || !options.publicKeyPath || !options.trustedKeyId)
+  if (
+    !options.manifestPath ||
+    !options.trustedKeyId ||
+    Boolean(options.publicKeyPath) === Boolean(options.trustStorePath)
+  )
     throw new Error(
-      'A signed plugin manifest, trusted public key and key ID are required.'
+      'A signed plugin manifest, exactly one trusted key source, and key ID are required.'
     );
-  const publicKeyPem = await readPemKeyFile(options.publicKeyPath);
+  let publicKeyPem: string;
+  if (options.trustStorePath) {
+    if (!options.projectRoot)
+      throw new Error(
+        'A project root is required with the plugin trust store.'
+      );
+    const store = await readPluginTrustStore(
+      options.trustStorePath,
+      options.projectRoot
+    );
+    publicKeyPem = resolvePluginTrustKey(
+      store,
+      options.trustedKeyId
+    ).publicKeyPem;
+  } else {
+    publicKeyPem = await readPemKeyFile(options.publicKeyPath as string);
+  }
   return loadWasmAnalyzerPlugin(options.manifestPath, {
     publicKeyPem,
     trustedKeyId: options.trustedKeyId

@@ -29,6 +29,8 @@ export type ProjectSnapshot = Readonly<{
   gitHeadRevision?: string;
   gitIndexDigest?: string;
   gitIndexStatus: 'available' | 'not_git' | 'unavailable';
+  /** Stable digest of captured path/content identities, independent of host metadata. */
+  sourceTreeDigest: string;
   lockGraphDigest?: string;
   configDigest?: string;
   budgets: Readonly<{
@@ -315,6 +317,27 @@ export async function createProjectSnapshot(
         )
       )
       .digest('hex');
+  const sourceTreeDigest = createHash('sha256')
+    .update('toolip-source-snapshot-v1\0')
+    .update(String(content.length))
+    .update('\0');
+  const sourceFiles = [...content].sort((left, right) =>
+    left.path < right.path ? -1 : left.path > right.path ? 1 : 0
+  );
+  for (const file of sourceFiles) {
+    sourceTreeDigest
+      .update(String(Buffer.byteLength(file.path, 'utf8')))
+      .update(':')
+      .update(file.path)
+      .update('\0')
+      .update(String(file.bytes))
+      .update('\0')
+      .update(file.binary ? 'binary' : 'text')
+      .update('\0')
+      .update(file.sha256)
+      .update('\0');
+  }
+  const sourceTreeDigestHex = sourceTreeDigest.digest('hex');
   const configDigest =
     options.configDigest ??
     createHash('sha256')
@@ -345,6 +368,7 @@ export async function createProjectSnapshot(
         gitHeadRevision: git.revision ?? null,
         gitIndexDigest: gitIndexDigest ?? null,
         gitIndexStatus: git.status,
+        sourceTreeDigest: sourceTreeDigestHex,
         lockGraphDigest,
         configDigest,
         budget: budgets,
@@ -385,6 +409,7 @@ export async function createProjectSnapshot(
     ...(git.revision ? { gitHeadRevision: git.revision } : {}),
     ...(gitIndexDigest ? { gitIndexDigest } : {}),
     gitIndexStatus: git.status,
+    sourceTreeDigest: sourceTreeDigestHex,
     ...(lockGraphDigest ? { lockGraphDigest } : {}),
     ...(configDigest ? { configDigest } : {}),
     budgets: Object.freeze(budgets),

@@ -2,6 +2,7 @@ import type { AnalysisCoverage, AnalysisState } from '../contracts/analysis.js';
 import type { Finding, FindingSeverity } from '../contracts/finding.js';
 import { redactSensitiveText, sanitizeOutput } from './safe-output.js';
 import type { ReportEvidenceSignature } from './report-signature.js';
+import type { NpmProvenanceVerification } from '../providers/npm/provenance.js';
 
 export type SerializedFinding = {
   id: string;
@@ -50,6 +51,8 @@ export type ToolipReport = {
     state: AnalysisState;
     findings: number;
   }>;
+  /** Exact npm provenance results when verification was explicitly configured. */
+  npmProvenance?: NpmProvenanceVerification[];
   /** Present only when this exact report has a verifiable signed attestation. */
   evidenceSignature?: ReportEvidenceSignature;
 };
@@ -87,6 +90,7 @@ export function createReport(input: {
     state: AnalysisState;
     findings: number;
   }>;
+  npmProvenance?: NpmProvenanceVerification[];
 }): ToolipReport {
   return sanitizeOutput({
     tool: 'toolip',
@@ -97,7 +101,10 @@ export function createReport(input: {
     summary: summarizeFindings(input.findings),
     findings: input.findings.map(serializeFinding),
     ...(input.analysis ? { analysis: input.analysis } : {}),
-    ...(input.analyzerPlugins ? { analyzerPlugins: input.analyzerPlugins } : {})
+    ...(input.analyzerPlugins
+      ? { analyzerPlugins: input.analyzerPlugins }
+      : {}),
+    ...(input.npmProvenance ? { npmProvenance: input.npmProvenance } : {})
   });
 }
 

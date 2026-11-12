@@ -42,10 +42,13 @@ describe('immutable project snapshots', () => {
     expect(snapshot.files[0]?.sha256).toHaveLength(64);
     expect(snapshot.files[0]?.fileId).toMatch(/^\d+:\d+$/u);
     expect(snapshot.files[0]?.mtimeNs).not.toBe('unknown');
+    expect(snapshot.sourceTreeDigest).toMatch(/^[a-f0-9]{64}$/u);
     expect(snapshot.lockGraphDigest).toBe('lock');
     expect(await verifyProjectSnapshot(snapshot)).toBe(true);
     await writeFile(path.join(root, 'src', 'a.ts'), 'changed');
     expect(await verifyProjectSnapshot(snapshot)).toBe(false);
+    const changed = await createProjectSnapshot(root);
+    expect(changed.sourceTreeDigest).not.toBe(snapshot.sourceTreeDigest);
   });
 
   it('fails closed when the snapshot exceeds explicit file budgets', async () => {

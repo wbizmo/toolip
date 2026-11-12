@@ -9,6 +9,23 @@ import path from 'node:path';
 import { canonicalJson } from './canonical-json.js';
 import type { ToolipReport } from './report.js';
 
+export type ReportEvidenceRulePack = Readonly<{
+  id: string;
+  sha256: string;
+  trust: 'signature' | 'unsigned-local-override';
+  keyId?: string;
+}>;
+
+export type ReportEvidenceSubject = Readonly<{
+  gitRevision?: string;
+  gitIndexDigest?: string;
+  sourceTreeDigest?: string;
+  lockGraphDigest?: string;
+  dependencyGraphDigest?: string;
+  configDigest?: string;
+  rulePacks?: readonly ReportEvidenceRulePack[];
+}>;
+
 export type ReportEvidenceSignature = Readonly<{
   schema: 'toolip.dev/evidence/v2';
   algorithm: 'Ed25519';
@@ -16,12 +33,7 @@ export type ReportEvidenceSignature = Readonly<{
   projectId: string;
   issuedAt: string;
   scannerArtifactSha256: string;
-  subject: Readonly<{
-    gitRevision?: string;
-    gitIndexDigest?: string;
-    lockGraphDigest?: string;
-    configDigest?: string;
-  }>;
+  subject: ReportEvidenceSubject;
   payloadSha256: string;
   signature: string;
 }>;
@@ -31,7 +43,10 @@ export type ReportEvidenceVerification =
   | {
       status: 'untrusted';
       reason:
-        'key-id-mismatch' | 'project-id-mismatch' | 'scanner-artifact-mismatch';
+        | 'key-id-mismatch'
+        | 'project-id-mismatch'
+        | 'scanner-artifact-mismatch'
+        | 'source-tree-mismatch';
     }
   | { status: 'expired'; reason: 'signature-expired' }
   | {
@@ -83,7 +98,7 @@ function validateIdentity(projectId: string, keyId: string): void {
 function signedPayload(
   report: ToolipReport,
   projectId: string,
-  subject: ReportEvidenceSignature['subject'],
+  subject: ReportEvidenceSubject,
   scannerArtifactSha256: string,
   keyId: string,
   issuedAt: string
@@ -103,6 +118,153 @@ function signedPayload(
     subject,
     report: stableReport
   };
+}
+
+function normalizeEvidenceSubject(value: unknown): ReportEvidenceSubject {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new TypeError('evidence subject is invalid');
+  if (
+    Object.getPrototypeOf(value) !== Object.prototype &&
+    Object.getPrototypeOf(value) !== null
+  )
+    throw new TypeError('evidence subject has an unsupported prototype');
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const allowed = new Set([
+    'gitRevision',
+    'gitIndexDigest',
+    'sourceTreeDigest',
+    'lockGraphDigest',
+    'dependencyGraphDigest',
+    'configDigest',
+    'rulePacks'
+  ]);
+  if (
+    Reflect.ownKeys(value).some(
+      (key) => typeof key !== 'string' || !allowed.has(key)
+    ) ||
+    Object.values(descriptors).some(
+      (descriptor) =>
+        !descriptor.enumerable || !Object.hasOwn(descriptor, 'value')
+    )
+  )
+    throw new TypeError('evidence subject has unsupported fields');
+  const field = (name: string): unknown => descriptors[name]?.value;
+  const gitRevision = field('gitRevision');
+  if (
+    gitRevision !== undefined &&
+    (typeof gitRevision !== 'string' ||
+      !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/iu.test(gitRevision))
+  )
+    throw new TypeError('evidence Git revision is invalid');
+  const digests = [
+    'gitIndexDigest',
+    'sourceTreeDigest',
+    'lockGraphDigest',
+    'dependencyGraphDigest',
+    'configDigest'
+  ] as const;
+  for (const name of digests) {
+    const digest = field(name);
+    if (
+      digest !== undefined &&
+      (typeof digest !== 'string' || !/^[a-f0-9]{64}$/u.test(digest))
+    )
+      throw new TypeError(`evidence ${name} is invalid`);
+  }
+
+  const rawRulePacks = field('rulePacks');
+  if (
+    rawRulePacks !== undefined &&
+    (!Array.isArray(rawRulePacks) ||
+      rawRulePacks.length > 16 ||
+      Object.getPrototypeOf(rawRulePacks) !== Array.prototype)
+  )
+    throw new TypeError('evidence rule pack list is invalid');
+  const rulePackValues: unknown[] = [];
+  if (rawRulePacks !== undefined) {
+    const descriptors = Object.getOwnPropertyDescriptors(rawRulePacks);
+    for (const key of Reflect.ownKeys(rawRulePacks)) {
+      if (key === 'length') continue;
+      if (
+        typeof key !== 'string' ||
+        !/^(?:0|[1-9]\d*)$/u.test(key) ||
+        Number(key) >= rawRulePacks.length
+      )
+        throw new TypeError('evidence rule pack list has unsupported fields');
+    }
+    for (let index = 0; index < rawRulePacks.length; index++) {
+      const descriptor = descriptors[String(index)];
+      if (!descriptor?.enumerable || !Object.hasOwn(descriptor, 'value'))
+        throw new TypeError('evidence rule pack list is incomplete');
+      rulePackValues.push(descriptor.value);
+    }
+  }
+  const rulePacks = rulePackValues.map((value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+      throw new TypeError('evidence rule pack identity is invalid');
+    if (
+      Object.getPrototypeOf(value) !== Object.prototype &&
+      Object.getPrototypeOf(value) !== null
+    )
+      throw new TypeError('evidence rule pack has an unsupported prototype');
+    const packDescriptors = Object.getOwnPropertyDescriptors(value);
+    const packAllowed = new Set(['id', 'sha256', 'trust', 'keyId']);
+    if (
+      Reflect.ownKeys(value).some(
+        (key) => typeof key !== 'string' || !packAllowed.has(key)
+      ) ||
+      Object.values(packDescriptors).some(
+        (descriptor) =>
+          !descriptor.enumerable || !Object.hasOwn(descriptor, 'value')
+      )
+    )
+      throw new TypeError('evidence rule pack has unsupported fields');
+    const packField = (name: string): unknown => packDescriptors[name]?.value;
+    const id = packField('id');
+    const sha256 = packField('sha256');
+    const trust = packField('trust');
+    const keyId = packField('keyId');
+    if (
+      typeof id !== 'string' ||
+      !/^[a-z][a-z0-9]{1,15}$/u.test(id) ||
+      typeof sha256 !== 'string' ||
+      !/^[a-f0-9]{64}$/u.test(sha256) ||
+      (trust !== 'signature' && trust !== 'unsigned-local-override') ||
+      (keyId !== undefined &&
+        (typeof keyId !== 'string' ||
+          !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(keyId))) ||
+      (trust === 'signature' && keyId === undefined)
+    )
+      throw new TypeError('evidence rule pack identity is invalid');
+    return Object.freeze({
+      id,
+      sha256,
+      trust: trust as ReportEvidenceRulePack['trust'],
+      ...(keyId === undefined ? {} : { keyId })
+    });
+  });
+
+  return Object.freeze({
+    ...(gitRevision === undefined ? {} : { gitRevision }),
+    ...(field('gitIndexDigest') === undefined
+      ? {}
+      : { gitIndexDigest: field('gitIndexDigest') as string }),
+    ...(field('sourceTreeDigest') === undefined
+      ? {}
+      : { sourceTreeDigest: field('sourceTreeDigest') as string }),
+    ...(field('lockGraphDigest') === undefined
+      ? {}
+      : { lockGraphDigest: field('lockGraphDigest') as string }),
+    ...(field('dependencyGraphDigest') === undefined
+      ? {}
+      : { dependencyGraphDigest: field('dependencyGraphDigest') as string }),
+    ...(field('configDigest') === undefined
+      ? {}
+      : { configDigest: field('configDigest') as string }),
+    ...(rawRulePacks === undefined
+      ? {}
+      : { rulePacks: Object.freeze(rulePacks) })
+  });
 }
 
 /** Hashes the installed Toolip package metadata and its complete runtime module tree. */
@@ -309,7 +471,9 @@ export function signReportEvidence(
   const issuedAt = input.issuedAt ?? new Date().toISOString();
   if (!Number.isFinite(Date.parse(issuedAt)))
     throw new TypeError('evidence issue time is invalid');
-  const subject = Object.freeze({ ...(input.subject ?? {}) });
+  const subject = normalizeEvidenceSubject(
+    input.subject === undefined ? {} : input.subject
+  );
   const payload = signedPayload(
     report,
     input.projectId,
@@ -347,6 +511,7 @@ export function verifyReportEvidence(
     trustedKeyId: string;
     expectedProjectId: string;
     expectedScannerArtifactSha256?: string;
+    expectedSourceTreeSha256?: string;
     now?: number;
     maxAgeMs?: number;
   }
@@ -371,12 +536,24 @@ export function verifyReportEvidence(
     !/^[A-Za-z0-9+/]{86}==$/u.test(envelope.signature)
   )
     return { status: 'invalid', reason: 'malformed-signature' };
+  let subject: ReportEvidenceSubject;
+  try {
+    subject = normalizeEvidenceSubject(envelope.subject);
+  } catch {
+    return { status: 'invalid', reason: 'malformed-signature' };
+  }
   if (
     input.expectedScannerArtifactSha256 !== undefined &&
     (!/^[a-f0-9]{64}$/u.test(input.expectedScannerArtifactSha256) ||
       input.expectedScannerArtifactSha256 !== envelope.scannerArtifactSha256)
   )
     return { status: 'untrusted', reason: 'scanner-artifact-mismatch' };
+  if (
+    input.expectedSourceTreeSha256 !== undefined &&
+    (!/^[a-f0-9]{64}$/u.test(input.expectedSourceTreeSha256) ||
+      subject.sourceTreeDigest !== input.expectedSourceTreeSha256)
+  )
+    return { status: 'untrusted', reason: 'source-tree-mismatch' };
   const issuedAt = Date.parse(envelope.issuedAt);
   const now = input.now ?? Date.now();
   if (issuedAt - now > FUTURE_CLOCK_SKEW_MS)
@@ -389,7 +566,7 @@ export function verifyReportEvidence(
   const payload = signedPayload(
     report,
     envelope.projectId,
-    envelope.subject,
+    subject,
     envelope.scannerArtifactSha256,
     envelope.keyId,
     envelope.issuedAt

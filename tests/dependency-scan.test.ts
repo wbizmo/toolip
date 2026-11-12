@@ -7,6 +7,10 @@ import {
   dependencyFileSourceFromSnapshot
 } from '../src/application/project-snapshot.js';
 import { AnalysisResultCache } from '../src/application/task-scheduler.js';
+import {
+  npmProvenanceIdentityDigest,
+  parseNpmProvenancePolicy
+} from '../src/providers/npm/provenance.js';
 
 const analyzePackageMock = vi.hoisted(() =>
   vi.fn(async (dependency: { name: string; version: string }) => ({
@@ -73,6 +77,7 @@ describe('scanDependencies', () => {
         inventoryCacheKey: firstSnapshot.lockGraphDigest
       });
       expect(first.inventoryCacheHit).toBe(false);
+      expect(first.dependencyGraphDigest).toMatch(/^[a-f0-9]{64}$/u);
 
       await writeFile(path.join(root, 'source.ts'), 'export const value = 2;');
       const sourceOnlySnapshot = await createProjectSnapshot(root, {
@@ -89,6 +94,9 @@ describe('scanDependencies', () => {
       });
       expect(sourceOnly.inventoryCacheHit).toBe(true);
       expect(sourceOnly.identities).toEqual(first.identities);
+      expect(sourceOnly.dependencyGraphDigest).toBe(
+        first.dependencyGraphDigest
+      );
 
       await writeFile(
         path.join(root, 'package.json'),
@@ -111,6 +119,39 @@ describe('scanDependencies', () => {
         inventoryCacheKey: manifestSnapshot.lockGraphDigest
       });
       expect(changedGraph.inventoryCacheHit).toBe(false);
+      expect(changedGraph.dependencyGraphDigest).toBe(
+        first.dependencyGraphDigest
+      );
+
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': {
+              name: 'fixture',
+              version: '1.0.0',
+              dependencies: { example: '^1.0.0' }
+            },
+            'node_modules/example': {
+              version: '1.3.0',
+              ...publicNpmSource('example', '1.3.0')
+            }
+          }
+        })
+      );
+      const changedLockSnapshot = await createProjectSnapshot(root, {
+        previous: manifestSnapshot
+      });
+      const changedLock = await scanDependencies(root, {
+        offline: true,
+        fileSource: dependencyFileSourceFromSnapshot(changedLockSnapshot),
+        inventoryCache: cache,
+        inventoryCacheKey: changedLockSnapshot.lockGraphDigest
+      });
+      expect(changedLock.dependencyGraphDigest).not.toBe(
+        changedGraph.dependencyGraphDigest
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -144,6 +185,74 @@ describe('scanDependencies', () => {
         }
       ]);
       expect(result.coverage.state).toBe('failed');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('surfaces opt-in npm provenance failures as explicit supply-chain findings', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-deps-provenance-')
+    );
+    try {
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': { name: 'fixture', version: '1.0.0' },
+            'node_modules/example': {
+              version: '1.2.3',
+              resolved:
+                'https://registry.npmjs.org/example/-/example-1.2.3.tgz',
+              integrity: `sha512-${Buffer.alloc(64, 0x41).toString('base64')}`
+            }
+          }
+        })
+      );
+      const { scanDependencies } =
+        await import('../src/core/dependency-scan.js');
+      const policy = parseNpmProvenancePolicy({
+        version: 1,
+        packages: {
+          example: {
+            certificateIssuer: 'https://token.actions.githubusercontent.com',
+            certificateIdentity:
+              'https://github.com/acme/example/.github/workflows/release.yml@refs/tags/v1.2.3',
+            sourceRepository: 'https://github.com/acme/example'
+          }
+        }
+      });
+      const verifier = vi.fn(async (identity) => ({
+        identityDigest: npmProvenanceIdentityDigest(identity),
+        name: identity.name,
+        version: identity.version,
+        status: 'untrusted' as const,
+        reason: 'repository_mismatch' as const,
+        artifactIntegrity: 'declared-not-verified' as const
+      }));
+      const result = await scanDependencies(root, {
+        offline: true,
+        npmProvenancePolicy: policy,
+        npmProvenanceVerifier: verifier
+      });
+
+      expect(verifier).toHaveBeenCalledTimes(1);
+      expect(result.npmProvenance).toMatchObject([
+        {
+          name: 'example',
+          version: '1.2.3',
+          status: 'untrusted',
+          reason: 'repository_mismatch'
+        }
+      ]);
+      expect(result.findings).toContainEqual(
+        expect.objectContaining({
+          ruleId: 'TOOLIP-NPM-PROVENANCE-UNVERIFIED',
+          category: 'supply-chain',
+          severity: 'info'
+        })
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }

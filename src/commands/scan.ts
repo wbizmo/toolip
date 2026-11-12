@@ -30,6 +30,10 @@ import {
 } from '../core/rule-packs.js';
 import { printReportSummary, printScannerContext } from '../utils/output.js';
 import { loadWasmAnalyzerPluginForCli } from '../core/analyzer-plugin.js';
+import {
+  readNpmProvenancePolicy,
+  type NpmProvenancePolicy
+} from '../providers/npm/provenance.js';
 
 export function registerScanCommand(program: Command): void {
   program
@@ -72,7 +76,11 @@ export function registerScanCommand(program: Command): void {
     )
     .option(
       '--analyzer-plugin-public-key <file>',
-      'Trusted Ed25519 public key for the analyzer plugin.'
+      'One-off trusted Ed25519 public key for plugin migration.'
+    )
+    .option(
+      '--analyzer-plugin-trust-store <file>',
+      'Operator-owned plugin key trust store outside the scanned project.'
     )
     .option(
       '--analyzer-plugin-key-id <id>',
@@ -98,6 +106,10 @@ export function registerScanCommand(program: Command): void {
     .option(
       '--allow-public-scope',
       'Consent to sending scoped npm package names to public metadata and advisory providers.'
+    )
+    .option(
+      '--npm-provenance-policy <file>',
+      'Opt in to exact npm provenance verification with an operator policy stored outside the scanned project.'
     )
     .option('--no-history', 'Do not append this scan to local history.')
     .option(
@@ -153,6 +165,7 @@ export function registerScanCommand(program: Command): void {
         packageHealth?: boolean;
         licenses?: boolean;
         allowPublicScope?: boolean;
+        npmProvenancePolicy?: string;
         dataSnapshot?: string;
         snapshotPublicKey?: string;
         snapshotPublicKeyId?: string;
@@ -170,6 +183,7 @@ export function registerScanCommand(program: Command): void {
         allowUnsignedRulePack?: boolean;
         analyzerPlugin?: string;
         analyzerPluginPublicKey?: string;
+        analyzerPluginTrustStore?: string;
         analyzerPluginKeyId?: string;
         enableExecutablePlugins?: boolean;
       }) => {
@@ -199,7 +213,9 @@ export function registerScanCommand(program: Command): void {
           analyzerPlugin = await loadWasmAnalyzerPluginForCli({
             manifestPath: options.analyzerPlugin,
             publicKeyPath: options.analyzerPluginPublicKey,
+            trustStorePath: options.analyzerPluginTrustStore,
             trustedKeyId: options.analyzerPluginKeyId,
+            projectRoot: options.path,
             enabled: options.enableExecutablePlugins
           });
         } catch (error) {
@@ -308,6 +324,28 @@ export function registerScanCommand(program: Command): void {
           );
 
         const projectSnapshot = await createProjectSnapshot(options.path);
+        let npmProvenancePolicy: NpmProvenancePolicy | undefined;
+        if (options.npmProvenancePolicy) {
+          if (options.offline) {
+            throw new ToolipError(
+              '--npm-provenance-policy cannot be used with --offline.',
+              { code: 'OFFLINE_PROVENANCE_CONFLICT', exitCode: 1 }
+            );
+          }
+          try {
+            npmProvenancePolicy = await readNpmProvenancePolicy(
+              options.npmProvenancePolicy,
+              projectSnapshot.root
+            );
+          } catch (error) {
+            throw new ToolipError(
+              error instanceof Error
+                ? error.message
+                : 'npm provenance policy could not be loaded.',
+              { code: 'NPM_PROVENANCE_POLICY_INVALID', exitCode: 1 }
+            );
+          }
+        }
         const context = await scannerContextFromSnapshot(projectSnapshot);
         printScannerContext(context);
 
@@ -324,6 +362,7 @@ export function registerScanCommand(program: Command): void {
             analyzerPlugins: analyzerPlugin ? [analyzerPlugin] : undefined,
             enableExecutablePlugins: options.enableExecutablePlugins,
             allowPublicScope: options.allowPublicScope,
+            npmProvenancePolicy,
             maxAdvisoryAgeMs: maxAdvisoryAgeDays * 24 * 60 * 60 * 1000,
             scannerContext: context,
             projectSnapshot
@@ -391,7 +430,8 @@ export function registerScanCommand(program: Command): void {
             keyId: plugin.keyId,
             state: plugin.coverage.state,
             findings: plugin.findings
-          }))
+          })),
+          npmProvenance: scorecard.npmProvenance
         });
         if (options.evidenceSigningKey) {
           const privateKeyPem = await readPemKeyFile(
@@ -435,6 +475,23 @@ export function registerScanCommand(program: Command): void {
           console.log(
             `${chalk.dim('Signals:')} ${scorecard.packageHealth.findings.length}`
           );
+        }
+
+        if (scorecard.npmProvenance?.length) {
+          const verified = scorecard.npmProvenance.filter(
+            (item) => item.status === 'verified'
+          ).length;
+          console.log('');
+          console.log(chalk.bold('npm Publisher Provenance'));
+          console.log(
+            `${chalk.dim('Verified:')} ${verified}/${scorecard.npmProvenance.length}`
+          );
+          if (verified !== scorecard.npmProvenance.length)
+            console.log(
+              chalk.yellow(
+                `${scorecard.npmProvenance.length - verified} package(s) remain unverified; see the JSON report for per-package status.`
+              )
+            );
         }
 
         console.log(

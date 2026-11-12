@@ -89,6 +89,43 @@ if (process.env.TOOLIP_STAGE_A_SIGNATURE_AUDIT !== expectedSignatureAudit)
   throw new Error(
     'Stage A registry signature audit is missing or inconsistent'
   );
+const dependencyArtifactCount = scan.coverage.dependencyArtifactCount;
+const verifiedArchiveDigests = scan.verifiedArtifactSha512ByLocation;
+if (
+  !verifiedArchiveDigests ||
+  typeof verifiedArchiveDigests !== 'object' ||
+  Array.isArray(verifiedArchiveDigests) ||
+  Object.keys(verifiedArchiveDigests).length !== dependencyArtifactCount ||
+  Object.entries(verifiedArchiveDigests).some(
+    ([location, digest]) =>
+      !/^node_modules\/(?!.*(?:^|\/)\.\.(?:\/|$))[^\\\0]+$/u.test(location) ||
+      !/^[a-f0-9]{128}$/u.test(digest ?? '')
+  )
+)
+  throw new Error('Stage A exact npm archive digest set is incomplete');
+let npmProvenanceStatus = 'not-applicable';
+let npmProvenancePolicySha256 = null;
+let npmProvenanceArtifactCount = 0;
+let npmProvenanceVerifiedCount = 0;
+if (dependencyArtifactCount > 0) {
+  const npmProvenance = JSON.parse(
+    await readFile(path.join(runnerTemp, 'stage-a-npm-provenance.json'), 'utf8')
+  );
+  if (
+    npmProvenance?.version !== 1 ||
+    npmProvenance.status !== 'verified' ||
+    npmProvenance.artifactCount !== dependencyArtifactCount ||
+    npmProvenance.verifiedCount !== dependencyArtifactCount ||
+    npmProvenance.failureCount !== 0 ||
+    npmProvenance.reasonCodes?.length !== 0 ||
+    !/^[0-9a-f]{64}$/iu.test(npmProvenance.policySha256 ?? '')
+  )
+    throw new Error('Stage A npm issuer/source policy result is incomplete');
+  npmProvenanceStatus = 'verified';
+  npmProvenancePolicySha256 = npmProvenance.policySha256;
+  npmProvenanceArtifactCount = npmProvenance.artifactCount;
+  npmProvenanceVerifiedCount = npmProvenance.verifiedCount;
+}
 const complexityEvidence = (body) => {
   const text = typeof body === 'string' ? body.toLowerCase() : '';
   return (
@@ -103,7 +140,7 @@ const complexityEvidence = (body) => {
   );
 };
 const record = {
-  version: 5,
+  version: 6,
   repository,
   pullRequest: pr.number,
   runId,
@@ -118,6 +155,11 @@ const record = {
   exceptionPolicySha256: scan.exceptionPolicySha256,
   appliedExceptions: scan.appliedExceptions,
   registrySignatureAudit: expectedSignatureAudit,
+  npmProvenanceStatus,
+  npmProvenancePolicySha256,
+  npmProvenanceArtifactCount,
+  npmProvenanceVerifiedCount,
+  verifiedArtifactSha512ByLocation: verifiedArchiveDigests,
   reasonCodes: scan.reasonCodes,
   status: 'approved',
   complexityEvidence: complexityEvidence(pr.body)

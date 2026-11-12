@@ -50,6 +50,11 @@ import { runTaskDag } from './task-scheduler.js';
 import type { VerifiedRulePack } from '../core/rule-packs.js';
 import type { WasmAnalyzerPlugin } from '../core/analyzer-plugin.js';
 import type { GoCommandRunner } from '../core/dependencies/go-module-graph.js';
+import type { ReportEvidenceSubject } from '../core/report-signature.js';
+import type {
+  NpmProvenancePolicy,
+  NpmProvenanceVerification
+} from '../providers/npm/provenance.js';
 
 export type SecurityScorecardServices = {
   dependencyScan?: typeof scanDependencies;
@@ -75,6 +80,8 @@ export type SecurityScorecardOptions = {
   maxAdvisoryAgeMs?: number;
   /** Explicit consent to send scoped npm package names to public providers. */
   allowPublicScope?: boolean;
+  /** Opt-in operator-owned trust rules for exact npm provenance verification. */
+  npmProvenancePolicy?: NpmProvenancePolicy;
   /** Opt in to npm publisher, maintenance and lifecycle-history review signals. */
   includePackageHealth?: boolean;
   /** Add deps.dev license findings to the immutable scan result. */
@@ -98,17 +105,13 @@ export type SecurityScorecardResult = {
   score: ToolipScore;
   dependencyHealth?: DependencyHealthBreakdown;
   dependencySummary?: DependencyScanResult['summary'];
+  npmProvenance?: NpmProvenanceVerification[];
   packageHealth?: PackageHealthAnalysis;
   licenseAnalysis?: LicenseAnalysisResult;
   findings: Finding[];
   warnings: string[];
   snapshotId: string;
-  evidenceSubject: {
-    gitRevision?: string;
-    gitIndexDigest?: string;
-    lockGraphDigest?: string;
-    configDigest?: string;
-  };
+  evidenceSubject: ReportEvidenceSubject;
   cacheMetrics: {
     hits: number;
     misses: number;
@@ -218,6 +221,7 @@ export async function buildSecurityScorecard(
             budget,
             offline: options.offline,
             allowPublicScope: options.allowPublicScope,
+            npmProvenancePolicy: options.npmProvenancePolicy,
             fileSource,
             inventoryCache: options.analysisCache,
             inventoryCacheKey: projectSnapshot.lockGraphDigest
@@ -383,6 +387,7 @@ export async function buildSecurityScorecard(
 
   let dependencyHealth: DependencyHealthBreakdown | undefined;
   let dependencySummary: DependencyScanResult['summary'] | undefined;
+  let npmProvenance: NpmProvenanceVerification[] | undefined;
   const packageHealthResult =
     packageHealthOutcome?.status === 'fulfilled'
       ? packageHealthOutcome.value
@@ -409,6 +414,7 @@ export async function buildSecurityScorecard(
     );
   } else {
     dependencySummary = dependencyOutcome.value.summary;
+    npmProvenance = dependencyOutcome.value.npmProvenance;
     findings.push(...dependencyOutcome.value.findings);
     const dependencyCoverage = dependencyOutcome.value.coverage;
 
@@ -471,6 +477,22 @@ export async function buildSecurityScorecard(
           : 'unavailable',
         vulnerabilityExecution.coverage.reason ??
           'Offline advisory records are missing or stale.'
+      );
+    } else if (
+      dependencyOutcome.value.npmProvenance?.some(
+        (verification) => verification.status !== 'verified'
+      )
+    ) {
+      const unverified = dependencyOutcome.value.npmProvenance.filter(
+        (verification) => verification.status !== 'verified'
+      );
+      const sample = unverified
+        .slice(0, 3)
+        .map((verification) => `${verification.name}@${verification.version}`)
+        .join(', ');
+      dependencyDimension = unmeasuredDimension(
+        'unavailable',
+        `npm publisher provenance is not verified for ${unverified.length} package(s)${sample ? ` (for example ${sample})` : ''}.`
       );
     } else {
       dependencyHealth = calculateDependencyHealthFromPackages(
@@ -673,6 +695,7 @@ export async function buildSecurityScorecard(
     score,
     dependencyHealth,
     dependencySummary,
+    ...(npmProvenance ? { npmProvenance } : {}),
     ...(packageHealthResult ? { packageHealth: packageHealthResult } : {}),
     ...(licenseAnalysisResult
       ? { licenseAnalysis: licenseAnalysisResult }
@@ -691,11 +714,30 @@ export async function buildSecurityScorecard(
       ...(capturedSnapshot.gitIndexDigest
         ? { gitIndexDigest: capturedSnapshot.gitIndexDigest }
         : {}),
+      sourceTreeDigest: capturedSnapshot.sourceTreeDigest,
       ...(capturedSnapshot.lockGraphDigest
         ? { lockGraphDigest: capturedSnapshot.lockGraphDigest }
         : {}),
+      ...(dependencyOutcome.status === 'fulfilled' &&
+      dependencyOutcome.value.dependencyGraphDigest
+        ? {
+            dependencyGraphDigest: dependencyOutcome.value.dependencyGraphDigest
+          }
+        : {}),
       ...(capturedSnapshot.configDigest
         ? { configDigest: capturedSnapshot.configDigest }
+        : {}),
+      ...(options.rulePacks?.length
+        ? {
+            rulePacks: options.rulePacks.map(({ id, sha256, trust, keyId }) =>
+              Object.freeze({
+                id,
+                sha256,
+                trust,
+                ...(keyId === undefined ? {} : { keyId })
+              })
+            )
+          }
         : {})
     },
     cacheMetrics: {

@@ -8,7 +8,7 @@ WASI modules, and modules with any import are rejected.
 ```sh
 toolip doctor \
   --analyzer-plugin ./team-analyzer.json \
-  --analyzer-plugin-public-key ./team-analyzer.pub.pem \
+  --analyzer-plugin-trust-store "$HOME/toolip/plugin-trust.json" \
   --analyzer-plugin-key-id team-analyzer-2026 \
   --enable-executable-plugins
 ```
@@ -16,9 +16,17 @@ toolip doctor \
 The manifest is strict JSON. Its Ed25519 signature covers the canonical
 manifest fields, including the module SHA-256, capability list, expiration and
 resource limits. The module must be a regular non-symlink file in the same
-directory as the manifest. The caller supplies the trusted public key and key
-ID independently. A changed module, untrusted key, expired manifest, unknown
-field or unsupported API is rejected before execution.
+directory as the manifest. The recommended trust store is a strict version 1
+JSON file outside the scanned project. It maps key IDs to Ed25519 public PEMs
+and `active` or `revoked` status, with optional canonical UTC `validFrom` and
+`expiresAt` timestamps. A revoked key is denied on the next plugin load; key
+rotation adds a new key ID before removing the old one. Trust store reads reject
+symlinks, duplicate keys, unknown fields, invalid key types, validity-window
+errors and files over 1 MiB or 100 key entries. `--analyzer-plugin-public-key`
+remains available as an explicit one-off migration path, but it has no central
+revocation or rotation policy. A changed module, untrusted/revoked/expired key,
+expired manifest, unknown field or unsupported API is rejected before
+execution.
 
 The only capability in API v1 is `read-snapshot`. Toolip sends the bounded,
 immutable text snapshot as JSON. Plugins have no host imports, WASI, filesystem,
@@ -66,6 +74,11 @@ isolated in the validation worker. The worker is a capability boundary for the
 no-import WASM module; it is not an OS sandbox for arbitrary native code. Node
 workers and WebAssembly are required. The cross-platform Node matrix still
 needs to verify this path.
+
+Plugin signer trust stores are external strict JSON capped at 1 MiB and 100
+keys. Parsing and public-key validation are `O(S + K)` time and space for store
+bytes `S` and entries `K`; key lookup is expected `O(1)`. The CLI reloads the
+store for each plugin load, so revocation takes effect on the next invocation.
 
 Declarative signed JSON rule packs remain the preferred extension format for
 literal checks. They run in-process without executable code. Plugins should be

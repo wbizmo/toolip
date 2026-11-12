@@ -17,9 +17,9 @@
  */
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
 import semver from 'semver';
 import { parse } from 'yaml';
+import { trustedScannerDigest } from './stage-a-gate.mjs';
 
 const DIR = process.env.WORKFLOWS_DIR ?? '.github/workflows';
 const RELEASE = new Set(['publish.yml', 'github-release.yml']);
@@ -110,6 +110,18 @@ for (const file of files) {
     const runtimeVerifierIndex = stageASteps.findIndex((step) =>
       String(step.run ?? '').includes('scripts/verify-node.mjs')
     );
+    const scannerDigestCheckIndex = stageASteps.findIndex((step) =>
+      String(step.run ?? '').includes('scripts/verify-stage-a-scanner.mjs')
+    );
+    const trustedInstallIndex = stageASteps.findIndex((step) =>
+      String(step.name ?? '').includes('protected scanner dependencies')
+    );
+    const trustedBuildIndex = stageASteps.findIndex(
+      (step) => String(step.run ?? '').trim() === 'npm run build'
+    );
+    const provenanceIndex = stageASteps.findIndex((step) =>
+      String(step.run ?? '').includes('scripts/stage-a-npm-provenance.mjs')
+    );
     const writerIndex = stageASteps.findIndex((step) =>
       String(step.run ?? '').includes('scripts/write-stage-a-artifact.mjs')
     );
@@ -118,7 +130,12 @@ for (const file of files) {
         ? [index]
         : []
     );
-    const approvedInstallIndex = inertInstallIndexes[0] ?? -1;
+    const approvedInstallIndex =
+      inertInstallIndexes.find((index) =>
+        String(stageASteps[index]?.['working-directory'] ?? '').includes(
+          'toolip-stage-a-dependency-audit'
+        )
+      ) ?? -1;
     const approvalUploadIndex = stageASteps.findIndex(
       (step) =>
         String(step.uses ?? '').startsWith('actions/upload-artifact@') &&
@@ -133,11 +150,36 @@ for (const file of files) {
     const scannerEnv = stageASteps[scannerIndex]?.env ?? {};
     if (
       scannerIndex < 0 ||
-      inertInstallIndexes.length !== 1 ||
+      inertInstallIndexes.length !== 2 ||
       trustedRuntimeIndex < 0 ||
       runtimeVerifierIndex <= trustedRuntimeIndex ||
-      runtimeVerifierIndex >= scannerIndex ||
+      runtimeVerifierIndex >= scannerDigestCheckIndex ||
+      scannerDigestCheckIndex <= runtimeVerifierIndex ||
+      scannerDigestCheckIndex >= trustedInstallIndex ||
+      trustedInstallIndex <= scannerDigestCheckIndex ||
+      !String(stageASteps[trustedInstallIndex]?.run ?? '').includes(
+        'npm ci --ignore-scripts'
+      ) ||
+      !String(stageASteps[trustedInstallIndex]?.run ?? '').includes(
+        'npm audit signatures --ignore-scripts'
+      ) ||
+      stageASteps[trustedInstallIndex]?.env?.npm_config_ignore_scripts !==
+        'true' ||
+      trustedBuildIndex <= trustedInstallIndex ||
+      trustedBuildIndex >= scannerIndex ||
       writerIndex <= scannerIndex ||
+      provenanceIndex <= scannerIndex ||
+      provenanceIndex >= approvedInstallIndex ||
+      !String(stageASteps[provenanceIndex]?.if ?? '').includes(
+        "steps.gate.outputs.status == 'approved'"
+      ) ||
+      !String(stageASteps[provenanceIndex]?.if ?? '').includes(
+        "steps.gate.outputs.dependency_audit_required == 'true'"
+      ) ||
+      !String(
+        stageASteps[provenanceIndex]?.env
+          ?.TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY ?? ''
+      ).includes('vars.TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY') ||
       (approvedInstallIndex !== -1 &&
         (approvedInstallIndex <= scannerIndex ||
           approvedInstallIndex >= writerIndex ||
@@ -162,18 +204,23 @@ for (const file of files) {
           stageASteps[approvedInstallIndex]?.env?.npm_config_ignore_scripts !==
             'true')) ||
       approvalUploadIndex <= writerIndex ||
-      (diagnosticUploadIndex !== -1 &&
-        (diagnosticUploadIndex <= scannerIndex ||
-          !String(stageASteps[diagnosticUploadIndex]?.if ?? '').includes(
-            'always()'
-          ) ||
-          !String(
-            stageASteps[diagnosticUploadIndex]?.with?.path ?? ''
-          ).includes('stage-a-results.sarif'))) ||
+      diagnosticUploadIndex <= scannerIndex ||
+      diagnosticUploadIndex >= approvedInstallIndex ||
+      !String(stageASteps[diagnosticUploadIndex]?.if ?? '').includes(
+        'always()'
+      ) ||
+      !String(stageASteps[diagnosticUploadIndex]?.with?.path ?? '').includes(
+        'stage-a-results.sarif'
+      ) ||
+      !String(stageASteps[diagnosticUploadIndex]?.with?.path ?? '').includes(
+        'stage-a-npm-provenance.json'
+      ) ||
       !String(
         stageASteps[scannerIndex]?.env?.TOOLIP_STAGE_A_SHA256 ?? ''
       ).match(/^[0-9a-f]{64}$/u) ||
       stageASteps[writerIndex]?.env?.TOOLIP_STAGE_A_SHA256 !==
+        stageASteps[scannerIndex]?.env?.TOOLIP_STAGE_A_SHA256 ||
+      stageASteps[scannerDigestCheckIndex]?.env?.TOOLIP_STAGE_A_SHA256 !==
         stageASteps[scannerIndex]?.env?.TOOLIP_STAGE_A_SHA256 ||
       scannerEnv.GITHUB_TOKEN === undefined ||
       [
@@ -200,6 +247,7 @@ for (const file of files) {
         (step, index) =>
           typeof step.run === 'string' &&
           !inertInstallIndexes.includes(index) &&
+          index !== trustedBuildIndex &&
           /\bnpm\s+(?:ci|install|run)|\b(?:npm|pnpm|yarn)\s+exec\b/u.test(
             step.run
           )
@@ -226,22 +274,46 @@ for (const file of files) {
         String(step.if ?? '').includes("!= 'success'") &&
         String(step.run ?? '').includes('exit 1')
     );
+    const trustedVerifierCheckout = (verifier?.steps ?? []).find(
+      (step) =>
+        step.uses?.startsWith('actions/checkout@') &&
+        String(step.with?.ref ?? '').includes(
+          'github.event.repository.default_branch'
+        ) &&
+        step.with?.['persist-credentials'] === false
+    );
+    const artifactVerificationStep = (verifier?.steps ?? []).find((step) =>
+      String(step.run ?? '').includes('verify-stage-a-artifact.mjs')
+    );
+    const approvalArtifactDownload = (verifier?.steps ?? []).find(
+      (step) =>
+        step.uses?.startsWith('actions/download-artifact@') &&
+        String(step.with?.name ?? '').includes('stage-a-')
+    );
     if (
       !String(verifier?.if ?? '').includes(
         "github.event_name == 'workflow_run'"
       ) ||
-      !failClosedStep
+      !failClosedStep ||
+      !trustedVerifierCheckout
     )
       fail(
         file,
         'Stage B must fail visibly when the completed Stage A workflow did not succeed; skipped required jobs can otherwise appear successful'
       );
     if (
-      !(verifier?.steps ?? []).some((step) =>
-        String(step.run ?? '').includes('verify-stage-a-artifact.mjs')
+      !artifactVerificationStep ||
+      !String(
+        artifactVerificationStep.env?.TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY ?? ''
+      ).includes('vars.TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY') ||
+      !String(approvalArtifactDownload?.with?.['run-id'] ?? '').includes(
+        'github.event.workflow_run.id'
       )
     )
-      fail(file, 'Stage B must validate the exact Stage A run artifact');
+      fail(
+        file,
+        'Stage B must validate the exact Stage A run artifact against the current operator npm provenance policy'
+      );
     if (
       !triggers.includes('workflow_run') ||
       !(verifier?.steps ?? []).some((step) =>
@@ -278,6 +350,70 @@ for (const file of files) {
               `job ${jobName} must check out the verified immutable merge SHA without persisted credentials`
             );
     }
+  }
+  if (file === 'publish.yml') {
+    const releaseSteps = doc.jobs?.publish?.steps ?? [];
+    const createAttestationIndex = releaseSteps.findIndex((step) =>
+      String(step.run ?? '').includes('npm-attestation create')
+    );
+    const verifyAttestationIndex = releaseSteps.findIndex((step) =>
+      String(step.run ?? '').includes('npm-attestation verify')
+    );
+    const uploadAttestationIndex = releaseSteps.findIndex((step) =>
+      String(step.uses ?? '').startsWith('actions/upload-artifact@')
+    );
+    const publishIndex = releaseSteps.findIndex((step) =>
+      String(step.name ?? '').startsWith(
+        'Publish to npm with trusted publishing'
+      )
+    );
+    const createAttestation = releaseSteps[createAttestationIndex];
+    const verifyAttestation = releaseSteps[verifyAttestationIndex];
+    const publishStep = releaseSteps[publishIndex];
+    if (
+      createAttestationIndex < 0 ||
+      verifyAttestationIndex !== createAttestationIndex ||
+      String(verifyAttestation?.run ?? '').indexOf('npm-attestation verify') <=
+        String(createAttestation?.run ?? '').indexOf(
+          'npm-attestation create'
+        ) ||
+      uploadAttestationIndex <= verifyAttestationIndex ||
+      publishIndex <= uploadAttestationIndex ||
+      !String(createAttestation?.run ?? '').includes(
+        ['TARBALL="toolip-$', '{VERSION}.tgz"'].join('')
+      ) ||
+      !String(createAttestation?.run ?? '').includes('--tarball "$TARBALL"') ||
+      !String(verifyAttestation?.run ?? '').includes('--tarball "$TARBALL"') ||
+      !String(verifyAttestation?.run ?? '').includes(
+        '--certificate-issuer "https://token.actions.githubusercontent.com"'
+      ) ||
+      !String(verifyAttestation?.run ?? '').includes(
+        '--certificate-identity "https://github.com/wbizmo/toolip/.github/workflows/publish.yml@refs/heads/main"'
+      ) ||
+      !String(publishStep?.run ?? '').includes(
+        ['npm publish --ignore-scripts "toolip-$', '{VERSION}.tgz"'].join('')
+      ) ||
+      !String(publishStep?.env?.NPM_CONFIG_PROVENANCE ?? '').includes('true') ||
+      createAttestation?.env?.SOURCE_COMMIT !==
+        ['$', '{{ github.sha }}'].join('') ||
+      createAttestation?.env?.SOURCE_REPOSITORY !==
+        ['https://github.com/$', '{{ github.repository }}'].join('') ||
+      [
+        createAttestation,
+        verifyAttestation,
+        releaseSteps[uploadAttestationIndex],
+        publishStep
+      ].some(
+        (step) =>
+          !String(step?.if ?? '').includes(
+            "steps.availability.outputs.should_publish == 'true'"
+          )
+      )
+    )
+      fail(
+        file,
+        'publish must sign, verify, preserve, and publish the same exact tarball under the pinned release workflow identity'
+      );
   }
   for (const [jobName, job] of Object.entries(doc.jobs ?? {})) {
     for (const [scope, level] of Object.entries(job.permissions ?? {})) {
@@ -345,26 +481,11 @@ if (files.includes('stage-a.yml')) {
       'stage-a.yml',
       'trusted Stage A runtime must use an exact, supported Node.js patch version'
     );
-  const scannerDigest = createHash('sha256').update(
-    'toolip-stage-a-scanner-v2\0'
-  );
-  for (const relativePath of [
-    'scripts/stage-a-gate.mjs',
-    'vendor/stage-a-yaml-parser.mjs'
-  ]) {
-    const bytes = await readFile(relativePath);
-    scannerDigest
-      .update(relativePath)
-      .update('\0')
-      .update(String(bytes.length))
-      .update('\0')
-      .update(bytes);
-  }
-  const scannerSha = scannerDigest.digest('hex');
+  const scannerSha = await trustedScannerDigest();
   if (!stageAWorkflow.includes(`TOOLIP_STAGE_A_SHA256: ${scannerSha}`))
     fail(
       'stage-a.yml',
-      'trusted scanner digest pin does not match scripts/stage-a-gate.mjs'
+      'trusted scanner digest pin does not match the trusted scanner sources'
     );
   const artifactVerifier = await readFile(
     'scripts/verify-stage-a-artifact.mjs',
