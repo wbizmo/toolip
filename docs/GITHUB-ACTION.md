@@ -7,12 +7,16 @@ disabled, verifies registry signatures, and then builds that pinned Toolip
 revision. It does not install or execute scripts from the scanned repository.
 
 SARIF upload is available as an explicit opt-in with `upload-sarif: 'true'`.
-The composite action uses a pinned CodeQL uploader and skips uploads for fork
-pull requests, including `pull_request_target`. It also skips `workflow_run`
-events because their associated pull request context may be incomplete. The
-calling job must grant `security-events: write`; the action cannot grant
-permissions itself. Use the separate upload-job example below when the
-workflow should keep that permission off the scanning job.
+The composite action uses a pinned CodeQL uploader and only uploads for a PR
+whose head and base repository IDs are present and match, with the head marked
+as non-fork. This covers same-repository `pull_request` and
+`pull_request_target` events and fails closed if repository metadata is absent.
+For non-PR events, only `push`, `schedule`, `workflow_dispatch`, and `release`
+are allowed. `workflow_run`, `merge_group`, and unknown event types are skipped
+because their PR source cannot be verified by this event payload. The calling
+job must grant `security-events: write`; the action cannot grant permissions
+itself. Use the separate upload-job example below when the workflow should
+keep that permission off the scanning job.
 
 Pin the action to a reviewed immutable commit SHA. Keep the workflow token
 read-only for scanning, and grant `security-events: write` only to a separate
@@ -49,7 +53,7 @@ jobs:
 
   upload:
     needs: scan
-    if: github.event_name != 'workflow_run' && (!github.event.pull_request || github.event.pull_request.head.repo.fork == false)
+    if: (((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.id > 0 && github.event.pull_request.base.repo.id > 0 && github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id && github.event.pull_request.head.repo.fork == false) || contains(fromJSON('["push","schedule","workflow_dispatch","release"]'), github.event_name))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -59,14 +63,14 @@ jobs:
         with:
           name: toolip-sarif
       - uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
-        if: github.event_name != 'workflow_run' && (!github.event.pull_request || github.event.pull_request.head.repo.fork == false)
+        if: (((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.id > 0 && github.event.pull_request.base.repo.id > 0 && github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id && github.event.pull_request.head.repo.fork == false) || contains(fromJSON('["push","schedule","workflow_dispatch","release"]'), github.event_name))
         with:
           sarif_file: toolip.sarif
 ```
 
 Pin Toolip to a reviewed immutable commit SHA. The scan job has read
 permissions only; the separate upload job receives `security-events: write`
-only for events that are not fork pull requests and are not `workflow_run`.
+only for the same-repository PR contexts or allowlisted non-PR events above.
 The artifact actions and GitHub Code Scanning uploader are also pinned to
 immutable SHAs. Fork scans never receive a write-scoped token.
 

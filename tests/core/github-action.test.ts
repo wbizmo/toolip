@@ -45,14 +45,28 @@ describe('GitHub Action integration contract', () => {
       /^github\/codeql-action\/upload-sarif@[a-f0-9]{40}$/u
     );
     expect(upload?.if).toContain("inputs.upload-sarif == 'true'");
-    expect(upload?.if).toContain("github.event_name != 'workflow_run'");
+    expect(upload?.if).toContain("github.event_name == 'pull_request_target'");
+    expect(upload?.if).toContain('github.event.pull_request.head.repo.id > 0');
+    expect(upload?.if).toContain('github.event.pull_request.base.repo.id > 0');
     expect(upload?.if).toContain(
-      '!github.event.pull_request || github.event.pull_request.head.repo.fork == false'
+      'github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id'
     );
     expect(upload?.if).toContain(
       'github.event.pull_request.head.repo.fork == false'
     );
+    expect(upload?.if).toContain(
+      'contains(fromJSON(\'["push","schedule","workflow_dispatch","release"]\'), github.event_name)'
+    );
+    expect(upload?.if).not.toContain('!github.event.pull_request');
     expect(upload?.if).not.toContain("github.event_name != 'pull_request'");
     expect(upload?.with?.sarif_file).toBe('$' + '{{ inputs.sarif-output }}');
+
+    const docs = await readFile(path.resolve('docs/GITHUB-ACTION.md'), 'utf8');
+    expect(docs).toContain(
+      'github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id'
+    );
+    expect(docs).toContain(
+      'contains(fromJSON(\'["push","schedule","workflow_dispatch","release"]\'), github.event_name)'
+    );
   });
 });
