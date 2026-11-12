@@ -50,7 +50,7 @@ inputs:
     required: false
     default: '24'
   upload-sarif:
-    description: 'Upload redacted SARIF to GitHub Code Scanning (requires security-events: write; skipped for fork pull requests).'
+    description: 'Upload redacted SARIF to GitHub Code Scanning (requires security-events: write; skipped for fork pull requests and workflow_run events).'
     required: false
     default: 'false'
 runs:
@@ -127,7 +127,7 @@ runs:
         fi
         node "$GITHUB_ACTION_PATH/dist/src/index.js" "${args[@]}"
     - name: Upload SARIF to GitHub Code Scanning
-      if: ${{ always() && !cancelled() && inputs.upload-sarif == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false) }}
+      if: ${{ always() && !cancelled() && inputs.upload-sarif == 'true' && github.event_name != 'workflow_run' && (!github.event.pull_request || github.event.pull_request.head.repo.fork == false) }}
       uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
       with:
         sarif_file: ${{ inputs.sarif-output }}

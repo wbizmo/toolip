@@ -45,9 +45,14 @@ describe('GitHub Action integration contract', () => {
       /^github\/codeql-action\/upload-sarif@[a-f0-9]{40}$/u
     );
     expect(upload?.if).toContain("inputs.upload-sarif == 'true'");
+    expect(upload?.if).toContain("github.event_name != 'workflow_run'");
+    expect(upload?.if).toContain(
+      '!github.event.pull_request || github.event.pull_request.head.repo.fork == false'
+    );
     expect(upload?.if).toContain(
       'github.event.pull_request.head.repo.fork == false'
     );
+    expect(upload?.if).not.toContain("github.event_name != 'pull_request'");
     expect(upload?.with?.sarif_file).toBe('$' + '{{ inputs.sarif-output }}');
   });
 });
