@@ -1,11 +1,20 @@
-import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import {
+  createHash,
+  createHmac,
+  randomUUID,
+  timingSafeEqual
+} from 'node:crypto';
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import path from 'node:path';
+import { TextDecoder } from 'node:util';
 import { realpath } from 'node:fs/promises';
 import { buildSecurityScorecard } from '../../application/security-scorecard.js';
-import { createProjectSnapshot } from '../../application/project-snapshot.js';
-import { runGit } from '../git/safe-git.js';
+import {
+  createProjectSnapshot,
+  verifyProjectSnapshot
+} from '../../application/project-snapshot.js';
+import { runGit, runGitChecked } from '../git/safe-git.js';
 import { redactSensitiveText } from '../safe-output.js';
 import { GitHubAppDeliveryJournal } from './delivery-journal.js';
 
@@ -16,6 +25,9 @@ const DELIVERY_ID = /^[A-Za-z0-9-]{1,128}$/u;
 const MAX_BODY_BYTES = 1_048_576;
 const DEFAULT_DEDUPE_LIMIT = 10_000;
 const DEFAULT_DEDUPE_TTL_MS = 24 * 60 * 60 * 1_000;
+const MAX_SNAPSHOT_TREE_BYTES = 16 * 1024 * 1024;
+const MAX_SNAPSHOT_FILES = 20_000;
+const MAX_SNAPSHOT_BLOB_BYTES = 64 * 1024 * 1024;
 
 export type GitHubAppRepository = Readonly<{
   name: string;
@@ -138,6 +150,207 @@ function settleOnAbort<T>(
       }
     );
   });
+}
+
+type CommitTreeBlob = Readonly<{
+  mode: string;
+  oid: string;
+  path: string;
+}>;
+
+function parseCommitTree(
+  output: Buffer
+): { ok: true; blobs: CommitTreeBlob[] } | { ok: false; reason: string } {
+  if (output.byteLength > MAX_SNAPSHOT_TREE_BYTES)
+    return { ok: false, reason: 'repository-tree-budget-exceeded' };
+  if (output.byteLength > 0 && output[output.byteLength - 1] !== 0)
+    return { ok: false, reason: 'repository-tree-truncated' };
+
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  const blobs: CommitTreeBlob[] = [];
+  let offset = 0;
+  while (offset < output.byteLength) {
+    const end = output.indexOf(0, offset);
+    const tab = output.indexOf(9, offset);
+    if (end < 0 || tab < 0 || tab >= end)
+      return { ok: false, reason: 'repository-tree-malformed' };
+    const metadata = output.subarray(offset, tab).toString('ascii');
+    const match = metadata.match(
+      /^([0-7]{6}) (blob|commit) ([a-f0-9]{40,64})$/u
+    );
+    if (!match?.[1] || !match[2] || !match[3])
+      return { ok: false, reason: 'repository-tree-malformed' };
+    let entryPath: string;
+    try {
+      const pathBytes = output.subarray(tab + 1, end);
+      entryPath = decoder.decode(pathBytes);
+      if (!Buffer.from(entryPath, 'utf8').equals(pathBytes))
+        return { ok: false, reason: 'repository-tree-path-invalid' };
+    } catch {
+      return { ok: false, reason: 'repository-tree-path-invalid' };
+    }
+    if (
+      !entryPath ||
+      entryPath.includes('\\') ||
+      entryPath.startsWith('/') ||
+      entryPath
+        .split('/')
+        .some((part) => !part || part === '.' || part === '..')
+    )
+      return { ok: false, reason: 'repository-tree-path-invalid' };
+    if (match[2] !== 'blob')
+      return {
+        ok: false,
+        reason: 'repository-tree-contains-link-or-submodule'
+      };
+    if (match[1] !== '100644' && match[1] !== '100755')
+      return { ok: false, reason: 'repository-tree-mode-unsupported' };
+    blobs.push({
+      mode: match[1],
+      oid: match[3].toLowerCase(),
+      path: entryPath
+    });
+    if (blobs.length > MAX_SNAPSHOT_FILES)
+      return { ok: false, reason: 'repository-tree-file-budget-exceeded' };
+    offset = end + 1;
+  }
+  return { ok: true, blobs };
+}
+
+function parseCommitBlobs(
+  output: Buffer,
+  oids: readonly string[],
+  maximumBytes: number
+): Map<string, { sha256: string; bytes: number }> | undefined {
+  const content = new Map<string, { sha256: string; bytes: number }>();
+  let offset = 0;
+  let total = 0;
+  for (const oid of oids) {
+    const headerEnd = output.indexOf(10, offset);
+    if (headerEnd < 0) return undefined;
+    const header = output.subarray(offset, headerEnd).toString('ascii');
+    const match = header.match(/^([a-f0-9]{40,64}) blob ([0-9]+)$/u);
+    if (!match || match[1]?.toLowerCase() !== oid) return undefined;
+    const size = Number(match[2]);
+    if (!Number.isSafeInteger(size) || size < 0 || size > maximumBytes)
+      return undefined;
+    total += size;
+    if (total > maximumBytes) return undefined;
+    const start = headerEnd + 1;
+    const end = start + size;
+    if (end >= output.byteLength || output[end] !== 10) return undefined;
+    const bytes = output.subarray(start, end);
+    content.set(oid, {
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+      bytes: size
+    });
+    offset = end + 1;
+  }
+  return offset === output.byteLength ? content : undefined;
+}
+
+/** Proves snapshot coverage and bytes against regular blobs in one exact Git tree. */
+async function verifySnapshotMatchesCommit(
+  root: string,
+  revision: string,
+  snapshot: Awaited<ReturnType<typeof createProjectSnapshot>>,
+  signal: AbortSignal
+): Promise<{ matches: true } | { matches: false; reason: string }> {
+  try {
+    const prefix = await runGitChecked(['rev-parse', '--show-prefix'], {
+      cwd: root,
+      signal,
+      timeoutMs: 5_000,
+      maxBuffer: 4_096
+    });
+    if (prefix.toString('utf8').trim().length !== 0)
+      return { matches: false, reason: 'repository-root-not-top-level' };
+    const treeOutput = await runGitChecked(
+      ['--no-replace-objects', 'ls-tree', '-r', '-z', '--full-tree', revision],
+      {
+        cwd: root,
+        signal,
+        timeoutMs: 30_000,
+        maxBuffer: MAX_SNAPSHOT_TREE_BYTES
+      }
+    );
+    const tree = parseCommitTree(treeOutput);
+    if (!tree.ok) return { matches: false, reason: tree.reason };
+    if (tree.blobs.length !== snapshot.files.length)
+      return {
+        matches: false,
+        reason: 'repository-snapshot-file-set-mismatch'
+      };
+
+    const captured = new Map(snapshot.files.map((file) => [file.path, file]));
+    if (captured.size !== snapshot.files.length)
+      return { matches: false, reason: 'repository-snapshot-path-duplicate' };
+    const oids: string[] = [];
+    const treeByPath = new Map<string, CommitTreeBlob>();
+    for (const blob of tree.blobs) {
+      if (treeByPath.has(blob.path))
+        return { matches: false, reason: 'repository-tree-path-duplicate' };
+      treeByPath.set(blob.path, blob);
+      if (!captured.has(blob.path))
+        return {
+          matches: false,
+          reason: 'repository-snapshot-file-set-mismatch'
+        };
+      oids.push(blob.oid);
+    }
+    const uniqueOids = [...new Set(oids)];
+    const output = await runGitChecked(
+      ['--no-replace-objects', 'cat-file', '--batch'],
+      {
+        cwd: root,
+        signal,
+        timeoutMs: 30_000,
+        maxBuffer: MAX_SNAPSHOT_BLOB_BYTES + uniqueOids.length * 128,
+        input: `${uniqueOids.join('\n')}\n`
+      }
+    );
+    const gitContent = parseCommitBlobs(
+      output,
+      uniqueOids,
+      Math.min(snapshot.budgets.maxTotalBytes, MAX_SNAPSHOT_BLOB_BYTES)
+    );
+    if (!gitContent)
+      return {
+        matches: false,
+        reason: 'repository-snapshot-blob-budget-or-read-failed'
+      };
+    for (const [relativePath, blob] of treeByPath) {
+      const file = captured.get(relativePath);
+      const committed = gitContent.get(blob.oid);
+      if (
+        !file ||
+        !committed ||
+        file.bytes !== committed.bytes ||
+        file.sha256 !== committed.sha256
+      )
+        return {
+          matches: false,
+          reason: 'repository-snapshot-content-mismatch'
+        };
+      if (blob.mode === '100755' && file.binary)
+        return {
+          matches: false,
+          reason: 'repository-executable-binary-uninspected'
+        };
+      if (
+        file.content?.startsWith('version https://git-lfs.github.com/spec/v1\n')
+      )
+        return { matches: false, reason: 'repository-lfs-object-unavailable' };
+    }
+    return { matches: true };
+  } catch {
+    return {
+      matches: false,
+      reason: signal.aborted
+        ? 'repository-snapshot-verification-cancelled'
+        : 'repository-snapshot-verification-unavailable'
+    };
+  }
 }
 
 function sendJson(
@@ -346,6 +559,7 @@ export class GitHubAppWebhookService {
   private readonly repositories = new Map<string, GitHubAppRepository>();
   private readonly suspendedInstallations = new Set<number>();
   private readonly pendingSuspensions = new Set<number>();
+  private readonly scheduledRepositories = new Set<string>();
   private readonly deliveries = new Map<string, DeliveryRecord>();
   private readonly queue: Array<{
     work: GitHubAppScanWork;
@@ -451,6 +665,7 @@ export class GitHubAppWebhookService {
       this.closed ||
       !repository ||
       this.suspendedInstallations.has(repository.installationId) ||
+      this.scheduledRepositories.has(repository.name) ||
       this.queue.length >= this.queueLimit
     )
       return false;
@@ -463,6 +678,7 @@ export class GitHubAppWebhookService {
       deliveryId
     });
     this.queue.push({ work, repository });
+    this.scheduledRepositories.add(repository.name);
     this.rememberDelivery(deliveryId, 'pending');
     this.pump();
     return true;
@@ -480,6 +696,8 @@ export class GitHubAppWebhookService {
     for (const controller of this.activeControllers)
       controller.abort(new Error('GitHub App service is shutting down.'));
     for (const item of this.queue.splice(0)) {
+      if (item.work.kind === 'scheduled')
+        this.scheduledRepositories.delete(item.work.repository);
       this.rememberDelivery(item.work.deliveryId, 'complete');
       void this.writeAudit({
         event: 'scan-cancelled',
@@ -799,6 +1017,8 @@ export class GitHubAppWebhookService {
         })
         .finally(() => {
           clearTimeout(deadline);
+          if (item.work.kind === 'scheduled')
+            this.scheduledRepositories.delete(item.work.repository);
           this.activeControllers.delete(controller);
           this.controllerInstallations.delete(controller);
           this.rememberDelivery(item.work.deliveryId, 'complete');
@@ -830,6 +1050,8 @@ export class GitHubAppWebhookService {
       const item = this.queue[index];
       if (!item || item.work.installationId !== installationId) continue;
       this.queue.splice(index, 1);
+      if (item.work.kind === 'scheduled')
+        this.scheduledRepositories.delete(item.work.repository);
       this.rememberDelivery(item.work.deliveryId, 'complete');
       void this.writeAudit({
         event: 'scan-cancelled',
@@ -889,6 +1111,10 @@ export function createGitHubAppScorecardScanner(
   options: {
     offline?: boolean;
     timeoutMs?: number;
+    /** Snapshot factory seam for adversarial capture-race tests. */
+    snapshotter?: typeof createProjectSnapshot;
+    /** Scorecard runner seam for adversarial analysis-race tests. */
+    scorecardRunner?: typeof buildSecurityScorecard;
   } = {}
 ): GitHubAppWebhookOptions['scan'] {
   const offline = options.offline ?? true;
@@ -941,8 +1167,62 @@ export function createGitHubAppScorecardScanner(
           findingCount: 0,
           reason: 'scan-cancelled'
         };
-      const snapshot = await createProjectSnapshot(root, { signal });
-      const scorecard = await buildSecurityScorecard(
+      const snapshot = await (options.snapshotter ?? createProjectSnapshot)(
+        root,
+        { signal }
+      );
+      const [capturedHead, capturedStatus] = await Promise.all([
+        runGit(['rev-parse', '--verify', 'HEAD^{commit}'], {
+          cwd: root,
+          signal,
+          timeoutMs: 5_000,
+          maxBuffer: 4_096
+        }),
+        runGit(['status', '--porcelain=v1', '--untracked-files=all'], {
+          cwd: root,
+          signal,
+          timeoutMs: 5_000,
+          maxBuffer: 1_048_576
+        })
+      ]);
+      if (
+        capturedHead.code !== 0 ||
+        capturedStatus.code !== 0 ||
+        capturedHead.stdout.toString('utf8').trim().toLowerCase() !==
+          revision ||
+        capturedStatus.stdout.byteLength !== 0
+      )
+        return {
+          status: 'incomplete',
+          findingCount: 0,
+          reason: 'repository-changed-during-snapshot'
+        };
+      if (
+        snapshot.root !== root ||
+        snapshot.gitHeadRevision !== revision ||
+        snapshot.gitIndexStatus !== 'available' ||
+        !snapshot.gitIndexDigest
+      )
+        return {
+          status: 'incomplete',
+          findingCount: 0,
+          reason: 'repository-snapshot-identity-unavailable'
+        };
+      const exactSnapshot = await verifySnapshotMatchesCommit(
+        root,
+        revision,
+        snapshot,
+        signal
+      );
+      if (!exactSnapshot.matches)
+        return {
+          status: 'incomplete',
+          findingCount: 0,
+          reason: exactSnapshot.reason
+        };
+      const scorecard = await (
+        options.scorecardRunner ?? buildSecurityScorecard
+      )(
         root,
         {},
         {
@@ -951,6 +1231,35 @@ export function createGitHubAppScorecardScanner(
           budget: { totalMs: timeoutMs, signal }
         }
       );
+      const [analysisHead, analysisStatus, snapshotStillValid] =
+        await Promise.all([
+          runGit(['rev-parse', '--verify', 'HEAD^{commit}'], {
+            cwd: root,
+            signal,
+            timeoutMs: 5_000,
+            maxBuffer: 4_096
+          }),
+          runGit(['status', '--porcelain=v1', '--untracked-files=all'], {
+            cwd: root,
+            signal,
+            timeoutMs: 5_000,
+            maxBuffer: 1_048_576
+          }),
+          verifyProjectSnapshot(snapshot, { signal })
+        ]);
+      if (
+        analysisHead.code !== 0 ||
+        analysisStatus.code !== 0 ||
+        analysisHead.stdout.toString('utf8').trim().toLowerCase() !==
+          revision ||
+        analysisStatus.stdout.byteLength !== 0 ||
+        !snapshotStillValid
+      )
+        return {
+          status: 'incomplete',
+          findingCount: 0,
+          reason: 'repository-changed-during-analysis'
+        };
       return {
         status:
           scorecard.analysis.state === 'complete'

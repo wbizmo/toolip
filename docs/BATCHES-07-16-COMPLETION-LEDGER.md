@@ -40,7 +40,7 @@ marked complete.** The original baseline is `cf94e2103e7d2ced05a0acf68251bcc8fd7
 | 15 / #81      | Cargo lock/workspace identity and advisories                                                                        | `src/core/dependencies/ecosystem-inventory.ts`, `src/core/dependencies/inventory.ts`, `src/analyzers/vulnerability/osv-analyzer.ts`; `tests/core/ecosystem-inventory.test.ts`, `tests/analyzers/osv-analyzer.test.ts`, `tests/core/sbom.test.ts`; `docs/RUST-CARGO.md`                                                                                                                                                                                                                                                                                                                                                                                                                   | Partial; Cargo.lock v3/v4 preserves aliases, source identities, multiple versions, workspace identities, requested features and target cfg, while unknown feature/target activation remains explicit. Batch 15 now rejects malformed Cargo crate names and non-semantic exact versions before creating advisory/SBOM identities and rejects malformed dependency names. The integrated Batch 15 ecosystem/OSV/SBOM/profile focused group passes 100 tests across 4 files; typecheck, compiler quality, lint and formatting pass. Cargo execution/build scripts remain disabled; Cargo checksum-database/artifact-byte verification, full active feature/target resolution, external Cargo metadata goldens, external Cargo metadata goldens, scale benchmarks and cross-platform acceptance remain incomplete; full local Node 22/24 verification and Node 24 release:check pass for this checkpoint.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | 15 / #82      | Maven/Gradle resolved graph and advisories                                                                          | `src/core/dependencies/ecosystem-inventory.ts`, `src/core/sbom/generate.ts`; `tests/core/ecosystem-inventory.test.ts`, `tests/core/sbom.test.ts`; `docs/JAVA-DEPENDENCY-GRAPHS.md`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Partial; bounded Maven text/JSON and Gradle exported-JSON multi-module exact graphs, Gradle lock identities, classifier/type PURLs, unresolved-property handling and missing-graph incompleteness are implemented. Batch 15 maps supported Gradle configurations to dependency sections and marks unknown scopes or malformed optional/omitted flags incomplete while retaining exact coordinates conservatively. The integrated Batch 15 ecosystem/OSV/SBOM/profile focused group passes 100 tests across 4 files; typecheck, compiler quality, lint and formatting pass. Real Maven/Gradle export goldens covering parent properties, BOM overrides, conflicts and lock overrides, provider acceptance, provenance binding, supported-platform coverage, reviewed upstream export provenance and native Maven/Gradle golden fixtures remain external; full local Node 22/24 verification and Node 24 release:check pass for this checkpoint.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | 15 / #83      | Composer/Laravel exact dependencies and advisory support                                                            | `src/core/dependencies/ecosystem-inventory.ts`, `src/core/profile-project.ts`, `src/analyzers/vulnerability/osv-analyzer.ts`, `docs/PHP-COMPOSER.md`; `tests/core/ecosystem-inventory.test.ts`, `tests/profile-project.test.ts`, `tests/analyzers/osv-analyzer.test.ts`                                                                                                                                                                                                                                                                                                                                                                                                                  | Partial; Composer path repositories use bounded non-symlink traversal, stable local packages form workspace identities/edges, exact constraints and dev roots are preserved, and branch versions stay unknown. Batch 15 validates package and requirement names, filters PHP/extensions/libraries plus Composer runtime/plugin platform packages, supports a valid empty platform-only lock, requires project-relative path identities, and marks non-path custom repository packages unknown with redacted provenance so public OSV queries are withheld. OSV regression tests verify private package names and repository URLs are not sent or disclosed. The integrated Batch 15 ecosystem/OSV/SBOM/profile focused group passes 100 tests across 4 files; typecheck, compiler quality, lint and formatting pass. Full Composer/Laravel provider and path-alias matrices, real toolchain exports, cross-platform acceptance and native Composer/PHP fixture runs remain external; full local Node 22/24 verification and Node 24 release:check pass for this checkpoint.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| 16 / #69      | Changed-line incremental analysis with accurate PR context                                                          | `src/core/diff/pr-scan.ts`, `src/commands/pr-scan.ts`, `src/core/pre-commit.ts`; `tests/core/pr-scan.test.ts`, `tests/git/staged-blobs.test.ts`, `tests/commands/program.test.ts`; `docs/PR-SECURITY-DIFF.md`                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Partial; exact commit/blob comparison, safe revisions, NUL change metadata, rename identity, changed-line ranges, redacted JSON/SARIF, staged-index behavior and bounded exact base/head dependency inventory deltas are tested. An explicit online OSV mode queries only changed exact instances under query/response limits; scoped npm names remain withheld without consent, and provider or privacy gaps stay incomplete. License, provenance, maintainer-health and reachability impacts still require a full scan. Changed source/execution entrypoints, Docker, IaC and workflow paths carry explicit incomplete reason codes when specialized analysis does not run. Bounded JSON inline-review records are now emitted only for introduced findings on changed lines; fixed messages omit source/evidence and are capped at 500. The local command does not post remote comments.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| 16 / #69      | Changed-line incremental analysis with accurate PR context                                                          | `src/core/diff/pr-scan.ts`, `src/commands/pr-scan.ts`, `src/core/pre-commit.ts`; `tests/core/pr-scan.test.ts`, `tests/git/staged-blobs.test.ts`, `tests/commands/program.test.ts`; `docs/PR-SECURITY-DIFF.md`                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Partial; exact commit/blob comparison, safe revisions, NUL change metadata, rename identity, changed-line ranges, redacted JSON/SARIF, staged-index behavior and bounded exact base/head dependency inventory deltas are tested. An explicit online OSV mode queries only changed exact instances under query/response limits; scoped npm names remain withheld without consent, and provider or privacy gaps stay incomplete. License, provenance, maintainer-health and reachability impacts still require a full scan. Changed source/execution entrypoints, Docker, IaC and workflow paths carry explicit incomplete reason codes when specialized analysis does not run. Bounded JSON inline-review records are now emitted only for introduced findings on changed lines; fixed messages omit source/evidence and are capped at 500. The local command does not post remote comments. Its optional GitHub event mode reads a bounded strict-JSON payload, binds the expected base repository and the exact base/head SHAs, and emits only minimal PR context without network writes; missing or unsupported event data fails closed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | 16 / #70      | GitHub Actions integration and valid SARIF upload                                                                   | `action.yml`, `src/core/sarif.ts`, `src/commands/policy.ts`, `docs/GITHUB-ACTION.md`; `tests/core/sarif.test.ts`, `tests/core/github-action.test.ts`, `tests/fixtures/sarif-schema-2.1.0.json`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Partial; the pinned composite action writes redacted SARIF and offers an immutable Code Scanning uploader behind explicit opt-in; PR upload requires positive matching base/head repository IDs and a false fork flag for `pull_request` and `pull_request_target`; non-PR upload is allowlisted to push, schedule, workflow_dispatch and release, so `workflow_run`, `merge_group` and unknown events fail closed. Caller-granted `security-events: write` is still required. Complete/incomplete reports validate against the official OASIS SARIF 2.1.0 schema and fingerprints remain stable; live GitHub ingest and actual fork-token permissions remain externally unverified                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | 16 / #84      | Scoped GitHub App and scheduled checks                                                                              | `src/core/github/app-webhook.ts`, `src/core/github/app-api.ts`, `src/core/github/delivery-journal.ts`, `src/commands/github-app.ts`, `src/cli/program.ts`; `tests/core/github-app-webhook.test.ts`, `tests/core/github-delivery-journal.test.ts`, `tests/core/github-app-api.test.ts`, `tests/commands/github-app.test.ts`, `tests/commands/program.test.ts`; `docs/GITHUB-APP.md`                                                                                                                                                                                                                                                                                                       | Partial; read-only signed webhooks, timing-safe HMAC validation, repository/installation allowlisting, a bounded atomic cross-process replay journal, durable suspension state, cancellation of queued and active work on suspension, scan concurrency/deadlines, local schedules, and shared scorecard integration are implemented. A scan that ignores its AbortSignal now still releases the queue slot at the configured deadline and reports incomplete; an adversarial never-settling scanner regression verifies queued work proceeds; exact clean local HEAD is required and stale/dirty roots fail incomplete; installation tokens are scoped to one repository and checks:write; App JWT signing rejects RSA keys below 2048 bits with a weak-key regression; API repository paths reject dot segments before any network request, and check-run summaries must match the webhook revision. Remote commit provisioning and live App permission verification remain external limitations.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 16 / #85      | Verified remediation PRs with policy, audit and rollback                                                            | `src/core/github/upgrade-pr.ts`, `src/commands/upgrade-pr.ts`, `docs/UPGRADE-PRS.md`; `tests/core/upgrade-pr.test.ts`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Partial; baseline and candidate use scripts-disabled frozen installs and the shared complete scorecard; exact direct lock resolution, advisory fixed-version checks, non-downgradable repository policy comparison, test-mutation detection, expected-file diff checks, allowlisted subprocess environment, unsafe package-manager configuration rejection, disabled Git hooks, human-review PR evidence and rollback steps are locally covered. On ambiguous `gh pr create` failure, remote cleanup now requires a successful GitHub query proving no PR references the branch; lookup errors preserve the branch. Live GitHub behavior, full pnpm/Yarn install matrix and Windows command execution remain unverified                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -554,7 +554,8 @@ files**; the signed plugin/trust-store/CLI group passed **23 across 3 files**;
 the Stage A artifact/gate and release-isolation group passed **62 across 3
 files**. The full suites include those regressions.
 
-Final local Linux verification on this source tree:
+Final local Linux verification for the SARIF guard checkpoint before the
+following GitHub event adapter:
 
 - Node 22.23.4: clean `npm ci --ignore-scripts` and `npm run verify` passed;
   unit tests **1,115 passed / 2 skipped**, coverage tests **1,113 passed / 2
@@ -623,3 +624,170 @@ This closes a local Action-condition gap only. All 37 issues remain Partial;
 GitHub-hosted SARIF ingest, actual fork token behavior, protected Stage A
 bootstrap/rulesets, independent review and other issue-specific live acceptance
 remain outstanding. No benchmark was repeated.
+
+### Batch 16 GitHub pull request event adapter — 2026-11-12
+
+`toolip pr-scan --github-event <file> --github-repository <owner/repo>`
+validates a bounded, strict-JSON GitHub pull request event, checks that the
+base repository matches the expected repository, and scans its exact base/head
+commit SHAs. The reader rejects duplicate keys, unsupported/closed actions,
+oversized and symlinked files, malformed commit IDs and mismatched repository
+identity. JSON output includes only repository, PR number and head repository
+context; the adapter makes no API requests and does not post comments.
+
+Additional #69 hardening checks both old and new names for deletes/renames when
+marking source, editor-task, policy, workflow, Docker and IaC impacts incomplete.
+Dependency edits identify the still-uncomputed license, reachability, provenance,
+maintainer and policy dimensions separately. Finding reconciliation now hashes
+normalized lines once per blob and includes redacted evidence fingerprints plus
+same-key occurrence ordinals, avoiding the former O(N × B_f) full-file
+normalization per finding and preventing same-context findings from collapsing;
+that path is O(B_f + N) time. The PR-scan core/CLI group passes 22 tests across
+2 files, including copied/deleted/renamed inputs, committed-vs-worktree bytes,
+transitive dependency changes and repeated findings on a long line.
+Typecheck, compiler quality, lint, formatting, workflow policy, changelog and
+whitespace checks pass on the current local source. Gitleaks 8.30.1 reports no
+leaks in the current worktree.
+
+The current Stage A scanner digest is
+`bf85314e4fc8b0c8e27dc2e7a598fe8fb794c20f1934d697086b9521147b051f`; all three
+`.github/workflows/stage-a.yml` pins match it, and the standalone scanner check
+passes. The prior Node 22/24 full verification and Node 24 release check passed
+before these subsequent #69 path/fingerprint changes, so they are not final
+evidence for the current worktree. The full dual-Node gates, packed-artifact
+check and security scans will be repeated after Batch 16 implementation is
+complete. All 37 issues remain Partial; the adapter does not create remote
+comment/check integration or establish hosted GitHub acceptance.
+
+Additional Batch 16 #70 SARIF hardening — 2026-11-12: artifact URIs now accept
+only bounded repository-relative paths, percent-encode path segments and omit
+absolute, traversing, scheme-bearing, control-character, credential-bearing or
+overlong paths. Invalid paths and malformed rule IDs make the SARIF invocation
+unsuccessful instead of producing a clean-looking report. Stable partial
+fingerprints distinguish repeated same-rule occurrences while remaining stable
+when lines move. The official SARIF 2.1.0 schema test covers safe paths, invalid
+identities and incomplete invocation status. The #69 and #70 focused suites
+pass 28 tests across 4 files; typecheck, compiler quality, lint and formatting
+pass. GitHub-hosted Code Scanning ingestion and fork-permission behavior still
+require external workflow acceptance. All 37 issues remain Partial; final
+Node 22/24 and release/security gates are pending completion of Batch 16.
+
+Additional Batch 16 #70 workflow-expression hardening — 2026-11-12: the
+Code Scanning upload gate now compares `toJSON(head.repo.fork)` to the literal
+`false`, so GitHub Actions loose equality cannot coerce missing `null` metadata
+to false. Repository IDs must still be present and equal, the uploader remains
+explicit opt-in, and only the four allowlisted non-PR events may upload. The
+GitHub Action policy test asserts the strict serialized boolean condition. No
+remote workflow was dispatched; actual fork token behavior and hosted ingest
+remain external acceptance.
+
+Batch 16 bootstrap read-only status — 2026-11-12: PR #104 still targets
+`main` at `cf94e2103e7d2ced05a0acf68251bcc8fd7ab125`; the remote PR remains OPEN
+and DRAFT at `a83dcfaf0cfa85b61861e423c99f788600a988ac`. GitHub's default-branch
+workflow listing does not include `Stage A Trusted Pre-execution Gate`, so this
+PR cannot bootstrap its own trusted `pull_request_target` scanner or its
+`workflow_run` consumers. A read-only request for `main` required status checks
+returned HTTP 403 (`Resource not accessible by integration`), so current
+ruleset/branch-protection requirements could not be verified. Repository
+administrators must establish the protected Stage A trust root, independent
+CODEOWNERS approval and required checks on `main` before relying on the gate.
+No remote workflow was dispatched and no check was bypassed.
+
+Additional Batch 16 #84 checkout-race hardening — 2026-11-12: the App scanner
+now rechecks exact `HEAD` and a clean worktree/index immediately after immutable
+snapshot capture. A checkout revision change, tracked edit or untracked file
+appearing during capture returns `incomplete` before scorecard execution or
+check publication. The scanner also compares the complete bounded regular-file
+set and SHA-256 content against blobs from the exact immutable commit tree, so
+a temporary edit restored before the post-snapshot status check is rejected.
+Symlinks, submodules, Git LFS pointers, non-top-level roots, unavailable objects
+and file/byte budget overflow stay incomplete. Executable binary blobs also
+stay incomplete because the binary payload is not analyzed. The tree comparison
+takes O(F+B) time and O(F+B) additional peak space for F files and at most 64
+MiB of unique Git blob bytes, alongside the resident project snapshot; tree
+metadata is capped at 16 MiB and 20,000 entries. Repeated scheduled scans of
+one repository coalesce while queued or active using an O(R) set for at most
+100 allowlisted repos. After scorecard work, HEAD, status and snapshot identity
+are checked again to reject persistent mutation during the live Git audit. The
+GitHub App webhook/API focused suites pass 26 tests, including exact-tree
+identity, restored transient edits, analysis-time mutation, binary/LFS unknowns
+and scheduled deduplication. Live App
+registration, installation permissions and remote checkout provisioning remain
+external; #84 and all 37 issues remain Partial.
+
+Additional #85 manager integration evidence — 2026-11-12: with the host's pnpm
+11.25.0 and Yarn Classic 1.22.22 exposed in an isolated temporary PATH wrapper,
+`npm test -- tests/core/upgrade-pr.test.ts` passed 27 tests, including a real
+Yarn Berry 4.5.0 run selected by the fixture's `packageManager` pin. The group
+covered scripts-disabled frozen installs and project test execution for npm,
+pnpm, Yarn Classic and Yarn Berry; synthetic root/dependency lifecycle markers
+stayed absent and the development test executable resolved from each installed
+dependency. Windows/macOS process behavior, online audit integrations and any
+remote PR creation were not exercised by this focused run. It is not a full
+release gate, and #85 plus all 37 issues remain Partial.
+
+Integrated Batch 16 regression group — 2026-11-12: Stage A scanner/artifact/
+provenance, exact PR-event scanning, SARIF, Action fork conditions, GitHub App
+snapshot/race/API behavior, upgrade-PR worktrees, and release-isolation suites
+passed 146 tests across 11 files, including the real Yarn Berry fixture.
+`TOOLIP_STAGE_A_SHA256` is pinned to
+`bf85314e4fc8b0c8e27dc2e7a598fe8fb794c20f1934d697086b9521147b051f`; the
+standalone digest verifier and seven-workflow policy check pass. This is a
+focused local group, not the required Node 22/24 `verify`, Node 24
+`release:check`, security scan, packed-package acceptance, hosted workflow or
+external review evidence. All 37 issues remain Partial.
+
+Batch 16 #96 Cargo archive work — 2026-11-12: Stage A now parses bounded
+Cargo.lock v3/v4 Git blobs, accepts only official crates.io registry identities
+with SHA-256 checksums, and fetches exact `.crate` archives from
+`static.crates.io` without redirects. It checks the archive digest against both
+the lock checksum and an exact administrator-owned
+`TOOLIP_STAGE_A_CARGO_SHA256_POLICY` (`name@version` → SHA-256) before Stage A
+can approve Cargo artifacts. The digest map and canonical policy digest flow
+through a version 7 approval artifact; Stage B rechecks the current policy so
+rotation invalidates stale approvals. The archive scanner verifies the
+embedded Cargo package name/version, strict tar root/paths/header checksums,
+duplicate entries and terminators, rejects symlinks, hardlinks and unsupported
+PAX/extension entries, bounds compressed/unpacked bytes and files, scans text
+in memory, and marks binaries, build scripts and proc macros incomplete for
+review. It does not extract or execute crate content. Explicit Cargo workspace
+members are indexed and bound to tracked manifests; globbed workspaces, local
+path dependencies, git sources and missing locks remain unknown. Lock/manifest
+processing is O(L+M+Q), where L is at most 16 MiB of lock/manifest bytes, M is
+at most 500 manifests and Q at most 100,000 explicit member entries. Archive
+verification is O(A+U) for downloaded bytes A and decompressed bytes U; Cargo
+archives are inspected sequentially, capped at 32 MiB compressed/128 MiB
+unpacked each and share existing aggregate byte/file limits. Focused tests for
+Cargo archives, Cargo policy/artifact validation and Stage A Git objects pass
+61 tests across 3 files. These are focused tests, not final dual-Node or release
+verification.
+
+The remaining #96 code gap is non-npm provenance/artifact support for Go,
+Python, Composer, Maven and Gradle, plus broader Cargo path/git/workspace and
+publisher-attestation coverage. A trusted digest allowlist is an independent
+administrator approval of exact archive bytes, not a publisher signature or
+proof the code is safe. The external main-branch Stage A bootstrap, required
+checks/rulesets, CODEOWNERS enforcement, independent review and live hosted
+workflow behavior also remain outstanding. All 37 issues remain Partial; no
+current Batch 16 implementation push is ready until its full local gates pass.
+
+Additional Batch 16 #96 build-tool execution guard — 2026-11-12: Stage A now
+marks recognized unsupported external build-tool commands incomplete when
+they appear in project package scripts, GitHub Actions `run` steps, VS Code
+`folderOpen` task commands or statically named subprocess calls in JavaScript,
+Python, Rust, Go, Java, PHP, Ruby, shell and PowerShell source. This
+prevents Stage B from treating those exact paths as approved before it runs
+project code. GitHub Actions shell use of event fields, secrets, tokens and
+step/job outputs is blocked, as is a shell reference to an environment value
+derived from event, secret or token data; an unused tainted variable remains a
+negative control. Python and Rust subprocess fixtures are positive controls; a
+Rust example in documentation is a negative control.
+Dynamic command construction and indirect launchers are still outside these
+heuristics and remain an explicit review limitation. The Stage A gate and Cargo
+artifact focused suites pass 54 tests across 2 files on Node 24.22.1; the
+trusted scanner digest verifier and seven-workflow policy check pass with
+`TOOLIP_STAGE_A_SHA256=c61346931f681c515e381ef7d3f4f60250c918c956935230146499e1d095235a`.
+Typecheck, quality typecheck, lint, changed-file formatting, scanner pin,
+workflow policy and `git diff --check` pass on Node 24.22.1. Full Node 22/24
+verification, Node 24 release checks and final security gates have not yet been
+rerun for this batch. All 37 issues remain Partial.

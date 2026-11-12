@@ -3,7 +3,10 @@ import {
   verifyCurrentPullRequestIdentity,
   verifyStageAArtifact
 } from '../../scripts/verify-stage-a-artifact.mjs';
-import { npmProvenancePolicyDigest } from '../../scripts/stage-a-canonical-json.mjs';
+import {
+  cargoArtifactPolicyDigest,
+  npmProvenancePolicyDigest
+} from '../../scripts/stage-a-canonical-json.mjs';
 
 const repository = 'wbizmo/toolip';
 const baseSha = 'a'.repeat(40);
@@ -20,9 +23,14 @@ const npmPolicyText = JSON.stringify({
   }
 });
 const npmPolicySha256 = npmProvenancePolicyDigest(npmPolicyText);
+const cargoPolicyText = JSON.stringify({
+  version: 1,
+  packages: { 'safe-crate@1.2.3': 'a'.repeat(64) }
+});
+const cargoPolicySha256 = cargoArtifactPolicyDigest(cargoPolicyText);
 const complexityBody = `## Algorithmic analysis\nPrevious worst-case time: O(n^2)\nNew worst-case time: O(n log n)\nPrevious peak space: O(n)\nNew peak space: O(n)`;
 const record = {
-  version: 6,
+  version: 7,
   repository,
   pullRequest: 123,
   runId: '456',
@@ -44,6 +52,12 @@ const record = {
     dependencyArtifactBytes: 1000,
     dependencyArtifactNetworkBytes: 500,
     dependencyArtifactBinaryFiles: 0,
+    nonNpmDependencyArtifactsChecked: 0,
+    nonNpmDependencyArtifactCount: 0,
+    nonNpmDependencyArtifactFiles: 0,
+    nonNpmDependencyArtifactBytes: 0,
+    nonNpmDependencyArtifactNetworkBytes: 0,
+    nonNpmDependencyArtifactBinaryFiles: 0,
     headCommitSignatureStatus: 'verified'
   },
   exceptionPolicySha256: null,
@@ -59,6 +73,8 @@ const record = {
       String(index + 1).padStart(128, '0')
     ])
   ),
+  verifiedArtifactSha256ByLocation: {},
+  cargoArtifactPolicySha256: null,
   reasonCodes: [],
   status: 'approved',
   complexityEvidence: true
@@ -102,6 +118,8 @@ describe('Stage A artifact identity verification', () => {
       npmProvenanceArtifactCount: 5,
       npmProvenanceVerifiedCount: 5,
       verifiedArtifactSha512ByLocation: record.verifiedArtifactSha512ByLocation,
+      verifiedArtifactSha256ByLocation: record.verifiedArtifactSha256ByLocation,
+      cargoArtifactPolicySha256: null,
       coverage: record.coverage,
       exceptionPolicySha256: null,
       appliedExceptions: []
@@ -135,7 +153,7 @@ describe('Stage A artifact identity verification', () => {
   it('rejects another run, repository, pull request or commit snapshot', () => {
     for (const changed of [
       { ...record, version: 2 },
-      { ...record, version: 5 },
+      { ...record, version: 6 },
       { ...record, runId: '999' },
       { ...record, repository: 'attacker/fork' },
       { ...record, headSha: 'd'.repeat(40) },
@@ -156,6 +174,12 @@ describe('Stage A artifact identity verification', () => {
         coverage: {
           ...record.coverage,
           dependencyArtifactsChecked: 4
+        }
+      },
+      {
+        ...record,
+        verifiedArtifactSha256ByLocation: {
+          'cargo-lock/../Cargo.lock/serde@1.0.0': '2'.repeat(64)
         }
       },
       {
@@ -261,12 +285,55 @@ describe('Stage A artifact identity verification', () => {
       npmProvenancePolicySha256: null,
       npmProvenanceArtifactCount: 0,
       npmProvenanceVerifiedCount: 0,
-      verifiedArtifactSha512ByLocation: {}
+      verifiedArtifactSha512ByLocation: {},
+      verifiedArtifactSha256ByLocation: {}
     };
     expect(
       verifyStageAArtifact(noDependencies, event, repository)
         .npmProvenanceStatus
     ).toBe('not-applicable');
+  });
+
+  it('binds scanned Cargo artifacts to the current operator-owned digest policy', () => {
+    const location = `cargo-lock/Q2FyZ28ubG9jaw/safe-crate@1.2.3#${'a'.repeat(64)}`;
+    const cargoRecord = {
+      ...record,
+      coverage: {
+        ...record.coverage,
+        nonNpmDependencyArtifactsChecked: 1,
+        nonNpmDependencyArtifactCount: 1
+      },
+      cargoArtifactPolicySha256: cargoPolicySha256,
+      verifiedArtifactSha256ByLocation: { [location]: 'a'.repeat(64) }
+    };
+    expect(
+      verifyStageAArtifact(cargoRecord, event, repository, {
+        expectedNpmProvenancePolicySha256: npmPolicySha256,
+        expectedCargoArtifactPolicySha256: cargoPolicySha256
+      }).cargoArtifactPolicySha256
+    ).toBe(cargoPolicySha256);
+    expect(() =>
+      verifyStageAArtifact(cargoRecord, event, repository, {
+        expectedNpmProvenancePolicySha256: npmPolicySha256,
+        expectedCargoArtifactPolicySha256: 'b'.repeat(64)
+      })
+    ).toThrow('does not match');
+  });
+
+  it('rejects malformed and duplicate-key Cargo artifact policies', () => {
+    expect(cargoArtifactPolicyDigest(cargoPolicyText)).toBe(cargoPolicySha256);
+    expect(() =>
+      cargoArtifactPolicyDigest(
+        '{"version":1,"version":1,"packages":{"safe-crate@1.2.3":"' +
+          'a'.repeat(64) +
+          '"}}'
+      )
+    ).toThrow('invalid');
+    expect(() =>
+      cargoArtifactPolicyDigest(
+        JSON.stringify({ version: 1, packages: { 'safe-crate@1.2.3': 'bad' } })
+      )
+    ).toThrow('invalid');
   });
 
   it('rechecks the live PR identity before any Stage B work starts', async () => {

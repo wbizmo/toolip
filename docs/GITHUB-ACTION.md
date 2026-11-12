@@ -5,12 +5,21 @@ redacted SARIF 2.1.0 file, and returns the policy command's exit status. It
 installs the action revision's locked dependencies with lifecycle scripts
 disabled, verifies registry signatures, and then builds that pinned Toolip
 revision. It does not install or execute scripts from the scanned repository.
+SARIF artifact URIs are encoded from relative paths only. Absolute paths, URI
+schemes, traversal segments, control characters, overlong paths and malformed
+rule IDs are omitted or replaced with safe identifiers; the invocation is
+marked unsuccessful when such input is encountered. Stable fingerprints omit
+line numbers, preserve distinct same-rule occurrences and are schema-tested
+against the official SARIF 2.1.0 schema.
 
 SARIF upload is available as an explicit opt-in with `upload-sarif: 'true'`.
 The composite action uses a pinned CodeQL uploader and only uploads for a PR
 whose head and base repository IDs are present and match, with the head marked
-as non-fork. This covers same-repository `pull_request` and
-`pull_request_target` events and fails closed if repository metadata is absent.
+as non-fork. The condition compares `toJSON(head.repo.fork)` to the literal
+string `false`; this prevents GitHub expression loose-equality coercion from
+treating a missing (`null`) fork field as boolean false. This covers
+same-repository `pull_request` and `pull_request_target` events and fails closed
+if repository metadata is absent.
 For non-PR events, only `push`, `schedule`, `workflow_dispatch`, and `release`
 are allowed. `workflow_run`, `merge_group`, and unknown event types are skipped
 because their PR source cannot be verified by this event payload. The calling
@@ -53,7 +62,7 @@ jobs:
 
   upload:
     needs: scan
-    if: (((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.id > 0 && github.event.pull_request.base.repo.id > 0 && github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id && github.event.pull_request.head.repo.fork == false) || contains(fromJSON('["push","schedule","workflow_dispatch","release"]'), github.event_name))
+    if: (((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.id > 0 && github.event.pull_request.base.repo.id > 0 && github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id && toJSON(github.event.pull_request.head.repo.fork) == 'false') || contains(fromJSON('["push","schedule","workflow_dispatch","release"]'), github.event_name))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -63,7 +72,7 @@ jobs:
         with:
           name: toolip-sarif
       - uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
-        if: (((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.id > 0 && github.event.pull_request.base.repo.id > 0 && github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id && github.event.pull_request.head.repo.fork == false) || contains(fromJSON('["push","schedule","workflow_dispatch","release"]'), github.event_name))
+        if: (((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.id > 0 && github.event.pull_request.base.repo.id > 0 && github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id && toJSON(github.event.pull_request.head.repo.fork) == 'false') || contains(fromJSON('["push","schedule","workflow_dispatch","release"]'), github.event_name))
         with:
           sarif_file: toolip.sarif
 ```

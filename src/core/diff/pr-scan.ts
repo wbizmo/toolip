@@ -35,6 +35,8 @@ const executionEntrypointPath =
 const infrastructurePath =
   /(?:^|\/)(?:Dockerfile(?:\.[^/]*)?|docker-compose(?:\.[^/]*)?\.ya?ml|[^/]+\.(?:tf|hcl))$/iu;
 const infrastructureWorkflowPath = /^\.github\/workflows\/[^/]+\.ya?ml$/iu;
+const policyPath =
+  /(?:^|\/)(?:\.toolip\/)?(?:organization-)?(?:toolip-)?policy\.(?:json|ya?ml)$/iu;
 
 export type PrFileChange = Readonly<{
   status: string;
@@ -756,26 +758,43 @@ async function compareDependencyInventories(
   });
 }
 
-function findingKey(
-  finding: Finding,
+function findingKeys(
+  findings: readonly Finding[],
   content: string,
-  normalizedPath = finding.location?.file ?? ''
-): string {
-  const location = finding.location;
-  const lines = content.split(/\r?\n/u);
-  const current = location?.line ? location.line - 1 : 0;
-  const context = lines
-    .slice(Math.max(0, current - 1), Math.min(lines.length, current + 2))
-    .map((line) => line.trim().replace(/\s+/gu, ' '))
-    .join('\n');
-  const fingerprint = createHash('sha256').update(context).digest('hex');
-  return [
-    finding.ruleId,
-    finding.category,
-    normalizedPath,
-    finding.title,
-    fingerprint
-  ].join('\0');
+  normalizedPath: string
+): string[] {
+  const lineFingerprints = content
+    .split(/\r?\n/u)
+    .map((line) =>
+      createHash('sha256')
+        .update(line.trim().replace(/\s+/gu, ' '))
+        .digest('hex')
+    );
+  const occurrences = new Map<string, number>();
+  return findings.map((finding) => {
+    const current = finding.location?.line ? finding.location.line - 1 : 0;
+    const context = lineFingerprints
+      .slice(
+        Math.max(0, current - 1),
+        Math.min(lineFingerprints.length, current + 2)
+      )
+      .join('\n');
+    const fingerprint = createHash('sha256').update(context).digest('hex');
+    const evidenceFingerprints = (finding.evidence ?? [])
+      .map((evidence) => evidence.fingerprint ?? '')
+      .join('\0');
+    const baseKey = [
+      finding.ruleId,
+      finding.category,
+      normalizedPath,
+      finding.title,
+      fingerprint,
+      evidenceFingerprints
+    ].join('\0');
+    const occurrence = occurrences.get(baseKey) ?? 0;
+    occurrences.set(baseKey, occurrence + 1);
+    return `${baseKey}\0${occurrence}`;
+  });
 }
 
 function scanText(filePath: string, content: string): Finding[] {
@@ -855,6 +874,7 @@ export async function scanPullRequestDiff(
   let totalBytes = 0;
   const oids: string[] = [];
   for (const change of changes) {
+    const changedPaths = [...new Set([change.oldPath, change.newPath])];
     if (change.oldOid) oids.push(change.oldOid);
     if (change.newOid) oids.push(change.newOid);
     if (change.oldMode === '120000' || change.newMode === '120000')
@@ -864,31 +884,45 @@ export async function scanPullRequestDiff(
     if (dependencyGraphInput.test(change.newPath))
       reasons.add('dependency-graph-change-requires-full-scan');
     if (
-      change.newOid !== undefined &&
-      (executionEntrypointPath.test(change.newPath) ||
-        sourceExtensions.has(
-          change.newPath.split('.').at(-1)?.toLowerCase() ?? ''
-        ))
+      changedPaths.some(
+        (changedPath) =>
+          executionEntrypointPath.test(changedPath) ||
+          sourceExtensions.has(
+            changedPath.split('.').at(-1)?.toLowerCase() ?? ''
+          )
+      )
     )
       reasons.add('malicious-execution-graph-analysis-not-run');
     if (
-      change.newOid !== undefined &&
-      (infrastructurePath.test(change.newPath) ||
-        infrastructureWorkflowPath.test(change.newPath) ||
-        /(?:^|\/)(?:k8s|kubernetes|manifests)\/[^/]+\.ya?ml$/iu.test(
-          change.newPath
-        ))
-    )
-      reasons.add('infrastructure-analysis-not-run');
-    const extension = change.newPath.split('.').at(-1)?.toLowerCase() ?? '';
-    if (
-      change.newOid !== undefined &&
-      !sourceExtensions.has(extension) &&
-      !/(?:\.env(?:\..*)?|\.(?:json|ya?ml|toml|ini|conf|cfg|tf|hcl|md)|Dockerfile(?:\..*)?)$/iu.test(
-        change.newPath
+      changedPaths.some(
+        (changedPath) =>
+          infrastructurePath.test(changedPath) ||
+          infrastructureWorkflowPath.test(changedPath) ||
+          /(?:^|\/)(?:k8s|kubernetes|manifests)\/[^/]+\.ya?ml$/iu.test(
+            changedPath
+          )
       )
     )
-      reasons.add(`specialized-analysis-not-run:${change.newPath}`);
+      reasons.add('infrastructure-analysis-not-run');
+    if (changedPaths.some((changedPath) => policyPath.test(changedPath)))
+      reasons.add('policy-effects-not-recomputed');
+    for (const changedPath of changedPaths) {
+      const extension = changedPath.split('.').at(-1)?.toLowerCase() ?? '';
+      if (
+        !sourceExtensions.has(extension) &&
+        !/(?:\.env(?:\..*)?|\.(?:json|ya?ml|toml|ini|conf|cfg|tf|hcl|md)|Dockerfile(?:\..*)?)$/iu.test(
+          changedPath
+        )
+      )
+        reasons.add(`specialized-analysis-not-run:${changedPath}`);
+    }
+  }
+  if (dependencyGraphChanged) {
+    reasons.add('dependency-license-impact-not-recomputed');
+    reasons.add('dependency-reachability-impact-not-recomputed');
+    reasons.add('dependency-provenance-impact-not-recomputed');
+    reasons.add('dependency-maintainer-impact-not-recomputed');
+    reasons.add('dependency-policy-impact-not-recomputed');
   }
   const blobs = await loadBlobs(root, oids, signal);
   for (const blob of blobs.values()) {
@@ -918,12 +952,22 @@ export async function scanPullRequestDiff(
     const newText = decode(change.newOid);
     const comparisonPath = change.newPath;
     if (oldText !== undefined) {
-      for (const finding of scanText(change.oldPath, oldText))
-        baseline.set(findingKey(finding, oldText, comparisonPath), finding);
+      const findings = scanText(change.oldPath, oldText);
+      const keys = findingKeys(findings, oldText, comparisonPath);
+      for (let index = 0; index < findings.length; index++) {
+        const finding = findings[index];
+        const key = keys[index];
+        if (finding && key) baseline.set(key, finding);
+      }
     }
     if (newText !== undefined) {
-      for (const finding of scanText(change.newPath, newText))
-        current.set(findingKey(finding, newText, comparisonPath), finding);
+      const findings = scanText(change.newPath, newText);
+      const keys = findingKeys(findings, newText, comparisonPath);
+      for (let index = 0; index < findings.length; index++) {
+        const finding = findings[index];
+        const key = keys[index];
+        if (finding && key) current.set(key, finding);
+      }
     }
   }
   const introduced = [...current]

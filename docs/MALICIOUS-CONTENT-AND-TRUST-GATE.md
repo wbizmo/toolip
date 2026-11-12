@@ -92,8 +92,26 @@ blocks Stage B. Only then does Stage A perform a scripts-disabled `npm ci` in a
 temporary directory containing the captured manifest and lockfile and verify
 npm registry signatures. This PR dependency install consumes only the captured
 manifest and lockfile after exact scans and provenance checks pass.
+For supported Cargo lockfiles, Stage A fetches only exact crates.io `.crate`
+archives, verifies each archive against both the lock checksum and the
+administrator-owned repository variable `TOOLIP_STAGE_A_CARGO_SHA256_POLICY`,
+and scans tar members in memory. The JSON policy is
+`{"version":1,"packages":{"crate-name@1.2.3":"<64-character-archive-sha256>"}}`;
+it must contain exactly the locked crates.io package identities. The digest is
+the independent trust decision: Cargo.lock checksum agreement alone is not
+publisher provenance. Stage B recomputes the policy digest and rejects stale
+approval artifacts after policy changes. Git/path sources, unsupported
+workspaces, unsupported tar entries, build scripts, proc macros and binary
+archive members remain incomplete or require explicit reviewed exception.
 Unsupported scope policy, package-manager
 lockfiles and archives also block Stage B.
+Direct unsupported build-tool commands are also marked incomplete when they
+appear in project package scripts, GitHub Actions `run` steps, VS Code
+`folderOpen` tasks or statically named subprocess calls in JavaScript, Python,
+Rust, Go, Java, PHP, Ruby, shell and PowerShell source. This is a conservative
+heuristic: dynamic command construction, indirect launchers and toolchains not
+recognized by the scanner remain outside the current proof and must not be
+treated as a complete execution-chain analysis.
 The inspected tarball's embedded package name and exact version must match its
 lock entry; npm aliases retain the registry package identity for this check and
 for scope withholding. Tarball integrity alone cannot authorize mismatched
@@ -107,7 +125,11 @@ third-party action commit pins, immutable Docker image digests, local action
 usage and privileged `pull_request_target` triggers. An unpinned action or a
 non-Stage-A `pull_request_target` trigger blocks the candidate. Local actions
 and expanded workflow token permissions make Stage A incomplete and require
-review before Stage B. Changes to `.github/CODEOWNERS`, the Stage A scanner,
+review before Stage B. Shell commands that interpolate untrusted event data,
+secrets, tokens or step/job outputs are blocked; an environment value derived
+from untrusted event, secret or token input is blocked when a shell command
+references that variable.
+Changes to `.github/CODEOWNERS`, the Stage A scanner,
 its artifact writers/verifiers, runtime/workflow verifiers and trusted gate
 workflow paths also require a current maintainer review through the base
 branch's time-limited exception policy. The trusted scanner emits stable, redacted SARIF
@@ -173,10 +195,11 @@ body-only edit cannot reuse stale review evidence. Stage A runs on `edited`
 events, and delayed runs after a force-push, base update, body edit, close or
 merge are rejected as stale. Each Stage B workflow performs that check using
 only `pull-requests:read`. For dependency-bearing scans, the verifier also
-hashes the current protected repository npm provenance policy and requires it
-to match the policy digest in Stage A's approval. A missing, malformed or
-changed policy makes that approval stale, so policy rotation cannot leave an
-older approval usable. A failed, cancelled or otherwise non-successful Stage A
+hashes the current protected repository npm provenance policy and, when Cargo
+archives are present, the Cargo artifact digest policy; both must match the
+policy digests in Stage A's approval. A missing, malformed or changed policy
+makes that approval stale, so policy rotation cannot leave an older approval
+usable. A failed, cancelled or otherwise non-successful Stage A
 run produces an explicit failing Stage B verifier job; it is not
 represented by skipped checks, which GitHub may treat as successful for
 required-check purposes.
@@ -191,29 +214,37 @@ entries, B scanned bytes, V reference nodes and E local-reference edges,
 tree/diff ordering costs O(F log F), Git-object reads and pattern passes cost
 O(F+B), graph construction costs O(B+V+E), and changed-entrypoint traversal
 costs O(W), where W is capped at 1,000,000 visits with 1 MiB of trace output.
-For K exact locked package artifacts, A downloaded bytes and U decompressed bytes,
-integrity verification and tar scanning cost O(A+U); each archive is capped at
-32 MiB compressed and 128 MiB unpacked, downloads use concurrency 4, and
-aggregate archive bytes/files are bounded. Peak additional memory is
-O(F+B+V+E+T+4A+U), with bounded tar content and 100,000 files. It reads both
-head and merge trees, so Git object scanning uses two tree budgets. Synthetic
+For K npm artifacts, P supported Cargo lock records, L parsed lock/manifest
+bytes, A downloaded bytes and U decompressed bytes, integrity verification and
+archive scanning cost O(A+U+P+L). Each archive is capped at 32 MiB compressed
+and 128 MiB unpacked; npm download concurrency is four and Cargo inspection is
+sequential. Aggregate archive bytes/files are bounded. Peak additional memory
+is O(F+B+V+E+T+4A_n+U_n+A_c+U_c+P), with lock/manifest bytes capped at 16 MiB
+and archive contents at 100,000 files. It reads both head and merge trees, so
+Git object scanning uses two tree budgets. Synthetic
 fixtures cover malicious scripts, malformed manifests, symlink escapes,
 untrusted workflow interpolation, merge-parent identity, unusual-extension
 text, unchanged targets reached from changed configs, rename detection, npm
-tarball integrity, lifecycle hooks, traversal, checksum validation and
-incomplete archive handling. The prior baseline measurement (277 entries, 235
+tarball integrity, lifecycle hooks, Cargo checksum and operator-policy binding,
+Cargo workspace identity, build-script review, traversal, symlink rejection
+and incomplete archive handling. The prior baseline measurement (277 entries, 235
 text candidates, 979,203 bytes) predates this two-tree implementation and is
 not a current benchmark.
 
 This is an integrated Stage A boundary, but **issue #96 remains incomplete**.
 The scanner uses bounded heuristics rather than a complete execution-chain
-graph. Tarballs containing binary files, install lifecycle hooks, unsupported
-entries or unapproved scopes remain incomplete. The PR scripts-disabled install
+graph. Tarballs containing binary files, npm install lifecycle hooks, Cargo
+build scripts/proc macros, unsupported entries or unapproved scopes remain
+incomplete. The PR scripts-disabled install
 and registry signature check run only after exact lock entries, tarball bytes
 and every configured npm issuer/source check pass; any missing policy, partial
-coverage, signature failure or install failure blocks approval. Non-npm
-artifact provenance verification, force-push continuity, and
-several #95 behaviors remain outside this implementation. A diff rename is only a path relationship and
+coverage, signature failure or install failure blocks approval. Go, Python,
+Composer, Maven and Gradle artifact inspection remains unsupported and
+fail-closed; Cargo git/path sources, globbed workspace membership and
+package-manager execution also remain incomplete. The Cargo digest allowlist is
+administrator-managed evidence, not a publisher signature or proof of benign
+code. Force-push continuity and several #95 behaviors remain outside this
+implementation. A diff rename is only a path relationship and
 does not prove semantic equivalence. Stage A `approved` means the implemented
 bounded checks completed without a known signal; it is not proof that a
 repository is benign. The former `evaluateStageA` helper remains a local model

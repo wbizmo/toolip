@@ -51,6 +51,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY: ${{ vars.TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY }}
+          TOOLIP_STAGE_A_CARGO_SHA256_POLICY: ${{ vars.TOOLIP_STAGE_A_CARGO_SHA256_POLICY }}
         run: node scripts/verify-stage-a-artifact.mjs "${{ runner.temp }}/stage-a/stage-a-approval.json"
 
   analyze:

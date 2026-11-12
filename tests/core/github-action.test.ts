@@ -52,6 +52,9 @@ describe('GitHub Action integration contract', () => {
       'github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id'
     );
     expect(upload?.if).toContain(
+      "toJSON(github.event.pull_request.head.repo.fork) == 'false'"
+    );
+    expect(upload?.if).not.toContain(
       'github.event.pull_request.head.repo.fork == false'
     );
     expect(upload?.if).toContain(

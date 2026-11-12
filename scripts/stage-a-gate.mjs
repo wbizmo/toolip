@@ -19,6 +19,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
+import { parse as parseToml } from 'smol-toml';
+import {
+  canonicalJsonSha256,
+  parseCargoArtifactPolicy
+} from './stage-a-canonical-json.mjs';
 import { parseDocument } from '../vendor/stage-a-yaml-parser.mjs';
 
 const MAX_FILES = 100_000;
@@ -141,6 +146,21 @@ const dangerous = [
   /\b(?:Invoke-Expression|IEX)\b[^\r\n]{0,300}(?:DownloadString|FromBase64String|https?:\/\/)/iu,
   /\b(?:base64\s+-d|openssl\s+enc)[^\r\n]{0,200}(?:\||;|&&)[ \t]*(?:sh|bash|node)\b/iu
 ];
+const unsupportedToolchainCommand =
+  /\b(?:cargo|rustc|go|python(?:3(?:\.\d+)?)?|pip(?:3(?:\.\d+)?)?|uv|poetry|composer|mvnw?|gradlew?|java|javac|ruby|bundle|perl|pytest|tox|make|just|task|pnpm|yarn|bun|docker|podman|corepack)\b[ \t]+\S/iu;
+const unsupportedToolchainSpawn =
+  /\b(?:spawn|spawnSync|execFile|execFileSync|execSync|exec|Command\.new|Command::new|exec\.Command|ProcessBuilder|subprocess\.(?:run|Popen|call)|os\.system|system|shell_exec|proc_open|popen)\s*\([\s\S]{0,160}?['"](?:cargo|rustc|go|python(?:3(?:\.\d+)?)?|pip(?:3(?:\.\d+)?)?|uv|poetry|composer|mvnw?|gradlew?|java|javac|ruby|bundle|perl|pytest|tox|make|just|task|pnpm|yarn|bun|docker|podman|corepack)['"]/iu;
+const untrustedWorkflowExpression =
+  /\$\{\{\s*(?:github\.token|secrets\.[^}]+|(?:steps|needs)\.[^}]+\.outputs\.[^}]+)\s*\}\}/iu;
+const untrustedWorkflowEnvironmentExpression =
+  /\$\{\{\s*(?:github\.event\.[^}]+|github\.(?:head_ref|ref_name|actor|triggering_actor|token)|inputs\.[^}]+|secrets\.[^}]+)\s*\}\}/iu;
+
+function hasUnsupportedToolchainExecution(source) {
+  return (
+    unsupportedToolchainCommand.test(source) ||
+    unsupportedToolchainSpawn.test(source)
+  );
+}
 const suspiciousProcessExecution =
   /\b(?:exec|execSync|spawn|spawnSync)\s*\([^\r\n)]{0,300}(?:curl|wget|https?:\/\/|atob|fromBase64)/iu;
 const credentialStoreProbe =
@@ -678,7 +698,7 @@ function readTarText(header, start, length) {
   );
 }
 
-function safeTarName(name) {
+function safeTarName(name, packageRoot = 'package') {
   if (
     !name ||
     name.startsWith('/') ||
@@ -692,7 +712,7 @@ function safeTarName(name) {
   const normalized = path.posix.normalize(name);
   if (normalized !== name.replace(/\/$/u, '') && normalized !== name)
     throw new Error('tar-path-invalid');
-  if (normalized !== 'package' && !normalized.startsWith('package/'))
+  if (normalized !== packageRoot && !normalized.startsWith(`${packageRoot}/`))
     throw new Error('tar-path-outside-package-root');
   return normalized;
 }
@@ -724,6 +744,7 @@ export function inspectNpmTarball(archive, artifact) {
     });
   }
   const reasons = [];
+  const incompleteReasons = [];
   if (unpacked.length > 1024 * 1024 && unpacked.length > archive.length * 200)
     reasons.push('artifact-compression-ratio-exceeded');
   const findings = [];
@@ -836,7 +857,7 @@ export function inspectNpmTarball(archive, artifact) {
             content
           );
           const artifactPath = `artifact:${artifact.location}/${canonical.slice('package/'.length)}`;
-          findings.push(...scanText(artifactPath, text));
+          findings.push(...scanText(artifactPath, text, incompleteReasons));
         } catch {
           binaryFiles++;
         }
@@ -878,7 +899,9 @@ export function inspectNpmTarball(archive, artifact) {
     files,
     bytes,
     findings: Object.freeze([...new Set(findings)].sort()),
-    reasons: Object.freeze([...new Set(reasons)].sort()),
+    reasons: Object.freeze(
+      [...new Set([...reasons, ...incompleteReasons])].sort()
+    ),
     hasInstallScript,
     binaryFiles
   });
@@ -1269,6 +1292,593 @@ export async function inspectNpmArtifacts(
   });
 }
 
+function cratesIoRegistrySource(source) {
+  if (typeof source !== 'string' || !source.startsWith('registry+'))
+    return false;
+  try {
+    const url = new URL(source.slice('registry+'.length));
+    return (
+      url.protocol === 'https:' &&
+      !url.username &&
+      !url.password &&
+      !url.port &&
+      !url.search &&
+      !url.hash &&
+      ((url.hostname === 'github.com' &&
+        /^\/rust-lang\/crates\.io-index(?:\.git)?\/?$/u.test(url.pathname)) ||
+        (url.hostname === 'index.crates.io' && url.pathname === '/'))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function cargoLockRecordKey(record) {
+  return `${record.name}\0${record.version}\0${record.source}`;
+}
+
+/** Parse only exact crates.io package identities from a bounded Cargo.lock. */
+export function parseCargoLockArtifactInventory(
+  lockText,
+  { lockPath = 'Cargo.lock', rootPackage, rootPackages = [] } = {}
+) {
+  const reasons = [];
+  if (
+    typeof lockText !== 'string' ||
+    Buffer.byteLength(lockText, 'utf8') > MAX_FILE_BYTES ||
+    typeof lockPath !== 'string' ||
+    !lockPath.endsWith('Cargo.lock')
+  )
+    return Object.freeze({
+      artifactRecords: Object.freeze([]),
+      packageCount: 0,
+      reasons: Object.freeze(['cargo-lock-budget-or-path-invalid'])
+    });
+
+  let document;
+  try {
+    document = parseToml(lockText, { unsafeKeyBehaviour: 'throw' });
+  } catch {
+    return Object.freeze({
+      artifactRecords: Object.freeze([]),
+      packageCount: 0,
+      reasons: Object.freeze(['cargo-lock-invalid'])
+    });
+  }
+  if (
+    !document ||
+    typeof document !== 'object' ||
+    Array.isArray(document) ||
+    ![3, 4].includes(document.version) ||
+    !Array.isArray(document.package) ||
+    document.package.length > MAX_ARTIFACT_COUNT
+  )
+    return Object.freeze({
+      artifactRecords: Object.freeze([]),
+      packageCount: Array.isArray(document?.package)
+        ? document.package.length
+        : 0,
+      reasons: Object.freeze(['cargo-lock-schema-or-budget-invalid'])
+    });
+
+  const records = new Map();
+  const localPackageIds = new Set(
+    [rootPackage, ...rootPackages]
+      .filter(
+        (item) =>
+          item &&
+          typeof item.name === 'string' &&
+          typeof item.version === 'string'
+      )
+      .map((item) => `${item.name}\0${item.version}`)
+  );
+  let invalidPackage = false;
+  for (const item of document.package) {
+    if (
+      !item ||
+      typeof item !== 'object' ||
+      Array.isArray(item) ||
+      typeof item.name !== 'string' ||
+      !/^[A-Za-z0-9_-]{1,128}$/u.test(item.name) ||
+      typeof item.version !== 'string' ||
+      !/^[0-9][A-Za-z0-9.+-]{0,127}$/u.test(item.version)
+    ) {
+      invalidPackage = true;
+      continue;
+    }
+
+    if (item.source === undefined) {
+      if (localPackageIds.has(`${item.name}\0${item.version}`)) continue;
+      reasons.push(`cargo-local-package-unverified:${lockPath}`);
+      continue;
+    }
+    if (!cratesIoRegistrySource(item.source)) {
+      reasons.push(`cargo-source-unverified:${lockPath}`);
+      continue;
+    }
+    if (
+      typeof item.checksum !== 'string' ||
+      !/^[a-f0-9]{64}$/iu.test(item.checksum)
+    ) {
+      reasons.push(`cargo-checksum-missing-or-invalid:${lockPath}`);
+      continue;
+    }
+
+    const record = {
+      location: `cargo-lock/${Buffer.from(lockPath).toString('base64url')}/${item.name}@${item.version}#${item.checksum.toLowerCase()}`,
+      name: item.name,
+      version: item.version,
+      source: item.source,
+      checksum: item.checksum.toLowerCase()
+    };
+    const key = cargoLockRecordKey(record);
+    const prior = records.get(key);
+    if (prior && prior.checksum !== record.checksum) {
+      records.delete(key);
+      reasons.push(`cargo-package-checksum-conflict:${lockPath}`);
+    } else if (!prior) records.set(key, Object.freeze(record));
+  }
+  if (invalidPackage) reasons.push(`cargo-package-record-invalid:${lockPath}`);
+
+  return Object.freeze({
+    artifactRecords: Object.freeze(
+      [...records.values()].sort((left, right) =>
+        left.location.localeCompare(right.location)
+      )
+    ),
+    packageCount: document.package.length,
+    reasons: Object.freeze([...new Set(reasons)].sort())
+  });
+}
+
+/** Inspect a crates.io .crate archive without extracting or executing it. */
+export function inspectCargoCrateTarball(
+  archive,
+  artifact,
+  {
+    maxUnpackedBytes = MAX_ARTIFACT_UNPACKED_BYTES,
+    maxFiles = MAX_ARTIFACT_FILES
+  } = {}
+) {
+  if (
+    !Buffer.isBuffer(archive) ||
+    archive.length > MAX_ARTIFACT_BYTES ||
+    !/^[A-Za-z0-9_-]{1,128}$/u.test(artifact?.name ?? '') ||
+    !/^[0-9][A-Za-z0-9.+-]{0,127}$/u.test(artifact?.version ?? '')
+  )
+    return Object.freeze({
+      files: 0,
+      bytes: 0,
+      findings: Object.freeze([]),
+      reasons: Object.freeze(['cargo-artifact-size-or-identity-invalid']),
+      binaryFiles: 0,
+      hasBuildScript: false,
+      isProcMacro: false
+    });
+
+  const packageRoot = `${artifact.name}-${artifact.version}`;
+  let unpacked;
+  try {
+    unpacked = gunzipSync(archive, {
+      maxOutputLength: Math.min(MAX_ARTIFACT_UNPACKED_BYTES, maxUnpackedBytes)
+    });
+  } catch {
+    return Object.freeze({
+      files: 0,
+      bytes: 0,
+      findings: Object.freeze([]),
+      reasons: Object.freeze(['cargo-artifact-gzip-invalid-or-over-budget']),
+      binaryFiles: 0,
+      hasBuildScript: false,
+      isProcMacro: false
+    });
+  }
+
+  const reasons = [];
+  if (unpacked.length > 1024 * 1024 && unpacked.length > archive.length * 200)
+    reasons.push('cargo-artifact-compression-ratio-exceeded');
+  const findings = [];
+  const seen = new Set();
+  const textPaths = new Set();
+  let offset = 0;
+  let entries = 0;
+  let files = 0;
+  let bytes = 0;
+  let binaryFiles = 0;
+  let manifest;
+  let sawTerminator = false;
+  while (offset + 512 <= unpacked.length) {
+    const header = unpacked.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) {
+      sawTerminator = true;
+      if (unpacked.length - offset < 1024)
+        reasons.push('cargo-tar-terminator-truncated');
+      if (unpacked.subarray(offset).some((byte) => byte !== 0))
+        reasons.push('cargo-tar-trailing-data');
+      offset = unpacked.length;
+      break;
+    }
+
+    let canonical;
+    let size;
+    try {
+      let name = readTarText(header, 0, 100);
+      const prefix = readTarText(header, 345, 155);
+      if (prefix) name = `${prefix}/${name}`;
+      canonical = safeTarName(name, packageRoot);
+      size = readTarOctal(header, 124, 12);
+      const declaredChecksum = readTarOctal(header, 148, 8);
+      let checksum = 0;
+      for (let index = 0; index < 512; index++)
+        checksum += index >= 148 && index < 156 ? 32 : (header[index] ?? 0);
+      if (checksum !== declaredChecksum)
+        reasons.push('cargo-tar-header-checksum-invalid');
+    } catch (error) {
+      reasons.push(
+        error instanceof Error ? error.message : 'cargo-tar-header-invalid'
+      );
+      break;
+    }
+
+    const type = String.fromCharCode(header[156] ?? 0);
+    const bodyStart = offset + 512;
+    const bodyEnd = bodyStart + size;
+    if (
+      size > MAX_ARTIFACT_FILE_BYTES ||
+      bodyEnd > unpacked.length ||
+      !Number.isSafeInteger(bodyEnd)
+    ) {
+      reasons.push('cargo-artifact-file-size-exceeded');
+      break;
+    }
+    entries++;
+    if (entries > MAX_ARTIFACT_FILES) {
+      reasons.push('cargo-artifact-content-budget-exceeded');
+      break;
+    }
+    if (['x', 'g', 'L', 'K', '1', '2', 'S'].includes(type)) {
+      reasons.push('cargo-tar-entry-type-unsupported');
+      break;
+    }
+    if (type === '0' || type === '\0' || type === '7') {
+      if (canonical === packageRoot) {
+        reasons.push('cargo-tar-file-path-invalid');
+        break;
+      }
+      files++;
+      bytes += size;
+      if (files > maxFiles || bytes > maxUnpackedBytes) {
+        reasons.push('cargo-artifact-content-budget-exceeded');
+        break;
+      }
+      if (seen.has(canonical)) {
+        reasons.push('cargo-tar-duplicate-path');
+        break;
+      }
+      seen.add(canonical);
+      const content = unpacked.subarray(bodyStart, bodyEnd);
+      const relativePath = canonical.slice(packageRoot.length + 1);
+      if (relativePath === 'Cargo.toml') {
+        try {
+          manifest = parseToml(
+            new TextDecoder('utf-8', { fatal: true }).decode(content),
+            {
+              unsafeKeyBehaviour: 'throw'
+            }
+          );
+          if (
+            !manifest ||
+            typeof manifest !== 'object' ||
+            Array.isArray(manifest)
+          )
+            throw new Error('cargo-manifest-not-object');
+        } catch {
+          reasons.push('cargo-artifact-manifest-invalid');
+        }
+      }
+      if (!content.includes(0)) {
+        try {
+          const text = new TextDecoder('utf-8', { fatal: true }).decode(
+            content
+          );
+          textPaths.add(relativePath);
+          findings.push(
+            ...scanText(
+              `artifact:${artifact.location}/${relativePath}`,
+              text,
+              reasons
+            )
+          );
+        } catch {
+          binaryFiles++;
+        }
+      } else {
+        binaryFiles++;
+      }
+    } else if (type === '5') {
+      if (size !== 0) {
+        reasons.push('cargo-tar-directory-entry-invalid');
+        break;
+      }
+    } else {
+      reasons.push('cargo-tar-entry-type-unsupported');
+      break;
+    }
+    offset = bodyStart + Math.ceil(size / 512) * 512;
+  }
+  if (!sawTerminator) reasons.push('cargo-tar-terminator-missing');
+
+  const packageManifest = manifest?.package;
+  if (
+    !packageManifest ||
+    packageManifest.name !== artifact.name ||
+    packageManifest.version !== artifact.version
+  )
+    reasons.push('cargo-artifact-package-identity-mismatch');
+  const explicitBuild = packageManifest?.build;
+  let buildScriptPath = 'build.rs';
+  if (typeof explicitBuild === 'string') {
+    const normalized = path.posix.normalize(
+      explicitBuild.replaceAll('\\', '/')
+    );
+    if (
+      !explicitBuild ||
+      normalized === '..' ||
+      normalized.startsWith('../') ||
+      normalized.startsWith('/') ||
+      /^[A-Za-z]:/u.test(normalized) ||
+      normalized.includes('\0')
+    )
+      reasons.push('cargo-build-script-path-invalid');
+    else buildScriptPath = normalized;
+  } else if (
+    explicitBuild !== undefined &&
+    typeof explicitBuild !== 'boolean'
+  ) {
+    reasons.push('cargo-build-script-setting-invalid');
+  }
+  const hasBuildScript =
+    explicitBuild !== false && textPaths.has(buildScriptPath);
+  if (
+    explicitBuild === true ||
+    (typeof explicitBuild === 'string' && explicitBuild.length > 0)
+  ) {
+    if (!textPaths.has(buildScriptPath))
+      reasons.push('cargo-build-script-missing');
+  }
+  if (hasBuildScript)
+    reasons.push(`cargo-build-script-review:${artifact.location}`);
+  const lib = manifest?.lib;
+  const crateTypes = Array.isArray(lib?.['crate-type'])
+    ? lib['crate-type']
+    : [];
+  if (
+    lib?.['crate-type'] !== undefined &&
+    (!Array.isArray(lib['crate-type']) ||
+      lib['crate-type'].some((crateType) => typeof crateType !== 'string'))
+  )
+    reasons.push('cargo-crate-type-invalid');
+  if (
+    lib?.['proc-macro'] !== undefined &&
+    typeof lib['proc-macro'] !== 'boolean'
+  )
+    reasons.push('cargo-proc-macro-setting-invalid');
+  const isProcMacro =
+    crateTypes.includes('proc-macro') || lib?.['proc-macro'] === true;
+  if (isProcMacro) reasons.push(`cargo-proc-macro-review:${artifact.location}`);
+  if (binaryFiles > 0)
+    reasons.push('cargo-artifact-binary-content-uninspected');
+
+  return Object.freeze({
+    files,
+    bytes,
+    findings: Object.freeze([...new Set(findings)].sort()),
+    reasons: Object.freeze([...new Set(reasons)].sort()),
+    binaryFiles,
+    hasBuildScript,
+    isProcMacro
+  });
+}
+
+export async function inspectCargoArtifacts(
+  artifacts,
+  {
+    fetchImpl = globalThis.fetch,
+    deadlineMs = MAX_ARTIFACT_DEADLINE_MS,
+    maxCount = MAX_ARTIFACT_COUNT,
+    maxTotalBytes = MAX_ARTIFACT_TOTAL_BYTES,
+    maxTotalNetworkBytes = MAX_ARTIFACT_TOTAL_BYTES,
+    maxFiles = MAX_ARTIFACT_FILES
+  } = {}
+) {
+  const reasons = [];
+  const findings = [];
+  const coverage = {
+    checked: 0,
+    bytes: 0,
+    files: 0,
+    binaryFiles: 0,
+    networkBytes: 0
+  };
+  const verifiedArtifactSha256ByLocation = new Map();
+  if (artifacts.length > maxCount)
+    return Object.freeze({
+      reasons: Object.freeze(['cargo-artifact-count-budget-exceeded']),
+      findings: Object.freeze([]),
+      coverage: Object.freeze(coverage),
+      verifiedArtifactSha256ByLocation: Object.freeze({})
+    });
+
+  const startedAt = Date.now();
+  for (let start = 0; start < artifacts.length; start++) {
+    const batch = artifacts.slice(start, start + 1);
+    const results = await Promise.all(
+      batch.map(async (artifact) => {
+        if (
+          !/^[A-Za-z0-9_-]{1,128}$/u.test(artifact.name ?? '') ||
+          !/^[0-9][A-Za-z0-9.+-]{0,127}$/u.test(artifact.version ?? '') ||
+          !/^[a-f0-9]{64}$/iu.test(artifact.checksum ?? '') ||
+          !cratesIoRegistrySource(artifact.source) ||
+          !/^cargo-lock\/[A-Za-z0-9_-]+\//u.test(artifact.location ?? '') ||
+          !artifact.location.endsWith(
+            `/${artifact.name}@${artifact.version}#${artifact.checksum}`
+          )
+        )
+          return { reasons: ['cargo-artifact-identity-invalid'] };
+        const url = new URL(
+          `https://static.crates.io/crates/${artifact.name}/${artifact.name}-${artifact.version}.crate`
+        );
+        const remaining = deadlineMs - (Date.now() - startedAt);
+        if (remaining <= 0)
+          return { reasons: ['cargo-artifact-inspection-deadline-exceeded'] };
+        try {
+          const response = await fetchImpl(url, {
+            redirect: 'manual',
+            signal: AbortSignal.timeout(Math.min(20_000, remaining)),
+            headers: { accept: 'application/gzip, application/octet-stream' }
+          });
+          if (!response.ok || response.status >= 300)
+            throw new Error('cargo-artifact-fetch-unavailable');
+          if (response.url) {
+            const finalUrl = new URL(response.url);
+            if (
+              finalUrl.origin !== 'https://static.crates.io' ||
+              finalUrl.pathname !== url.pathname ||
+              finalUrl.search ||
+              finalUrl.hash
+            )
+              throw new Error('cargo-artifact-redirected-outside-registry');
+          }
+          const remainingNetworkBytes = Math.max(
+            0,
+            maxTotalNetworkBytes - coverage.networkBytes
+          );
+          if (remainingNetworkBytes === 0)
+            throw new Error('cargo-artifact-total-download-budget-exceeded');
+          const archive = await boundedResponseBytes(
+            response,
+            Math.min(MAX_ARTIFACT_BYTES, remainingNetworkBytes)
+          );
+          const actualDigest = createHash('sha256')
+            .update(archive)
+            .digest('hex');
+          if (actualDigest !== artifact.checksum.toLowerCase())
+            throw new Error('cargo-artifact-integrity-mismatch');
+          const inspected = inspectCargoCrateTarball(archive, artifact, {
+            maxUnpackedBytes: Math.max(0, maxTotalBytes - coverage.bytes),
+            maxFiles: Math.max(0, maxFiles - coverage.files)
+          });
+          return {
+            ...inspected,
+            location: artifact.location,
+            artifactSha256: actualDigest,
+            networkBytes: archive.length,
+            reasons: inspected.reasons.map(
+              (reason) => `${reason}:${artifact.location}`
+            )
+          };
+        } catch (error) {
+          const code =
+            error instanceof Error &&
+            [
+              'artifact-size-budget-exceeded',
+              'cargo-artifact-integrity-mismatch',
+              'cargo-artifact-redirected-outside-registry',
+              'cargo-artifact-total-download-budget-exceeded'
+            ].includes(error.message)
+              ? error.message
+              : 'cargo-artifact-fetch-or-inspection-failed';
+          return { reasons: [`${code}:${artifact.location}`] };
+        }
+      })
+    );
+    for (const result of results) {
+      reasons.push(...(result.reasons ?? []));
+      findings.push(...(result.findings ?? []));
+      if (
+        typeof result.location === 'string' &&
+        typeof result.artifactSha256 === 'string'
+      )
+        verifiedArtifactSha256ByLocation.set(
+          result.location,
+          result.artifactSha256
+        );
+      if (result.files !== undefined) {
+        coverage.checked++;
+        coverage.files += result.files;
+        coverage.bytes += result.bytes ?? 0;
+        coverage.binaryFiles += result.binaryFiles ?? 0;
+        coverage.networkBytes += result.networkBytes ?? 0;
+        if (coverage.bytes > maxTotalBytes)
+          reasons.push('cargo-artifact-total-content-budget-exceeded');
+        if (coverage.networkBytes > maxTotalNetworkBytes)
+          reasons.push('cargo-artifact-total-download-budget-exceeded');
+        if (coverage.files > maxFiles)
+          reasons.push('cargo-artifact-total-file-count-exceeded');
+      }
+    }
+    if (
+      coverage.bytes > maxTotalBytes ||
+      coverage.networkBytes > maxTotalNetworkBytes ||
+      coverage.files > maxFiles
+    )
+      break;
+  }
+  return Object.freeze({
+    reasons: Object.freeze([...new Set(reasons)].sort()),
+    findings: Object.freeze([...new Set(findings)].sort()),
+    coverage: Object.freeze(coverage),
+    verifiedArtifactSha256ByLocation: Object.freeze(
+      Object.fromEntries(
+        [...verifiedArtifactSha256ByLocation.entries()].sort(
+          ([left], [right]) => left.localeCompare(right)
+        )
+      )
+    )
+  });
+}
+
+export function verifyCargoArtifactPolicy(artifacts, policyText) {
+  if (artifacts.length === 0)
+    return Object.freeze({
+      policySha256: null,
+      reasons: Object.freeze([])
+    });
+  let policy;
+  try {
+    policy = parseCargoArtifactPolicy(policyText);
+  } catch {
+    return Object.freeze({
+      policySha256: null,
+      reasons: Object.freeze(['cargo-artifact-policy-unavailable-or-invalid'])
+    });
+  }
+  const policySha256 = canonicalJsonSha256(policy);
+  const expected = new Map();
+  const reasons = [];
+  for (const artifact of artifacts) {
+    const identity = `${artifact.name}@${artifact.version}`;
+    const prior = expected.get(identity);
+    if (prior !== undefined && prior !== artifact.checksum)
+      reasons.push('cargo-artifact-lock-identity-conflict');
+    expected.set(identity, artifact.checksum);
+  }
+  const policyPackages = policy.packages;
+  for (const [identity, checksum] of expected) {
+    if (policyPackages[identity] === undefined)
+      reasons.push(`cargo-artifact-policy-entry-missing:${identity}`);
+    else if (policyPackages[identity] !== checksum)
+      reasons.push(`cargo-artifact-policy-digest-mismatch:${identity}`);
+  }
+  for (const identity of Object.keys(policyPackages))
+    if (!expected.has(identity))
+      reasons.push(`cargo-artifact-policy-entry-unused:${identity}`);
+  return Object.freeze({
+    policySha256,
+    reasons: Object.freeze([...new Set(reasons)].sort())
+  });
+}
+
 // Retained for test and API compatibility; Stage A now inspects every exact
 // locked identity, including unchanged packages, before any install occurs.
 export const inspectChangedNpmArtifacts = inspectNpmArtifacts;
@@ -1285,7 +1895,251 @@ function readCommitBlob(repo, commit, name) {
   return new TextDecoder('utf-8', { fatal: true }).decode(content);
 }
 
-export function inspectDependencyChanges(repo, baseSha, headSha) {
+function parseCargoManifest(text) {
+  if (
+    typeof text !== 'string' ||
+    Buffer.byteLength(text, 'utf8') > MAX_FILE_BYTES
+  )
+    return undefined;
+  try {
+    const manifest = parseToml(text, { unsafeKeyBehaviour: 'throw' });
+    return manifest && typeof manifest === 'object' && !Array.isArray(manifest)
+      ? manifest
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseCargoManifestIdentity(manifest, workspaceManifest = manifest) {
+  const name = manifest?.package?.name;
+  const packageVersion = manifest?.package?.version;
+  const version =
+    packageVersion &&
+    typeof packageVersion === 'object' &&
+    !Array.isArray(packageVersion) &&
+    packageVersion.workspace === true
+      ? workspaceManifest?.workspace?.package?.version
+      : packageVersion;
+  return typeof name === 'string' && typeof version === 'string'
+    ? { name, version }
+    : undefined;
+}
+
+function cargoManifestDirectory(manifestPath) {
+  const directory = path.posix.dirname(manifestPath);
+  return directory === '.' ? '' : directory;
+}
+
+function inspectCargoLockfiles(repo, commit, tree) {
+  const resolvedTree =
+    tree ?? parseTree(git(repo, ['ls-tree', '-rz', '--full-tree', commit]));
+  const lockfiles = resolvedTree.blobs.filter((blob) =>
+    /(?:^|\/)Cargo\.lock$/u.test(blob.path)
+  );
+  const manifests = resolvedTree.blobs.filter((blob) =>
+    /(?:^|\/)Cargo\.toml$/iu.test(blob.path)
+  );
+  const reasons = [];
+  if (lockfiles.length > 100 || manifests.length > 500)
+    return Object.freeze({
+      artifactRecords: Object.freeze([]),
+      packageCount: 0,
+      reasons: Object.freeze(['cargo-lockfile-count-budget-exceeded'])
+    });
+
+  const locksByDirectory = new Set(
+    lockfiles.map((blob) => cargoManifestDirectory(blob.path))
+  );
+  if (lockfiles.length === 0) {
+    for (const manifest of manifests)
+      reasons.push(`cargo-lockfile-missing:${manifest.path}`);
+    return Object.freeze({
+      artifactRecords: Object.freeze([]),
+      packageCount: 0,
+      reasons: Object.freeze([...new Set(reasons)].sort())
+    });
+  }
+
+  const selected = new Map();
+  for (const manifest of manifests) selected.set(manifest.oid, manifest);
+  for (const lockfile of lockfiles) {
+    selected.set(lockfile.oid, lockfile);
+  }
+  let selectedBytes = 0;
+  let oversizedSource = false;
+  for (const blob of selected.values()) {
+    if (blob.size > MAX_FILE_BYTES) {
+      reasons.push('cargo-lock-or-manifest-file-budget-exceeded');
+      oversizedSource = true;
+      continue;
+    }
+    selectedBytes += blob.size;
+  }
+  if (oversizedSource || selectedBytes > 16 * 1024 * 1024)
+    return Object.freeze({
+      artifactRecords: Object.freeze([]),
+      packageCount: 0,
+      reasons: Object.freeze(
+        [...new Set([...reasons, 'cargo-lock-source-budget-exceeded'])].sort()
+      )
+    });
+
+  const contentByOid = catFileBatch(repo, [...selected.keys()]);
+  const manifestByPath = new Map();
+  for (const manifest of manifests) {
+    const bytes = contentByOid.get(manifest.oid);
+    if (!bytes || bytes.length > MAX_FILE_BYTES) {
+      reasons.push(`cargo-manifest-unavailable:${manifest.path}`);
+      continue;
+    }
+    try {
+      const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      const document = parseCargoManifest(text);
+      if (!document) throw new Error('manifest-invalid');
+      manifestByPath.set(manifest.path, document);
+    } catch {
+      reasons.push(`cargo-manifest-invalid:${manifest.path}`);
+    }
+  }
+
+  const workspaceMembersByDirectory = new Map();
+  const workspacePackagesByDirectory = new Map();
+  let workspaceMemberCount = 0;
+  for (const lockfile of lockfiles) {
+    const directory = cargoManifestDirectory(lockfile.path);
+    const manifestPath = directory ? `${directory}/Cargo.toml` : 'Cargo.toml';
+    const workspaceManifest = manifestByPath.get(manifestPath);
+    const members = workspaceManifest?.workspace?.members;
+    if (members === undefined) continue;
+    if (!Array.isArray(members)) {
+      reasons.push(`cargo-workspace-members-invalid:${manifestPath}`);
+      continue;
+    }
+    const normalizedMembers = new Set();
+    const localPackages = [];
+    for (const member of members) {
+      workspaceMemberCount++;
+      if (workspaceMemberCount > 100_000) {
+        reasons.push('cargo-workspace-member-budget-exceeded');
+        break;
+      }
+      if (typeof member !== 'string') {
+        reasons.push(`cargo-workspace-member-invalid:${manifestPath}`);
+        continue;
+      }
+      const normalized = path.posix.normalize(member.replaceAll('\\', '/'));
+      if (
+        normalized === '..' ||
+        normalized.startsWith('../') ||
+        path.posix.isAbsolute(normalized)
+      ) {
+        reasons.push(`cargo-workspace-member-escape:${manifestPath}`);
+        continue;
+      }
+      if (normalized.includes('*') || normalized.includes('?')) {
+        reasons.push(`cargo-workspace-pattern-unverified:${manifestPath}`);
+        continue;
+      }
+      normalizedMembers.add(normalized);
+      const memberManifestPath = path.posix.join(
+        directory || '.',
+        normalized,
+        'Cargo.toml'
+      );
+      const memberManifest = manifestByPath.get(memberManifestPath);
+      if (!memberManifest) {
+        reasons.push(`cargo-workspace-member-missing:${manifestPath}`);
+        continue;
+      }
+      const identity = parseCargoManifestIdentity(
+        memberManifest,
+        workspaceManifest
+      );
+      if (!identity) {
+        reasons.push(`cargo-workspace-member-identity-unknown:${manifestPath}`);
+        continue;
+      }
+      localPackages.push(identity);
+    }
+    if (workspaceManifest.workspace?.exclude !== undefined)
+      reasons.push(`cargo-workspace-excludes-unverified:${manifestPath}`);
+    workspaceMembersByDirectory.set(directory, normalizedMembers);
+    workspacePackagesByDirectory.set(directory, localPackages);
+  }
+
+  for (const manifest of manifests) {
+    const memberDirectory = cargoManifestDirectory(manifest.path);
+    let directory = memberDirectory;
+    let foundLock = false;
+    while (!foundLock) {
+      if (locksByDirectory.has(directory)) {
+        if (directory === memberDirectory) {
+          foundLock = true;
+          break;
+        }
+        const relativeMember =
+          path.posix.relative(directory || '.', memberDirectory || '.') || '.';
+        foundLock =
+          workspaceMembersByDirectory.get(directory)?.has(relativeMember) ??
+          false;
+        break;
+      }
+      if (!directory) break;
+      directory = path.posix.dirname(directory);
+      if (directory === '.') directory = '';
+    }
+    if (!foundLock) reasons.push(`cargo-lockfile-missing:${manifest.path}`);
+  }
+
+  const records = new Map();
+  let packageCount = 0;
+  for (const lockfile of lockfiles) {
+    const bytes = contentByOid.get(lockfile.oid);
+    if (!bytes || bytes.length > MAX_FILE_BYTES) {
+      reasons.push(`cargo-lock-unavailable:${lockfile.path}`);
+      continue;
+    }
+    let lockText;
+    try {
+      lockText = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch {
+      reasons.push(`cargo-lock-invalid:${lockfile.path}`);
+      continue;
+    }
+    const directory = cargoManifestDirectory(lockfile.path);
+    const manifestPath = directory ? `${directory}/Cargo.toml` : 'Cargo.toml';
+    const rootManifest = manifestByPath.get(manifestPath);
+    const rootPackage = parseCargoManifestIdentity(rootManifest);
+    const rootPackages = workspacePackagesByDirectory.get(directory) ?? [];
+    const inventory = parseCargoLockArtifactInventory(lockText, {
+      lockPath: lockfile.path,
+      rootPackage,
+      rootPackages
+    });
+    packageCount += inventory.packageCount;
+    reasons.push(...inventory.reasons);
+    for (const record of inventory.artifactRecords) {
+      const key = cargoLockRecordKey(record);
+      const prior = records.get(key);
+      if (prior && prior.checksum !== record.checksum) {
+        records.delete(key);
+        reasons.push(`cargo-package-checksum-conflict:${lockfile.path}`);
+      } else if (!prior) records.set(key, record);
+    }
+  }
+  return Object.freeze({
+    artifactRecords: Object.freeze(
+      [...records.values()].sort((left, right) =>
+        left.location.localeCompare(right.location)
+      )
+    ),
+    packageCount,
+    reasons: Object.freeze([...new Set(reasons)].sort())
+  });
+}
+
+export function inspectDependencyChanges(repo, baseSha, headSha, mergeSha) {
   const reasons = [];
   const headTree = parseTree(
     git(repo, ['ls-tree', '-rz', '--full-tree', headSha])
@@ -1302,12 +2156,23 @@ export function inspectDependencyChanges(repo, baseSha, headSha) {
   if (unsupportedLockfiles.length > 0)
     reasons.push('unsupported-lockfile-format');
   const unsupportedEcosystemInputs = headTree.blobs.some((blob) =>
-    /(?:^|\/)(?:Cargo\.lock|Cargo\.toml|go\.mod|go\.sum|go\.work|go\.work\.sum|uv\.lock|poetry\.lock|Pipfile|Pipfile\.lock|requirements(?:-[^/]+)?\.txt|composer\.json|composer\.lock|pom\.xml|gradle\.lockfile|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?)$/iu.test(
+    /(?:^|\/)(?:go\.mod|go\.sum|go\.work|go\.work\.sum|uv\.lock|poetry\.lock|Pipfile|Pipfile\.lock|requirements(?:-[^/]+)?\.txt|composer\.json|composer\.lock|pom\.xml|gradle\.lockfile|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?)$/iu.test(
       blob.path
     )
   );
   if (unsupportedEcosystemInputs)
     reasons.push('unsupported-dependency-ecosystem-provenance');
+  const cargoHead = inspectCargoLockfiles(repo, headSha, headTree);
+  const cargoMerge = mergeSha
+    ? inspectCargoLockfiles(repo, mergeSha)
+    : cargoHead;
+  const cargoArtifactRecordsByLocation = new Map();
+  for (const artifact of [
+    ...cargoHead.artifactRecords,
+    ...cargoMerge.artifactRecords
+  ])
+    cargoArtifactRecordsByLocation.set(artifact.location, artifact);
+  reasons.push(...cargoHead.reasons, ...cargoMerge.reasons);
   const baseLock = readCommitBlob(repo, baseSha, 'package-lock.json');
   const headLock = readCommitBlob(repo, headSha, 'package-lock.json');
   const headManifest = readCommitBlob(repo, headSha, 'package.json');
@@ -1357,6 +2222,16 @@ export function inspectDependencyChanges(repo, baseSha, headSha) {
     changedArtifacts,
     changedArtifactRecords: Object.freeze(changedArtifactRecords),
     artifactRecords: Object.freeze(artifactRecords),
+    cargoArtifactRecords: Object.freeze(
+      [...cargoArtifactRecordsByLocation.values()].sort((left, right) =>
+        left.location.localeCompare(right.location)
+      )
+    ),
+    cargoArtifactCount: cargoArtifactRecordsByLocation.size,
+    cargoPackageCount: Math.max(
+      cargoHead.packageCount,
+      cargoMerge.packageCount
+    ),
     scopedPackages: Object.freeze(scopedPackages)
   });
 }
@@ -1386,6 +2261,25 @@ function workflowRunCommands(source) {
     throw new Error('Malformed GitHub Actions workflow structure');
 
   const commands = [];
+  const parseWorkflowEnv = (value, label) => {
+    if (value === undefined) return {};
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+      throw new Error(`Malformed GitHub Actions ${label} environment`);
+    const env = {};
+    for (const [name, content] of Object.entries(value)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name))
+        throw new Error(`Malformed GitHub Actions ${label} environment`);
+      if (
+        typeof content !== 'string' &&
+        typeof content !== 'number' &&
+        typeof content !== 'boolean'
+      )
+        throw new Error(`Malformed GitHub Actions ${label} environment`);
+      env[name] = String(content);
+    }
+    return env;
+  };
+  const workflowEnv = parseWorkflowEnv(workflow.env, 'workflow');
   const workflowDefault = workflow.defaults?.run?.['working-directory'];
   if (workflowDefault !== undefined && typeof workflowDefault !== 'string')
     throw new Error('Malformed GitHub Actions default working directory');
@@ -1397,6 +2291,10 @@ function workflowRunCommands(source) {
     if (steps === undefined) continue;
     if (!Array.isArray(steps))
       throw new Error('Malformed GitHub Actions step list');
+    const jobEnv = {
+      ...workflowEnv,
+      ...parseWorkflowEnv(job.env, 'job')
+    };
     const jobDefault = job.defaults?.run?.['working-directory'];
     if (jobDefault !== undefined && typeof jobDefault !== 'string')
       throw new Error('Malformed GitHub Actions default working directory');
@@ -1416,10 +2314,20 @@ function workflowRunCommands(source) {
         throw new Error(
           'GitHub Actions run command is missing or not a scalar'
         );
+      const stepEnv = {
+        ...jobEnv,
+        ...parseWorkflowEnv(step.env, 'step')
+      };
+      const unsafeEnvironmentReference = Object.entries(stepEnv).some(
+        ([name, value]) =>
+          untrustedWorkflowEnvironmentExpression.test(value) &&
+          new RegExp(`\\b${name}\\b`, 'iu').test(text)
+      );
       commands.push({
         text,
         cwd: stepDefault ?? jobDefault ?? workflowDefault ?? '.',
-        jobName
+        jobName,
+        unsafeEnvironmentReference
       });
     }
   }
@@ -1787,7 +2695,7 @@ function traceChangedEntrypoints(changedPaths, texts, findingPaths) {
   return { traces: [...new Set(traces)].sort(), incomplete: false };
 }
 
-function scanText(name, text) {
+function scanText(name, text, incompleteReasons = []) {
   const findings = [];
   if (
     name === 'package.json' ||
@@ -1814,6 +2722,10 @@ function scanText(name, text) {
           throw new Error(`Non-text npm script: ${name}#${script}`);
         if (dangerous.some((pattern) => pattern.test(command)))
           findings.push(`${name}#scripts.${script}`);
+        if (hasUnsupportedToolchainExecution(command))
+          incompleteReasons.push(
+            `unsupported-toolchain-execution:${name}#scripts.${script}`
+          );
       }
     }
     const tasksFile = name.endsWith('/tasks.json');
@@ -1866,20 +2778,45 @@ function scanText(name, text) {
         dangerous.some((pattern) => pattern.test(command))
       )
         findings.push(`${name}#folderOpen`);
+      if (
+        (task.runOptions?.runOn === 'folderOpen' ||
+          task.runOn === 'folderOpen') &&
+        hasUnsupportedToolchainExecution(command)
+      )
+        incompleteReasons.push(
+          `unsupported-toolchain-execution:${name}#folderOpen`
+        );
     }
   }
-  if (
-    /(?:^|\/)\.github\/workflows\/[^/]+\.ya?ml$/iu.test(name) &&
-    workflowRunCommands(text).some((command) =>
-      /\$\{\{\s*(?:github\.event\.(?:pull_request|issue|comment|discussion|review|workflow_run)\.[^}]+|github\.(?:head_ref|ref_name|actor|triggering_actor)|inputs\.[A-Za-z0-9_-]+)\s*\}\}/iu.test(
-        command.text
+  if (/(?:^|\/)\.github\/workflows\/[^/]+\.ya?ml$/iu.test(name)) {
+    const commands = workflowRunCommands(text);
+    if (
+      commands.some((command) =>
+        /\$\{\{\s*(?:github\.event\.[^}]+|github\.(?:head_ref|ref_name|actor|triggering_actor)|inputs\.[A-Za-z0-9_-]+)\s*\}\}/iu.test(
+          command.text
+        )
       )
     )
-  )
-    findings.push(`${name}#untrusted-event-shell-interpolation`);
+      findings.push(`${name}#untrusted-event-shell-interpolation`);
+    if (
+      commands.some(
+        (command) =>
+          command.unsafeEnvironmentReference ||
+          untrustedWorkflowExpression.test(command.text)
+      )
+    )
+      findings.push(`${name}#untrusted-shell-input`);
+    if (
+      commands.some((command) => hasUnsupportedToolchainExecution(command.text))
+    )
+      incompleteReasons.push(`unsupported-toolchain-execution:${name}`);
+  }
   const packageManifest =
     name === 'package.json' || name.endsWith('/package.json');
   const sourceCode = /\.[cm]?[jt]sx?$/iu.test(name);
+  const otherSourceCode = /\.(?:py|go|rs|java|php|rb|sh|bash|ps1|psm1)$/iu.test(
+    name
+  );
   const markdown = /\.(?:md|mdx|markdown)$/iu.test(name);
   const shebang = /^\uFEFF?#!/u.test(text);
   const sourceSignature =
@@ -1901,6 +2838,13 @@ function scanText(name, text) {
     if (pattern.test(scanContent)) findings.push(name);
   if (executableText && suspiciousProcessExecution.test(behaviorContent))
     findings.push(name);
+  if (
+    (sourceCode || otherSourceCode) &&
+    unsupportedToolchainSpawn.test(sourceCode ? behaviorContent : text)
+  )
+    incompleteReasons.push(`unsupported-toolchain-execution:${name}`);
+  if (shebang && hasUnsupportedToolchainExecution(scanContent))
+    incompleteReasons.push(`unsupported-toolchain-execution:${name}`);
   if (executableText && hasCredentialTransfer(behaviorContent))
     findings.push(`${name}#credential-transfer`);
   if (
@@ -2142,7 +3086,7 @@ export function scanGitTree(repo, expectedSha, { changedPaths = [] } = {}) {
     }
     scanned++;
     texts.set(blob.path, text);
-    findings.push(...scanText(blob.path, text));
+    findings.push(...scanText(blob.path, text, incompleteReasons));
     if (changedSet.has(blob.path)) {
       const workflow = inspectChangedWorkflowTrust(blob.path, text);
       findings.push(...workflow.findings);
@@ -2491,7 +3435,13 @@ export async function scanGithubPullRequest({
       );
     verifyPullRequestMergeParents(bare, mergeSha, baseSha, headSha);
     const changedPaths = listPullRequestChanges(bare, baseSha, headSha);
-    const dependency = inspectDependencyChanges(bare, baseSha, headSha);
+    const dependency = inspectDependencyChanges(
+      bare,
+      baseSha,
+      headSha,
+      mergeSha
+    );
+    const dependencyInspectionStartedAt = Date.now();
     // Inspect the complete locked install graph before Stage B. Unchanged lock
     // identities are not a trusted content cache: runners may download and
     // execute their lifecycle hooks again on every run.
@@ -2499,13 +3449,45 @@ export async function scanGithubPullRequest({
       dependency.artifactRecords,
       { fetchImpl, allowedPublicScopes }
     );
+    const npmInspectionDurationMs = Math.min(
+      MAX_ARTIFACT_DEADLINE_MS,
+      Date.now() - dependencyInspectionStartedAt
+    );
+    const cargoArtifacts = await inspectCargoArtifacts(
+      dependency.cargoArtifactRecords,
+      {
+        fetchImpl,
+        deadlineMs: MAX_ARTIFACT_DEADLINE_MS - npmInspectionDurationMs,
+        maxCount: Math.max(
+          0,
+          MAX_ARTIFACT_COUNT - dependency.artifactRecords.length
+        ),
+        maxTotalBytes: Math.max(
+          0,
+          MAX_ARTIFACT_TOTAL_BYTES - dependencyArtifacts.coverage.bytes
+        ),
+        maxTotalNetworkBytes: Math.max(
+          0,
+          MAX_ARTIFACT_TOTAL_BYTES - dependencyArtifacts.coverage.networkBytes
+        ),
+        maxFiles: Math.max(
+          0,
+          MAX_ARTIFACT_FILES - dependencyArtifacts.coverage.files
+        )
+      }
+    );
+    const cargoArtifactPolicy = verifyCargoArtifactPolicy(
+      dependency.cargoArtifactRecords,
+      process.env.TOOLIP_STAGE_A_CARGO_SHA256_POLICY
+    );
     const head = scanGitTree(bare, headSha, { changedPaths });
     const merged = scanGitTree(bare, mergeSha, { changedPaths });
     let findings = [
       ...new Set([
         ...head.findings,
         ...merged.findings,
-        ...dependencyArtifacts.findings
+        ...dependencyArtifacts.findings,
+        ...cargoArtifacts.findings
       ])
     ].sort();
     const appliedExceptions = [];
@@ -2533,14 +3515,17 @@ export async function scanGithubPullRequest({
           [
             ...head.findings,
             ...merged.findings,
-            ...dependencyArtifacts.findings
+            ...dependencyArtifacts.findings,
+            ...cargoArtifacts.findings
           ].map((finding) => stageAFindingRecord(finding).id)
         );
         const candidateIncompleteReasons = [
           ...head.incompleteReasons,
           ...merged.incompleteReasons,
           ...dependency.reasons,
-          ...dependencyArtifacts.reasons
+          ...dependencyArtifacts.reasons,
+          ...cargoArtifacts.reasons,
+          ...cargoArtifactPolicy.reasons
         ];
         const matchingExceptions = matchingStageAExceptions(
           policy.entries,
@@ -2628,6 +3613,11 @@ export async function scanGithubPullRequest({
         ...head.incompleteReasons,
         ...merged.incompleteReasons,
         ...dependencyIncompleteReasons,
+        ...cargoArtifacts.reasons,
+        ...cargoArtifactPolicy.reasons,
+        ...(dependency.cargoArtifactCount > cargoArtifacts.coverage.checked
+          ? ['cargo-dependency-artifact-uninspected']
+          : []),
         ...(dependency.scopedPackages.some(
           (scope) => !allowedPublicScopes.includes(scope)
         )
@@ -2692,6 +3682,9 @@ export async function scanGithubPullRequest({
       appliedExceptions: Object.freeze(appliedExceptions),
       verifiedArtifactSha512ByLocation:
         dependencyArtifacts.verifiedArtifactSha512ByLocation,
+      verifiedArtifactSha256ByLocation:
+        cargoArtifacts.verifiedArtifactSha256ByLocation,
+      cargoArtifactPolicySha256: cargoArtifactPolicy.policySha256,
       coverage: Object.freeze({
         changedFiles: changedPaths.length,
         head: head.coverage,
@@ -2704,6 +3697,14 @@ export async function scanGithubPullRequest({
         dependencyArtifactNetworkBytes:
           dependencyArtifacts.coverage.networkBytes,
         dependencyArtifactBinaryFiles: dependencyArtifacts.coverage.binaryFiles,
+        nonNpmDependencyArtifactsChecked: cargoArtifacts.coverage.checked,
+        nonNpmDependencyArtifactCount: dependency.cargoArtifactCount,
+        nonNpmDependencyArtifactFiles: cargoArtifacts.coverage.files,
+        nonNpmDependencyArtifactBytes: cargoArtifacts.coverage.bytes,
+        nonNpmDependencyArtifactNetworkBytes:
+          cargoArtifacts.coverage.networkBytes,
+        nonNpmDependencyArtifactBinaryFiles:
+          cargoArtifacts.coverage.binaryFiles,
         headCommitSignatureStatus: exactHeadCommitVerification
           ? exactHeadCommitVerification.verified
             ? 'verified'
@@ -2780,6 +3781,11 @@ const stageARules = Object.freeze({
     description:
       'A changed workflow requests pull_request_target execution outside the trusted Stage A workflow.'
   },
+  'TLP-STAGEA-UNTRUSTED-SHELL-INPUT': {
+    name: 'Untrusted workflow data in shell commands',
+    description:
+      'A GitHub Actions shell command consumes an untrusted expression or an environment value derived from one.'
+  },
   'TLP-STAGEA-GATE-ERROR': {
     name: 'Stage A gate did not complete',
     description:
@@ -2819,9 +3825,11 @@ function stageAFindingRecord(finding) {
       ? 'TLP-STAGEA-UNPINNED-ACTION'
       : /#privileged-pull-request-trigger\b/u.test(finding)
         ? 'TLP-STAGEA-PRIVILEGED-WORKFLOW'
-        : /#(?:scripts\.|folderOpen)/u.test(finding)
-          ? 'TLP-STAGEA-ENTRYPOINT'
-          : 'TLP-STAGEA-SUSPICIOUS-CONTENT';
+        : /#untrusted-shell-input\b/u.test(finding)
+          ? 'TLP-STAGEA-UNTRUSTED-SHELL-INPUT'
+          : /#(?:scripts\.|folderOpen)/u.test(finding)
+            ? 'TLP-STAGEA-ENTRYPOINT'
+            : 'TLP-STAGEA-SUSPICIOUS-CONTENT';
   const location = redactStageAValue(firstPath).slice(0, 512);
   const trace = isTrace
     ? redactStageAValue(rawTrace).slice(0, 2_048)
@@ -2832,9 +3840,11 @@ function stageAFindingRecord(finding) {
       ? 'A changed workflow references an action by a mutable tag or branch; pin and review the exact commit before execution.'
       : ruleId === 'TLP-STAGEA-PRIVILEGED-WORKFLOW'
         ? 'A changed workflow uses pull_request_target outside the protected Stage A gate; this can expose write-scoped credentials to untrusted pull request data.'
-        : ruleId === 'TLP-STAGEA-ENTRYPOINT'
-          ? 'An execution entrypoint contains a suspicious command pattern; review it before running project scripts.'
-          : 'A bounded static scan found suspicious content; the scanner did not execute the content.';
+        : ruleId === 'TLP-STAGEA-UNTRUSTED-SHELL-INPUT'
+          ? 'A workflow shell command consumes untrusted event, secret, token or action-output data; pass validated values through a non-shell interface or review the workflow before execution.'
+          : ruleId === 'TLP-STAGEA-ENTRYPOINT'
+            ? 'An execution entrypoint contains a suspicious command pattern; review it before running project scripts.'
+            : 'A bounded static scan found suspicious content; the scanner did not execute the content.';
   const id = createHash('sha256')
     .update(`${ruleId}\0${location}\0${trace ?? ''}`)
     .digest('hex');

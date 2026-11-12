@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -8,6 +8,10 @@ import {
   parseRawChanges,
   scanPullRequestDiff
 } from '../../src/core/diff/pr-scan.js';
+import {
+  parseGitHubPullRequestEvent,
+  readGitHubPullRequestEvent
+} from '../../src/core/diff/github-pr-event.js';
 
 const roots: string[] = [];
 const fakeGithubToken = ['ghp_', '123456789012345678901234567890'].join('');
@@ -41,6 +45,129 @@ async function createRepo(): Promise<string> {
 }
 
 describe('pull request changed-file security scan', () => {
+  it('binds a GitHub pull request event to exact base and head commits', async () => {
+    const root = await createRepo();
+    const base = git(root, 'rev-parse', 'HEAD');
+    await writeFile(path.join(root, 'README.md'), 'review change\n');
+    git(root, 'add', 'README.md');
+    git(root, 'commit', '-qm', 'review change');
+    const head = git(root, 'rev-parse', 'HEAD');
+    const eventPath = path.join(root, 'event.json');
+    await writeFile(
+      eventPath,
+      JSON.stringify({
+        action: 'synchronize',
+        repository: { id: 1234, full_name: 'acme/toolip' },
+        pull_request: {
+          number: 42,
+          base: {
+            sha: base,
+            repo: { id: 1234, full_name: 'acme/toolip' }
+          },
+          head: {
+            sha: head,
+            repo: { id: 5678, full_name: 'contributor/toolip' }
+          }
+        }
+      })
+    );
+
+    const context = await readGitHubPullRequestEvent(eventPath, 'acme/toolip');
+    expect(context).toEqual({
+      action: 'synchronize',
+      repository: 'acme/toolip',
+      pullRequestNumber: 42,
+      baseSha: base,
+      headSha: head,
+      headRepository: 'contributor/toolip'
+    });
+
+    const result = await scanPullRequestDiff(
+      root,
+      context.baseSha,
+      context.headSha
+    );
+    expect(result.baseCommit).toBe(base);
+    expect(result.headCommit).toBe(head);
+  });
+
+  it('rejects malformed, duplicate-key, stale-action and cross-repository events', () => {
+    const valid = {
+      action: 'opened',
+      repository: { id: 1234, full_name: 'acme/toolip' },
+      pull_request: {
+        number: 42,
+        base: {
+          sha: 'a'.repeat(40),
+          repo: { id: 1234, full_name: 'acme/toolip' }
+        },
+        head: {
+          sha: 'b'.repeat(40),
+          repo: { id: 5678, full_name: 'contributor/toolip' }
+        }
+      }
+    };
+    expect(() =>
+      parseGitHubPullRequestEvent(
+        JSON.stringify({ ...valid, action: 'closed' }),
+        'acme/toolip'
+      )
+    ).toThrow(expect.objectContaining({ code: 'GITHUB_EVENT_INVALID' }));
+    expect(() =>
+      parseGitHubPullRequestEvent(
+        JSON.stringify({
+          ...valid,
+          pull_request: {
+            ...valid.pull_request,
+            base: {
+              ...valid.pull_request.base,
+              repo: { id: 9999, full_name: 'other/repo' }
+            }
+          }
+        }),
+        'acme/toolip'
+      )
+    ).toThrow(expect.objectContaining({ code: 'GITHUB_EVENT_INVALID' }));
+    expect(() =>
+      parseGitHubPullRequestEvent(
+        JSON.stringify({
+          ...valid,
+          pull_request: { ...valid.pull_request, head: null }
+        }),
+        'acme/toolip'
+      )
+    ).toThrow(expect.objectContaining({ code: 'GITHUB_EVENT_INVALID' }));
+    expect(() =>
+      parseGitHubPullRequestEvent(
+        '{"action":"opened","action":"synchronize"}',
+        'acme/toolip'
+      )
+    ).toThrow(expect.objectContaining({ code: 'GITHUB_EVENT_INVALID' }));
+    expect(() =>
+      parseGitHubPullRequestEvent(JSON.stringify(valid), 'other/repo')
+    ).toThrow(expect.objectContaining({ code: 'GITHUB_EVENT_INVALID' }));
+  });
+
+  it('rejects oversized and symlinked GitHub event files', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-pr-event-file-'));
+    roots.push(root);
+    const oversized = path.join(root, 'oversized.json');
+    await writeFile(oversized, Buffer.alloc(1024 * 1024 + 1));
+    await expect(
+      readGitHubPullRequestEvent(oversized, 'acme/toolip')
+    ).rejects.toMatchObject({ code: 'GITHUB_EVENT_INVALID' });
+
+    if (process.platform !== 'win32') {
+      const target = path.join(root, 'target.json');
+      const link = path.join(root, 'event.json');
+      await writeFile(target, '{}');
+      await symlink(target, link);
+      await expect(
+        readGitHubPullRequestEvent(link, 'acme/toolip')
+      ).rejects.toMatchObject({ code: 'GITHUB_EVENT_INVALID' });
+    }
+  });
+
   it('parses NUL-delimited rename metadata without losing spaces in paths', () => {
     const raw = Buffer.from(
       `:100644 100644 ${oid} ${'b'.repeat(40)} R098\0old name.ts\0new name.ts\0`,
@@ -124,6 +251,29 @@ describe('pull request changed-file security scan', () => {
     expect(result.inlineReviewCommentsTruncated).toBe(false);
   });
 
+  it('uses the committed head blob when the worktree has different bytes', async () => {
+    const root = await createRepo();
+    const base = git(root, 'rev-parse', 'HEAD');
+    await writeFile(
+      path.join(root, 'src/app.ts'),
+      `const token = "${fakeGithubToken}";\n`
+    );
+    git(root, 'add', 'src/app.ts');
+    git(root, 'commit', '-qm', 'commit credential');
+    const head = git(root, 'rev-parse', 'HEAD');
+    await writeFile(
+      path.join(root, 'src/app.ts'),
+      'export const clean = true;\n'
+    );
+
+    const result = await scanPullRequestDiff(root, base, head);
+    expect(result.headCommit).toBe(head);
+    expect(result.introduced).toMatchObject([
+      { ruleId: 'TOOLIP-SECRET-GITHUB-TOKEN', location: { line: 1 } }
+    ]);
+    expect(JSON.stringify(result)).not.toContain(fakeGithubToken);
+  });
+
   it('keeps an unchanged finding stable across an exact Git rename', async () => {
     const root = await createRepo();
     await writeFile(
@@ -150,6 +300,55 @@ describe('pull request changed-file security scan', () => {
     expect(result.unchangedCount).toBe(1);
   });
 
+  it('treats a copied source file as a new changed path', async () => {
+    const root = await createRepo();
+    const base = git(root, 'rev-parse', 'HEAD');
+    await writeFile(
+      path.join(root, 'src/copied.ts'),
+      `const token = "${fakeGithubToken}";\n`
+    );
+    git(root, 'add', 'src/copied.ts');
+    git(root, 'commit', '-qm', 'copy source with credential');
+
+    const result = await scanPullRequestDiff(root, base, 'HEAD');
+    expect(result.changedFiles).toEqual([
+      expect.objectContaining({ status: 'A', newPath: 'src/copied.ts' })
+    ]);
+    expect(result.introduced).toMatchObject([
+      {
+        ruleId: 'TOOLIP-SECRET-GITHUB-TOKEN',
+        location: { file: 'src/copied.ts' }
+      }
+    ]);
+    expect(result.coverage).toBe('incomplete');
+  });
+
+  it('matches repeated findings in a long line without changing their impact', async () => {
+    const root = await createRepo();
+    const repeatedSecrets = Array.from({ length: 9 }, (_, index) =>
+      ['ghp_', String(index + 1).repeat(36)].join('')
+    ).join(' ');
+    const secretLine = `${repeatedSecrets} ${'x'.repeat(256 * 1024)}`;
+    await writeFile(
+      path.join(root, 'credentials.env'),
+      `${secretLine}\nstable context\nstable context\nbefore\n`
+    );
+    git(root, 'add', 'credentials.env');
+    git(root, 'commit', '-qm', 'add repeated synthetic findings');
+    const base = git(root, 'rev-parse', 'HEAD');
+    await writeFile(
+      path.join(root, 'credentials.env'),
+      `${secretLine}\nstable context\nstable context\nafter\n`
+    );
+    git(root, 'add', 'credentials.env');
+    git(root, 'commit', '-qm', 'change an unrelated line');
+
+    const result = await scanPullRequestDiff(root, base, 'HEAD');
+    expect(result.unchangedCount).toBeGreaterThan(1);
+    expect(result.introduced).toEqual([]);
+    expect(result.fixed).toEqual([]);
+  });
+
   it('marks dependency graph, symlink and unsupported file changes incomplete', async () => {
     const root = await createRepo();
     const base = git(root, 'rev-parse', 'HEAD');
@@ -165,6 +364,19 @@ describe('pull request changed-file security scan', () => {
     expect(result.reasons).toContain(
       'dependency-graph-change-requires-full-scan'
     );
+    expect(result.reasons).toContain(
+      'dependency-license-impact-not-recomputed'
+    );
+    expect(result.reasons).toContain(
+      'dependency-reachability-impact-not-recomputed'
+    );
+    expect(result.reasons).toContain(
+      'dependency-provenance-impact-not-recomputed'
+    );
+    expect(result.reasons).toContain(
+      'dependency-maintainer-impact-not-recomputed'
+    );
+    expect(result.reasons).toContain('dependency-policy-impact-not-recomputed');
     expect(result.reasons).toContain(
       'specialized-analysis-not-run:release.bin'
     );
@@ -185,6 +397,37 @@ describe('pull request changed-file security scan', () => {
     const result = await scanPullRequestDiff(root, base, 'HEAD');
     expect(result.coverage).toBe('incomplete');
     expect(result.reasons).toContain('infrastructure-analysis-not-run');
+  });
+
+  it('keeps removed and renamed analyzer inputs explicitly incomplete', async () => {
+    const root = await createRepo();
+    await mkdir(path.join(root, '.vscode'), { recursive: true });
+    await mkdir(path.join(root, '.toolip'), { recursive: true });
+    await writeFile(
+      path.join(root, '.vscode/tasks.json'),
+      JSON.stringify({ version: '2.0.0', tasks: [] })
+    );
+    await writeFile(path.join(root, '.toolip/policy.yaml'), 'version: 1\n');
+    await writeFile(path.join(root, 'Dockerfile'), 'FROM scratch\n');
+    git(root, 'add', '--all');
+    git(root, 'commit', '-qm', 'add task, policy and container');
+    const base = git(root, 'rev-parse', 'HEAD');
+
+    git(root, 'mv', 'src/app.ts', 'src/app.bin');
+    git(root, 'rm', '.vscode/tasks.json', '.toolip/policy.yaml', 'Dockerfile');
+    git(root, 'commit', '-qm', 'remove and rename analyzed inputs');
+
+    const result = await scanPullRequestDiff(root, base, 'HEAD');
+    expect(result.reasons).toContain(
+      'malicious-execution-graph-analysis-not-run'
+    );
+    expect(result.reasons).toContain('infrastructure-analysis-not-run');
+    expect(result.reasons).toContain('policy-effects-not-recomputed');
+    expect(result.reasons).toContain(
+      'specialized-analysis-not-run:src/app.bin'
+    );
+    expect(result.coverage).toBe('incomplete');
+    expect(result.analysisState).toBe('failed');
   });
 
   it('compares resolved dependency instances from exact base and head lockfile blobs', async () => {
@@ -326,6 +569,70 @@ describe('pull request changed-file security scan', () => {
     expect(result.reasons).toContain(
       'dependency-advisory-impact-not-recomputed'
     );
+  });
+
+  it('reports an exact version change in a transitive dependency instance', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-pr-transitive-'));
+    roots.push(root);
+    execFileSync('git', ['init', '-q', root]);
+    git(root, 'config', 'user.name', 'Toolip Test');
+    git(root, 'config', 'user.email', 'test@example.invalid');
+    const writeGraph = async (transitiveVersion: string): Promise<void> => {
+      await writeFile(
+        path.join(root, 'package.json'),
+        JSON.stringify({ name: 'fixture', dependencies: { alpha: '^1.0.0' } })
+      );
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          name: 'fixture',
+          lockfileVersion: 3,
+          packages: {
+            '': { dependencies: { alpha: '^1.0.0' } },
+            'node_modules/alpha': {
+              name: 'alpha',
+              version: '1.0.0',
+              resolved: 'https://registry.npmjs.org/alpha/-/alpha-1.0.0.tgz',
+              dependencies: { beta: '^1.0.0' }
+            },
+            'node_modules/alpha/node_modules/beta': {
+              name: 'beta',
+              version: transitiveVersion,
+              resolved: `https://registry.npmjs.org/beta/-/beta-${transitiveVersion}.tgz`
+            }
+          }
+        })
+      );
+    };
+    await writeGraph('1.0.0');
+    git(root, 'add', '--all');
+    git(root, 'commit', '-qm', 'base transitive lock graph');
+    const base = git(root, 'rev-parse', 'HEAD');
+    await writeGraph('1.1.0');
+    git(root, 'add', '--all');
+    git(root, 'commit', '-qm', 'update transitive package');
+
+    const result = await scanPullRequestDiff(root, base, 'HEAD');
+    expect(result.dependencyImpact).toMatchObject({
+      state: 'complete',
+      versionChangedCount: 1,
+      versionChanged: [
+        {
+          before: {
+            ecosystem: 'npm',
+            name: 'beta',
+            version: '1.0.0',
+            installPath: 'node_modules/alpha/node_modules/beta'
+          },
+          after: {
+            ecosystem: 'npm',
+            name: 'beta',
+            version: '1.1.0',
+            installPath: 'node_modules/alpha/node_modules/beta'
+          }
+        }
+      ]
+    });
   });
 
   it('marks non-npm ecosystem manifest changes as unresolved dependency impact', async () => {

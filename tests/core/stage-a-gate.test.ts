@@ -501,6 +501,82 @@ describe('trusted Stage A Git-object scanner', () => {
     ).toThrow('Malformed package scripts');
   });
 
+  it('keeps unsupported build toolchains incomplete before Stage B can execute them', async () => {
+    const packageScript = await repo({
+      'package.json': JSON.stringify({
+        scripts: { verify: 'cargo build --locked' }
+      })
+    });
+    expect(scanGitTree(packageScript.root, packageScript.sha)).toMatchObject({
+      status: 'incomplete',
+      incompleteReasons: [
+        'unsupported-toolchain-execution:package.json#scripts.verify'
+      ]
+    });
+
+    const workflow = await repo({
+      '.github/workflows/build.yml': [
+        'name: Build',
+        'on: pull_request',
+        'jobs:',
+        '  build:',
+        '    runs-on: ubuntu-latest',
+        '    steps:',
+        '      - run: cargo build --locked',
+        ''
+      ].join('\n')
+    });
+    expect(scanGitTree(workflow.root, workflow.sha)).toMatchObject({
+      status: 'incomplete',
+      incompleteReasons: [
+        'unsupported-toolchain-execution:.github/workflows/build.yml'
+      ]
+    });
+
+    const spawned = await repo({
+      'src/build.ts': [
+        "import { spawnSync } from 'node:child_process';",
+        "spawnSync('cargo', ['build', '--locked']);",
+        ''
+      ].join('\n')
+    });
+    expect(scanGitTree(spawned.root, spawned.sha)).toMatchObject({
+      status: 'incomplete',
+      incompleteReasons: ['unsupported-toolchain-execution:src/build.ts']
+    });
+
+    const python = await repo({
+      'tools/build.py': [
+        'import subprocess',
+        "subprocess.run(['cargo', 'build', '--locked'], check=True)",
+        ''
+      ].join('\n')
+    });
+    expect(scanGitTree(python.root, python.sha)).toMatchObject({
+      status: 'incomplete',
+      incompleteReasons: ['unsupported-toolchain-execution:tools/build.py']
+    });
+
+    const rust = await repo({
+      'src/build.rs': [
+        'use std::process::Command;',
+        'fn main() { Command::new("cargo").arg("build").status().unwrap(); }',
+        ''
+      ].join('\n')
+    });
+    expect(scanGitTree(rust.root, rust.sha)).toMatchObject({
+      status: 'incomplete',
+      incompleteReasons: ['unsupported-toolchain-execution:src/build.rs']
+    });
+
+    const documentation = await repo({
+      'README.md': 'To build the Rust example, run `cargo build --locked`.\n'
+    });
+    expect(scanGitTree(documentation.root, documentation.sha).status).toBe(
+      'approved'
+    );
+  });
+
   it('fails closed on malformed editor task schemas and dynamic auto-run targets', async () => {
     const malformed = await repo({
       '.vscode/tasks.json': JSON.stringify({ tasks: { runOn: 'folderOpen' } })
@@ -1149,6 +1225,81 @@ describe('trusted Stage A Git-object scanner', () => {
     expect(result.incompleteReasons).toContain(
       'execution-reference-coverage-incomplete'
     );
+  });
+
+  it('blocks untrusted workflow outputs and tainted environment values in shell steps', async () => {
+    const outputExpression = await repo({
+      '.github/workflows/output.yml': [
+        'name: output',
+        'on: pull_request',
+        'jobs:',
+        '  build:',
+        '    steps:',
+        `      - run: echo "\${{ needs.inspect.outputs.title }}"`,
+        ''
+      ].join('\n')
+    });
+    expect(
+      scanGitTree(outputExpression.root, outputExpression.sha)
+    ).toMatchObject({
+      status: 'blocked',
+      findings: ['.github/workflows/output.yml#untrusted-shell-input']
+    });
+
+    const secretExpression = await repo({
+      '.github/workflows/secret.yml': [
+        'name: secret',
+        'on: pull_request',
+        'jobs:',
+        '  build:',
+        '    steps:',
+        `      - run: echo "\${{ secrets.DEPLOY_TOKEN }}"`,
+        ''
+      ].join('\n')
+    });
+    expect(
+      scanGitTree(secretExpression.root, secretExpression.sha)
+    ).toMatchObject({
+      status: 'blocked',
+      findings: ['.github/workflows/secret.yml#untrusted-shell-input']
+    });
+
+    const taintedEnvironment = await repo({
+      '.github/workflows/env.yml': [
+        'name: env',
+        'on: pull_request',
+        'env:',
+        `  PR_TITLE: "\${{ github.event.pull_request.title }}"`,
+        'jobs:',
+        '  build:',
+        '    steps:',
+        '      - run: printf "%s" "$PR_TITLE"',
+        ''
+      ].join('\n')
+    });
+    expect(
+      scanGitTree(taintedEnvironment.root, taintedEnvironment.sha)
+    ).toMatchObject({
+      status: 'blocked',
+      findings: ['.github/workflows/env.yml#untrusted-shell-input']
+    });
+
+    const unusedEnvironment = await repo({
+      '.github/workflows/env.yml': [
+        'name: env',
+        'on: pull_request',
+        'env:',
+        `  PR_TITLE: "\${{ github.event.pull_request.title }}"`,
+        'jobs:',
+        '  build:',
+        '    steps:',
+        '      - run: printf safe',
+        ''
+      ].join('\n')
+    });
+    expect(
+      scanGitTree(unusedEnvironment.root, unusedEnvironment.sha).status
+    ).toBe('approved');
   });
 
   it('fails closed on malformed changed workflow YAML', async () => {

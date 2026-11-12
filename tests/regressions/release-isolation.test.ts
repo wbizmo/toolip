@@ -160,6 +160,13 @@ describe('release isolation policy (regression for Batch 00)', () => {
       ).toEqual(
         ['${{ vars.TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY ', '}}'].join('')
       );
+      expect(
+        stageB.jobs['stage-a-result'].steps.find((step) =>
+          String(step.run ?? '').includes('verify-stage-a-artifact.mjs')
+        )?.env?.TOOLIP_STAGE_A_CARGO_SHA256_POLICY
+      ).toEqual(
+        ['${{ vars.TOOLIP_STAGE_A_CARGO_SHA256_POLICY ', '}}'].join('')
+      );
       for (const [name, job] of Object.entries(stageB.jobs)) {
         if (
           name !== 'stage-a-result' &&

@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, rm } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,6 +9,8 @@ import {
   GitHubAppWebhookService,
   type GitHubAppScanWork
 } from '../../src/core/github/app-webhook.js';
+import { createProjectSnapshot } from '../../src/application/project-snapshot.js';
+import { buildSecurityScorecard } from '../../src/application/security-scorecard.js';
 import { cleanupRepos, git, makeRepo, write } from '../helpers/git-repo.js';
 import { runGit } from '../../src/core/git/safe-git.js';
 
@@ -384,6 +386,7 @@ describe('read-only GitHub App webhook integration', () => {
     roots.push(() => service.close());
 
     expect(service.schedule('acme/service')).toBe(true);
+    expect(service.schedule('acme/service')).toBe(false);
     await viWaitFor(() => expect(scheduled).toHaveLength(1));
     await viWaitFor(() => expect(published).toHaveLength(1));
     expect(scheduled[0]).toMatchObject({
@@ -392,6 +395,9 @@ describe('read-only GitHub App webhook integration', () => {
       installationId: 42
     });
     expect(scheduled[0]?.deliveryId).toMatch(/^scheduled-[a-f0-9-]{36}$/u);
+    expect(service.schedule('acme/service')).toBe(true);
+    await viWaitFor(() => expect(scheduled).toHaveLength(2));
+    await viWaitFor(() => expect(published).toHaveLength(2));
   });
 
   it('rejects unsafe setup and invalid body-budget configuration', () => {
@@ -688,6 +694,224 @@ describe('read-only GitHub App webhook integration', () => {
     expect(dirty).toMatchObject({
       status: 'incomplete',
       reason: 'repository-worktree-not-clean'
+    });
+  });
+
+  it('rejects a checkout that changes while its scan snapshot is captured', async () => {
+    const root = makeRepo();
+    write(
+      root,
+      'package.json',
+      JSON.stringify({ name: 'fixture', version: '1.0.0', dependencies: {} })
+    );
+    git(root, 'add', 'package.json');
+    git(root, 'commit', '-qm', 'add package manifest');
+    const revision = git(root, 'rev-parse', 'HEAD').trim();
+    const scanner = createGitHubAppScorecardScanner({
+      offline: true,
+      snapshotter: async (snapshotRoot, snapshotOptions) => {
+        const snapshot = await createProjectSnapshot(
+          snapshotRoot,
+          snapshotOptions
+        );
+        write(
+          snapshotRoot,
+          'during-snapshot.ts',
+          'export const changed = true;\n'
+        );
+        return snapshot;
+      }
+    });
+    const repository = {
+      name: 'acme/service',
+      installationId: 42,
+      repositoryId: 123,
+      root
+    };
+    const work: GitHubAppScanWork = {
+      kind: 'push',
+      installationId: 42,
+      repository: 'acme/service',
+      repositoryId: 123,
+      revision,
+      deliveryId: 'delivery-capture-race'
+    };
+
+    await expect(
+      scanner(work, repository, new AbortController().signal)
+    ).resolves.toMatchObject({
+      status: 'incomplete',
+      findingCount: 0,
+      reason: 'repository-changed-during-snapshot'
+    });
+  });
+
+  it('rejects a transient edit restored before the post-snapshot status check', async () => {
+    const root = makeRepo();
+    const originalManifest = JSON.stringify({
+      name: 'fixture',
+      version: '1.0.0',
+      dependencies: {}
+    });
+    write(root, 'package.json', originalManifest);
+    git(root, 'add', 'package.json');
+    git(root, 'commit', '-qm', 'add package manifest');
+    const revision = git(root, 'rev-parse', 'HEAD').trim();
+    const scanner = createGitHubAppScorecardScanner({
+      offline: true,
+      snapshotter: async (snapshotRoot, snapshotOptions) => {
+        write(
+          snapshotRoot,
+          'package.json',
+          JSON.stringify({
+            name: 'fixture',
+            version: '1.0.0',
+            dependencies: { altered: '1.0.0' }
+          })
+        );
+        const snapshot = await createProjectSnapshot(
+          snapshotRoot,
+          snapshotOptions
+        );
+        write(snapshotRoot, 'package.json', originalManifest);
+        return snapshot;
+      }
+    });
+    const repository = {
+      name: 'acme/service',
+      installationId: 42,
+      repositoryId: 123,
+      root
+    };
+    const work: GitHubAppScanWork = {
+      kind: 'push',
+      installationId: 42,
+      repository: 'acme/service',
+      repositoryId: 123,
+      revision,
+      deliveryId: 'delivery-transient-snapshot-race'
+    };
+
+    await expect(
+      scanner(work, repository, new AbortController().signal)
+    ).resolves.toMatchObject({
+      status: 'incomplete',
+      findingCount: 0,
+      reason: 'repository-snapshot-content-mismatch'
+    });
+  });
+
+  it('does not report executable binary Git blobs complete without content analysis', async () => {
+    const root = makeRepo();
+    write(root, 'tool', '\0\u0001\u0002');
+    await chmod(path.join(root, 'tool'), 0o755);
+    git(root, 'add', 'tool');
+    git(root, 'update-index', '--chmod=+x', 'tool');
+    git(root, 'commit', '-qm', 'add executable payload');
+    const revision = git(root, 'rev-parse', 'HEAD').trim();
+    const scanner = createGitHubAppScorecardScanner({ offline: true });
+    const repository = {
+      name: 'acme/service',
+      installationId: 42,
+      repositoryId: 123,
+      root
+    };
+    const work: GitHubAppScanWork = {
+      kind: 'push',
+      installationId: 42,
+      repository: 'acme/service',
+      repositoryId: 123,
+      revision,
+      deliveryId: 'delivery-executable-mode'
+    };
+
+    await expect(
+      scanner(work, repository, new AbortController().signal)
+    ).resolves.toMatchObject({
+      status: 'incomplete',
+      findingCount: 0,
+      reason: 'repository-executable-binary-uninspected'
+    });
+  });
+
+  it('does not treat a Git LFS pointer as the payload at the exact commit', async () => {
+    const root = makeRepo();
+    write(
+      root,
+      'assets/model.bin',
+      `version https://git-lfs.github.com/spec/v1\noid sha256:${'a'.repeat(64)}\nsize 4\n`
+    );
+    git(root, 'add', 'assets/model.bin');
+    git(root, 'commit', '-qm', 'add lfs pointer');
+    const revision = git(root, 'rev-parse', 'HEAD').trim();
+    const scanner = createGitHubAppScorecardScanner({ offline: true });
+    const repository = {
+      name: 'acme/service',
+      installationId: 42,
+      repositoryId: 123,
+      root
+    };
+    const work: GitHubAppScanWork = {
+      kind: 'push',
+      installationId: 42,
+      repository: 'acme/service',
+      repositoryId: 123,
+      revision,
+      deliveryId: 'delivery-lfs-pointer'
+    };
+
+    await expect(
+      scanner(work, repository, new AbortController().signal)
+    ).resolves.toMatchObject({
+      status: 'incomplete',
+      findingCount: 0,
+      reason: 'repository-lfs-object-unavailable'
+    });
+  });
+
+  it('rejects a persistent checkout change made during scorecard analysis', async () => {
+    const root = makeRepo();
+    write(
+      root,
+      'package.json',
+      JSON.stringify({ name: 'fixture', version: '1.0.0', dependencies: {} })
+    );
+    git(root, 'add', 'package.json');
+    git(root, 'commit', '-qm', 'add package manifest');
+    const revision = git(root, 'rev-parse', 'HEAD').trim();
+    const scanner = createGitHubAppScorecardScanner({
+      offline: true,
+      scorecardRunner: async (scanRoot, options, services) => {
+        const scorecard = await buildSecurityScorecard(
+          scanRoot,
+          options,
+          services
+        );
+        write(scanRoot, 'after-analysis.ts', 'export const changed = true;\n');
+        return scorecard;
+      }
+    });
+    const repository = {
+      name: 'acme/service',
+      installationId: 42,
+      repositoryId: 123,
+      root
+    };
+    const work: GitHubAppScanWork = {
+      kind: 'push',
+      installationId: 42,
+      repository: 'acme/service',
+      repositoryId: 123,
+      revision,
+      deliveryId: 'delivery-analysis-race'
+    };
+
+    await expect(
+      scanner(work, repository, new AbortController().signal)
+    ).resolves.toMatchObject({
+      status: 'incomplete',
+      findingCount: 0,
+      reason: 'repository-changed-during-analysis'
     });
   });
 });

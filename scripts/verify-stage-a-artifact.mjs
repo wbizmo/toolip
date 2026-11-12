@@ -2,7 +2,10 @@
 import { appendFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { npmProvenancePolicyDigest } from './stage-a-canonical-json.mjs';
+import {
+  cargoArtifactPolicyDigest,
+  npmProvenancePolicyDigest
+} from './stage-a-canonical-json.mjs';
 
 function complexityEvidence(body) {
   const text = typeof body === 'string' ? body.toLowerCase() : '';
@@ -22,7 +25,7 @@ export function verifyStageAArtifact(
   record,
   event,
   expectedRepository,
-  { expectedNpmProvenancePolicySha256 } = {}
+  { expectedNpmProvenancePolicySha256, expectedCargoArtifactPolicySha256 } = {}
 ) {
   const run = event?.workflow_run;
   const associatedPrs = Array.isArray(run?.pull_requests)
@@ -32,7 +35,7 @@ export function verifyStageAArtifact(
   const nonnegativeSafeInteger = (value) =>
     Number.isSafeInteger(value) && value >= 0;
   if (
-    record?.version !== 6 ||
+    record?.version !== 7 ||
     record.status !== 'approved' ||
     record.repository !== expectedRepository ||
     event?.repository?.full_name !== expectedRepository ||
@@ -57,6 +60,11 @@ export function verifyStageAArtifact(
       record.exceptionPolicySha256 === null ||
       /^[0-9a-f]{64}$/iu.test(record.exceptionPolicySha256 ?? '')
     ) ||
+    !(record.coverage?.nonNpmDependencyArtifactCount > 0
+      ? /^[0-9a-f]{64}$/iu.test(record.cargoArtifactPolicySha256 ?? '') &&
+        typeof expectedCargoArtifactPolicySha256 === 'string' &&
+        record.cargoArtifactPolicySha256 === expectedCargoArtifactPolicySha256
+      : record.cargoArtifactPolicySha256 === null) ||
     !Array.isArray(record.appliedExceptions) ||
     record.appliedExceptions.length > 100 ||
     record.appliedExceptions.some(
@@ -96,6 +104,18 @@ export function verifyStageAArtifact(
     !nonnegativeSafeInteger(record.coverage?.dependencyArtifactBytes) ||
     !nonnegativeSafeInteger(record.coverage?.dependencyArtifactNetworkBytes) ||
     !nonnegativeSafeInteger(record.coverage?.dependencyArtifactBinaryFiles) ||
+    !nonnegativeSafeInteger(
+      record.coverage?.nonNpmDependencyArtifactsChecked
+    ) ||
+    !nonnegativeSafeInteger(record.coverage?.nonNpmDependencyArtifactCount) ||
+    !nonnegativeSafeInteger(record.coverage?.nonNpmDependencyArtifactFiles) ||
+    !nonnegativeSafeInteger(record.coverage?.nonNpmDependencyArtifactBytes) ||
+    !nonnegativeSafeInteger(
+      record.coverage?.nonNpmDependencyArtifactNetworkBytes
+    ) ||
+    !nonnegativeSafeInteger(
+      record.coverage?.nonNpmDependencyArtifactBinaryFiles
+    ) ||
     !['verified', 'unverified'].includes(
       record.coverage?.headCommitSignatureStatus
     ) ||
@@ -106,6 +126,9 @@ export function verifyStageAArtifact(
     record.coverage.dependencyArtifactsChecked !==
       record.coverage.dependencyArtifactCount ||
     record.coverage.dependencyArtifactBinaryFiles !== 0 ||
+    record.coverage.nonNpmDependencyArtifactsChecked !==
+      record.coverage.nonNpmDependencyArtifactCount ||
+    record.coverage.nonNpmDependencyArtifactBinaryFiles !== 0 ||
     record.registrySignatureAudit !==
       (record.coverage.dependencyArtifactCount > 0
         ? 'verified'
@@ -135,6 +158,17 @@ export function verifyStageAArtifact(
         !/^node_modules\/(?!.*(?:^|\/)\.\.(?:\/|$))[^\\\0]+$/u.test(location) ||
         !/^[a-f0-9]{128}$/iu.test(digest ?? '')
     ) ||
+    !record.verifiedArtifactSha256ByLocation ||
+    typeof record.verifiedArtifactSha256ByLocation !== 'object' ||
+    Array.isArray(record.verifiedArtifactSha256ByLocation) ||
+    Object.keys(record.verifiedArtifactSha256ByLocation).length !==
+      record.coverage.nonNpmDependencyArtifactCount ||
+    Object.entries(record.verifiedArtifactSha256ByLocation).some(
+      ([location, digest]) =>
+        !/^cargo-lock\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+@[A-Za-z0-9.+-]+#[a-f0-9]{64}$/u.test(
+          location
+        ) || !/^[a-f0-9]{64}$/iu.test(digest ?? '')
+    ) ||
     [record.baseSha, record.headSha, record.mergeSha].some(
       (sha) => !/^[0-9a-f]{40}$/iu.test(sha ?? '')
     )
@@ -156,6 +190,8 @@ export function verifyStageAArtifact(
     npmProvenanceArtifactCount: record.npmProvenanceArtifactCount,
     npmProvenanceVerifiedCount: record.npmProvenanceVerifiedCount,
     verifiedArtifactSha512ByLocation: record.verifiedArtifactSha512ByLocation,
+    verifiedArtifactSha256ByLocation: record.verifiedArtifactSha256ByLocation,
+    cargoArtifactPolicySha256: record.cargoArtifactPolicySha256,
     coverage: record.coverage,
     exceptionPolicySha256: record.exceptionPolicySha256,
     appliedExceptions: record.appliedExceptions
@@ -264,11 +300,17 @@ async function main() {
           process.env.TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY
         )
       : undefined;
+  const expectedCargoArtifactPolicySha256 =
+    record?.coverage?.nonNpmDependencyArtifactCount > 0
+      ? cargoArtifactPolicyDigest(
+          process.env.TOOLIP_STAGE_A_CARGO_SHA256_POLICY
+        )
+      : undefined;
   const approval = verifyStageAArtifact(
     record,
     event,
     process.env.GITHUB_REPOSITORY,
-    { expectedNpmProvenancePolicySha256 }
+    { expectedNpmProvenancePolicySha256, expectedCargoArtifactPolicySha256 }
   );
   await verifyCurrentPullRequestIdentity(
     record,
@@ -290,6 +332,7 @@ async function main() {
       `npm_provenance_policy_sha256=${approval.npmProvenancePolicySha256 ?? 'not-applicable'}`,
       `npm_provenance_artifact_count=${approval.npmProvenanceArtifactCount}`,
       `npm_provenance_verified_count=${approval.npmProvenanceVerifiedCount}`,
+      `cargo_artifact_policy_sha256=${approval.cargoArtifactPolicySha256 ?? 'not-applicable'}`,
       `stage_a_exception_count=${approval.appliedExceptions.length}`,
       `stage_a_exception_policy_sha256=${approval.exceptionPolicySha256 ?? 'none'}`
     ].join('\n')}\n`

@@ -127,7 +127,7 @@ runs:
         fi
         node "$GITHUB_ACTION_PATH/dist/src/index.js" "${args[@]}"
     - name: Upload SARIF to GitHub Code Scanning
-      if: ${{ always() && !cancelled() && inputs.upload-sarif == 'true' && (((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.id > 0 && github.event.pull_request.base.repo.id > 0 && github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id && github.event.pull_request.head.repo.fork == false) || contains(fromJSON('["push","schedule","workflow_dispatch","release"]'), github.event_name)) }}
+      if: ${{ always() && !cancelled() && inputs.upload-sarif == 'true' && (((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.id > 0 && github.event.pull_request.base.repo.id > 0 && github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id && toJSON(github.event.pull_request.head.repo.fork) == 'false') || contains(fromJSON('["push","schedule","workflow_dispatch","release"]'), github.event_name)) }}
       uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
       with:
         sarif_file: ${{ inputs.sarif-output }}

@@ -47,6 +47,12 @@ if (
   !Number.isSafeInteger(scan.coverage?.dependencyArtifactBytes) ||
   !Number.isSafeInteger(scan.coverage?.dependencyArtifactNetworkBytes) ||
   !Number.isSafeInteger(scan.coverage?.dependencyArtifactBinaryFiles) ||
+  !Number.isSafeInteger(scan.coverage?.nonNpmDependencyArtifactsChecked) ||
+  !Number.isSafeInteger(scan.coverage?.nonNpmDependencyArtifactCount) ||
+  !Number.isSafeInteger(scan.coverage?.nonNpmDependencyArtifactFiles) ||
+  !Number.isSafeInteger(scan.coverage?.nonNpmDependencyArtifactBytes) ||
+  !Number.isSafeInteger(scan.coverage?.nonNpmDependencyArtifactNetworkBytes) ||
+  !Number.isSafeInteger(scan.coverage?.nonNpmDependencyArtifactBinaryFiles) ||
   !['verified', 'unverified'].includes(
     scan.coverage?.headCommitSignatureStatus
   ) ||
@@ -57,6 +63,12 @@ if (
   scan.coverage.dependencyArtifactsChecked !==
     scan.coverage.dependencyArtifactCount ||
   scan.coverage.dependencyArtifactBinaryFiles !== 0 ||
+  scan.coverage.nonNpmDependencyArtifactsChecked !==
+    scan.coverage.nonNpmDependencyArtifactCount ||
+  scan.coverage.nonNpmDependencyArtifactBinaryFiles !== 0 ||
+  !(scan.coverage.nonNpmDependencyArtifactCount > 0
+    ? /^[0-9a-f]{64}$/iu.test(scan.cargoArtifactPolicySha256 ?? '')
+    : scan.cargoArtifactPolicySha256 === null) ||
   !Array.isArray(scan.appliedExceptions) ||
   scan.appliedExceptions.length > 100 ||
   !(
@@ -91,6 +103,7 @@ if (process.env.TOOLIP_STAGE_A_SIGNATURE_AUDIT !== expectedSignatureAudit)
   );
 const dependencyArtifactCount = scan.coverage.dependencyArtifactCount;
 const verifiedArchiveDigests = scan.verifiedArtifactSha512ByLocation;
+const verifiedNonNpmArchiveDigests = scan.verifiedArtifactSha256ByLocation;
 if (
   !verifiedArchiveDigests ||
   typeof verifiedArchiveDigests !== 'object' ||
@@ -103,6 +116,20 @@ if (
   )
 )
   throw new Error('Stage A exact npm archive digest set is incomplete');
+if (
+  !verifiedNonNpmArchiveDigests ||
+  typeof verifiedNonNpmArchiveDigests !== 'object' ||
+  Array.isArray(verifiedNonNpmArchiveDigests) ||
+  Object.keys(verifiedNonNpmArchiveDigests).length !==
+    scan.coverage.nonNpmDependencyArtifactCount ||
+  Object.entries(verifiedNonNpmArchiveDigests).some(
+    ([location, digest]) =>
+      !/^cargo-lock\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+@[A-Za-z0-9.+-]+#[a-f0-9]{64}$/u.test(
+        location
+      ) || !/^[a-f0-9]{64}$/iu.test(digest ?? '')
+  )
+)
+  throw new Error('Stage A exact non-npm archive digest set is incomplete');
 let npmProvenanceStatus = 'not-applicable';
 let npmProvenancePolicySha256 = null;
 let npmProvenanceArtifactCount = 0;
@@ -140,7 +167,7 @@ const complexityEvidence = (body) => {
   );
 };
 const record = {
-  version: 6,
+  version: 7,
   repository,
   pullRequest: pr.number,
   runId,
@@ -160,6 +187,8 @@ const record = {
   npmProvenanceArtifactCount,
   npmProvenanceVerifiedCount,
   verifiedArtifactSha512ByLocation: verifiedArchiveDigests,
+  verifiedArtifactSha256ByLocation: verifiedNonNpmArchiveDigests,
+  cargoArtifactPolicySha256: scan.cargoArtifactPolicySha256,
   reasonCodes: scan.reasonCodes,
   status: 'approved',
   complexityEvidence: complexityEvidence(pr.body)

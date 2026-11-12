@@ -81,6 +81,46 @@ describe('SARIF serialization', () => {
     }
   });
 
+  it('keeps duplicate occurrence fingerprints distinct and stable across line moves', () => {
+    const first = {
+      id: 'secret-1',
+      ruleId: 'TOOLIP-SECRET-GITHUB-TOKEN',
+      title: 'GitHub token detected',
+      category: 'secrets',
+      severity: 'critical' as const,
+      confidence: 'high' as const,
+      message: 'A GitHub token-like secret was found.',
+      source: 'test',
+      location: { file: 'src/app.ts', line: 12, column: 4 },
+      evidence: [{ summary: '[redacted secret]', fingerprint: 'a'.repeat(64) }]
+    };
+    const second = {
+      ...first,
+      id: 'secret-2',
+      location: { file: 'src/app.ts', line: 13, column: 4 }
+    };
+    const reportFingerprints = (
+      findings: readonly (typeof first | typeof second)[]
+    ) =>
+      (
+        createSarifReport({
+          findings,
+          analysisState: 'complete',
+          toolVersion: '3.2.1-rc'
+        }).runs as Array<{
+          results: Array<{ partialFingerprints: Record<string, string> }>;
+        }>
+      )[0]?.results.map((result) => result.partialFingerprints['toolip/v1']);
+
+    const original = reportFingerprints([first, second]);
+    const moved = reportFingerprints([
+      { ...first, location: { ...first.location, line: 100 } },
+      { ...second, location: { ...second.location, line: 101 } }
+    ]);
+    expect(original?.[0]).not.toBe(original?.[1]);
+    expect(moved).toEqual(original);
+  });
+
   it('validates complete and incomplete reports against the official SARIF 2.1.0 schema', () => {
     const ajv = new AjvDraft04({ allErrors: true, strict: false });
     addFormats(ajv);
@@ -120,5 +160,83 @@ describe('SARIF serialization', () => {
     ).toMatch(/^[a-f0-9]{64}$/u);
     for (const report of [complete, partial])
       expect(validate(report), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  it('encodes repository paths and fails closed on unsafe SARIF identities', () => {
+    const ajv = new AjvDraft04({ allErrors: true, strict: false });
+    addFormats(ajv);
+    const validate = ajv.compile(sarifSchema);
+    const finding = {
+      id: 'stable-finding',
+      ruleId: 'TLP-TEST-001',
+      title: 'Unsafe sample call',
+      category: 'injection',
+      severity: 'high' as const,
+      confidence: 'high' as const,
+      message: 'Untrusted input reaches a command sink.',
+      source: 'test',
+      location: { file: 'src/a file.ts', line: 12 }
+    };
+    const syntheticCredential = ['ghp_', '123456789012345678901234567890'].join(
+      ''
+    );
+    const report = createSarifReport({
+      findings: [
+        finding,
+        {
+          ...finding,
+          id: 'unsafe-finding',
+          ruleId: '../unsafe-rule',
+          location: { file: '../../outside.ts', line: 1 }
+        },
+        {
+          ...finding,
+          id: 'credential-path',
+          location: { file: `src/${syntheticCredential}.ts`, line: 2 }
+        },
+        {
+          ...finding,
+          id: 'unicode-path',
+          location: { file: `src/${String.fromCharCode(0xd800)}.ts`, line: 3 }
+        }
+      ],
+      analysisState: 'complete',
+      toolVersion: '3.2.1-rc'
+    }) as {
+      runs: Array<{
+        results: Array<{
+          ruleId: string;
+          locations?: Array<{
+            physicalLocation: { artifactLocation: { uri: string } };
+          }>;
+          properties: Record<string, unknown>;
+        }>;
+        invocations: Array<{
+          executionSuccessful: boolean;
+          properties: Record<string, unknown>;
+        }>;
+      }>;
+    };
+    const run = report.runs[0];
+    expect(
+      run?.results[0]?.locations?.[0]?.physicalLocation.artifactLocation.uri
+    ).toBe('src/a%20file.ts');
+    expect(run?.results[1]).toMatchObject({
+      ruleId: 'TOOLIP-INVALID-RULE-ID',
+      properties: { locationOmitted: true }
+    });
+    expect(run?.results[1]?.locations).toBeUndefined();
+    expect(run?.results[2]?.locations).toBeUndefined();
+    expect(run?.results[3]?.locations).toBeUndefined();
+    expect(run?.invocations[0]).toMatchObject({
+      executionSuccessful: false,
+      properties: {
+        analysisState: 'failed',
+        invalidRuleIdCount: 1,
+        invalidArtifactLocationCount: 3
+      }
+    });
+    expect(JSON.stringify(report)).not.toContain(syntheticCredential);
+    expect(validate(report), JSON.stringify(validate.errors)).toBe(true);
   });
 });

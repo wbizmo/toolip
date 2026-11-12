@@ -156,6 +156,9 @@ for (const file of files) {
       runtimeVerifierIndex >= scannerDigestCheckIndex ||
       scannerDigestCheckIndex <= runtimeVerifierIndex ||
       scannerDigestCheckIndex >= trustedInstallIndex ||
+      !String(scannerEnv.TOOLIP_STAGE_A_CARGO_SHA256_POLICY ?? '').includes(
+        'vars.TOOLIP_STAGE_A_CARGO_SHA256_POLICY'
+      ) ||
       trustedInstallIndex <= scannerDigestCheckIndex ||
       !String(stageASteps[trustedInstallIndex]?.run ?? '').includes(
         'npm ci --ignore-scripts'
@@ -306,13 +309,16 @@ for (const file of files) {
       !String(
         artifactVerificationStep.env?.TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY ?? ''
       ).includes('vars.TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY') ||
+      !String(
+        artifactVerificationStep.env?.TOOLIP_STAGE_A_CARGO_SHA256_POLICY ?? ''
+      ).includes('vars.TOOLIP_STAGE_A_CARGO_SHA256_POLICY') ||
       !String(approvalArtifactDownload?.with?.['run-id'] ?? '').includes(
         'github.event.workflow_run.id'
       )
     )
       fail(
         file,
-        'Stage B must validate the exact Stage A run artifact against the current operator npm provenance policy'
+        'Stage B must validate the exact Stage A run artifact against current operator npm and Cargo artifact policies'
       );
     if (
       !triggers.includes('workflow_run') ||

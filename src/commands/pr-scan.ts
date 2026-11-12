@@ -6,6 +6,7 @@ import {
   hasFindingAtSeverity,
   scanPullRequestDiff
 } from '../core/diff/pr-scan.js';
+import { readGitHubPullRequestEvent } from '../core/diff/github-pr-event.js';
 import { writeSarifReport } from '../core/report-writer.js';
 import { sanitizeOutput } from '../core/safe-output.js';
 
@@ -19,11 +20,19 @@ const failOnValues = new Set<FindingSeverity>([
 
 export function registerPrScanCommand(program: Command): void {
   program
-    .command('pr-scan <base> [head]')
+    .command('pr-scan [base] [head]')
     .description(
       'Compare changed-file security findings against an exact Git baseline.'
     )
     .option('-p, --path <path>', 'Repository path.', process.cwd())
+    .option(
+      '--github-event <file>',
+      'Bind this scan to exact base/head SHAs from a GitHub pull_request event JSON file.'
+    )
+    .option(
+      '--github-repository <owner/repo>',
+      'Expected base repository for --github-event.'
+    )
     .option('--json', 'Print a sanitized JSON diff report.')
     .option('--sarif <file>', 'Write introduced findings as SARIF 2.1.0.')
     .option(
@@ -41,10 +50,12 @@ export function registerPrScanCommand(program: Command): void {
     )
     .action(
       async (
-        base: string,
+        base: string | undefined,
         head: string | undefined,
         options: {
           path: string;
+          githubEvent?: string;
+          githubRepository?: string;
           json?: boolean;
           sarif?: string;
           failOn: string;
@@ -52,6 +63,16 @@ export function registerPrScanCommand(program: Command): void {
           allowPublicScope?: boolean;
         }
       ) => {
+        if (
+          Boolean(options.githubEvent) !== Boolean(options.githubRepository) ||
+          (options.githubEvent && (base || head)) ||
+          (!options.githubEvent && !base)
+        )
+          throw new ToolipError(
+            'Use either a base revision and optional head revision, or --github-event with --github-repository.',
+            { code: 'PR_SCAN_INPUT_INVALID', exitCode: 1 }
+          );
+
         if (
           options.failOn !== 'none' &&
           !failOnValues.has(options.failOn as FindingSeverity)
@@ -64,10 +85,16 @@ export function registerPrScanCommand(program: Command): void {
             }
           );
 
+        const githubContext = options.githubEvent
+          ? await readGitHubPullRequestEvent(
+              options.githubEvent,
+              options.githubRepository as string
+            )
+          : undefined;
         const result = await scanPullRequestDiff(
           options.path,
-          base,
-          head ?? 'HEAD',
+          githubContext?.baseSha ?? (base as string),
+          githubContext?.headSha ?? head ?? 'HEAD',
           undefined,
           {
             onlineAdvisories: options.onlineAdvisories,
@@ -81,13 +108,29 @@ export function registerPrScanCommand(program: Command): void {
             toolVersion: TOOLIP_VERSION
           });
 
-        const output = sanitizeOutput(result);
+        const output = sanitizeOutput(
+          githubContext
+            ? {
+                ...result,
+                githubPullRequest: {
+                  repository: githubContext.repository,
+                  number: githubContext.pullRequestNumber,
+                  headRepository: githubContext.headRepository
+                }
+              }
+            : result
+        );
         if (options.json) {
           process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
         } else {
           process.stdout.write(
             `${[
               'Toolip Pull Request Security Diff',
+              ...(githubContext
+                ? [
+                    `GitHub pull request: ${githubContext.repository}#${githubContext.pullRequestNumber} (head ${githubContext.headRepository})`
+                  ]
+                : []),
               `Range: ${result.base}..${result.head}`,
               `Changed files: ${result.changedFiles.length}`,
               `Introduced findings: ${result.introduced.length}`,

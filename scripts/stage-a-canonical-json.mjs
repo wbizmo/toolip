@@ -54,3 +54,54 @@ export function npmProvenancePolicyDigest(text) {
     throw new Error('Current Stage A npm provenance policy is invalid.');
   }
 }
+
+export function parseCargoArtifactPolicy(text) {
+  if (
+    typeof text !== 'string' ||
+    Buffer.byteLength(text, 'utf8') === 0 ||
+    Buffer.byteLength(text, 'utf8') > MAX_POLICY_BYTES
+  )
+    throw new Error('Current Stage A Cargo artifact policy is unavailable.');
+  const document = parseDocument(text, {
+    uniqueKeys: true,
+    prettyErrors: false
+  });
+  if (document.errors.length)
+    throw new Error('Current Stage A Cargo artifact policy is invalid.');
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error('Current Stage A Cargo artifact policy is invalid.');
+  }
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    Object.keys(value).some((key) => !['version', 'packages'].includes(key)) ||
+    value.version !== 1 ||
+    !value.packages ||
+    typeof value.packages !== 'object' ||
+    Array.isArray(value.packages)
+  )
+    throw new Error('Current Stage A Cargo artifact policy is invalid.');
+  const packageEntries = Object.entries(value.packages);
+  if (
+    packageEntries.length > 1_000 ||
+    packageEntries.some(
+      ([identity, digest]) =>
+        !/^[A-Za-z0-9_-]{1,128}@[0-9][A-Za-z0-9.+-]{0,127}$/u.test(identity) ||
+        !/^[a-f0-9]{64}$/u.test(digest ?? '')
+    )
+  )
+    throw new Error('Current Stage A Cargo artifact policy is invalid.');
+  return value;
+}
+
+export function cargoArtifactPolicyDigest(text) {
+  try {
+    return canonicalJsonSha256(parseCargoArtifactPolicy(text));
+  } catch {
+    throw new Error('Current Stage A Cargo artifact policy is invalid.');
+  }
+}
