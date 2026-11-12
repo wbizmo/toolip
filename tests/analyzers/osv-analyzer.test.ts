@@ -1761,6 +1761,68 @@ describe('OsvVulnerabilityAnalyzer', () => {
     }
   });
 
+  it('resolves Composer aliases for graph edges but never queries aliases as releases', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-osv-composer-alias-')
+    );
+    const queried: string[] = [];
+    try {
+      await writeFile(
+        path.join(root, 'composer.json'),
+        JSON.stringify({ require: { 'vendor/library': '^1.0' } })
+      );
+      await writeFile(
+        path.join(root, 'composer.lock'),
+        JSON.stringify({
+          packages: [{ name: 'vendor/library', version: 'dev-main' }],
+          'packages-dev': [],
+          aliases: [
+            {
+              package: 'vendor/library',
+              version: 'dev-main',
+              alias: '1.0.x-dev',
+              alias_normalized: '1.0.9999999.9999999-dev'
+            }
+          ]
+        })
+      );
+      const client = new OsvClient({
+        fetchImplementation: async (_input, init) => {
+          const body = JSON.parse(String(init?.body)) as {
+            queries: Array<{
+              package: { ecosystem: string; name: string };
+              version: string;
+            }>;
+          };
+          queried.push(
+            ...body.queries
+              .filter((query) => query.package.ecosystem === 'Packagist')
+              .map((query) => `${query.package.name}@${query.version}`)
+          );
+          return new Response(
+            JSON.stringify({
+              results: body.queries.map(() => ({ vulns: [] }))
+            }),
+            { status: 200 }
+          );
+        }
+      });
+
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({
+        root,
+        options: { allowPublicScope: true }
+      });
+
+      expect(queried).toEqual([]);
+      expect(result.coverage?.state).not.toBe('complete');
+      expect(result.warnings).toContain(
+        'dependency-graph:composer-branch-version-unverified:vendor/library'
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('queries the MVS-selected Go version only through explicit tool execution', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-go-mvs-'));
     const goModSum = `h1:${Buffer.alloc(32, 5).toString('base64')}`;

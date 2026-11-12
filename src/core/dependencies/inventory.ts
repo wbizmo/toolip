@@ -45,6 +45,8 @@ export type DependencyIdentity = {
   declaredFeatures?: string[];
   /** Features activated for a workspace Cargo package under the selected profile. */
   activeFeatures?: string[];
+  /** Exact Composer license metadata for SBOM output. */
+  licenses?: string[];
 };
 
 export type DependencyEdge = {

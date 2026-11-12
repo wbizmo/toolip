@@ -2,6 +2,7 @@ import { readdir } from 'node:fs/promises';
 import type { Dirent } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { parse as parseToml } from 'smol-toml';
 import semver from 'semver';
 import type {
@@ -50,6 +51,10 @@ type LockedPackage = {
   artifactIntegrityStatus?: DependencyIdentity['artifactIntegrityStatus'];
   declaredFeatures?: string[];
   activeFeatures?: string[];
+  /** Composer alias versions used for constraints; never replace the locked version. */
+  composerAliasVersions?: string[];
+  /** Raw, bounded Composer license metadata. */
+  licenses?: string[];
   dependencies?: Array<{
     name: string;
     requirement: string;
@@ -65,9 +70,15 @@ type LockedPackage = {
 };
 
 type RecordValue = Record<string, unknown>;
+const composerParseYieldInterval = 256;
 const maximumComposerWorkspaceManifests = 5_000;
 const maximumComposerWorkspaceEntries = 50_000;
 const maximumComposerPathRepositories = 128;
+const maximumComposerLockPackages = 100_000;
+const maximumComposerLockAliases = 10_000;
+const maximumComposerAliasesPerPackage = 8;
+const maximumComposerRequirementsPerPackage = 10_000;
+const maximumComposerRootRequirements = 10_000;
 const maximumCargoWorkspaceManifests = 5_000;
 const maximumGradleWorkspaceManifests = 5_000;
 const maximumGradleWorkspaceEntries = 50_000;
@@ -84,6 +95,22 @@ const maximumPythonWorkspaceManifests = 5_000;
 const maximumPythonWorkspaceEntries = 50_000;
 const maximumWorkspaceGlobWork = 16_000_000;
 const maximumEcosystemResolutionWork = 250_000;
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  throw new DOMException('The operation was aborted.', 'AbortError');
+}
+
+async function yieldForCancellation(
+  work: number,
+  signal: AbortSignal | undefined
+): Promise<void> {
+  if (work === 0 || work % composerParseYieldInterval !== 0) return;
+  throwIfAborted(signal);
+  await yieldToEventLoop(undefined, { signal });
+  throwIfAborted(signal);
+}
 const javaScopes = new Set([
   'compile',
   'provided',
@@ -134,6 +161,9 @@ function identity(item: LockedPackage): DependencyIdentity {
     source: item.source,
     resolutionConfidence: item.resolutionConfidence ?? 'lockfile',
     installPath,
+    ...(item.licenses?.length
+      ? { licenses: [...new Set(item.licenses)].sort() }
+      : {}),
     ...(item.module ? { workspace: item.module } : {}),
     ...(item.classifier ? { classifier: item.classifier } : {}),
     ...(item.packageType ? { packageType: item.packageType } : {}),
@@ -217,6 +247,103 @@ function isComposerPlatformPackage(name: string): boolean {
   );
 }
 
+function composerNormalizedAliasVersion(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length > 256) return undefined;
+  const match =
+    /^(\d{1,16})\.(\d{1,16})\.(\d{1,16})\.\d{1,16}(?:-([0-9A-Za-z.-]{1,128}))?$/u.exec(
+      value
+    );
+  const major = match?.[1];
+  const minor = match?.[2];
+  const patch = match?.[3];
+  if (!major || !minor || !patch) return undefined;
+  const candidate = `${major}.${minor}.${patch}${match[4] ? `-${match[4]}` : ''}`;
+  return semver.valid(candidate) ?? undefined;
+}
+
+function composerAliasKey(name: string, version: string): string {
+  return JSON.stringify([name.toLowerCase(), version]);
+}
+
+function composerLicenseValues(
+  pkg: RecordValue,
+  name: string,
+  warnings: string[]
+): string[] | undefined {
+  const raw = pkg.license;
+  if (raw === undefined) return undefined;
+  const values = typeof raw === 'string' ? [raw] : raw;
+  if (
+    !Array.isArray(values) ||
+    values.length > 32 ||
+    values.some(
+      (value) =>
+        typeof value !== 'string' ||
+        value.length === 0 ||
+        value.length > 512 ||
+        /[\p{Cc}]/u.test(value) ||
+        value.trim().length === 0
+    )
+  ) {
+    warnings.push(`composer-lock-license-invalid:${name}`);
+    return undefined;
+  }
+  return [...new Set(values.map((value) => value.trim()))].sort();
+}
+
+type ComposerPlatformOverrides = {
+  known: boolean;
+  values: Map<string, string | false>;
+};
+
+function parseComposerPlatformOverrides(
+  raw: unknown,
+  present: boolean,
+  label: 'composer-lock' | 'composer-manifest',
+  warnings: string[]
+): ComposerPlatformOverrides {
+  const values = new Map<string, string | false>();
+  if (!present) return { known: true, values };
+  const record = asRecord(raw);
+  if (!record) {
+    warnings.push(`${label}-platform-overrides-invalid`);
+    return { known: false, values };
+  }
+  let count = 0;
+  for (const name in record) {
+    if (!Object.hasOwn(record, name)) continue;
+    if (count >= 256) {
+      warnings.push(`${label}-platform-overrides-invalid`);
+      return { known: false, values: new Map() };
+    }
+    count += 1;
+    const value = record[name];
+    const normalizedName = name.toLowerCase();
+    if (
+      !isComposerPlatformPackage(normalizedName) ||
+      !validComposerPackageName(`platform/${normalizedName}`) ||
+      (value !== false &&
+        (typeof value !== 'string' || !exact(value) || value.length > 256))
+    ) {
+      warnings.push(`${label}-platform-overrides-invalid`);
+      return { known: false, values: new Map() };
+    }
+    values.set(normalizedName, value as string | false);
+  }
+  return { known: true, values };
+}
+
+function composerPlatformOverridesEqual(
+  left: ComposerPlatformOverrides,
+  right: ComposerPlatformOverrides
+): boolean {
+  if (!left.known || !right.known || left.values.size !== right.values.size)
+    return false;
+  for (const [name, version] of left.values)
+    if (right.values.get(name) !== version) return false;
+  return true;
+}
+
 function validPythonPackageName(value: string): boolean {
   return (
     value.length <= 256 &&
@@ -224,12 +351,14 @@ function validPythonPackageName(value: string): boolean {
   );
 }
 
-function fromJsonLock(
+async function fromJsonLock(
   value: unknown,
   ecosystem: LockedPackage['ecosystem'],
   source: string,
-  warnings: string[]
-): LockedPackage[] {
+  warnings: string[],
+  signal?: AbortSignal
+): Promise<LockedPackage[]> {
+  throwIfAborted(signal);
   const record = asRecord(value);
   if (!record) {
     if (ecosystem === 'Packagist') warnings.push('composer-lock-invalid');
@@ -237,10 +366,12 @@ function fromJsonLock(
   }
   if (ecosystem === 'PyPI' && ('default' in record || 'develop' in record)) {
     const output: LockedPackage[] = [];
+    let pipfilePackageCount = 0;
     for (const section of ['default', 'develop']) {
       const entries = record[section];
       if (!entries || typeof entries !== 'object') continue;
       for (const [name, raw] of Object.entries(entries)) {
+        await yieldForCancellation(++pipfilePackageCount, signal);
         const pkg = asRecord(raw);
         const version = pkg?.version;
         if (
@@ -289,6 +420,69 @@ function fromJsonLock(
   }
   if (ecosystem === 'Packagist') {
     const output: LockedPackage[] = [];
+    const aliases = new Map<string, string[]>();
+    const rawAliases = record.aliases;
+    if (rawAliases !== undefined && !Array.isArray(rawAliases))
+      warnings.push('composer-lock-aliases-invalid');
+    const aliasBudgetExceeded =
+      Array.isArray(rawAliases) &&
+      rawAliases.length > maximumComposerLockAliases;
+    if (aliasBudgetExceeded)
+      warnings.push('composer-lock-alias-budget-exceeded');
+    const unresolvedAliasKeys = new Set<string>();
+    const overBudgetAliasKeys = new Set<string>();
+    const aliasCounts = new Map<string, number>();
+    let rawAliasCount = 0;
+    if (Array.isArray(rawAliases)) {
+      for (const rawAlias of rawAliases.slice(0, maximumComposerLockAliases)) {
+        await yieldForCancellation(++rawAliasCount, signal);
+        const alias = asRecord(rawAlias);
+        const name = alias?.package;
+        const version = alias?.version;
+        const prettyAlias = alias?.alias;
+        const normalizedAlias = composerNormalizedAliasVersion(
+          alias?.alias_normalized
+        );
+        if (
+          !alias ||
+          typeof name !== 'string' ||
+          !validComposerPackageName(name) ||
+          typeof version !== 'string' ||
+          !exact(version) ||
+          typeof prettyAlias !== 'string' ||
+          !exact(prettyAlias) ||
+          prettyAlias.length > 256 ||
+          !normalizedAlias
+        ) {
+          warnings.push('composer-lock-alias-invalid');
+          if (
+            typeof name === 'string' &&
+            validComposerPackageName(name) &&
+            typeof version === 'string' &&
+            exact(version)
+          )
+            unresolvedAliasKeys.add(composerAliasKey(name, version));
+          continue;
+        }
+        const key = composerAliasKey(name, version);
+        const aliasCount = aliasCounts.get(key) ?? 0;
+        if (aliasCount >= maximumComposerAliasesPerPackage) {
+          if (!overBudgetAliasKeys.has(key))
+            warnings.push('composer-lock-alias-package-budget-exceeded');
+          overBudgetAliasKeys.add(key);
+          unresolvedAliasKeys.add(key);
+          continue;
+        }
+        aliasCounts.set(key, aliasCount + 1);
+        const values = aliases.get(key) ?? [];
+        for (const candidate of [prettyAlias, normalizedAlias])
+          if (!values.includes(candidate)) values.push(candidate);
+        aliases.set(key, values);
+      }
+    }
+    const matchedAliases = new Set<string>();
+    let composerPackageCount = 0;
+    let composerPackageBudgetWarned = false;
     for (const section of ['packages', 'packages-dev']) {
       const entries = record[section];
       if (entries === undefined && section === 'packages-dev') continue;
@@ -296,7 +490,17 @@ function fromJsonLock(
         warnings.push(`composer-lock-section-invalid:${section}`);
         continue;
       }
+      if (
+        entries.length > maximumComposerLockPackages - composerPackageCount &&
+        !composerPackageBudgetWarned
+      ) {
+        warnings.push('composer-lock-package-budget-exceeded');
+        composerPackageBudgetWarned = true;
+      }
       for (const item of entries) {
+        if (composerPackageCount >= maximumComposerLockPackages) break;
+        composerPackageCount += 1;
+        await yieldForCancellation(composerPackageCount, signal);
         const pkg = asRecord(item);
         if (
           !pkg ||
@@ -310,6 +514,11 @@ function fromJsonLock(
         }
         const name = pkg.name.toLowerCase();
         const version = pkg.version.replace(/^v/u, '');
+        const aliasKey = composerAliasKey(name, pkg.version);
+        const composerAliasVersions = aliases.get(aliasKey);
+        if (composerAliasVersions) matchedAliases.add(aliasKey);
+        const composerAliasUnverified =
+          aliasBudgetExceeded || unresolvedAliasKeys.has(aliasKey);
         const stableVersion = semver.valid(version) !== null;
         const distribution = asRecord(pkg.dist);
         const packageSource = asRecord(pkg.source);
@@ -329,31 +538,35 @@ function fromJsonLock(
         const requirements = asRecord(rawRequirements);
         if (rawRequirements !== undefined && !requirements)
           warnings.push(`composer-lock-require-invalid:${name}`);
-        const dependencies = Object.entries(requirements ?? {}).flatMap(
-          ([dependencyName, requirement]) => {
-            const normalizedName = dependencyName.toLowerCase();
-            if (isComposerPlatformPackage(normalizedName)) return [];
-            if (
-              !validComposerPackageName(dependencyName) ||
-              typeof requirement !== 'string' ||
-              requirement.length === 0 ||
-              requirement.length > 4_096
-            ) {
-              warnings.push(`composer-lock-require-unresolved:${name}`);
-              return [];
-            }
-            return [
-              {
-                name: normalizedName,
-                requirement,
-                section:
-                  section === 'packages-dev'
-                    ? ('devDependency' as const)
-                    : ('dependency' as const)
-              }
-            ];
+        const dependencies: NonNullable<LockedPackage['dependencies']> = [];
+        let requirementCount = 0;
+        for (const dependencyName in requirements) {
+          if (!Object.hasOwn(requirements, dependencyName)) continue;
+          await yieldForCancellation(requirementCount + 1, signal);
+          if (requirementCount >= maximumComposerRequirementsPerPackage) {
+            warnings.push(`composer-lock-require-budget-exceeded:${name}`);
+            break;
           }
-        );
+          requirementCount += 1;
+          const requirement = requirements[dependencyName];
+          const normalizedName = dependencyName.toLowerCase();
+          if (isComposerPlatformPackage(normalizedName)) continue;
+          if (
+            !validComposerPackageName(dependencyName) ||
+            typeof requirement !== 'string' ||
+            requirement.length === 0 ||
+            requirement.length > 4_096
+          ) {
+            warnings.push(`composer-lock-require-unresolved:${name}`);
+            continue;
+          }
+          dependencies.push({
+            name: normalizedName,
+            requirement,
+            section: section === 'packages-dev' ? 'devDependency' : 'dependency'
+          });
+        }
+        const licenses = composerLicenseValues(pkg, name, warnings);
         output.push({
           name,
           version,
@@ -366,6 +579,9 @@ function fromJsonLock(
           ...(!isPathRepository && !stableVersion
             ? { resolutionConfidence: 'unknown' as const }
             : {}),
+          ...(composerAliasUnverified
+            ? { resolutionConfidence: 'unknown' as const }
+            : {}),
           ...(isPathRepository
             ? {
                 resolutionConfidence: safePath
@@ -374,11 +590,16 @@ function fromJsonLock(
                 ...(safePath ? { module: normalizedPath } : {})
               }
             : {}),
+          ...(composerAliasVersions ? { composerAliasVersions } : {}),
+          ...(licenses ? { licenses } : {}),
           development: section === 'packages-dev',
           dependencies
         });
       }
     }
+    for (const key of aliases.keys())
+      if (!matchedAliases.has(key))
+        warnings.push('composer-lock-alias-package-unresolved');
     return output;
   }
   return [];
@@ -4183,6 +4404,7 @@ export async function readOtherEcosystemInventoryDetailed(
   fileSource?: DependencyFileSource,
   options: OtherEcosystemInventoryOptions = {}
 ): Promise<OtherEcosystemInventoryResult> {
+  throwIfAborted(options.signal);
   let output: LockedPackage[] = [];
   const warnings: string[] = [];
   let pythonTarget: PythonTargetProfile | undefined;
@@ -4320,16 +4542,31 @@ export async function readOtherEcosystemInventoryDetailed(
     ['Pipfile.lock', 'PyPI', 'Pipfile.lock'],
     ['composer.lock', 'Packagist', 'composer.lock']
   ];
+  let composerLockPlatformOverrides: ComposerPlatformOverrides = {
+    known: true,
+    values: new Map()
+  };
   for (const [file, ecosystem, source] of jsonLocks) {
     try {
       const text = await readInput(root, file, fileSource);
       if (text === undefined) continue;
       loadedLockfiles.add(file);
-      const packages = fromJsonLock(
-        JSON.parse(text) as unknown,
+      const parsed = JSON.parse(text) as unknown;
+      if (file === 'composer.lock') {
+        const lock = asRecord(parsed);
+        composerLockPlatformOverrides = parseComposerPlatformOverrides(
+          lock?.['platform-overrides'],
+          Boolean(lock && Object.hasOwn(lock, 'platform-overrides')),
+          'composer-lock',
+          warnings
+        );
+      }
+      const packages = await fromJsonLock(
+        parsed,
         ecosystem,
         source,
-        warnings
+        warnings,
+        options.signal
       );
       output.push(...packages);
       if (file === 'Pipfile.lock' && packages.length > 0)
@@ -4337,6 +4574,7 @@ export async function readOtherEcosystemInventoryDetailed(
       if (packages.length === 0 && file !== 'composer.lock')
         warnings.push(`no-exact-package-records:${file}`);
     } catch {
+      throwIfAborted(options.signal);
       warnings.push(`invalid-or-unreadable-lockfile:${file}`);
     }
   }
@@ -4373,6 +4611,10 @@ export async function readOtherEcosystemInventoryDetailed(
   const composerWorkspaceFiles = new Set<string>();
   let composerPathPatterns: string[] = [];
   let composerRegistryProvenanceKnown = false;
+  let composerManifestPlatformOverrides: ComposerPlatformOverrides = {
+    known: true,
+    values: new Map()
+  };
   if (composerManifestText !== undefined) {
     try {
       const manifest = asRecord(JSON.parse(composerManifestText));
@@ -4380,6 +4622,25 @@ export async function readOtherEcosystemInventoryDetailed(
       composerRegistryProvenanceKnown =
         composerRepositoryProvenanceKnown(manifest);
       composerPathPatterns = composerPathRepositoryPatterns(manifest, warnings);
+      const rawConfig = manifest.config;
+      const config = asRecord(rawConfig);
+      if (rawConfig !== undefined && !config) {
+        warnings.push('composer-manifest-config-invalid');
+        composerManifestPlatformOverrides = {
+          known: false,
+          values: new Map()
+        };
+      } else {
+        const hasPlatformOverrides = Boolean(
+          config && Object.hasOwn(config, 'platform')
+        );
+        composerManifestPlatformOverrides = parseComposerPlatformOverrides(
+          config?.platform,
+          hasPlatformOverrides,
+          'composer-manifest',
+          warnings
+        );
+      }
       for (const [field, section] of [
         ['require', 'dependency'],
         ['require-dev', 'devDependency']
@@ -4391,7 +4652,17 @@ export async function readOtherEcosystemInventoryDetailed(
           warnings.push(`composer-manifest-requirements-invalid:${field}`);
           continue;
         }
-        for (const [name, requirement] of Object.entries(entries)) {
+        let requirementCount = 0;
+        for (const name in entries) {
+          if (!Object.hasOwn(entries, name)) continue;
+          if (requirementCount >= maximumComposerRootRequirements) {
+            warnings.push(
+              `composer-manifest-requirement-budget-exceeded:${field}`
+            );
+            break;
+          }
+          requirementCount += 1;
+          const requirement = entries[name];
           const normalizedName = name.toLowerCase();
           if (isComposerPlatformPackage(normalizedName)) continue;
           if (
@@ -4407,8 +4678,23 @@ export async function readOtherEcosystemInventoryDetailed(
         }
       }
     } catch {
+      composerManifestPlatformOverrides = {
+        known: false,
+        values: new Map()
+      };
       warnings.push('invalid-manifest:composer.json');
     }
+  }
+  if (
+    !composerPlatformOverridesEqual(
+      composerManifestPlatformOverrides,
+      composerLockPlatformOverrides
+    )
+  ) {
+    warnings.push('composer-platform-overrides-unverified');
+    for (const item of output)
+      if (item.ecosystem === 'Packagist' && item.source === 'composer.lock')
+        item.resolutionConfidence = 'unknown';
   }
   if (!composerRegistryProvenanceKnown) {
     let affectedPackages = false;
@@ -5308,6 +5594,11 @@ export async function readOtherEcosystemInventoryDetailed(
         priorRecord.record.resolutionContext !== item.resolutionContext ||
         priorRecord.record.resolutionTarget !== item.resolutionTarget ||
         priorRecord.record.cargoLockSource !== item.cargoLockSource ||
+        JSON.stringify(
+          [...(priorRecord.record.composerAliasVersions ?? [])].sort()
+        ) !== JSON.stringify([...(item.composerAliasVersions ?? [])].sort()) ||
+        JSON.stringify([...(priorRecord.record.licenses ?? [])].sort()) !==
+          JSON.stringify([...(item.licenses ?? [])].sort()) ||
         priorRecord.record.artifactIntegrityStatus !==
           item.artifactIntegrityStatus
       ) {
@@ -5333,6 +5624,10 @@ export async function readOtherEcosystemInventoryDetailed(
   const packages = [...unique.values()].sort((a, b) =>
     a.id.localeCompare(b.id)
   );
+  const composerAliasVersionsById = new Map<string, string[]>();
+  for (const [id, { record }] of lockRecordById)
+    if (record.composerAliasVersions?.length)
+      composerAliasVersionsById.set(id, record.composerAliasVersions);
   const byName = new Map<string, DependencyIdentity[]>();
   for (const dependency of packages) {
     const key = `${dependency.ecosystem}\0${dependency.name}`;
@@ -5465,8 +5760,13 @@ export async function readOtherEcosystemInventoryDetailed(
       else if (index?.hasMarkerContexts) return undefined;
     }
     if (ecosystem === 'Packagist') {
-      const matches = filterCandidates(candidates, (candidate) =>
-        composerRequirementMatches(candidate.version, requirement)
+      const matches = filterCandidates(
+        candidates,
+        (candidate) =>
+          composerRequirementMatches(candidate.version, requirement) ||
+          (composerAliasVersionsById.get(candidate.id) ?? []).some((alias) =>
+            composerRequirementMatches(alias, requirement)
+          )
       );
       if (ecosystemResolutionWorkExceeded) return undefined;
       return matches.length === 1 ? matches[0] : undefined;
@@ -6086,7 +6386,7 @@ function composerPathRepositoryPatterns(
     warnings.push('composer-path-repositories-invalid');
     return [];
   }
-  const patterns: string[] = [];
+  const patterns = new Set<string>();
   for (const repository of manifest.repositories) {
     const entry = asRecord(repository);
     if (entry?.type !== 'path') continue;
@@ -6111,18 +6411,24 @@ function composerPathRepositoryPatterns(
       warnings.push('composer-path-repository-outside-or-unsupported');
       continue;
     }
-    patterns.push(normalized);
+    if (patterns.has(normalized)) continue;
+    if (patterns.size >= maximumComposerPathRepositories) {
+      warnings.push('composer-path-repository-budget-exceeded');
+      break;
+    }
+    patterns.add(normalized);
   }
-  const unique = [...new Set(patterns)].sort();
-  if (unique.length > maximumComposerPathRepositories)
-    warnings.push('composer-path-repository-budget-exceeded');
-  return unique.slice(0, maximumComposerPathRepositories);
+  return [...patterns].sort();
 }
 
 function composerRepositoryProvenanceKnown(manifest: RecordValue): boolean {
   const repositories = manifest.repositories;
   if (repositories === undefined) return true;
-  if (!Array.isArray(repositories)) return false;
+  if (
+    !Array.isArray(repositories) ||
+    repositories.length > maximumComposerPathRepositories
+  )
+    return false;
   for (const rawRepository of repositories) {
     const repository = asRecord(rawRepository);
     if (repository?.type === 'path') continue;
@@ -6263,7 +6569,15 @@ function composerWorkspacePackage(
       warnings.push(`composer-workspace-requirements-invalid:${file}`);
       continue;
     }
-    for (const [name, requirement] of Object.entries(requirements ?? {})) {
+    let requirementCount = 0;
+    for (const name in requirements) {
+      if (!Object.hasOwn(requirements, name)) continue;
+      if (requirementCount >= maximumComposerRequirementsPerPackage) {
+        warnings.push(`composer-workspace-requirement-budget-exceeded:${file}`);
+        break;
+      }
+      requirementCount += 1;
+      const requirement = requirements[name];
       const normalizedName = name.toLowerCase();
       if (isComposerPlatformPackage(normalizedName)) continue;
       if (
@@ -6284,6 +6598,7 @@ function composerWorkspacePackage(
   }
   const name = manifest.name.toLowerCase();
   const version = manifest.version.replace(/^v/u, '');
+  const licenses = composerLicenseValues(manifest, name, warnings);
   const isStableVersion = semver.valid(version) !== null;
   if (!isStableVersion)
     warnings.push(`composer-workspace-version-unverified:${file}`);
@@ -6295,6 +6610,7 @@ function composerWorkspacePackage(
     resolutionConfidence: isStableVersion ? 'workspace' : 'unknown',
     module,
     installPath: `composer-path:${module}:${name}@${version}`,
+    ...(licenses ? { licenses } : {}),
     dependencies
   };
 }
@@ -6303,7 +6619,19 @@ function composerRequirementMatches(
   version: string,
   requirement: string
 ): boolean {
-  const clean = requirement.trim().replace(/@[A-Za-z]+$/u, '');
+  let clean = requirement.trim().replace(/@[A-Za-z]+$/u, '');
+  const inlineAlias = /^(\S+)\s+as\s+(\S+)$/iu.exec(clean);
+  if (inlineAlias) {
+    const requestedVersion = inlineAlias[1];
+    const aliasVersion = inlineAlias[2];
+    if (!requestedVersion || !aliasVersion) return false;
+    if (
+      version === requestedVersion ||
+      version.replace(/^v/u, '') === requestedVersion.replace(/^v/u, '')
+    )
+      return true;
+    clean = aliasVersion;
+  }
   if (!clean || clean === '*') return true;
   if (version === clean || version === clean.replace(/^v/u, '')) return true;
   const normalizedVersion = version.replace(/^v/u, '');

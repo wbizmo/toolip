@@ -592,6 +592,77 @@ describe('SBOM generation', () => {
     }
   });
 
+  it('preserves Composer license choices in CycloneDX and SPDX output', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-sbom-composer-licenses-')
+    );
+    try {
+      await writeFile(path.join(root, 'composer.json'), JSON.stringify({}));
+      await writeFile(
+        path.join(root, 'composer.lock'),
+        JSON.stringify({
+          packages: [
+            {
+              name: 'vendor/library',
+              version: '1.2.3',
+              license: ['MIT', 'Apache-2.0']
+            },
+            {
+              name: 'vendor/internal',
+              version: '2.0.0',
+              license: ['proprietary']
+            }
+          ],
+          'packages-dev': []
+        })
+      );
+
+      const cyclonedx = await generateSbom(root, 'cyclonedx');
+      const components = cyclonedx.components as Array<{
+        name: string;
+        purl: string;
+        licenses?: Array<{
+          expression?: string;
+          license?: { name?: string };
+        }>;
+      }>;
+      expect(components).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'vendor/library',
+            purl: 'pkg:composer/vendor/library@1.2.3',
+            licenses: [{ expression: '(Apache-2.0) OR (MIT)' }]
+          }),
+          expect.objectContaining({
+            name: 'vendor/internal',
+            licenses: [{ license: { name: 'proprietary' } }]
+          })
+        ])
+      );
+      await expectValidCycloneDx(cyclonedx);
+
+      const spdx = await generateSbom(root, 'spdx');
+      const packages = spdx.packages as Array<{
+        name: string;
+        licenseDeclared: string;
+      }>;
+      expect(packages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'vendor/library',
+            licenseDeclared: '(Apache-2.0) OR (MIT)'
+          }),
+          expect.objectContaining({
+            name: 'vendor/internal',
+            licenseDeclared: 'NOASSERTION'
+          })
+        ])
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('emits the exact Maven text-tree classifier PURL', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-sbom-maven-text-')

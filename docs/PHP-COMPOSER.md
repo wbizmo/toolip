@@ -15,9 +15,28 @@ sections is a complete empty graph. Root and
 transitive version constraints are checked against the locked version; an
 incompatible or ambiguous match remains unresolved and makes graph coverage
 incomplete.
+Composer lock aliases are used to connect branch packages to compatible root
+and transitive constraints. The installed identity stays at the locked branch
+version (for example, `dev-main`) with unknown resolution confidence, so the
+alias is never queried as an immutable Packagist release. Inline root aliases
+such as `dev-bugfix as 1.0.x-dev` are recognized for matching without changing
+the locked package identity. Alias records are limited to 10,000 per lock and
+8 per package; lock package records are limited to 100,000 and package/root
+dependency requirement sections to 10,000 entries each. Exceeding a budget or
+using malformed alias data makes coverage incomplete.
+
+`composer.json` `config.platform` settings are compared with the lock's
+`platform-overrides` values. Invalid or stale settings mark Composer lock
+packages unknown and withhold them from public OSV queries. Composer package
+license metadata is retained in SBOMs: SPDX expressions are validated and
+Composer's disjunctive license lists become an SPDX `OR` choice; names such as
+`proprietary` remain named CycloneDX licenses and are `NOASSERTION` in SPDX.
+Invalid or over-budget license arrays are omitted with a warning rather than
+copied into the SBOM.
+
 Branch labels and other non-semver lock versions such as `dev-main` remain in
-the dependency graph with unknown resolution confidence. They are not queried
-as if they identified immutable released packages.
+the dependency graph with unknown resolution confidence even when their aliases
+resolve graph edges.
 
 For configured path repositories, Toolip inspects at most 128 repository
 patterns, 5,000 Composer manifests, and 50,000 directory entries, does not follow directory symlinks, and reads
@@ -41,3 +60,8 @@ paths remain unverified.
 This is a read-only project profile and dependency inventory. It does not
 execute Composer plugins or scripts, install dependencies, or apply
 Laravel-specific code rules.
+
+The lock alias and platform override fields follow Composer's current
+[`Locker` schema](https://github.com/composer/composer/blob/main/src/Composer/Package/Locker.php),
+the [alias documentation](https://getcomposer.org/doc/articles/aliases.md),
+and the [`config.platform` documentation](https://getcomposer.org/doc/06-config.md#platform).

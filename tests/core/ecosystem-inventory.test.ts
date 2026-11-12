@@ -2044,6 +2044,304 @@ describe('non-npm lockfile inventory', () => {
     );
   });
 
+  it('resolves Composer branch and inline aliases without changing the locked identities', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'composer.json'),
+      JSON.stringify({
+        require: {
+          'vendor/library': '^1.0',
+          'vendor/inline': 'dev-feature as 2.1.x-dev'
+        }
+      })
+    );
+    await writeFile(
+      path.join(root, 'composer.lock'),
+      JSON.stringify({
+        packages: [
+          { name: 'vendor/library', version: 'dev-main' },
+          { name: 'vendor/inline', version: 'dev-feature' }
+        ],
+        'packages-dev': [],
+        aliases: [
+          {
+            package: 'vendor/library',
+            version: 'dev-main',
+            alias: '1.0.x-dev',
+            alias_normalized: '1.0.9999999.9999999-dev'
+          },
+          {
+            package: 'vendor/inline',
+            version: 'dev-feature',
+            alias: '2.1.x-dev',
+            alias_normalized: '2.1.9999999.9999999-dev'
+          }
+        ]
+      })
+    );
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+
+    expect(graph.packages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'vendor/library',
+          version: 'dev-main',
+          resolutionConfidence: 'unknown',
+          direct: true
+        }),
+        expect.objectContaining({
+          name: 'vendor/inline',
+          version: 'dev-feature',
+          resolutionConfidence: 'unknown',
+          direct: true
+        })
+      ])
+    );
+    expect(graph.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          from: 'root',
+          name: 'vendor/library',
+          requirement: '^1.0'
+        }),
+        expect.objectContaining({
+          from: 'root',
+          name: 'vendor/inline',
+          requirement: 'dev-feature as 2.1.x-dev'
+        })
+      ])
+    );
+    expect(graph.warnings).not.toContain(
+      'unresolved-Packagist-root-dependency:vendor/library'
+    );
+    expect(graph.warnings).not.toContain(
+      'unresolved-Packagist-root-dependency:vendor/inline'
+    );
+    expect(graph.complete).toBe(false);
+  });
+
+  it('bounds Composer aliases per locked package and keeps that package unverified', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'composer.json'),
+      JSON.stringify({ require: { 'vendor/library': '^1.0' } })
+    );
+    await writeFile(
+      path.join(root, 'composer.lock'),
+      JSON.stringify({
+        packages: [{ name: 'vendor/library', version: 'dev-main' }],
+        'packages-dev': [],
+        aliases: Array.from({ length: 9 }, (_, index) => ({
+          package: 'vendor/library',
+          version: 'dev-main',
+          alias: `${index + 1}.0.x-dev`,
+          alias_normalized: `${index + 1}.0.9999999.9999999-dev`
+        }))
+      })
+    );
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain(
+      'composer-lock-alias-package-budget-exceeded'
+    );
+    expect(graph.packages[0]).toMatchObject({
+      name: 'vendor/library',
+      version: 'dev-main',
+      resolutionConfidence: 'unknown'
+    });
+  });
+
+  it('requires Composer platform overrides to agree with the lock resolution context', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'composer.json'),
+      JSON.stringify({
+        config: { platform: { php: '8.2.0', 'ext-json': false } },
+        require: { 'vendor/library': '^1.0' }
+      })
+    );
+    await writeFile(
+      path.join(root, 'composer.lock'),
+      JSON.stringify({
+        packages: [{ name: 'vendor/library', version: '1.2.0' }],
+        'packages-dev': [],
+        'platform-overrides': { php: '8.2.0', 'ext-json': false }
+      })
+    );
+
+    const matching = await readOtherEcosystemInventoryDetailed(root);
+    expect(matching.complete).toBe(true);
+    expect(matching.packages[0]).toMatchObject({
+      name: 'vendor/library',
+      resolutionConfidence: 'lockfile',
+      direct: true
+    });
+
+    await writeFile(
+      path.join(root, 'composer.lock'),
+      JSON.stringify({
+        packages: [{ name: 'vendor/library', version: '1.2.0' }],
+        'packages-dev': [],
+        'platform-overrides': { php: '8.1.0', 'ext-json': false }
+      })
+    );
+    const mismatched = await readOtherEcosystemInventoryDetailed(root);
+    expect(mismatched.complete).toBe(false);
+    expect(mismatched.warnings).toContain(
+      'composer-platform-overrides-unverified'
+    );
+    expect(mismatched.packages[0]).toMatchObject({
+      name: 'vendor/library',
+      resolutionConfidence: 'unknown'
+    });
+  });
+
+  it('caps Composer lock package records and reports skipped entries', async () => {
+    const root = await fixture();
+    const files = {
+      'composer.json': JSON.stringify({}),
+      'composer.lock': JSON.stringify({
+        packages: Array.from({ length: 100_001 }, () => ({
+          name: 'vendor/repeated',
+          version: '1.0.0'
+        })),
+        'packages-dev': []
+      })
+    };
+    const fileSource = {
+      files: Object.keys(files),
+      hasFile: (relativePath: string) => relativePath in files,
+      readText: (relativePath: string) =>
+        files[relativePath as keyof typeof files]
+    };
+
+    const graph = await readOtherEcosystemInventoryDetailed(root, fileSource);
+
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain('composer-lock-package-budget-exceeded');
+    expect(graph.packages).toHaveLength(1);
+    expect(graph.packages[0]).toMatchObject({
+      name: 'vendor/repeated',
+      version: '1.0.0'
+    });
+  });
+
+  it('caps Composer dependency edges per package and reports omitted requirements', async () => {
+    const root = await fixture();
+    const requirements = Object.fromEntries(
+      Array.from({ length: 10_001 }, (_, index) => [
+        `vendor/dependency-${String(index).padStart(5, '0')}`,
+        '^1.0'
+      ])
+    );
+    await writeFile(
+      path.join(root, 'composer.json'),
+      JSON.stringify({ require: { 'vendor/root': '^1.0' } })
+    );
+    await writeFile(
+      path.join(root, 'composer.lock'),
+      JSON.stringify({
+        packages: [
+          { name: 'vendor/root', version: '1.0.0', require: requirements },
+          ...Object.keys(requirements).map((name) => ({
+            name,
+            version: '1.0.0'
+          }))
+        ],
+        'packages-dev': []
+      })
+    );
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain(
+      'composer-lock-require-budget-exceeded:vendor/root'
+    );
+    const rootPackage = graph.packages.find(
+      (item) => item.name === 'vendor/root'
+    );
+    expect(rootPackage).toBeDefined();
+    expect(
+      graph.edges.filter((edge) => edge.from === rootPackage?.id)
+    ).toHaveLength(10_000);
+  });
+
+  it('cancels large Composer lock parsing between bounded package batches', async () => {
+    const root = await fixture();
+    const files = new Map<string, string>([
+      ['composer.json', JSON.stringify({ require: {} })],
+      [
+        'composer.lock',
+        JSON.stringify({
+          packages: Array.from({ length: 10_000 }, (_, index) => ({
+            name: `vendor/package-${index}`,
+            version: '1.0.0'
+          })),
+          'packages-dev': []
+        })
+      ]
+    ]);
+    const controller = new AbortController();
+    const fileSource = {
+      files: [...files.keys()],
+      hasFile: (relativePath: string) => files.has(relativePath),
+      readText: (relativePath: string) => {
+        if (relativePath === 'composer.lock')
+          setTimeout(() => controller.abort(), 0);
+        return files.get(relativePath);
+      }
+    };
+
+    await expect(
+      readOtherEcosystemInventoryDetailed(root, fileSource, {
+        signal: controller.signal
+      })
+    ).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('rejects malformed Composer aliases and license metadata without leaking values', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'composer.json'),
+      JSON.stringify({ require: { 'vendor/library': '^1.0' } })
+    );
+    await writeFile(
+      path.join(root, 'composer.lock'),
+      JSON.stringify({
+        packages: [
+          {
+            name: 'vendor/library',
+            version: 'dev-main',
+            license: ['MIT', { untrusted: 'hidden-value' }]
+          }
+        ],
+        'packages-dev': [],
+        aliases: [
+          {
+            package: 'vendor/library',
+            version: 'dev-main',
+            alias: '1.0.x-dev',
+            alias_normalized: 'not-a-normalized-version'
+          }
+        ]
+      })
+    );
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain('composer-lock-alias-invalid');
+    expect(graph.warnings).toContain(
+      'composer-lock-license-invalid:vendor/library'
+    );
+    expect(graph.packages[0]?.licenses).toBeUndefined();
+    expect(JSON.stringify(graph)).not.toContain('hidden-value');
+  });
+
   it('ignores Composer platform requirements and rejects external path identities', async () => {
     const root = await fixture();
     await writeFile(

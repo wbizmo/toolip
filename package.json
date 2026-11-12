@@ -86,6 +86,7 @@
     "semver": "^7.7.3",
     "sigstore": "^5.0.1",
     "smol-toml": "^1.9.1",
+    "spdx-expression-parse": "4.0.0",
     "tar": "^7.5.23",
     "typescript": "^5.8.2",
     "yaml": "^2.9.1",

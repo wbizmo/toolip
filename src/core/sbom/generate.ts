@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { PackageURL } from 'packageurl-js';
@@ -22,6 +23,46 @@ import {
 } from '../../providers/npm/provenance.js';
 
 export type SbomFormat = 'cyclonedx' | 'spdx';
+
+const parseSpdxExpression = createRequire(import.meta.url)(
+  'spdx-expression-parse'
+) as (expression: string) => unknown;
+
+function isSpdxExpression(value: string): boolean {
+  try {
+    parseSpdxExpression(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function cyclonedxLicenses(
+  licenses: string[] | undefined
+): Array<{ expression: string } | { license: { name: string } }> | undefined {
+  if (!licenses?.length) return undefined;
+  if (licenses.every(isSpdxExpression))
+    return [
+      {
+        expression:
+          licenses.length === 1
+            ? (licenses[0] ?? '')
+            : licenses.map((license) => `(${license})`).join(' OR ')
+      }
+    ];
+  return [{ license: { name: licenses.join(' OR ') } }];
+}
+
+function spdxDeclaredLicense(licenses: string[] | undefined): string {
+  if (
+    !licenses?.length ||
+    licenses.some((license) => !isSpdxExpression(license))
+  )
+    return 'NOASSERTION';
+  return licenses.length === 1
+    ? (licenses[0] ?? 'NOASSERTION')
+    : licenses.map((license) => `(${license})`).join(' OR ');
+}
 
 type RootManifest = {
   name?: string;
@@ -379,7 +420,8 @@ export async function generateSbom(
       pythonTarget: options.pythonTarget,
       goTarget: options.goTarget,
       cargoTarget: options.cargoTarget,
-      goCommandRunner: options.goCommandRunner
+      goCommandRunner: options.goCommandRunner,
+      signal: options.signal
     }
   );
   throwIfAborted(options.signal);
@@ -460,44 +502,48 @@ export async function generateSbom(
 
     const components = await mapWithCancellation(
       dependencies,
-      (dependency) => ({
-        type: 'library',
-        'bom-ref': bomRef(dependency),
-        name: dependency.name,
-        version: dependency.version,
-        scope: dependency.development ? 'optional' : 'required',
-        purl: purl(dependency),
-        properties: [
-          {
-            name: 'toolip:direct',
-            value: String(dependency.direct)
-          },
-          {
-            name: 'toolip:development',
-            value: String(dependency.development)
-          },
-          {
-            name: 'toolip:resolutionConfidence',
-            value: dependency.resolutionConfidence ?? 'lockfile'
-          },
-          {
-            name: 'toolip:installPath',
-            value: dependency.installPath
-          },
-          ...(dependency.resolutionTarget
-            ? [
-                {
-                  name: 'toolip:resolutionTarget',
-                  value: dependency.resolutionTarget
-                }
-              ]
-            : []),
-          ...provenanceProperties(
-            dependency,
-            npmProvenance.get(npmProvenanceIdentityDigest(dependency))
-          )
-        ]
-      }),
+      (dependency) => {
+        const licenses = cyclonedxLicenses(dependency.licenses);
+        return {
+          type: 'library',
+          'bom-ref': bomRef(dependency),
+          name: dependency.name,
+          version: dependency.version,
+          scope: dependency.development ? 'optional' : 'required',
+          purl: purl(dependency),
+          ...(licenses ? { licenses } : {}),
+          properties: [
+            {
+              name: 'toolip:direct',
+              value: String(dependency.direct)
+            },
+            {
+              name: 'toolip:development',
+              value: String(dependency.development)
+            },
+            {
+              name: 'toolip:resolutionConfidence',
+              value: dependency.resolutionConfidence ?? 'lockfile'
+            },
+            {
+              name: 'toolip:installPath',
+              value: dependency.installPath
+            },
+            ...(dependency.resolutionTarget
+              ? [
+                  {
+                    name: 'toolip:resolutionTarget',
+                    value: dependency.resolutionTarget
+                  }
+                ]
+              : []),
+            ...provenanceProperties(
+              dependency,
+              npmProvenance.get(npmProvenanceIdentityDigest(dependency))
+            )
+          ]
+        };
+      },
       options.signal
     );
     const dependencyEntries = await mapWithCancellation(
@@ -576,7 +622,7 @@ export async function generateSbom(
       downloadLocation: 'NOASSERTION',
       filesAnalyzed: false,
       licenseConcluded: 'NOASSERTION',
-      licenseDeclared: 'NOASSERTION',
+      licenseDeclared: spdxDeclaredLicense(dependency.licenses),
       sourceInfo: spdxSourceInfo(
         dependency,
         npmProvenance.get(npmProvenanceIdentityDigest(dependency))
