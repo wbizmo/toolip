@@ -112,6 +112,25 @@ Rust, Go, Java, PHP, Ruby, shell and PowerShell source. This is a conservative
 heuristic: dynamic command construction, indirect launchers and toolchains not
 recognized by the scanner remain outside the current proof and must not be
 treated as a complete execution-chain analysis.
+Workflow expression inspection follows function-wrapped and bracket-form
+references to event data, inputs, secrets, tokens, step/job outputs and matrix
+values. A tainted environment value referenced by a command, or inherited by a
+recognized child process, blocks the scan. Malformed or over-budget expressions
+make coverage incomplete. The expression parser does not execute GitHub
+expressions or shell commands.
+Script-driven `npm install`, `npm add`, `npm update`, `npm exec`, `npx`, and
+nested or prefix/workspace-scoped `npm ci` commands remain incomplete because
+their exact artifact graph is not the root graph Stage A verified. A
+root-directory `npm ci` is permitted only after Stage A verifies the root lock
+graph and its archives, and only when it passes `--ignore-scripts`, has no
+workspace/prefix or registry override, and uses the fixed public registry and
+null user/global npm configuration. Repository `.npmrc` files are currently
+unsupported because they can redirect downstream installs. `npm-shrinkwrap.json`,
+Bun lockfiles, Python `pyproject.toml`,
+`setup.py`/`setup.cfg`, requirements input files, and Ruby `Gemfile`, lock,
+gemspec and Bundler config inputs are recognized as unsupported provenance and
+fail closed. They are not treated as verified merely because a checksum is
+present.
 The inspected tarball's embedded package name and exact version must match its
 lock entry; npm aliases retain the registry package identity for this check and
 for scope withholding. Tarball integrity alone cannot authorize mismatched
@@ -126,9 +145,9 @@ usage and privileged `pull_request_target` triggers. An unpinned action or a
 non-Stage-A `pull_request_target` trigger blocks the candidate. Local actions
 and expanded workflow token permissions make Stage A incomplete and require
 review before Stage B. Shell commands that interpolate untrusted event data,
-secrets, tokens or step/job outputs are blocked; an environment value derived
-from untrusted event, secret or token input is blocked when a shell command
-references that variable.
+inputs, secrets, tokens, matrix values or step/job outputs are blocked. Tainted
+environment values block when the command references them or launches a
+recognized child process that inherits them.
 Changes to `.github/CODEOWNERS`, the Stage A scanner,
 its artifact writers/verifiers, runtime/workflow verifiers and trusted gate
 workflow paths also require a current maintainer review through the base
@@ -231,6 +250,30 @@ and incomplete archive handling. The prior baseline measurement (277 entries, 23
 text candidates, 979,203 bytes) predates this two-tree implementation and is
 not a current benchmark.
 
+For one workflow, let Y be its YAML bytes, N the run-step count, Cᵢ each step's
+shell-command bytes and Eᵢ its inherited environment entries. YAML parsing,
+command tokenization and taint checks take O(Y + Σ(Cᵢ + Eᵢ)); expression
+inspection is capped at 32 MiB of examined strings, run steps at 10,000 and
+environment checks at 100,000. The expression cache retains at most 10,000
+string entries. Peak additional space is O(Y + max(Cᵢ + Eᵢ)) for one parsed
+workflow and its live command identifiers/environment, plus the bounded cache;
+workflows still share the per-file 2 MiB Git-blob limit.
+
+Package-script and workflow npm command review scans S command bytes in O(S)
+time and O(S) temporary token space. It rejects package-resolution commands,
+unknown npm operations, `npx`, workspace/prefix installs and root installs
+whose registry or npm configuration differs from the pinned public registry
+and null user/global config. Root `npm ci` must also pass `--ignore-scripts`.
+Only that form can use the Stage A lock/artifact inspection contract. NPM
+configuration environment overrides must match the public registry and
+`/dev/null` user/global config; unknown overrides remain incomplete. Shell
+aliases, functions, PATH replacement and variable/command substitution in
+executable position are marked incomplete in package scripts, workflow steps,
+automatic editor tasks and recognized shell wrappers. Shebang or
+extension-recognized shell scripts also receive package-manager and
+unsupported-toolchain checks. More complex indirect launchers remain
+unresolved and must not be inferred safe.
+
 This is an integrated Stage A boundary, but **issue #96 remains incomplete**.
 The scanner uses bounded heuristics rather than a complete execution-chain
 graph. Tarballs containing binary files, npm install lifecycle hooks, Cargo
@@ -239,9 +282,16 @@ incomplete. The PR scripts-disabled install
 and registry signature check run only after exact lock entries, tarball bytes
 and every configured npm issuer/source check pass; any missing policy, partial
 coverage, signature failure or install failure blocks approval. Go, Python,
-Composer, Maven and Gradle artifact inspection remains unsupported and
-fail-closed; Cargo git/path sources, globbed workspace membership and
-package-manager execution also remain incomplete. The Cargo digest allowlist is
+Composer, Maven, Gradle and Ruby artifact inspection remains unsupported and
+fail-closed. Ruby Bundler inputs, Bun lockfiles, npm shrinkwrap, and Python
+build/requirements inputs are explicitly classified as unsupported. Any
+repository `.npmrc` is also incomplete because Stage B's npm install could
+otherwise resolve the same lock through a repository-selected registry that
+Stage A's public-registry artifact policy did not attest. Cargo
+git/path sources, `.cargo/config` source overrides, Deno, PDM, Pixi and Conda
+inputs, Go vendoring metadata, Maven extension/config files, Gradle version
+catalogs and property files, globbed workspace membership and their
+package-manager execution remain incomplete. The Cargo digest allowlist is
 administrator-managed evidence, not a publisher signature or proof of benign
 code. Force-push continuity and several #95 behaviors remain outside this
 implementation. A diff rename is only a path relationship and

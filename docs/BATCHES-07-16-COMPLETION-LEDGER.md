@@ -768,8 +768,9 @@ publisher-attestation coverage. A trusted digest allowlist is an independent
 administrator approval of exact archive bytes, not a publisher signature or
 proof the code is safe. The external main-branch Stage A bootstrap, required
 checks/rulesets, CODEOWNERS enforcement, independent review and live hosted
-workflow behavior also remain outstanding. All 37 issues remain Partial; no
-current Batch 16 implementation push is ready until its full local gates pass.
+workflow behavior also remain outstanding. At this earlier checkpoint, all 37
+issues remained Partial and the Batch 16 local gates were still pending; later
+local verification evidence is recorded below.
 
 Additional Batch 16 #96 build-tool execution guard — 2026-11-12: Stage A now
 marks recognized unsupported external build-tool commands incomplete when
@@ -789,5 +790,91 @@ trusted scanner digest verifier and seven-workflow policy check pass with
 `TOOLIP_STAGE_A_SHA256=c61346931f681c515e381ef7d3f4f60250c918c956935230146499e1d095235a`.
 Typecheck, quality typecheck, lint, changed-file formatting, scanner pin,
 workflow policy and `git diff --check` pass on Node 24.22.1. Full Node 22/24
-verification, Node 24 release checks and final security gates have not yet been
-rerun for this batch. All 37 issues remain Partial.
+verification, Node 24 release checks and final security gates were pending at
+that snapshot; their later results are recorded below. All 37 issues remain
+Partial.
+
+Follow-on Stage A trust-coverage correction — 2026-11-12, working-tree changes
+based on `df9da16`: #96/#77 now classify
+`npm-shrinkwrap.json` and Bun lockfiles as unsupported alternate lock graphs,
+and classify Ruby Bundler inputs plus Python `pyproject.toml`, setup metadata
+and requirement input files as unsupported artifact provenance. Stage A keeps
+these explicitly incomplete instead of relying on a root package-lock scan. It
+also marks script-driven npm install/add/update/exec and `npx` commands
+incomplete; `npm ci` is considered covered only at the verified root without
+prefix/workspace selection or shell directory changes. The Stage A regression
+test failed before these checks and now passes as part of the 51-test
+`tests/core/stage-a-gate.test.ts` suite on Node 24.22.1 (exit 0).
+
+Workflow shell-input analysis now recognizes function-wrapped and quoted
+bracket-form GitHub expressions for event data, inputs, secrets, tokens,
+step/job outputs and matrix values. Tainted environment values block when a
+shell command references them or invokes a recognized child process that
+inherits them. Malformed or over-4-KiB expressions block and leave explicit
+incomplete coverage. New checks are bounded to 10,000 run steps, 100,000
+environment checks and 32 MiB expression inspection per workflow. For workflow
+YAML bytes Y, shell bytes Cᵢ and effective environment entries Eᵢ, parsing and
+taint analysis are O(Y + Σ(Cᵢ + Eᵢ)); additional peak space is O(Y + max(Cᵢ +
+Eᵢ)) plus the 10,000-entry expression cache. Regressions for wrapped,
+bracketed, malformed and oversized expressions, inherited tainted variables,
+nested npm installs and alternate artifact inputs are included in the same
+focused suite.
+
+These changes do not complete #95, #77 or #96. Custom/indirect launchers and
+full shell semantics remain heuristic; non-npm publisher provenance and
+artifact-byte verification remain unsupported. Authenticated workflow
+bootstrap, ruleset enforcement, actual hosted Actions behavior and independent
+review remain external. The current local gates and scanner pin are recorded
+below; all 37 issues remain Partial.
+
+Follow-on Stage A trust-boundary regression — 2026-11-12, working-tree changes
+based on `df9da16`: A targeted regression first
+reproduced approval of `npm --workspace packages/app install`; Stage A now
+parses npm options before and after subcommands, blocks unverified resolution
+commands and wrapper-prefixed `npx`, and accepts only the verified root install
+`npm ci --ignore-scripts` with the fixed public registry and null user/global
+npm config. A
+second test reproduced approval when `.npmrc` redirected Stage B's install to
+an unverified registry; any repository `.npmrc` now withholds Stage A approval
+as `unsupported-npm-registry-configuration`. The previous bypass regressions
+failed before their fixes. Common shell aliases, function definitions, PATH
+replacement and variable/command-substitution executable positions now leave
+an explicit `dynamic-command-resolution` incomplete result in package scripts,
+workflow steps and automatic editor tasks. Workflow steps using local actions
+now also produce `local-action-execution-unverified`, even if their local
+composite manifest is not among the selected blobs. Inline and effective
+workflow `NPM_CONFIG_*` overrides are rejected unless they match the fixed
+public registry and inert config files (or use a bounded cache path). The alias,
+variable position, local-action and environment-override regressions failed
+before their fixes. Workflow and automatic editor task environments also
+block PATH, PATHEXT and shell executable-lookup overrides; these regressions
+failed before the fix. Shebang and extension-recognized shell wrappers now
+receive package-manager, unsupported-toolchain and dynamic-command checks; the
+nested installer regression failed before the fix. Static subprocess calls
+that launch npm or npx, including shell-string process APIs, now remain
+incomplete; the JavaScript executable and shell-string regressions failed
+before their fixes. The Stage A suite passes 58/58 on Linux Node 24.22.1. The
+protected scanner digest is pinned and verifies as
+`48d79dc73fef59b9a3824f336bad73138f9d3910b51b70c40fc9388f5f604e30`.
+
+Local verification on 2026-11-12, working tree based on `df9da1631e5110695c9b4fa3edf549be55763566`:
+
+- Node 22.23.5: clean `npm ci --ignore-scripts` and `npm run verify` both exit 0. Unit tests: 125 files, 1,155 passed, 3 skipped. Coverage: 124 files,
+  1,153 passed, 3 skipped; 85.45% statements, 79.76% branches, 92.54%
+  functions and 87.63% lines. Typecheck, quality typecheck, lint, formatting,
+  seven-workflow policy, 355-package lockfile integrity, full npm audit,
+  build and package verification pass.
+- Node 24.22.1: clean `npm ci --ignore-scripts` and `npm run verify` exit 0
+  with the same test and coverage counts. `npm run release:check` exits 0,
+  including a second clean install, full verification, build, pack and isolated
+  verification of `toolip@2.2.1`.
+- `npm run audit:signatures` verifies 299 registry signatures and 102
+  attestations; full and production npm audits report zero vulnerabilities.
+  Gitleaks reports no leaks in the working tree, diff or 140-commit history.
+  Actionlint 1.7.12 with ShellCheck 0.11.0, the scanner digest verifier,
+  workflow policy, and `git diff --check` pass.
+
+These are local results only; they do not establish hosted Actions, protected
+`main` trust bootstrap, administrator ruleset configuration, macOS/Windows
+verification or independent review. Issue-specific requirements listed above
+remain incomplete, and all 37 issues remain Partial.

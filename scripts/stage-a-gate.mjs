@@ -147,19 +147,342 @@ const dangerous = [
   /\b(?:base64\s+-d|openssl\s+enc)[^\r\n]{0,200}(?:\||;|&&)[ \t]*(?:sh|bash|node)\b/iu
 ];
 const unsupportedToolchainCommand =
-  /\b(?:cargo|rustc|go|python(?:3(?:\.\d+)?)?|pip(?:3(?:\.\d+)?)?|uv|poetry|composer|mvnw?|gradlew?|java|javac|ruby|bundle|perl|pytest|tox|make|just|task|pnpm|yarn|bun|docker|podman|corepack)\b[ \t]+\S/iu;
+  /\b(?:cargo|rustc|go|python(?:3(?:\.\d+)?)?|pip(?:3(?:\.\d+)?)?|pipenv|pdm|rye|hatch|uv|poetry|conda|mamba|pixi|composer|mvnw?|gradlew?|dotnet|nuget|msbuild|java|javac|ruby|bundle|perl|pytest|tox|make|just|task|deno|pnpm|yarn|bun|docker|podman|corepack)\b[ \t]+\S/iu;
 const unsupportedToolchainSpawn =
-  /\b(?:spawn|spawnSync|execFile|execFileSync|execSync|exec|Command\.new|Command::new|exec\.Command|ProcessBuilder|subprocess\.(?:run|Popen|call)|os\.system|system|shell_exec|proc_open|popen)\s*\([\s\S]{0,160}?['"](?:cargo|rustc|go|python(?:3(?:\.\d+)?)?|pip(?:3(?:\.\d+)?)?|uv|poetry|composer|mvnw?|gradlew?|java|javac|ruby|bundle|perl|pytest|tox|make|just|task|pnpm|yarn|bun|docker|podman|corepack)['"]/iu;
-const untrustedWorkflowExpression =
-  /\$\{\{\s*(?:github\.token|secrets\.[^}]+|(?:steps|needs)\.[^}]+\.outputs\.[^}]+)\s*\}\}/iu;
-const untrustedWorkflowEnvironmentExpression =
-  /\$\{\{\s*(?:github\.event\.[^}]+|github\.(?:head_ref|ref_name|actor|triggering_actor|token)|inputs\.[^}]+|secrets\.[^}]+)\s*\}\}/iu;
+  /\b(?:spawn|spawnSync|execFile|execFileSync|execSync|exec|Command\.new|Command::new|exec\.Command|ProcessBuilder|subprocess\.(?:run|Popen|call)|os\.system|system|shell_exec|proc_open|popen)\s*\([\s\S]{0,160}?['"](?:cargo|rustc|go|python(?:3(?:\.\d+)?)?|pip(?:3(?:\.\d+)?)?|pipenv|pdm|rye|hatch|uv|poetry|conda|mamba|pixi|composer|mvnw?|gradlew?|dotnet|nuget|msbuild|java|javac|ruby|bundle|perl|pytest|tox|make|just|task|deno|npm(?:\.cmd)?|npx(?:\.cmd)?|pnpm|yarn|bun|docker|podman|corepack)['"]/iu;
+const unsupportedToolchainShellCommand =
+  /\b(?:exec|execSync|os\.system|system|shell_exec|proc_open|popen|subprocess\.(?:run|Popen|call))\s*\(\s*['"]\s*(?:cargo|rustc|go|python(?:3(?:\.\d+)?)?|pip(?:3(?:\.\d+)?)?|pipenv|pdm|rye|hatch|uv|poetry|conda|mamba|pixi|composer|mvnw?|gradlew?|dotnet|nuget|msbuild|java|javac|ruby|bundle|perl|pytest|tox|make|just|task|deno|npm(?:\.cmd)?|npx(?:\.cmd)?|pnpm|yarn|bun|docker|podman|corepack)\b/iu;
+const npmResolutionSubcommands = new Set([
+  'add',
+  'create',
+  'exec',
+  'i',
+  'install',
+  'install-ci-test',
+  'install-test',
+  'link',
+  'update',
+  'upgrade',
+  'x'
+]);
+const npmKnownReadOnlySubcommands = new Set([
+  'audit',
+  'cache',
+  'config',
+  'doctor',
+  'fund',
+  'help',
+  'info',
+  'pack',
+  'ping',
+  'prefix',
+  'root',
+  'run',
+  'run-script',
+  'start',
+  'stop',
+  'restart',
+  'test',
+  'version',
+  'view',
+  'whoami'
+]);
+const npmOptionValueFlags = new Set([
+  '--cache',
+  '--globalconfig',
+  '--loglevel',
+  '--prefix',
+  '--registry',
+  '--script-shell',
+  '--userconfig',
+  '--workspace',
+  '-w'
+]);
+const npmBooleanFlags = new Set([
+  '--audit',
+  '--color',
+  '--foreground-scripts',
+  '--fund',
+  '--global',
+  '--ignore-scripts',
+  '--no-audit',
+  '--no-color',
+  '--no-fund',
+  '--no-progress',
+  '--offline',
+  '--prefer-offline',
+  '--progress',
+  '--workspaces'
+]);
+const npmExecutable = /(?:^|[\\/])?npm(?:\.cmd)?$/iu;
+const npxExecutable = /(?:^|[\\/])?npx(?:\.cmd)?$/iu;
+const untrustedWorkflowContext =
+  /\bgithub\s*(?:\.\s*(?:event|head_ref|ref|ref_name|actor|triggering_actor|token|workflow|job|action)\b|\[\s*['"]?(?:event|head_ref|ref|ref_name|actor|triggering_actor|token|workflow|job|action)['"]?\s*\])|\b(?:inputs|secrets)\s*(?:\.|\[)|\b(?:steps|needs)\s*(?:\.\s*[A-Za-z_][\w-]*\s*\.\s*outputs\b|\[\s*['"][A-Za-z_][\w-]*['"]\s*\]\s*\.\s*outputs\b)|\bmatrix\s*(?:\.|\[)/iu;
+const untrustedWorkflowEventContext =
+  /\bgithub\s*(?:\.\s*(?:event|head_ref|ref|ref_name|actor|triggering_actor)\b|\[\s*['"]?(?:event|head_ref|ref|ref_name|actor|triggering_actor)['"]?\s*\])|\binputs\s*(?:\.|\[)/iu;
+const untrustedWorkflowBracketContext =
+  /\bgithub\s*\[\s*['"](?:event|head_ref|ref|ref_name|actor|triggering_actor|token|workflow|job|action)['"]\s*\]|\b(?:steps|needs)\s*\[\s*['"][A-Za-z_][\w-]*['"]\s*\]\s*\.\s*outputs\b/iu;
+const untrustedWorkflowEventBracketContext =
+  /\bgithub\s*\[\s*['"](?:event|head_ref|ref|ref_name|actor|triggering_actor)['"]\s*\]/iu;
+const MAX_WORKFLOW_EXPRESSION_LENGTH = 4096;
+const MAX_WORKFLOW_EXPRESSION_CACHE_ENTRIES = 10_000;
+const MAX_WORKFLOW_EXPRESSION_SCAN_BYTES = 32 * 1024 * 1024;
+const MAX_WORKFLOW_RUN_STEPS = 10_000;
+const MAX_WORKFLOW_ENV_CHECKS = 100_000;
 
 function hasUnsupportedToolchainExecution(source) {
   return (
     unsupportedToolchainCommand.test(source) ||
-    unsupportedToolchainSpawn.test(source)
+    unsupportedToolchainSpawn.test(source) ||
+    unsupportedToolchainShellCommand.test(source)
   );
+}
+
+function hasDynamicShellCommandResolution(source) {
+  return (
+    /\balias\s+[^\s=]+\s*=/iu.test(source) ||
+    /(?:^|[;\n])\s*(?:function\s+)?[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)\s*\{/u.test(
+      source
+    ) ||
+    /\b(?:export\s+)?PATH\s*=/u.test(source) ||
+    /(?:^|[;&|])\s*(?:env|sudo|command|exec|nohup|time)\s+(?:(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]+)\s+)*(?:"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"?|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|\$\([^)]+\)|`[^`]+`)\s+/mu.test(
+      source
+    ) ||
+    /(?:^|[;&|])\s*(?:source|\.)\s+(?:"?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"?|\$\([^)]+\)|`[^`]+`)/mu.test(
+      source
+    ) ||
+    /\b(?:sh|bash|zsh|pwsh|powershell|cmd(?:\.exe)?)\s+(?:-[A-Za-z]+|\/[ck])\s+["']?\$(?:\{?[A-Za-z_][A-Za-z0-9_]*\}?|\()/iu.test(
+      source
+    ) ||
+    /(?:^|[;&|])\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|[^\s;&|]+)\s*)*)(?:"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"?|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|\$\([^)]+\)|`[^`]+`)\s+/mu.test(
+      source
+    )
+  );
+}
+
+function hasUnsafeNpmConfigEnvironment(environment) {
+  return Object.entries(environment).some(([name, value]) => {
+    const normalizedName = name.toLowerCase();
+    if (!normalizedName.startsWith('npm_config_')) return false;
+    if (normalizedName === 'npm_config_registry')
+      return value !== 'https://registry.npmjs.org/';
+    if (
+      normalizedName === 'npm_config_userconfig' ||
+      normalizedName === 'npm_config_globalconfig'
+    )
+      return value !== '/dev/null';
+    if (normalizedName === 'npm_config_cache') return false;
+    if (normalizedName === 'npm_config_ignore_scripts')
+      return !/^(?:true|1)$/iu.test(value);
+    return true;
+  });
+}
+
+function inspectWorkflowExpressions(source) {
+  let offset = 0;
+  let untrusted = false;
+  let eventDerived = false;
+  while (true) {
+    const start = source.indexOf('${{', offset);
+    if (start < 0) return { untrusted, eventDerived, malformed: false };
+    let cursor = start + 3;
+    let quoted = false;
+    let closed = false;
+    let expression = '';
+    let rawExpression = '';
+    while (
+      cursor < source.length &&
+      cursor - start <= MAX_WORKFLOW_EXPRESSION_LENGTH
+    ) {
+      const current = source[cursor] ?? '';
+      const next = source[cursor + 1] ?? '';
+      if (quoted) {
+        if (current === "'" && next === "'") {
+          expression += '  ';
+          rawExpression += "''";
+          cursor += 2;
+        } else if (current === "'") {
+          quoted = false;
+          expression += ' ';
+          rawExpression += current;
+          cursor++;
+        } else {
+          expression += ' ';
+          rawExpression += current;
+          cursor++;
+        }
+        continue;
+      }
+      if (current === "'") {
+        quoted = true;
+        expression += ' ';
+        rawExpression += current;
+        cursor++;
+      } else if (current === '}' && next === '}') {
+        closed = true;
+        break;
+      } else {
+        expression += current;
+        rawExpression += current;
+        cursor++;
+      }
+    }
+    if (!closed)
+      return { untrusted: true, eventDerived: true, malformed: true };
+    if (
+      untrustedWorkflowContext.test(expression) ||
+      untrustedWorkflowBracketContext.test(rawExpression)
+    )
+      untrusted = true;
+    if (
+      untrustedWorkflowEventContext.test(expression) ||
+      untrustedWorkflowEventBracketContext.test(rawExpression)
+    )
+      eventDerived = true;
+    offset = cursor + 2;
+  }
+}
+
+function commandMayLaunchChildProcess(command) {
+  return /\b(?:node(?:js)?|npm|npx|pnpm|yarn|bun|python(?:3(?:\.\d+)?)?|pip(?:3(?:\.\d+)?)?|uv|poetry|composer|ruby|bundle|perl|pytest|tox|make|just|task|cargo|rustc|go|mvnw?|gradlew?|java|javac|docker|podman|corepack|sh|bash|zsh|pwsh|powershell|cmd(?:\.exe)?|source|exec|env|xargs|git|gh|curl|wget|tar|unzip|zip|ssh|scp|rsync|jq|awk|sed|grep|find|cat|head|tail|kubectl|helm|terraform|tofu|cmake|gcc|clang)\b|(?:^|[;&|]\s*)\.\.?\/[^\s;&|]+/iu.test(
+    command
+  );
+}
+
+function npmCommands(command) {
+  const result = [];
+  const matcher = /(?:^|[\s;&|])((?:[^\s;&|]*[\\/])?npm(?:\.cmd)?)(?=\s|$)/giu;
+  let match;
+  while (true) {
+    match = matcher.exec(command);
+    if (!match) break;
+    const executable = match[1] ?? '';
+    if (!npmExecutable.test(executable)) continue;
+    const afterExecutable = matcher.lastIndex;
+    const separator = command.slice(afterExecutable).search(/[;&|]/u);
+    const rawArgs = command
+      .slice(
+        afterExecutable,
+        separator < 0 ? command.length : afterExecutable + separator
+      )
+      .trim();
+    const tokens =
+      rawArgs.match(/"(?:\\.|[^"\\])*"|'(?:''|[^'])*'|[^\s]+/gu) ?? [];
+    const args = tokens.map((token) =>
+      token
+        .replace(/^"([\s\S]*)"$/u, '$1')
+        .replace(/^'((?:''|[\s\S])*)'$/u, '$1')
+        .replaceAll("''", "'")
+        .replace(/\\(.)/gu, '$1')
+    );
+    const options = new Map();
+    let subcommand;
+    let index = 0;
+    while (index < args.length) {
+      const token = args[index] ?? '';
+      if (!token.startsWith('-')) {
+        subcommand = token.toLowerCase();
+        index++;
+        break;
+      }
+      const equals = token.indexOf('=');
+      const flag = equals < 0 ? token : token.slice(0, equals);
+      if (equals >= 0) {
+        options.set(flag, token.slice(equals + 1));
+        index++;
+      } else if (npmOptionValueFlags.has(flag)) {
+        if (index + 1 >= args.length) return [...result, { malformed: true }];
+        options.set(flag, args[index + 1] ?? '');
+        index += 2;
+      } else if (npmBooleanFlags.has(flag)) {
+        options.set(flag, true);
+        index++;
+      } else {
+        return [...result, { malformed: true }];
+      }
+    }
+    if (subcommand === 'ci' || subcommand === 'clean-install') {
+      while (index < args.length) {
+        const token = args[index] ?? '';
+        if (!token.startsWith('-')) {
+          options.set('__unexpected_argument__', true);
+          index++;
+          continue;
+        }
+        const equals = token.indexOf('=');
+        const flag = equals < 0 ? token : token.slice(0, equals);
+        if (equals >= 0) {
+          options.set(flag, token.slice(equals + 1));
+          index++;
+        } else if (npmOptionValueFlags.has(flag)) {
+          if (index + 1 >= args.length) return [...result, { malformed: true }];
+          options.set(flag, args[index + 1] ?? '');
+          index += 2;
+        } else {
+          options.set(flag, true);
+          index++;
+        }
+      }
+    }
+    result.push({ subcommand, options, args: args.slice(index) });
+  }
+  const npxMatcher =
+    /(?:^|[\s;&|])((?:[^\s;&|]*[\\/])?npx(?:\.cmd)?)(?=\s|$)/giu;
+  while (true) {
+    match = npxMatcher.exec(command);
+    if (!match) break;
+    if (npxExecutable.test(match[1] ?? '')) result.push({ subcommand: 'npx' });
+  }
+  return result;
+}
+
+function requiresUnverifiedNpmResolution(
+  command,
+  { cwd = '.', allowRootCi = false } = {}
+) {
+  if (/\bNPM_CONFIG_[A-Z0-9_]+\s*=/iu.test(command)) return true;
+  const invocations = npmCommands(command);
+  if (invocations.some((invocation) => invocation.malformed)) return true;
+  const normalizedCwd = path.posix.normalize(cwd.replaceAll('\\', '/'));
+  const allowedCiFlags = new Set([
+    '--globalconfig',
+    '--ignore-scripts',
+    '--no-audit',
+    '--no-fund',
+    '--no-progress',
+    '--offline',
+    '--prefer-offline',
+    '--registry',
+    '--userconfig'
+  ]);
+  for (const invocation of invocations) {
+    const { subcommand, options } = invocation;
+    if (!subcommand) return true;
+    if (subcommand === 'npx' || npmResolutionSubcommands.has(subcommand))
+      return true;
+    if (subcommand === 'init' && invocation.args.length > 0) return true;
+    if (subcommand === 'ci' || subcommand === 'clean-install') {
+      if (
+        !allowRootCi ||
+        normalizedCwd !== '.' ||
+        options.get('--ignore-scripts') !== true ||
+        /\b(?:cd|pushd|popd)\b/iu.test(command) ||
+        [...options.keys()].some((flag) => !allowedCiFlags.has(flag))
+      )
+        return true;
+      for (const [flag, value] of options) {
+        if (
+          (flag === '--registry' && value !== 'https://registry.npmjs.org/') ||
+          ((flag === '--userconfig' || flag === '--globalconfig') &&
+            value !== '/dev/null')
+        )
+          return true;
+      }
+      continue;
+    }
+    if (!npmKnownReadOnlySubcommands.has(subcommand)) return true;
+  }
+  return false;
 }
 const suspiciousProcessExecution =
   /\b(?:exec|execSync|spawn|spawnSync)\s*\([^\r\n)]{0,300}(?:curl|wget|https?:\/\/|atob|fromBase64)/iu;
@@ -2144,19 +2467,21 @@ export function inspectDependencyChanges(repo, baseSha, headSha, mergeSha) {
   const headTree = parseTree(
     git(repo, ['ls-tree', '-rz', '--full-tree', headSha])
   );
+  if (headTree.blobs.some((blob) => /(?:^|\/)\.npmrc$/iu.test(blob.path)))
+    reasons.push('unsupported-npm-registry-configuration');
   const unsupportedLockfiles = headTree.blobs
     .map((blob) => blob.path)
     .filter(
       (name) =>
         name !== 'package-lock.json' &&
-        /(?:^|\/)(?:package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$/iu.test(
+        /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|deno\.lock|pdm\.lock|uv\.lock|pixi\.lock|conda-lock\.ya?ml)$/iu.test(
           name
         )
     );
   if (unsupportedLockfiles.length > 0)
     reasons.push('unsupported-lockfile-format');
   const unsupportedEcosystemInputs = headTree.blobs.some((blob) =>
-    /(?:^|\/)(?:go\.mod|go\.sum|go\.work|go\.work\.sum|uv\.lock|poetry\.lock|Pipfile|Pipfile\.lock|requirements(?:-[^/]+)?\.txt|composer\.json|composer\.lock|pom\.xml|gradle\.lockfile|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?)$/iu.test(
+    /(?:^|\/)(?:go\.mod|go\.sum|go\.work|go\.work\.sum|vendor\/modules\.txt|\.cargo\/config(?:\.toml)?|uv\.(?:lock|toml)|pdm\.(?:lock|toml)|pixi\.(?:lock|toml)|conda-lock\.ya?ml|environment\.ya?ml|deno\.(?:jsonc?|lock)|poetry\.lock|Pipfile(?:\.lock)?|pyproject\.toml|setup\.(?:py|cfg)|requirements(?:-[^/]+)?\.(?:txt|in)|constraints(?:-[^/]+)?\.txt|Gemfile(?:\.lock)?|[^/]+\.gemspec|\.bundle\/config|composer\.json|composer\.lock|pom\.xml|\.mvn\/(?:extensions\.xml|maven\.config|wrapper\/maven-wrapper\.properties)|gradle\.lockfile|gradle\.properties|libs\.versions\.toml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?)$/iu.test(
       blob.path
     )
   );
@@ -2261,12 +2586,32 @@ function workflowRunCommands(source) {
     throw new Error('Malformed GitHub Actions workflow structure');
 
   const commands = [];
+  const expressionCache = new Map();
+  let expressionScanBytes = 0;
+  let runStepCount = 0;
+  let environmentCheckCount = 0;
+  const inspectExpressions = (value) => {
+    const cached = expressionCache.get(value);
+    if (cached) return cached;
+    expressionScanBytes += Buffer.byteLength(value, 'utf8');
+    if (expressionScanBytes > MAX_WORKFLOW_EXPRESSION_SCAN_BYTES)
+      throw new Error('Workflow expression analysis exceeds its byte budget');
+    const result = inspectWorkflowExpressions(value);
+    if (expressionCache.size < MAX_WORKFLOW_EXPRESSION_CACHE_ENTRIES)
+      expressionCache.set(value, result);
+    return result;
+  };
   const parseWorkflowEnv = (value, label) => {
     if (value === undefined) return {};
     if (!value || typeof value !== 'object' || Array.isArray(value))
       throw new Error(`Malformed GitHub Actions ${label} environment`);
     const env = {};
+    let count = 0;
     for (const [name, content] of Object.entries(value)) {
+      if (++count > MAX_WORKFLOW_ENV_CHECKS)
+        throw new Error(
+          `GitHub Actions ${label} environment exceeds its budget`
+        );
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name))
         throw new Error(`Malformed GitHub Actions ${label} environment`);
       if (
@@ -2299,8 +2644,20 @@ function workflowRunCommands(source) {
     if (jobDefault !== undefined && typeof jobDefault !== 'string')
       throw new Error('Malformed GitHub Actions default working directory');
     for (const step of steps) {
+      if (++runStepCount > MAX_WORKFLOW_RUN_STEPS)
+        throw new Error('GitHub Actions run-step count exceeds its budget');
       if (!step || typeof step !== 'object' || Array.isArray(step))
         throw new Error('Malformed GitHub Actions step structure');
+      if (step.uses !== undefined && typeof step.uses !== 'string')
+        throw new Error('Malformed GitHub Actions action reference');
+      if (step.uses?.startsWith('./') || step.uses?.startsWith('.\\'))
+        commands.push({
+          text: '',
+          cwd:
+            step['working-directory'] ?? jobDefault ?? workflowDefault ?? '.',
+          jobName,
+          localActionReference: true
+        });
       if (step.run === undefined) continue;
       if (typeof step.run !== 'string')
         throw new Error(
@@ -2314,20 +2671,51 @@ function workflowRunCommands(source) {
         throw new Error(
           'GitHub Actions run command is missing or not a scalar'
         );
-      const stepEnv = {
-        ...jobEnv,
-        ...parseWorkflowEnv(step.env, 'step')
-      };
-      const unsafeEnvironmentReference = Object.entries(stepEnv).some(
-        ([name, value]) =>
-          untrustedWorkflowEnvironmentExpression.test(value) &&
-          new RegExp(`\\b${name}\\b`, 'iu').test(text)
+      const stepSpecificEnv = parseWorkflowEnv(step.env, 'step');
+      environmentCheckCount +=
+        Object.keys(jobEnv).length + Object.keys(stepSpecificEnv).length;
+      if (environmentCheckCount > MAX_WORKFLOW_ENV_CHECKS)
+        throw new Error(
+          'GitHub Actions environment analysis exceeds its budget'
+        );
+      const stepEnv = { ...jobEnv, ...stepSpecificEnv };
+      const expressionSafety = inspectExpressions(text);
+      const hasNpmCommand = npmCommands(text).length > 0;
+      const unverifiedNpmEnvironment =
+        hasNpmCommand && hasUnsafeNpmConfigEnvironment(stepEnv);
+      const dynamicExecutableLookup = Object.keys(stepEnv).some((key) =>
+        ['PATH', 'PATHEXT', 'COMSPEC', 'SHELL'].includes(key.toUpperCase())
       );
+      const commandIdentifiers = new Set(
+        (text.match(/[A-Za-z_][A-Za-z0-9_]*/gu) ?? []).map((name) =>
+          name.toLowerCase()
+        )
+      );
+      const launchesChildProcess = commandMayLaunchChildProcess(text);
+      let unsafeEnvironmentReference = false;
+      let malformedEnvironmentReference = false;
+      for (const [name, value] of Object.entries(stepEnv)) {
+        const valueSafety = inspectExpressions(value);
+        if (!valueSafety.untrusted && !valueSafety.malformed) continue;
+        if (
+          !commandIdentifiers.has(name.toLowerCase()) &&
+          !launchesChildProcess
+        )
+          continue;
+        unsafeEnvironmentReference = true;
+        malformedEnvironmentReference ||= valueSafety.malformed;
+      }
       commands.push({
         text,
         cwd: stepDefault ?? jobDefault ?? workflowDefault ?? '.',
         jobName,
-        unsafeEnvironmentReference
+        unsafeEnvironmentReference,
+        untrustedExpression: expressionSafety.untrusted,
+        untrustedEventExpression: expressionSafety.eventDerived,
+        unverifiedNpmEnvironment,
+        dynamicExecutableLookup,
+        malformedExpression:
+          expressionSafety.malformed || malformedEnvironmentReference
       });
     }
   }
@@ -2726,6 +3114,14 @@ function scanText(name, text, incompleteReasons = []) {
           incompleteReasons.push(
             `unsupported-toolchain-execution:${name}#scripts.${script}`
           );
+        if (requiresUnverifiedNpmResolution(command))
+          incompleteReasons.push(
+            `unverified-npm-resolution:${name}#scripts.${script}`
+          );
+        if (hasDynamicShellCommandResolution(command))
+          incompleteReasons.push(
+            `dynamic-command-resolution:${name}#scripts.${script}`
+          );
       }
     }
     const tasksFile = name.endsWith('/tasks.json');
@@ -2765,6 +3161,18 @@ function scanText(name, text, incompleteReasons = []) {
               !['default', 'folderOpen'].includes(task.runOptions.runOn))))
       )
         throw new Error(`Malformed editor task command: ${name}`);
+      if (
+        task.options?.env !== undefined &&
+        (!task.options.env ||
+          typeof task.options.env !== 'object' ||
+          Array.isArray(task.options.env) ||
+          Object.entries(task.options.env).some(
+            ([name, value]) =>
+              !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(name) ||
+              typeof value !== 'string'
+          ))
+      )
+        throw new Error(`Malformed editor task environment: ${name}`);
       const command = [
         task.command,
         task.script,
@@ -2772,6 +3180,9 @@ function scanText(name, text, incompleteReasons = []) {
       ]
         .filter((part) => typeof part === 'string')
         .join(' ');
+      const folderOpenTask =
+        task.runOptions?.runOn === 'folderOpen' || task.runOn === 'folderOpen';
+      const taskEnvironment = task.options?.env ?? {};
       if (
         (task.runOptions?.runOn === 'folderOpen' ||
           task.runOn === 'folderOpen') &&
@@ -2786,26 +3197,63 @@ function scanText(name, text, incompleteReasons = []) {
         incompleteReasons.push(
           `unsupported-toolchain-execution:${name}#folderOpen`
         );
+      if (
+        (task.runOptions?.runOn === 'folderOpen' ||
+          task.runOn === 'folderOpen') &&
+        requiresUnverifiedNpmResolution(command)
+      )
+        incompleteReasons.push(`unverified-npm-resolution:${name}#folderOpen`);
+      if (
+        (task.runOptions?.runOn === 'folderOpen' ||
+          task.runOn === 'folderOpen') &&
+        hasDynamicShellCommandResolution(command)
+      )
+        incompleteReasons.push(`dynamic-command-resolution:${name}#folderOpen`);
+      if (
+        folderOpenTask &&
+        Object.keys(taskEnvironment).some((key) =>
+          ['PATH', 'PATHEXT', 'COMSPEC', 'SHELL'].includes(key.toUpperCase())
+        )
+      )
+        incompleteReasons.push(`dynamic-command-resolution:${name}#folderOpen`);
+      if (folderOpenTask && hasUnsafeNpmConfigEnvironment(taskEnvironment))
+        incompleteReasons.push(`unverified-npm-resolution:${name}#folderOpen`);
     }
   }
   if (/(?:^|\/)\.github\/workflows\/[^/]+\.ya?ml$/iu.test(name)) {
     const commands = workflowRunCommands(text);
-    if (
-      commands.some((command) =>
-        /\$\{\{\s*(?:github\.event\.[^}]+|github\.(?:head_ref|ref_name|actor|triggering_actor)|inputs\.[A-Za-z0-9_-]+)\s*\}\}/iu.test(
-          command.text
-        )
-      )
-    )
+    if (commands.some((command) => command.untrustedEventExpression))
       findings.push(`${name}#untrusted-event-shell-interpolation`);
     if (
       commands.some(
         (command) =>
-          command.unsafeEnvironmentReference ||
-          untrustedWorkflowExpression.test(command.text)
+          command.unsafeEnvironmentReference || command.untrustedExpression
       )
     )
       findings.push(`${name}#untrusted-shell-input`);
+    if (commands.some((command) => command.malformedExpression))
+      incompleteReasons.push(`workflow-expression-coverage-incomplete:${name}`);
+    if (commands.some((command) => command.localActionReference))
+      incompleteReasons.push(`local-action-execution-unverified:${name}`);
+    if (
+      commands.some(
+        (command) =>
+          command.unverifiedNpmEnvironment ||
+          requiresUnverifiedNpmResolution(command.text, {
+            cwd: command.cwd,
+            allowRootCi: true
+          })
+      )
+    )
+      incompleteReasons.push(`unverified-npm-resolution:${name}`);
+    if (
+      commands.some(
+        (command) =>
+          command.dynamicExecutableLookup ||
+          hasDynamicShellCommandResolution(command.text)
+      )
+    )
+      incompleteReasons.push(`dynamic-command-resolution:${name}`);
     if (
       commands.some((command) => hasUnsupportedToolchainExecution(command.text))
     )
@@ -2819,11 +3267,35 @@ function scanText(name, text, incompleteReasons = []) {
   );
   const markdown = /\.(?:md|mdx|markdown)$/iu.test(name);
   const shebang = /^\uFEFF?#!/u.test(text);
+  const shellExecutionSource =
+    /\.(?:sh|bash|ps1|psm1)$/iu.test(name) ||
+    /^\uFEFF?#![^\n]*(?:\b(?:bash|zsh|pwsh|powershell|sh)\b)/iu.test(text);
   const sourceSignature =
     /(?:^|\n)\s*(?:import\s|export\s|(?:const|let|var)\s+\w|(?:async\s+)?function\s+\w|(?:curl|wget|eval|exec|source|\.\s+)[^\n]*)/u.test(
       text
     );
   const executableText = sourceCode || shebang || sourceSignature;
+  if (shellExecutionSource) {
+    if (
+      requiresUnverifiedNpmResolution(text, {
+        cwd: '.',
+        allowRootCi: true
+      })
+    )
+      incompleteReasons.push(`unverified-npm-resolution:${name}`);
+    if (hasDynamicShellCommandResolution(text))
+      incompleteReasons.push(`dynamic-command-resolution:${name}`);
+    if (hasUnsupportedToolchainExecution(text))
+      incompleteReasons.push(`unsupported-toolchain-execution:${name}`);
+  }
+  if (path.posix.extname(name) === '') {
+    if (requiresUnverifiedNpmResolution(text))
+      incompleteReasons.push(`unverified-npm-resolution:${name}`);
+    if (hasDynamicShellCommandResolution(text))
+      incompleteReasons.push(`dynamic-command-resolution:${name}`);
+    if (hasUnsupportedToolchainExecution(text))
+      incompleteReasons.push(`unsupported-toolchain-execution:${name}`);
+  }
   const scanContent = executableText
     ? maskJavaScriptNonCode(text)
     : packageManifest
@@ -2840,7 +3312,10 @@ function scanText(name, text, incompleteReasons = []) {
     findings.push(name);
   if (
     (sourceCode || otherSourceCode) &&
-    unsupportedToolchainSpawn.test(sourceCode ? behaviorContent : text)
+    (unsupportedToolchainSpawn.test(sourceCode ? behaviorContent : text) ||
+      unsupportedToolchainShellCommand.test(
+        sourceCode ? behaviorContent : text
+      ))
   )
     incompleteReasons.push(`unsupported-toolchain-execution:${name}`);
   if (shebang && hasUnsupportedToolchainExecution(scanContent))
