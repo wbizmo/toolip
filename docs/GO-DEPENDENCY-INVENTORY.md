@@ -29,28 +29,61 @@ remain unknown and keep the analysis incomplete. `--offline` cannot be
 combined with Go tool execution.
 
 Vendored modules use the exact versions recorded in `vendor/modules.txt`, but
-retain an explicit content-integrity warning because that manifest and the
-checked-in source tree do not prove the checksum of the original module
-archive.
+are reconciled against all captured workspace `go.mod` requirements. A selected
+vendor version below a declared requirement, an explicitly excluded version,
+an ambiguous duplicate module path, or an unmatched requirement is incomplete;
+local and remote replacement identities remain unknown. `vendor/modules.txt`
+package paths are checked against vendored file directories, and vendored
+imports are selected from the captured source snapshot. These checks do not
+prove that the vendor files match the original module archive. Vendor artifact
+integrity is therefore `unavailable`, not verified, and the inventory keeps an
+explicit content-integrity warning. A matching captured `go.sum` archive hash
+is carried as `declared-not-verified`; absent or conflicting hashes remain
+unavailable. Offline inventory does not authenticate `go.sum` against the
+checksum database or hash vendored files against an upstream archive.
 
 Both `go.mod` and `go.work` replacement directives are recognized. In the
 opt-in MVS path, a remote replacement is queried under its actual module path
 and version only after its checksum is verified; local or unresolved
 replacement targets remain `unknown` and are withheld from public OSV queries.
-Workspace paths that escape the project are rejected. Import files with build
-constraints are retained as incomplete because static inventory does not
-select the active GOOS, GOARCH, or build-tag configuration.
+Workspace paths that escape the project are rejected. Use
+`toolip scan --go-target '<json>'` or `toolip sbom --go-target '<json>'` to
+select one target. The bounded JSON profile requires `id`, `goos`, `goarch`,
+and `cgo`; it optionally accepts `goVersion` and up to 128 custom `tags`,
+including explicit architecture-feature levels such as `amd64.v3`. The
+serialized profile is limited to 4 KiB. For example:
+
+```sh
+toolip scan --go-target '{"id":"linux-amd64-go124","goos":"linux","goarch":"amd64","cgo":false,"goVersion":"1.24","tags":["enterprise"]}'
+```
+
+The scanner selects GOOS/GOARCH filename suffixes, `//go:build` expressions,
+legacy `// +build` lines, cgo/custom tags, and known OS implications. Go release
+tags require a supplied Go version. Architecture-feature constraints without a
+declared feature level remain unknown. Test-only `*_test.go` imports are not
+runtime edges. Missing targets, unsupported expressions and contradictory
+modern/legacy constraints leave the source graph incomplete. A target ID is
+included on selected dependency identities and edges; Toolip does not union
+Windows, macOS and Linux imports into one target graph.
 
 Strict offline scans perform no Go command or network access. Tool execution
 is an explicit user choice and may disclose public module paths to the official
 Go proxy and checksum database. These limits are visible in inventory warnings
 and must not be interpreted as a complete vulnerability result.
 
-For `F` captured Go source files, `B` source bytes, `P` resolved module
-instances and `E` import edges, vendored source parsing is bounded by configured
-file and byte limits and uses indexed module-prefix matching. It runs in
-`O(B + F log F + E log P)` time and `O(F + P + E + B)` peak additional space,
-including sorted file/module indexes and the bounded captured source text.
+For `F` captured Go source files, `B` source bytes, `P` manifest package paths,
+`M` module instances and `E` import edges, vendored parsing is bounded by file
+and byte limits. Sorting costs `O(F log F + M log M)`; path-trie indexing and
+package-directory construction cost `O(B + F + P + M)`. Import ownership uses
+longest-prefix lookup over path segments and graph output sorting costs
+`O(E log E)`, giving `O(B + F log F + M log M + P + E log E)` time. Peak
+additional space is `O(F + P + M + E)` for sorted paths, directory/module
+indexes, manifest entries and edges; source text is read one file at a time
+under the existing per-file and total-byte limits. Target profiles are at most
+4 KiB, with at most 128 custom tags; build expressions are at most 4 KiB/512
+tokens and are evaluated only for captured source files. The manifest-to-file
+check uses a directory set, avoiding a repeated full vendor-file scan per
+manifest package.
 
 The explicit MVS path copies at most 5,000 metadata files and 32 MiB, accepts
 at most 16 MiB of output per Go command, and gives the isolated Go process a

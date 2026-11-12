@@ -8,6 +8,7 @@ import { OsvClient } from '../../src/providers/osv/client.js';
 import { ExploitIntelClient } from '../../src/providers/exploit-intel/client.js';
 import { AdvisorySnapshotCache } from '../../src/providers/intelligence/snapshot-cache.js';
 import { MemoryCache } from '../../src/storage/memory-cache.js';
+import { parsePythonTargetProfile } from '../../src/core/dependencies/python-target.js';
 
 function publicNpmSource(name: string, version: string) {
   const tail = name.split('/').at(-1) ?? name;
@@ -553,6 +554,186 @@ describe('OsvVulnerabilityAnalyzer', () => {
       expect(result.coverage?.state).not.toBe('complete');
       expect(result.warnings).toContain(
         'dependency-graph:dependency-resolution-provenance-unknown:PyPI'
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('withholds Pipenv packages from private-index OSV queries without leaking credentials', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-osv-pipfile-private-')
+    );
+    let queryCount = 0;
+    try {
+      await writeFile(
+        path.join(root, 'Pipfile'),
+        [
+          '[[source]]',
+          'name = "internal"',
+          'url = "https://user:token-should-not-leak@packages.example.test/simple"',
+          'verify_ssl = true',
+          '',
+          '[[source]]',
+          'name = "pypi"',
+          'url = "https://pypi.org/simple"',
+          'verify_ssl = true',
+          '',
+          '[packages]',
+          'internal_pkg = "==1.2.3"',
+          'git_pkg = { version = "==2.0.0", git = "https://user:token-should-not-leak@git.example.test/team/private.git", ref = "main" }',
+          'path_pkg = { version = "==3.0.0", path = "../private/path-pkg", editable = true }',
+          'spoofed_pkg = { version = "==4.0.0", git = "https://user:token-should-not-leak@git.example.test/team/spoofed.git", ref = "main" }'
+        ].join('\n')
+      );
+      await writeFile(
+        path.join(root, 'Pipfile.lock'),
+        JSON.stringify({
+          _meta: {
+            sources: [
+              {
+                name: 'internal',
+                url: 'https://user:token-should-not-leak@packages.example.test/simple',
+                verify_ssl: true
+              },
+              { name: 'pypi', url: 'https://pypi.org/simple', verify_ssl: true }
+            ]
+          },
+          default: {
+            internal_pkg: {
+              version: '==1.2.3',
+              index: 'internal',
+              hashes: [`sha256:${'a'.repeat(64)}`]
+            },
+            git_pkg: {
+              version: '==2.0.0',
+              index: 'pypi',
+              git: 'https://user:token-should-not-leak@git.example.test/team/private.git',
+              ref: 'main',
+              hashes: [`sha256:${'b'.repeat(64)}`]
+            },
+            path_pkg: {
+              version: '==3.0.0',
+              index: 'pypi',
+              hashes: [`sha256:${'c'.repeat(64)}`]
+            },
+            spoofed_pkg: {
+              version: '==4.0.0',
+              index: 'pypi',
+              hashes: [`sha256:${'d'.repeat(64)}`]
+            }
+          }
+        })
+      );
+      const client = new OsvClient({
+        fetchImplementation: async () => {
+          queryCount++;
+          return new Response(JSON.stringify({ results: [] }), { status: 200 });
+        }
+      });
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({
+        root
+      });
+      expect(queryCount).toBe(0);
+      expect(result.coverage?.state).not.toBe('complete');
+      expect(result.warnings).toContain(
+        'dependency-graph:dependency-resolution-provenance-unknown:PyPI'
+      );
+      expect(JSON.stringify(result)).not.toContain('token-should-not-leak');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('queries only the Python lock variants selected by the explicit target', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-osv-python-target-')
+    );
+    const queries: string[] = [];
+    try {
+      await writeFile(
+        path.join(root, 'Pipfile'),
+        [
+          '[[source]]',
+          'name = "pypi"',
+          'url = "https://pypi.org/simple"',
+          'verify_ssl = true',
+          '',
+          '[packages]',
+          `linux_pkg = { version = "==1.2.3", markers = "sys_platform == 'linux'", index = "pypi" }`,
+          `windows_pkg = { version = "==4.5.6", markers = "sys_platform == 'win32'", index = "pypi" }`
+        ].join('\n')
+      );
+      await writeFile(
+        path.join(root, 'Pipfile.lock'),
+        JSON.stringify({
+          _meta: {
+            sources: [
+              { name: 'pypi', url: 'https://pypi.org/simple', verify_ssl: true }
+            ]
+          },
+          default: {
+            linux_pkg: {
+              version: '==1.2.3',
+              index: 'pypi',
+              markers: "sys_platform == 'linux'",
+              hashes: [`sha256:${'a'.repeat(64)}`]
+            },
+            windows_pkg: {
+              version: '==4.5.6',
+              index: 'pypi',
+              markers: "sys_platform == 'win32'",
+              hashes: [`sha256:${'b'.repeat(64)}`]
+            }
+          },
+          develop: {}
+        })
+      );
+      const client = new OsvClient({
+        fetchImplementation: async (_input, init) => {
+          const body = JSON.parse(String(init?.body)) as {
+            queries: Array<{
+              package: { ecosystem: string; name: string };
+              version: string;
+            }>;
+          };
+          queries.push(
+            ...body.queries.map(
+              ({ package: pkg, version }) =>
+                `${pkg.ecosystem}:${pkg.name}@${version}`
+            )
+          );
+          return new Response(
+            JSON.stringify({ results: body.queries.map(() => ({})) }),
+            { status: 200 }
+          );
+        }
+      });
+      const target = parsePythonTargetProfile({
+        id: 'py311-linux',
+        environment: {
+          implementation_name: 'cpython',
+          implementation_version: '3.11.9',
+          os_name: 'posix',
+          platform_machine: 'x86_64',
+          platform_python_implementation: 'CPython',
+          platform_release: '6.8.0',
+          platform_system: 'Linux',
+          platform_version: 'test-release',
+          python_full_version: '3.11.9',
+          python_version: '3.11',
+          sys_platform: 'linux'
+        }
+      });
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({
+        root,
+        options: { pythonTarget: target }
+      });
+
+      expect(queries).toEqual(['PyPI:linux-pkg@1.2.3']);
+      expect(result.coverage?.state).toBe('partial');
+      expect(result.warnings).toContain(
+        'dependency-graph:pipfile-lock-transitive-edges-unresolved'
       );
     } finally {
       await rm(root, { recursive: true, force: true });

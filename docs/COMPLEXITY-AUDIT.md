@@ -412,15 +412,40 @@ the total work is `O(sum(K_i log K_i))` over all `P` records, with `O(P + D)`
 retained identity/fingerprint space and `O(max K_i)` temporary fingerprint
 storage. Conflicting checksums, dependency edges or normalized resolution
 confidence/context mark the package unknown and remove its trusted integrity
-field. Python marker syntax is parsed
-under a 1,024-character, 256-token and depth-32 limit; the current tokenizer's
-bounded suffix matching has an `O(L^2)` worst-case character-copy bound per
-marker for `L <= 1,024`. The grammar requires PEP 508 whitespace around binary
-comparisons and boolean operators and rejects nonstandard `=` comparisons.
-This validates marker syntax but does not evaluate the expression against a
-target Python/OS matrix; those variants remain retained
-as explicit lock contexts or incomplete coverage. These changes have focused
-regressions; the full ecosystem/platform matrix remains open.
+field. Python marker syntax is parsed under a 1,024-character, 256-token and
+depth-32 limit; bounded suffix matching has an `O(L^2)` worst-case
+character-copy bound per marker for `L <= 1,024`. Evaluation uses a bounded
+target profile (4 KiB JSON, 11 environment values, at most 64 extras), parses
+each expression once per evaluation and evaluates it for at most 64 selected
+extras. For `Q` marker expressions, AST nodes `N <= 256`, and string-comparison
+length `C <= 1,024`, worst-case target work is `O(sum(L_i^2) + 64·Q·N·C)` and
+peak parser space is `O(L + N + 64)` per marker. Dependency matching retains
+the existing 250,000 candidate-work budget; package/context/edge indexing is
+`O(P + D)` for `P` identities and `D` declarations/edges, with `O(P + D)`
+retained graph space. PEP 440 parsing intentionally returns unknown for
+unsupported or out-of-safe-integer versions. The grammar requires PEP 508
+whitespace around binary comparisons and boolean operators and rejects
+nonstandard `=` comparisons. Unsupported dependency-group context and
+unselected target variants remain incomplete.
+
+Go vendor resolution builds one exact directory set for vendored files and one
+module-path trie, rather than scanning all vendor paths for each manifest
+package. For `F` Go files, source bytes `B`, `P` manifest package paths, `M`
+module instances, `R` `go.mod` requirements, `Q` checksum records and `E` import
+edges, sorting costs `O(F log F + M log M)`, package-directory, requirement
+and checksum indexing costs `O(F + P + M + R + Q)`, and import lookup plus
+final edge sorting costs `O(B + E log E)`. Build-directive parsing has a
+bounded `O(F·L²)` suffix-copy worst case for directive length `L <= 4 KiB`; AST
+evaluation adds `O(F·N·T)` with at most 512 nodes `N` and 128 target tags `T`.
+Total time is `O(B + F log F + M log M + P + R + Q + F·L² + F·N·T +
+E log E)`. Build-expression tokens are capped at 512 per source file and the
+target profile at 4 KiB/128 custom tags. Peak additional space is
+`O(F + P + M + R + Q + E + L)`, where `L` is the largest one-file source buffer;
+the snapshot's captured file bytes remain owned by the caller. `go.mod` and
+vendor reconciliation checks selected versions against requirements, explicit
+exclusions, duplicate module paths and package-directory membership. Vendored
+archive identity remains `unavailable`; a manifest and file-path match are not
+a cryptographic content proof.
 
 ### Batch 08: license analysis, SBOM identity, and frozen upgrade installs (2026-11-09)
 

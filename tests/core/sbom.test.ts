@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -11,6 +11,7 @@ import {
 } from '@cyclonedx/cyclonedx-library';
 import { generateSbom } from '../../src/core/sbom/generate.js';
 import { npmPurl } from '../../src/core/sbom/generate.js';
+import { parsePythonTargetProfile } from '../../src/core/dependencies/python-target.js';
 import {
   npmProvenanceIdentityDigest,
   parseNpmProvenancePolicy
@@ -553,7 +554,12 @@ describe('SBOM generation', () => {
       await writeFile(
         path.join(root, 'Pipfile.lock'),
         JSON.stringify({
-          _meta: { requires: { python_version: '3.12' } },
+          _meta: {
+            requires: { python_version: '3.12' },
+            sources: [
+              { name: 'pypi', url: 'https://pypi.org/simple', verify_ssl: true }
+            ]
+          },
           default: {
             'My_Package.Name': { version: '==1.2.3' }
           },
@@ -726,6 +732,103 @@ describe('SBOM generation', () => {
           })
         ])
       });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('records the selected Python target and declared-only package hashes', async () => {
+    const root = await fixture();
+    try {
+      await writeFile(
+        path.join(root, 'requirements.txt'),
+        [
+          '--index-url https://pypi.org/simple',
+          `sample-pkg==1.2.3 ; python_version < "3.12" --hash=sha256:${'a'.repeat(64)}`
+        ].join('\n')
+      );
+      const target = parsePythonTargetProfile({
+        id: 'py311-linux',
+        environment: {
+          implementation_name: 'cpython',
+          implementation_version: '3.11.9',
+          os_name: 'posix',
+          platform_machine: 'x86_64',
+          platform_python_implementation: 'CPython',
+          platform_release: '6.8.0',
+          platform_system: 'Linux',
+          platform_version: 'test-release',
+          python_full_version: '3.11.9',
+          python_version: '3.11',
+          sys_platform: 'linux'
+        }
+      });
+      const document = await generateSbom(root, 'cyclonedx', {
+        pythonTarget: target
+      });
+      await expectValidCycloneDx(document);
+      expect(document.components).toContainEqual(
+        expect.objectContaining({
+          name: 'sample-pkg',
+          version: '1.2.3',
+          properties: expect.arrayContaining([
+            {
+              name: 'toolip:resolutionTarget',
+              value: 'py311-linux'
+            },
+            {
+              name: 'toolip:artifactIntegrityStatus',
+              value: 'declared-not-verified'
+            }
+          ])
+        })
+      );
+
+      const spdx = await generateSbom(root, 'spdx', {
+        pythonTarget: target
+      });
+      expectValidSpdx(spdx);
+      expect(spdx.packages).toContainEqual(
+        expect.objectContaining({
+          name: 'sample-pkg',
+          sourceInfo: expect.stringContaining('resolution target: py311-linux')
+        })
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('records unavailable vendored Go artifact integrity without upgrading it to verified', async () => {
+    const root = await fixture();
+    try {
+      await writeFile(
+        path.join(root, 'go.mod'),
+        'module example.test/app\ngo 1.24.0\nrequire example.test/lib v1.2.3\n'
+      );
+      await mkdir(path.join(root, 'vendor'), { recursive: true });
+      await writeFile(
+        path.join(root, 'vendor', 'modules.txt'),
+        [
+          '# example.test/lib v1.2.3',
+          '## explicit; go 1.24.0',
+          'example.test/lib/pkg'
+        ].join('\n')
+      );
+      const document = await generateSbom(root, 'cyclonedx');
+      await expectValidCycloneDx(document);
+      expect(document.components).toContainEqual(
+        expect.objectContaining({
+          name: 'example.test/lib',
+          version: 'v1.2.3',
+          properties: expect.arrayContaining([
+            {
+              name: 'toolip:artifactIntegrityStatus',
+              value: 'unavailable'
+            }
+          ])
+        })
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }

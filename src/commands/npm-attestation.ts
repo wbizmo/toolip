@@ -43,7 +43,9 @@ async function readBoundedRegularFile(
     named.size === 0n ||
     named.size > BigInt(maximumBytes)
   )
-    throw new Error(`${description} must be a bounded regular non-symlink file.`);
+    throw new Error(
+      `${description} must be a bounded regular non-symlink file.`
+    );
 
   const handle = await open(
     absolute,
@@ -87,7 +89,10 @@ async function readBoundedRegularFile(
   }
 }
 
-async function createBundleFile(filePath: string, bundle: unknown): Promise<void> {
+async function createBundleFile(
+  filePath: string,
+  bundle: unknown
+): Promise<void> {
   const bytes = Buffer.from(`${JSON.stringify(bundle)}\n`, 'utf8');
   if (bytes.length > maximumBundleBytes)
     throw new Error('Generated npm attestation bundle exceeds 16 MiB.');
@@ -180,8 +185,14 @@ export function registerNpmAttestationCommand(program: Command): void {
       'Verify an exact tarball and bundle against explicit Sigstore and source identities.'
     )
     .requiredOption('--tarball <file>', 'Exact npm .tgz file to verify.')
-    .requiredOption('--bundle <file>', 'Sigstore bundle created for this tarball.')
-    .requiredOption('--certificate-issuer <url>', 'Expected OIDC certificate issuer.')
+    .requiredOption(
+      '--bundle <file>',
+      'Sigstore bundle created for this tarball.'
+    )
+    .requiredOption(
+      '--certificate-issuer <url>',
+      'Expected OIDC certificate issuer.'
+    )
     .requiredOption(
       '--certificate-identity <uri>',
       'Expected exact OIDC certificate identity URI.'

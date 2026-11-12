@@ -34,6 +34,8 @@ import {
   readNpmProvenancePolicy,
   type NpmProvenancePolicy
 } from '../providers/npm/provenance.js';
+import { parsePythonTargetProfileJson } from '../core/dependencies/python-target.js';
+import { parseGoTargetProfileJson } from '../core/dependencies/go-target.js';
 
 export function registerScanCommand(program: Command): void {
   program
@@ -94,6 +96,14 @@ export function registerScanCommand(program: Command): void {
     .option(
       '--allow-go-tool-execution',
       'Explicitly run go list/go mod graph on the captured metadata; may query proxy.golang.org and sum.golang.org. Project source is never built or imported.'
+    )
+    .option(
+      '--python-target <json>',
+      'Resolve Python markers for one explicit target JSON profile; without it platform-dependent Python packages remain unknown.'
+    )
+    .option(
+      '--go-target <json>',
+      'Select one GOOS/GOARCH target profile for vendor source import resolution.'
     )
     .option(
       '--package-health',
@@ -162,6 +172,8 @@ export function registerScanCommand(program: Command): void {
         failOnIncomplete?: boolean;
         offline?: boolean;
         allowGoToolExecution?: boolean;
+        pythonTarget?: string;
+        goTarget?: string;
         packageHealth?: boolean;
         licenses?: boolean;
         allowPublicScope?: boolean;
@@ -356,6 +368,12 @@ export function registerScanCommand(program: Command): void {
             cache: snapshot,
             offline: options.offline,
             allowGoToolExecution: options.allowGoToolExecution,
+            pythonTarget: options.pythonTarget
+              ? parsePythonTargetProfileJson(options.pythonTarget)
+              : undefined,
+            goTarget: options.goTarget
+              ? parseGoTargetProfileJson(options.goTarget)
+              : undefined,
             includePackageHealth: options.packageHealth,
             includeLicenseAnalysis: options.licenses,
             rulePacks: rulePack ? [rulePack] : undefined,

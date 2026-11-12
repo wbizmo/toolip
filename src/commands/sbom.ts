@@ -15,6 +15,8 @@ import {
 } from '../application/project-snapshot.js';
 import { generateSbom, type SbomFormat } from '../core/sbom/generate.js';
 import type { GoCommandRunner } from '../core/dependencies/go-module-graph.js';
+import { parsePythonTargetProfileJson } from '../core/dependencies/python-target.js';
+import { parseGoTargetProfileJson } from '../core/dependencies/go-target.js';
 import { readNpmProvenancePolicy } from '../providers/npm/provenance.js';
 import {
   readEvidenceTrustStore,
@@ -30,6 +32,8 @@ type SbomOptions = {
   projectId?: string;
   attestationOutput?: string;
   allowGoToolExecution?: boolean;
+  pythonTarget?: string;
+  goTarget?: string;
   allowPublicScope?: boolean;
   npmProvenancePolicy?: string;
   goCommandRunner?: GoCommandRunner;
@@ -89,6 +93,14 @@ export function registerSbomCommand(program: Command): void {
     .option(
       '--allow-go-tool-execution',
       'Explicitly run Go module graph commands on the captured metadata; may query proxy.golang.org and sum.golang.org.'
+    )
+    .option(
+      '--python-target <json>',
+      'Resolve Python markers for one explicit target JSON profile; without it platform-dependent Python packages remain unknown.'
+    )
+    .option(
+      '--go-target <json>',
+      'Select one GOOS/GOARCH target profile for vendor source import resolution.'
     )
     .option(
       '--allow-public-scope',
@@ -151,6 +163,12 @@ export function registerSbomCommand(program: Command): void {
       const document = await generateSbom(snapshot.root, options.format, {
         fileSource: dependencyFileSourceFromSnapshot(snapshot),
         allowGoToolExecution: options.allowGoToolExecution,
+        pythonTarget: options.pythonTarget
+          ? parsePythonTargetProfileJson(options.pythonTarget)
+          : undefined,
+        goTarget: options.goTarget
+          ? parseGoTargetProfileJson(options.goTarget)
+          : undefined,
         allowPublicScope: options.allowPublicScope,
         npmProvenancePolicy,
         goCommandRunner: options.goCommandRunner

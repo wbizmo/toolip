@@ -15,6 +15,19 @@ import {
   parseGoModuleJsonStream,
   type GoCommandRunner
 } from './go-module-graph.js';
+import {
+  evaluatePythonMarkerExpression,
+  normalizePythonExtra,
+  parsePythonMarkerExpression,
+  parsePythonTargetProfile,
+  pythonVersionSatisfies,
+  type PythonTargetProfile
+} from './python-target.js';
+import {
+  goSourceFileMatchesTarget,
+  parseGoTargetProfile,
+  type GoTargetProfile
+} from './go-target.js';
 
 type LockedPackage = {
   name: string;
@@ -31,6 +44,8 @@ type LockedPackage = {
   packageType?: string;
   module?: string;
   resolutionContext?: string;
+  resolutionTarget?: string;
+  artifactIntegrityStatus?: DependencyIdentity['artifactIntegrityStatus'];
   declaredFeatures?: string[];
   dependencies?: Array<{
     name: string;
@@ -87,6 +102,12 @@ function identity(item: LockedPackage): DependencyIdentity {
     ...(item.resolutionContext
       ? { resolutionContext: item.resolutionContext }
       : {}),
+    ...(item.resolutionTarget
+      ? { resolutionTarget: item.resolutionTarget }
+      : {}),
+    ...(item.artifactIntegrityStatus
+      ? { artifactIntegrityStatus: item.artifactIntegrityStatus }
+      : {}),
     ...(item.declaredFeatures?.length
       ? { declaredFeatures: [...item.declaredFeatures].sort() }
       : {}),
@@ -109,6 +130,10 @@ export type OtherEcosystemInventoryOptions = {
   signal?: AbortSignal;
   /** Injectable process boundary for deterministic integration tests. */
   goCommandRunner?: GoCommandRunner;
+  /** Resolve one exact Python marker/extras graph for this target. */
+  pythonTarget?: PythonTargetProfile;
+  /** Resolve vendored source imports for one explicit GOOS/GOARCH target. */
+  goTarget?: GoTargetProfile;
 };
 
 function exact(value: unknown): value is string {
@@ -119,10 +144,18 @@ function exact(value: unknown): value is string {
   );
 }
 
+function validPythonPackageName(value: string): boolean {
+  return (
+    value.length <= 256 &&
+    /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/u.test(value)
+  );
+}
+
 function fromJsonLock(
   value: unknown,
   ecosystem: LockedPackage['ecosystem'],
-  source: string
+  source: string,
+  warnings: string[]
 ): LockedPackage[] {
   if (!value || typeof value !== 'object') return [];
   const record = value as Record<string, unknown>;
@@ -132,18 +165,48 @@ function fromJsonLock(
       const entries = record[section];
       if (!entries || typeof entries !== 'object') continue;
       for (const [name, raw] of Object.entries(entries)) {
-        const version =
-          raw && typeof raw === 'object'
-            ? (raw as Record<string, unknown>).version
-            : undefined;
-        if (typeof version === 'string' && /^==?\d[^,;\s]*$/u.test(version))
-          output.push({
-            name: canonicalPythonName(name),
-            version: version.replace(/^==?/u, ''),
-            ecosystem,
-            source,
-            development: section === 'develop'
-          });
+        const pkg = asRecord(raw);
+        const version = pkg?.version;
+        if (
+          !validPythonPackageName(name) ||
+          !pkg ||
+          typeof version !== 'string' ||
+          !/^==?\d[^,;\s]*$/u.test(version) ||
+          pythonVersionSatisfies(version.replace(/^==?/u, ''), '*') !== true
+        ) {
+          warnings.push('pipfile-lock-package-unresolved');
+          continue;
+        }
+        const registry = pipfileLockRegistry(record, pkg, warnings);
+        const hashes = pipfileLockHashes(pkg, warnings);
+        const marker =
+          typeof pkg.markers === 'string' ? pkg.markers : undefined;
+        const markerValid =
+          pkg.markers === undefined ||
+          (marker !== undefined && validPythonMarkerExpression(marker));
+        if (!markerValid) warnings.push('pipfile-lock-marker-invalid');
+        const resolutionConfidence =
+          registry.confidence === 'unknown' || !hashes.valid || !markerValid
+            ? 'unknown'
+            : 'lockfile';
+        const contextFields = {
+          ...(markerValid && marker ? { markers: [marker] } : {}),
+          ...(hashes.values.length > 0 ? { hashes: hashes.values } : {})
+        };
+        output.push({
+          name: canonicalPythonName(name),
+          version: version.replace(/^==?/u, ''),
+          ecosystem,
+          source: registry.source,
+          resolutionConfidence,
+          development: section === 'develop',
+          artifactIntegrityStatus:
+            hashes.values.length > 0 ? 'declared-not-verified' : 'unavailable',
+          ...(Object.keys(contextFields).length > 0
+            ? { resolutionContext: JSON.stringify(contextFields) }
+            : {}),
+          installPath: `Pipfile.lock:${section}:${canonicalPythonName(name)}@${version.replace(/^==?/u, '')}${marker ? `:marker-${createHash('sha256').update(marker).digest('hex').slice(0, 16)}` : ''}`
+        });
       }
     }
     return output;
@@ -234,6 +297,107 @@ function fromJsonLock(
     return output;
   }
   return [];
+}
+
+function pipfileLockRegistry(
+  lock: Record<string, unknown>,
+  pkg: Record<string, unknown>,
+  warnings: string[]
+): { source: string; confidence: 'lockfile' | 'unknown' } {
+  const supportedFields = new Set([
+    'version',
+    'hashes',
+    'markers',
+    'extras',
+    'index',
+    'git',
+    'ref',
+    'path',
+    'file',
+    'editable',
+    'subdirectory',
+    'url'
+  ]);
+  if (
+    Object.keys(pkg).some((key) => !supportedFields.has(key)) ||
+    ['git', 'ref', 'path', 'file', 'editable', 'subdirectory', 'url'].some(
+      (key) => pkg[key] !== undefined
+    )
+  ) {
+    warnings.push('pipfile-lock-source-unverified');
+    return { source: 'Pipfile.lock:source-unverified', confidence: 'unknown' };
+  }
+  const metadata = asRecord(lock._meta);
+  const sources = Array.isArray(metadata?.sources)
+    ? metadata.sources.map(asRecord).filter((source) => source !== undefined)
+    : [];
+  const selectedName = typeof pkg.index === 'string' ? pkg.index : undefined;
+  if (pkg.index !== undefined && typeof pkg.index !== 'string') {
+    warnings.push('pipfile-lock-source-unresolved');
+    return { source: 'Pipfile.lock:source-unverified', confidence: 'unknown' };
+  }
+  const selected = selectedName
+    ? sources.filter((source) => source?.name === selectedName)
+    : sources.length === 1
+      ? sources
+      : [];
+  if (selected.length !== 1 || typeof selected[0]?.url !== 'string') {
+    warnings.push('pipfile-lock-source-unresolved');
+    return { source: 'Pipfile.lock:source-unverified', confidence: 'unknown' };
+  }
+  const rawUrl = selected[0].url;
+  if (isTrustedPipfilePypiSource(selected[0]))
+    return { source: 'Pipfile.lock:pypi', confidence: 'lockfile' };
+  const digest = createHash('sha256').update(rawUrl).digest('hex').slice(0, 16);
+  warnings.push('pipfile-lock-source-unverified');
+  return {
+    source: `Pipfile.lock:source-unverified:${digest}`,
+    confidence: 'unknown'
+  };
+}
+
+function isTrustedPipfilePypiSource(source: Record<string, unknown>): boolean {
+  if (typeof source.url !== 'string' || source.verify_ssl !== true)
+    return false;
+  try {
+    const url = new URL(source.url);
+    return (
+      url.protocol === 'https:' &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash &&
+      url.hostname === 'pypi.org' &&
+      /^\/(?:simple|pypi)(?:\/|$)/u.test(url.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function pipfileLockHashes(
+  pkg: Record<string, unknown>,
+  warnings: string[]
+): { values: string[]; valid: boolean } {
+  if (pkg.hashes === undefined) return { values: [], valid: true };
+  if (
+    !Array.isArray(pkg.hashes) ||
+    pkg.hashes.length === 0 ||
+    pkg.hashes.length > 32 ||
+    pkg.hashes.some(
+      (value) =>
+        typeof value !== 'string' || !/^sha256:[a-f0-9]{64}$/iu.test(value)
+    )
+  ) {
+    warnings.push('pipfile-lock-hash-invalid');
+    return { values: [], valid: false };
+  }
+  return {
+    values: [...new Set(pkg.hashes as string[])]
+      .map((hash) => hash.toLowerCase())
+      .sort(),
+    valid: true
+  };
 }
 
 function fromTomlLock(
@@ -346,9 +510,11 @@ function fromTomlLock(
     const version = pkg?.version;
     if (
       typeof packageName !== 'string' ||
+      (ecosystem === 'PyPI' && !validPythonPackageName(packageName)) ||
       typeof version !== 'string' ||
       !exact(version) ||
-      version.length > 256
+      version.length > 256 ||
+      (ecosystem === 'PyPI' && pythonVersionSatisfies(version, '*') !== true)
     ) {
       warnings.push(`toml-lock-package-unresolved:${source}`);
       continue;
@@ -392,6 +558,21 @@ function fromTomlLock(
         : extra
           ? [extra]
           : undefined;
+      if (
+        ecosystem === 'PyPI' &&
+        ((extra !== undefined &&
+          !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(extra)) ||
+          (Array.isArray(dep?.extras) &&
+            (dep.extras.length > 64 ||
+              dep.extras.some(
+                (item) =>
+                  typeof item !== 'string' ||
+                  !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(item)
+              ))))
+      ) {
+        warnings.push(`python-lock-extra-context-invalid:${source}`);
+        return;
+      }
       dependencies.push({
         name,
         requirement,
@@ -425,9 +606,10 @@ function fromTomlLock(
     }
 
     const optionalDependencies = asRecord(pkg?.['optional-dependencies']);
-    for (const [extra, rawItems] of Object.entries(
-      optionalDependencies ?? {}
-    )) {
+    const optionalEntries = Object.entries(optionalDependencies ?? {});
+    if (optionalEntries.length > 64)
+      warnings.push(`python-lock-extra-context-invalid:${source}`);
+    for (const [extra, rawItems] of optionalEntries.slice(0, 64)) {
       if (Array.isArray(rawItems)) {
         for (const rawItem of rawItems) {
           if (typeof rawItem === 'string')
@@ -462,18 +644,26 @@ function fromTomlLock(
             providesExtras: pkg.provides_extras
           }
         : undefined;
+    let pythonContextInvalid = false;
+    if (ecosystem === 'PyPI' && markerFields?.groups !== undefined) {
+      warnings.push(`python-lock-dependency-groups-unresolved:${source}`);
+      pythonContextInvalid = true;
+    }
     if (ecosystem === 'PyPI' && markerFields?.markers !== undefined) {
       const markers = Array.isArray(markerFields.markers)
         ? markerFields.markers
         : [markerFields.markers];
       if (
         markers.length === 0 ||
+        markers.length > 64 ||
         markers.some(
           (marker) =>
             typeof marker !== 'string' || !validPythonMarkerExpression(marker)
         )
-      )
+      ) {
         warnings.push(`python-lock-marker-context-invalid:${source}`);
+        pythonContextInvalid = true;
+      }
     }
     const markerContext = markerFields
       ? Object.fromEntries(
@@ -486,8 +676,10 @@ function fromTomlLock(
       markerContext && Object.keys(markerContext).length > 0
         ? stable(markerContext)
         : '';
-    if (context.length > 1_024)
+    if (context.length > 1_024) {
       warnings.push(`toml-lock-context-over-budget:${source}`);
+      if (ecosystem === 'PyPI') pythonContextInvalid = true;
+    }
     const resolutionContext =
       markerContext !== undefined &&
       context.length > 0 &&
@@ -513,6 +705,7 @@ function fromTomlLock(
       packageSource = provenance.source;
       resolutionConfidence = provenance.confidence;
       if (provenance.module) packageModule = provenance.module;
+      if (pythonContextInvalid) resolutionConfidence = 'unknown';
       if (resolutionConfidence === 'unknown')
         warnings.push(`python-source-provenance-unverified:${source}`);
     }
@@ -702,237 +895,19 @@ function pythonRequirementMatches(
   version: string,
   requirement: string
 ): boolean {
-  const normalizeRelease = (value: string): string | undefined => {
-    const match = /^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?$/iu.exec(value.trim());
-    if (!match?.[1]) return undefined;
-    return `${Number(match[1])}.${Number(match[2] ?? 0)}.${Number(match[3] ?? 0)}`;
-  };
-  const candidate = normalizeRelease(version);
+  const pep440 = pythonVersionSatisfies(version, requirement);
+  if (pep440 !== undefined) return pep440;
+  // Poetry's caret and tilde requirements are intentionally handled separately
+  // from PEP 440. Unknown PEP 440 syntax never falls through to semver.
   const specifier = requirement.trim();
-  if (!candidate || !specifier || specifier === '*') return specifier === '*';
-  if (specifier.startsWith('==='))
-    return version.toLowerCase() === specifier.slice(3).trim().toLowerCase();
-
-  const clauses = specifier.split(',').map((item) => item.trim());
-  const normalized: string[] = [];
-  for (const clause of clauses) {
-    if (!clause) return false;
-    const wildcard = /^(==|!=)\s*(\d+(?:\.\d+){0,2})\.\*$/u.exec(clause);
-    if (wildcard?.[1] && wildcard[2]) {
-      const prefix = wildcard[2]
-        .split('.')
-        .map((part) => String(Number(part)))
-        .join('.');
-      normalized.push(`${wildcard[1] === '!=' ? '!=' : ''}${prefix}.x`);
-      continue;
-    }
-    const compatible = /^~=\s*(\d+(?:\.\d+){0,2})$/u.exec(clause);
-    if (compatible?.[1]) {
-      const release = compatible[1].split('.').map(Number);
-      if (release.length < 2) return false;
-      const lower = normalizeRelease(compatible[1]);
-      const upper =
-        release.length === 2
-          ? `${(release[0] ?? 0) + 1}.0.0`
-          : `${release[0] ?? 0}.${(release[1] ?? 0) + 1}.0`;
-      if (!lower) return false;
-      normalized.push(`>=${lower}`, `<${upper}`);
-      continue;
-    }
-    const comparison = /^(===|==|!=|>=|<=|>|<|=)?\s*(\d+(?:\.\d+){0,2})$/u.exec(
-      clause
-    );
-    if (comparison?.[2]) {
-      const expected = normalizeRelease(comparison[2]);
-      if (!expected) return false;
-      const operator = comparison[1] ?? '=';
-      if (operator === '===' || operator === '==') {
-        if (candidate !== expected) return false;
-      } else {
-        normalized.push(`${operator}${expected}`);
-      }
-      continue;
-    }
-    // Poetry also accepts PEP 440-compatible range operators such as ^ and ~;
-    // semver can evaluate those only for the stable release versions accepted
-    // above. Unknown syntax stays unresolved instead of guessing an edge.
-    const semverRange = semver.validRange(clause);
-    if (!semverRange) return false;
-    normalized.push(semverRange);
-  }
-  return normalized.every((range) => semver.satisfies(candidate, range));
+  if (!/(?:^|,\s*)\^|(?:^|,\s*)~(?![=])/u.test(specifier)) return false;
+  const candidate = semver.valid(version);
+  const range = semver.validRange(specifier);
+  return Boolean(candidate && range && semver.satisfies(candidate, range));
 }
 
 function validPythonMarkerExpression(value: string): boolean {
-  if (!value || value.length > 1_024) return false;
-  const variables = new Set([
-    'implementation_name',
-    'implementation_version',
-    'os_name',
-    'platform_machine',
-    'platform_python_implementation',
-    'platform_release',
-    'platform_system',
-    'platform_version',
-    'python_full_version',
-    'python_version',
-    'sys_platform',
-    'extra',
-    'extras',
-    'dependency_groups'
-  ]);
-  const tokens: Array<{
-    kind: 'word' | 'string' | 'operator' | 'paren';
-    value: string;
-    start: number;
-    end: number;
-  }> = [];
-  for (let index = 0; index < value.length;) {
-    const character = value[index] ?? '';
-    if (/\s/u.test(character)) {
-      index++;
-      continue;
-    }
-    const start = index;
-    if (character === '(' || character === ')') {
-      index++;
-      tokens.push({ kind: 'paren', value: character, start, end: index });
-    } else if (character === "'" || character === '"') {
-      const quote = character;
-      let text = '';
-      index++;
-      let closed = false;
-      while (index < value.length) {
-        const current = value[index] ?? '';
-        if (current === '\\') {
-          const escaped = value[index + 1];
-          if (escaped === undefined) return false;
-          text += escaped;
-          index += 2;
-        } else if (current === quote) {
-          index++;
-          closed = true;
-          break;
-        } else if (current === '\n' || current === '\r' || current === '\0') {
-          return false;
-        } else {
-          text += current;
-          index++;
-        }
-      }
-      if (!closed) return false;
-      tokens.push({ kind: 'string', value: text, start, end: index });
-    } else {
-      const operator = /^(===|==|!=|<=|>=|~=|<|>)/u.exec(value.slice(index));
-      if (operator?.[1]) {
-        index += operator[1].length;
-        tokens.push({
-          kind: 'operator',
-          value: operator[1],
-          start,
-          end: index
-        });
-      } else {
-        const word = /^[A-Za-z_][A-Za-z0-9_]*/u.exec(value.slice(index));
-        if (!word?.[0]) return false;
-        index += word[0].length;
-        tokens.push({
-          kind: 'word',
-          value: word[0].toLowerCase(),
-          start,
-          end: index
-        });
-      }
-    }
-    if (tokens.length > 256) return false;
-  }
-
-  let position = 0;
-  const peek = (): (typeof tokens)[number] | undefined => tokens[position];
-  const take = (): (typeof tokens)[number] | undefined => tokens[position++];
-  const separated = (
-    left: (typeof tokens)[number],
-    right: (typeof tokens)[number]
-  ): boolean => /\s/u.test(value.slice(left.end, right.start));
-  const parseOperand = (): (typeof tokens)[number] | undefined => {
-    const token = take();
-    return token &&
-      (token.kind === 'string' ||
-        (token.kind === 'word' && variables.has(token.value)))
-      ? token
-      : undefined;
-  };
-  const parseOr = (depth: number): boolean => {
-    if (depth > 32 || !parseAnd(depth)) return false;
-    while (peek()?.kind === 'word' && peek()?.value === 'or') {
-      const previous = tokens[position - 1];
-      const operator = take();
-      const next = peek();
-      if (
-        !previous ||
-        !operator ||
-        !next ||
-        !separated(previous, operator) ||
-        !separated(operator, next)
-      )
-        return false;
-      if (!parseAnd(depth)) return false;
-    }
-    return true;
-  };
-  const parseAnd = (depth: number): boolean => {
-    if (depth > 32 || !parseAtom(depth)) return false;
-    while (peek()?.kind === 'word' && peek()?.value === 'and') {
-      const previous = tokens[position - 1];
-      const operator = take();
-      const next = peek();
-      if (
-        !previous ||
-        !operator ||
-        !next ||
-        !separated(previous, operator) ||
-        !separated(operator, next)
-      )
-        return false;
-      if (!parseAtom(depth)) return false;
-    }
-    return true;
-  };
-  const parseAtom = (depth: number): boolean => {
-    if (peek()?.kind === 'paren' && peek()?.value === '(') {
-      take();
-      if (
-        !parseOr(depth + 1) ||
-        peek()?.kind !== 'paren' ||
-        peek()?.value !== ')'
-      )
-        return false;
-      take();
-      return true;
-    }
-    const left = parseOperand();
-    if (!left) return false;
-    const operator = peek();
-    const inOperator = tokens[position + 1];
-    if (!operator || !separated(left, operator)) return false;
-    if (operator.kind === 'operator') take();
-    else if (operator.kind === 'word' && operator.value === 'in') take();
-    else if (
-      operator.kind === 'word' &&
-      operator.value === 'not' &&
-      inOperator?.kind === 'word' &&
-      inOperator.value === 'in' &&
-      separated(operator, inOperator)
-    ) {
-      take();
-      take();
-    } else return false;
-    const right = parseOperand();
-    const finalOperator = tokens[position - 2];
-    return Boolean(right && finalOperator && separated(finalOperator, right));
-  };
-
-  return tokens.length > 0 && parseOr(0) && position === tokens.length;
+  return parsePythonMarkerExpression(value) !== undefined;
 }
 
 function cargoDependencyDeclarations(
@@ -1543,6 +1518,48 @@ function parseGoMod(
   return output;
 }
 
+function parseGoExcludedVersions(
+  text: string,
+  warnings: string[]
+): Set<string> {
+  const excluded = new Set<string>();
+  let inBlock = false;
+  let lineCount = 0;
+  for (const rawLine of text.split(/\r?\n/u)) {
+    lineCount += 1;
+    if (lineCount > 100_000) {
+      warnings.push('go-exclude-record-budget-exceeded');
+      break;
+    }
+    const line = rawLine.replace(/\/\/.*$/u, '').trim();
+    if (!line) continue;
+    if (/^exclude\s*\($/u.test(line)) {
+      if (inBlock) warnings.push('go-exclude-format-invalid');
+      inBlock = true;
+      continue;
+    }
+    if (inBlock && line === ')') {
+      inBlock = false;
+      continue;
+    }
+    const single = line.match(/^exclude\s+([^\s]+)\s+([^\s]+)$/u);
+    const block = inBlock ? line.match(/^([^\s]+)\s+([^\s]+)$/u) : undefined;
+    const match = single ?? block;
+    if (!match?.[1] || !match[2]) {
+      if (line.startsWith('exclude '))
+        warnings.push('go-exclude-format-invalid');
+      continue;
+    }
+    if (!semver.valid(match[2])) {
+      warnings.push('go-exclude-version-invalid');
+      continue;
+    }
+    excluded.add(`${decodeGoModulePath(match[1])}@${match[2]}`);
+  }
+  if (inBlock) warnings.push('go-exclude-format-invalid');
+  return excluded;
+}
+
 function markGoReplacedPackages(
   packages: LockedPackage[],
   replacements: readonly GoReplacement[],
@@ -1934,6 +1951,7 @@ function fromGoVendorModules(
       source,
       installPath: `go:vendor:${current.name}@${current.version}`,
       resolutionConfidence: current.replaced ? 'unknown' : 'lockfile',
+      artifactIntegrityStatus: 'unavailable',
       direct: current.explicit
     });
     if (current.replaced)
@@ -1945,8 +1963,29 @@ function fromGoVendorModules(
     );
     if (header?.[1] && header[2]) {
       flush();
+      const name = decodeGoModulePath(header[1]);
+      if (!validGoImportPath(name)) {
+        warnings.push('go-vendor-module-path-invalid');
+        current = {
+          name,
+          version: 'unknown',
+          explicit: false,
+          replaced: false
+        };
+        continue;
+      }
+      if (!semver.valid(header[2])) {
+        warnings.push('go-vendor-version-invalid');
+        current = {
+          name,
+          version: 'unknown',
+          explicit: false,
+          replaced: false
+        };
+        continue;
+      }
       current = {
-        name: decodeGoModulePath(header[1]),
+        name,
         version: header[2],
         explicit: false,
         replaced: /\s=>\s/u.test(line)
@@ -1956,8 +1995,14 @@ function fromGoVendorModules(
     const replacementOnly = line.match(/^#\s+([^\s]+)\s+=>\s+.*$/u);
     if (replacementOnly?.[1]) {
       flush();
+      const name = decodeGoModulePath(replacementOnly[1]);
+      if (!validGoImportPath(name)) {
+        warnings.push('go-vendor-module-path-invalid');
+        current = undefined;
+        continue;
+      }
       current = {
-        name: decodeGoModulePath(replacementOnly[1]),
+        name,
         version: 'unknown',
         explicit: false,
         replaced: true
@@ -2101,7 +2146,14 @@ function parseGoImports(source: string): {
 }
 
 function validGoImportPath(value: string): boolean {
-  return value.length > 0 && value.length <= 2_048 && !/[\s\0\\]/u.test(value);
+  return (
+    value.length > 0 &&
+    value.length <= 2_048 &&
+    !value.startsWith('/') &&
+    !value.endsWith('/') &&
+    !/[\s\0\\]/u.test(value) &&
+    !value.split('/').some((segment) => segment === '.' || segment === '..')
+  );
 }
 
 function goVendorPath(module: string): string {
@@ -2157,7 +2209,9 @@ function longestGoModuleMatch<T extends { name: string }>(
 function addGoVendorImportGraph(
   packages: LockedPackage[],
   fileSource: DependencyFileSource | undefined,
-  warnings: string[]
+  warnings: string[],
+  target: GoTargetProfile | undefined,
+  vendorManifestText: string
 ): void {
   if (!fileSource) {
     warnings.push('go-vendor-transitive-edges-unresolved');
@@ -2184,9 +2238,57 @@ function addGoVendorImportGraph(
   const vendorIndex = pathPrefixIndex(
     modules.map((item) => ({ prefix: goVendorPath(item.name), value: item }))
   );
+  const vendorManifest = parseGoVendorManifestPackages(
+    vendorManifestText,
+    warnings
+  );
+  const vendorFiles = fileSource.files.filter(
+    (file) => file.startsWith('vendor/') && file !== 'vendor/modules.txt'
+  );
+  const vendorPackageDirectories = new Set(
+    vendorFiles.map((file) => path.posix.dirname(file))
+  );
+  const declaredVendorPackagePaths = new Set(
+    vendorManifest.map((entry) => entry.packagePath)
+  );
+  for (const entry of vendorManifest) {
+    const packagePrefix = `vendor/${goVendorPath(entry.packagePath)}/`;
+    if (!modulesByName.has(entry.module)) {
+      complete = false;
+      warnings.push('go-vendor-manifest-module-unresolved');
+    }
+    if (!vendorPackageDirectories.has(packagePrefix.slice(0, -1))) {
+      complete = false;
+      warnings.push('go-vendor-manifest-content-mismatch');
+    }
+  }
+  const vendorModulePackageCounts = new Map<string, number>();
+  for (const entry of vendorManifest)
+    vendorModulePackageCounts.set(
+      entry.module,
+      (vendorModulePackageCounts.get(entry.module) ?? 0) + 1
+    );
+  if (modules.some((module) => !vendorModulePackageCounts.has(module.name))) {
+    complete = false;
+    warnings.push('go-vendor-manifest-module-incomplete');
+  }
+  for (const file of vendorFiles) {
+    const owner = longestPathPrefix(vendorIndex, file.slice('vendor/'.length));
+    if (!owner) {
+      complete = false;
+      warnings.push('go-vendor-file-not-in-modules-manifest');
+      continue;
+    }
+    if (!file.endsWith('.go')) continue;
+    const packageDirectory = path.posix.dirname(file.slice('vendor/'.length));
+    const packagePath = decodeGoModulePath(packageDirectory);
+    if (!declaredVendorPackagePaths.has(packagePath)) {
+      complete = false;
+      warnings.push('go-vendor-source-package-not-in-modules-manifest');
+    }
+  }
   const importsByModule = new Map<LockedPackage, Set<string>>();
   const rootImports = new Set<string>();
-  const seenVendorModules = new Set<LockedPackage>();
   for (const file of boundedFiles) {
     const normalized = path.posix.normalize(file);
     if (
@@ -2220,10 +2322,13 @@ function addGoVendorImportGraph(
       warnings.push('go-source-byte-budget-exceeded');
       break;
     }
-    if (/^\s*\/\/\s*(?:go:build|\+build)\b/mu.test(source)) {
+    const selected = goSourceFileMatchesTarget(file, source, target);
+    if (selected === undefined) {
       complete = false;
-      warnings.push('go-source-build-constraints-unselected');
+      warnings.push('go-source-build-target-unresolved');
+      continue;
     }
+    if (!selected) continue;
     const parsed = parseGoImports(source);
     if (!parsed.complete) {
       complete = false;
@@ -2236,7 +2341,11 @@ function addGoVendorImportGraph(
     const owner = vendorRelative
       ? longestPathPrefix(vendorIndex, vendorRelative)
       : undefined;
-    if (owner) seenVendorModules.add(owner);
+    if (vendorRelative && !owner) {
+      complete = false;
+      warnings.push('go-vendor-file-not-in-modules-manifest');
+      continue;
+    }
     const dependencies = owner
       ? (importsByModule.get(owner) ?? new Set<string>())
       : rootImports;
@@ -2273,11 +2382,73 @@ function addGoVendorImportGraph(
       })
       .filter((dependency) => dependency !== undefined);
   }
-  if (seenVendorModules.size < modules.length) {
-    complete = false;
-    warnings.push('go-vendor-source-coverage-incomplete');
-  }
   if (!complete) warnings.push('go-vendor-transitive-edges-unresolved');
+}
+
+function parseGoVendorManifestPackages(
+  text: string,
+  warnings: string[]
+): Array<{ module: string; packagePath: string }> {
+  const output: Array<{ module: string; packagePath: string }> = [];
+  let currentModule: string | undefined;
+  const seenModules = new Set<string>();
+  for (const rawLine of text.split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const header = line.match(
+      /^#\s+([^\s]+)\s+(v\d+\.[^\s]+)(?:\s+=>\s+.*)?$/u
+    );
+    if (header?.[1] && header[2]) {
+      const module = decodeGoModulePath(header[1]);
+      if (!validGoImportPath(module)) {
+        warnings.push('go-vendor-module-path-invalid');
+        currentModule = undefined;
+        continue;
+      }
+      if (!semver.valid(header[2])) {
+        warnings.push('go-vendor-version-invalid');
+        currentModule = undefined;
+        continue;
+      }
+      const key = `${module}@${header[2]}`;
+      if (seenModules.has(key)) {
+        warnings.push('go-vendor-module-entry-duplicate');
+        currentModule = undefined;
+        continue;
+      }
+      seenModules.add(key);
+      currentModule = module;
+      continue;
+    }
+    if (line.startsWith('#')) {
+      if (line.startsWith('##')) continue;
+      const legacyReplacement = line.match(/^#\s+([^\s]+)\s+=>\s+.*$/u);
+      if (legacyReplacement?.[1]) {
+        const module = decodeGoModulePath(legacyReplacement[1]);
+        if (!validGoImportPath(module)) {
+          warnings.push('go-vendor-module-path-invalid');
+          currentModule = undefined;
+          continue;
+        }
+        currentModule = module;
+      } else if (!/^#\s+Modules by dependency graph\.?$/u.test(line))
+        currentModule = undefined;
+      continue;
+    }
+    if (!currentModule || !validGoImportPath(line) || line.includes('\\')) {
+      warnings.push('go-vendor-manifest-entry-invalid');
+      currentModule = undefined;
+      continue;
+    }
+    if (line !== currentModule && !line.startsWith(`${currentModule}/`)) {
+      warnings.push('go-vendor-manifest-package-outside-module');
+      continue;
+    }
+    output.push({ module: currentModule, packagePath: line });
+  }
+  if (output.length === 0)
+    warnings.push('go-vendor-manifest-packages-unavailable');
+  return output;
 }
 
 type PythonRootRequirement = {
@@ -2287,6 +2458,9 @@ type PythonRootRequirement = {
   module?: string;
   marker?: string;
   extras?: string[];
+  optionalGroup?: string;
+  dependencyGroup?: string;
+  nonRegistrySource?: boolean;
 };
 
 function parsePythonRequirement(
@@ -2306,12 +2480,10 @@ function parsePythonRequirement(
   const requirement = (
     markerIndex < 0 ? tail : tail.slice(0, markerIndex)
   ).trim();
+  const nonRegistrySource = /^@\s+\S/u.test(requirement);
   const marker =
     markerIndex < 0 ? undefined : tail.slice(markerIndex + 1).trim();
-  const extras = [
-    ...(match[2]?.split(',').map((extra) => extra.trim()) ?? []),
-    ...(optionalGroup ? [optionalGroup] : [])
-  ]
+  const extras = (match[2]?.split(',').map((extra) => extra.trim()) ?? [])
     .filter(Boolean)
     .map((extra) => extra.toLowerCase().replace(/[-_.]+/gu, '-'))
     .sort();
@@ -2321,13 +2493,18 @@ function parsePythonRequirement(
     section,
     ...(module ? { module } : {}),
     ...(marker ? { marker } : {}),
-    ...(extras.length ? { extras: [...new Set(extras)] } : {})
+    ...(nonRegistrySource ? { nonRegistrySource: true } : {}),
+    ...(extras.length ? { extras: [...new Set(extras)] } : {}),
+    ...(optionalGroup
+      ? { optionalGroup: normalizePythonExtra(optionalGroup) }
+      : {})
   };
 }
 
 function pythonManifestRequirements(
   value: unknown,
-  module?: string
+  module?: string,
+  unresolvedSources: Set<string> = new Set()
 ): PythonRootRequirement[] {
   const manifest = asRecord(value);
   if (!manifest) return [];
@@ -2341,7 +2518,10 @@ function pythonManifestRequirements(
         undefined,
         module
       );
-      if (parsed) output.push(parsed);
+      if (parsed) {
+        if (parsed.nonRegistrySource) unresolvedSources.add(parsed.name);
+        output.push(parsed);
+      }
     }
   }
   const projectOptional = asRecord(project?.['optional-dependencies']);
@@ -2354,7 +2534,10 @@ function pythonManifestRequirements(
         group,
         module
       );
-      if (parsed) output.push(parsed);
+      if (parsed) {
+        if (parsed.nonRegistrySource) unresolvedSources.add(parsed.name);
+        output.push(parsed);
+      }
     }
   }
 
@@ -2376,6 +2559,15 @@ function pythonManifestRequirements(
       module
     );
     if (parsed) {
+      if (
+        descriptor &&
+        ['git', 'path', 'url', 'file', 'source'].some(
+          (key) => descriptor[key] !== undefined
+        )
+      ) {
+        parsed.nonRegistrySource = true;
+        unresolvedSources.add(parsed.name);
+      }
       if (typeof descriptor?.markers === 'string')
         parsed.marker = descriptor.markers;
       if (Array.isArray(descriptor?.extras))
@@ -2401,7 +2593,25 @@ function pythonManifestRequirements(
       undefined,
       module
     );
-    if (parsed) output.push(parsed);
+    if (parsed) {
+      if (
+        descriptor &&
+        ['git', 'path', 'url', 'file', 'source'].some(
+          (key) => descriptor[key] !== undefined
+        )
+      ) {
+        parsed.nonRegistrySource = true;
+        unresolvedSources.add(parsed.name);
+      }
+      if (typeof descriptor?.markers === 'string')
+        parsed.marker = descriptor.markers;
+      if (Array.isArray(descriptor?.extras))
+        parsed.extras = descriptor.extras
+          .filter((extra): extra is string => typeof extra === 'string')
+          .map((extra) => extra.toLowerCase().replace(/[-_.]+/gu, '-'))
+          .sort();
+      output.push(parsed);
+    }
   }
   const poetryGroups = asRecord(poetry?.group);
   for (const [group, rawGroup] of Object.entries(poetryGroups ?? {})) {
@@ -2420,10 +2630,150 @@ function pythonManifestRequirements(
       const parsed = parsePythonRequirement(
         `${name}${version === '*' ? '' : ` ${version}`}`,
         section,
-        section === 'optionalDependency' ? group : undefined,
+        undefined,
         module
       );
-      if (parsed) output.push(parsed);
+      if (parsed) {
+        parsed.dependencyGroup = normalizePythonExtra(group);
+        if (
+          descriptor &&
+          ['git', 'path', 'url', 'file', 'source'].some(
+            (key) => descriptor[key] !== undefined
+          )
+        ) {
+          parsed.nonRegistrySource = true;
+          unresolvedSources.add(parsed.name);
+        }
+        if (typeof descriptor?.markers === 'string')
+          parsed.marker = descriptor.markers;
+        output.push(parsed);
+      }
+    }
+  }
+  return output;
+}
+
+function pythonPipfileRequirements(
+  value: unknown,
+  warnings: string[],
+  unresolvedSources: Set<string>
+): PythonRootRequirement[] {
+  const manifest = asRecord(value);
+  if (!manifest) return [];
+  const output: PythonRootRequirement[] = [];
+  const publicSources = new Set<string>();
+  const sourceRecords = Array.isArray(manifest.source) ? manifest.source : [];
+  for (const source of sourceRecords) {
+    const record = asRecord(source);
+    if (typeof record?.name === 'string' && isTrustedPipfilePypiSource(record))
+      publicSources.add(record.name);
+  }
+  for (const [table, section] of [
+    ['packages', 'dependency'],
+    ['dev-packages', 'devDependency']
+  ] as const) {
+    const rawTable = manifest[table];
+    if (rawTable === undefined) continue;
+    const entries = asRecord(rawTable);
+    if (!entries) {
+      warnings.push('pipfile-dependency-table-invalid');
+      continue;
+    }
+    const packages = Object.entries(entries);
+    if (packages.length > 10_000) {
+      warnings.push('pipfile-dependency-budget-exceeded');
+      packages.length = 10_000;
+    }
+    for (const [name, raw] of packages) {
+      const spec = asRecord(raw);
+      const version = typeof raw === 'string' ? raw : spec?.version;
+      const extras = Array.isArray(spec?.extras) ? spec.extras : [];
+      const marker =
+        typeof spec?.markers === 'string'
+          ? spec.markers
+          : typeof spec?.marker === 'string'
+            ? spec.marker
+            : undefined;
+      if (
+        spec?.index !== undefined &&
+        (typeof spec.index !== 'string' || !publicSources.has(spec.index))
+      ) {
+        warnings.push('pipfile-private-index-requirement-unresolved');
+        if (validPythonPackageName(name))
+          unresolvedSources.add(canonicalPythonName(name));
+        continue;
+      }
+      if (
+        spec &&
+        ['git', 'ref', 'path', 'file', 'editable', 'subdirectory'].some(
+          (key) => spec[key] !== undefined
+        )
+      ) {
+        warnings.push('pipfile-nonregistry-source-unresolved');
+        if (validPythonPackageName(name))
+          unresolvedSources.add(canonicalPythonName(name));
+        continue;
+      }
+      if (
+        (spec?.version !== undefined && typeof spec.version !== 'string') ||
+        (spec?.extras !== undefined && !Array.isArray(spec.extras)) ||
+        (spec?.markers !== undefined && typeof spec.markers !== 'string') ||
+        (spec?.marker !== undefined && typeof spec.marker !== 'string') ||
+        extras.length > 64 ||
+        extras.some(
+          (extra) =>
+            typeof extra !== 'string' ||
+            !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(extra)
+        )
+      ) {
+        warnings.push('pipfile-extra-context-invalid');
+        continue;
+      }
+      if (marker && !validPythonMarkerExpression(marker)) {
+        warnings.push('pipfile-marker-invalid');
+        continue;
+      }
+      if (typeof raw !== 'string' && !spec) {
+        warnings.push('pipfile-package-spec-invalid');
+        continue;
+      }
+      if (
+        spec &&
+        Object.keys(spec).some(
+          (key) =>
+            ![
+              'version',
+              'extras',
+              'markers',
+              'marker',
+              'index',
+              'git',
+              'ref',
+              'editable',
+              'path',
+              'file',
+              'subdirectory'
+            ].includes(key)
+        )
+      ) {
+        warnings.push('pipfile-package-spec-unsupported');
+        continue;
+      }
+      const suffix =
+        typeof version === 'string' && version.trim() && version.trim() !== '*'
+          ? ` ${version.trim()}`
+          : '';
+      const requestedExtras =
+        extras.length > 0 ? `[${(extras as string[]).join(',')}]` : '';
+      const requirement = parsePythonRequirement(
+        `${name}${requestedExtras}${suffix}${marker ? ` ; ${marker}` : ''}`,
+        section
+      );
+      if (!requirement) {
+        warnings.push('pipfile-package-spec-unresolved');
+        continue;
+      }
+      output.push(requirement);
     }
   }
   return output;
@@ -2434,7 +2784,7 @@ function pythonProjectName(value: unknown): string | undefined {
   const project = asRecord(manifest?.project);
   const poetry = asRecord(asRecord(manifest?.tool)?.poetry);
   const raw = project?.name ?? poetry?.name;
-  return typeof raw === 'string' && raw.length <= 256
+  return typeof raw === 'string' && validPythonPackageName(raw)
     ? canonicalPythonName(raw)
     : undefined;
 }
@@ -2704,20 +3054,33 @@ function pipRequirementsPackages(
       warnings.push(`unresolved-python-requirement:${file}`);
       continue;
     }
+    if (
+      !validPythonPackageName(match[1]) ||
+      pythonVersionSatisfies(match[3], '*') !== true
+    ) {
+      malformed = true;
+      warnings.push(`unresolved-python-requirement:${file}`);
+      continue;
+    }
     const marker = match[4]?.trim();
     if (marker && marker.length > 1_024) {
       malformed = true;
       warnings.push(`python-requirement-marker-over-budget:${file}`);
       continue;
     }
-    const extras = (match[2]?.split(',') ?? [])
-      .map((extra) =>
-        extra
-          .trim()
-          .toLowerCase()
-          .replace(/[-_.]+/gu, '-')
+    const rawExtras = (match[2]?.split(',') ?? []).map((extra) => extra.trim());
+    if (
+      rawExtras.length > 64 ||
+      rawExtras.some(
+        (extra) => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(extra)
       )
-      .filter((extra) => /^[a-z0-9][a-z0-9._-]{0,127}$/u.test(extra))
+    ) {
+      malformed = true;
+      warnings.push(`python-requirement-extra-invalid:${file}`);
+      continue;
+    }
+    const extras = rawExtras
+      .map((extra) => extra.toLowerCase().replace(/[-_.]+/gu, '-'))
       .sort();
     parsedLines.push({
       name: canonicalPythonName(match[1]),
@@ -2941,12 +3304,29 @@ export async function readOtherEcosystemInventoryDetailed(
   fileSource?: DependencyFileSource,
   options: OtherEcosystemInventoryOptions = {}
 ): Promise<OtherEcosystemInventoryResult> {
-  const output: LockedPackage[] = [];
+  let output: LockedPackage[] = [];
   const warnings: string[] = [];
+  let pythonTarget: PythonTargetProfile | undefined;
+  let goTarget: GoTargetProfile | undefined;
+  if (options.pythonTarget) {
+    try {
+      pythonTarget = parsePythonTargetProfile(options.pythonTarget);
+    } catch {
+      warnings.push('python-target-profile-invalid');
+    }
+  }
+  if (options.goTarget) {
+    try {
+      goTarget = parseGoTargetProfile(options.goTarget);
+    } catch {
+      warnings.push('go-target-profile-invalid');
+    }
+  }
   let goMvsEdges: DependencyEdge[] = [];
   const loadedLockfiles = new Set<string>();
   let pythonRootRequirements: PythonRootRequirement[] = [];
   let pythonRootManifest: RecordValue | undefined;
+  const pythonUnresolvedSourceNames = new Set<string>();
   const pythonWorkspaceFiles = new Set<string>();
   const pythonWorkspaceProjects = new Map<string, string>();
   try {
@@ -2955,10 +3335,31 @@ export async function readOtherEcosystemInventoryDetailed(
       pythonRootManifest = parseToml(pyproject, {
         unsafeKeyBehaviour: 'throw'
       }) as RecordValue;
-      pythonRootRequirements = pythonManifestRequirements(pythonRootManifest);
+      pythonRootRequirements = pythonManifestRequirements(
+        pythonRootManifest,
+        undefined,
+        pythonUnresolvedSourceNames
+      );
     }
   } catch {
     warnings.push('invalid-or-unreadable-manifest:pyproject.toml');
+  }
+  try {
+    const pipfile = await readInput(root, 'Pipfile', fileSource);
+    if (pipfile !== undefined) {
+      const manifest = parseToml(pipfile, {
+        unsafeKeyBehaviour: 'throw'
+      }) as RecordValue;
+      pythonRootRequirements.push(
+        ...pythonPipfileRequirements(
+          manifest,
+          warnings,
+          pythonUnresolvedSourceNames
+        )
+      );
+    }
+  } catch {
+    warnings.push('invalid-or-unreadable-manifest:Pipfile');
   }
   const workspacePatterns = pythonWorkspacePatterns(
     pythonRootManifest,
@@ -3015,7 +3416,11 @@ export async function readOtherEcosystemInventoryDetailed(
       pythonWorkspaceFiles.add(file);
       pythonWorkspaceProjects.set(module, name);
       pythonRootRequirements.push(
-        ...pythonManifestRequirements(manifest, module)
+        ...pythonManifestRequirements(
+          manifest,
+          module,
+          pythonUnresolvedSourceNames
+        )
       );
     }
     if (patternWork.exceeded)
@@ -3039,9 +3444,12 @@ export async function readOtherEcosystemInventoryDetailed(
       const packages = fromJsonLock(
         JSON.parse(text) as unknown,
         ecosystem,
-        source
+        source,
+        warnings
       );
       output.push(...packages);
+      if (file === 'Pipfile.lock' && packages.length > 0)
+        warnings.push('pipfile-lock-transitive-edges-unresolved');
       if (packages.length === 0)
         warnings.push(`no-exact-package-records:${file}`);
     } catch {
@@ -3468,6 +3876,36 @@ export async function readOtherEcosystemInventoryDetailed(
     warnings.push('invalid-or-unreadable-lockfile:vendor/modules.txt');
     return undefined;
   });
+  const goVendorChecksums = new Map<string, string>();
+  const conflictingGoVendorChecksums = new Set<string>();
+  if (goVendorText !== undefined) {
+    const sumPaths = new Set(
+      goModules.map((module) => {
+        const directory = path.posix.dirname(module.path);
+        return directory === '.' ? 'go.sum' : `${directory}/go.sum`;
+      })
+    );
+    if (goWork !== undefined) sumPaths.add('go.work.sum');
+    for (const sumPath of sumPaths) {
+      const sumText = await readInput(root, sumPath, fileSource).catch(() => {
+        warnings.push(`invalid-or-unreadable-lockfile:${sumPath}`);
+        return undefined;
+      });
+      if (sumText === undefined) continue;
+      for (const [key, checksum] of goSumChecksums(sumText, warnings)) {
+        if (conflictingGoVendorChecksums.has(key)) continue;
+        const previous = goVendorChecksums.get(key);
+        if (previous !== undefined && previous !== checksum) {
+          goVendorChecksums.delete(key);
+          conflictingGoVendorChecksums.add(key);
+          warnings.push('go-checksum-conflict');
+          continue;
+        }
+        goVendorChecksums.set(key, checksum);
+      }
+    }
+  }
+  let goVendorPackages: LockedPackage[] = [];
   let goToolGraphApplied = false;
   if (
     goModules.length > 0 &&
@@ -3506,6 +3944,25 @@ export async function readOtherEcosystemInventoryDetailed(
   if (!goToolGraphApplied) warnings.push(...goWorkspaceDirectiveWarnings);
   if (goVendorText !== undefined) {
     const vendorPackages = fromGoVendorModules(goVendorText, warnings);
+    for (const item of vendorPackages) {
+      if (item.resolutionConfidence === 'unknown') continue;
+      const checksum = goVendorChecksums.get(
+        `${item.name}@${item.version.replace(/^v/u, '')}`
+      );
+      if (checksum) {
+        item.integrity = checksum;
+        item.artifactIntegrityStatus = 'declared-not-verified';
+      } else {
+        warnings.push(`go-checksum-unavailable:${item.name}@${item.version}`);
+      }
+    }
+    goVendorPackages = vendorPackages;
+    if (goTarget) {
+      for (const item of vendorPackages) {
+        item.resolutionTarget = goTarget.id;
+        item.installPath = `${item.installPath ?? `go:vendor:${item.name}@${item.version}`}#target=${goTarget.id}`;
+      }
+    }
     markGoReplacedPackages(
       vendorPackages,
       goWorkspaceReplacements,
@@ -3513,7 +3970,13 @@ export async function readOtherEcosystemInventoryDetailed(
       'go.work'
     );
     output.push(...vendorPackages);
-    addGoVendorImportGraph(vendorPackages, fileSource, warnings);
+    addGoVendorImportGraph(
+      vendorPackages,
+      fileSource,
+      warnings,
+      goTarget,
+      goVendorText
+    );
     warnings.push('go-vendor-content-integrity-unverified');
   }
   if (goWork === undefined && goModules.length === 0) {
@@ -3524,11 +3987,52 @@ export async function readOtherEcosystemInventoryDetailed(
     if (goSumOnly !== undefined)
       warnings.push('go.sum-without-go.mod-is-not-an-installed-graph');
   }
+  if (goVendorText !== undefined) {
+    const declarations: LockedPackage[] = [];
+    const moduleReplacements: GoReplacement[] = [];
+    const excludedGoVersions = new Set<string>();
+    for (const module of goModules) {
+      // Vendor mode already provides an exact selected module list. Parse
+      // declarations only to reconcile it; do not turn the lower-bound
+      // requirements into additional installed identities.
+      const declarationWarnings: string[] = [];
+      declarations.push(
+        ...parseGoMod(
+          module.text,
+          module.path,
+          declarationWarnings,
+          moduleReplacements
+        )
+      );
+      for (const exclusion of parseGoExcludedVersions(module.text, warnings))
+        excludedGoVersions.add(exclusion);
+      for (const warning of declarationWarnings) {
+        // The vendor graph supplies a selected module graph, so these
+        // directives do not make version selection unknown by themselves.
+        // Replacements are separately applied below and remain unverified.
+        if (
+          !warning.startsWith('go-exclude-resolution-incomplete:') &&
+          !warning.startsWith('go-retract-resolution-incomplete:') &&
+          !warning.startsWith('go-replace-resolution-incomplete:')
+        )
+          warnings.push(warning);
+      }
+    }
+    markGoReplacedPackages(
+      goVendorPackages,
+      [...goWorkspaceReplacements, ...moduleReplacements],
+      warnings,
+      goWorkspaceReplacements.length > 0 ? 'go.work' : 'go.mod'
+    );
+    reconcileGoVendorRequirements(
+      goVendorPackages,
+      declarations,
+      excludedGoVersions,
+      warnings
+    );
+  }
   for (const module of goModules) {
     if (goVendorText !== undefined) {
-      // Validate the declarations for malformed records, but use the vendor
-      // manifest—not go.mod constraints—as the installed graph.
-      parseGoMod(module.text, module.path, warnings);
       continue;
     }
     if (goToolGraphApplied) continue;
@@ -3717,6 +4221,75 @@ export async function readOtherEcosystemInventoryDetailed(
     )
       warnings.push('ecosystem-workspace-graph-incomplete');
   }
+  output = output.flatMap((item) => {
+    if (item.ecosystem !== 'PyPI') return [item];
+    let markers: string[] = [];
+    let extras: string[] = [];
+    let declaredHashes: string[] = [];
+    try {
+      const context = JSON.parse(item.resolutionContext ?? '{}') as {
+        markers?: unknown;
+        extras?: unknown;
+        hashes?: unknown;
+      };
+      markers = Array.isArray(context.markers)
+        ? context.markers.filter(
+            (value): value is string => typeof value === 'string'
+          )
+        : typeof context.markers === 'string'
+          ? [context.markers]
+          : [];
+      extras = Array.isArray(context.extras)
+        ? context.extras.filter(
+            (value): value is string => typeof value === 'string'
+          )
+        : [];
+      declaredHashes = Array.isArray(context.hashes)
+        ? context.hashes.filter(
+            (value): value is string => typeof value === 'string'
+          )
+        : [];
+    } catch {
+      item.resolutionConfidence = 'unknown';
+      warnings.push(`python-lock-context-invalid:${item.name}`);
+    }
+    item.artifactIntegrityStatus =
+      item.integrity || declaredHashes.length > 0
+        ? 'declared-not-verified'
+        : 'unavailable';
+    if (pythonUnresolvedSourceNames.has(item.name)) {
+      item.resolutionConfidence = 'unknown';
+      warnings.push('python-root-source-unresolved');
+    }
+    if (!pythonTarget) {
+      if (markers.length > 0) {
+        item.resolutionConfidence = 'unknown';
+        warnings.push('python-target-profile-required');
+      }
+      return [item];
+    }
+    const selectedPythonTarget = pythonTarget;
+    const states = markers.map((marker) =>
+      evaluatePythonMarkerExpression(
+        marker,
+        selectedPythonTarget,
+        extras.length > 0 ? extras : ['']
+      )
+    );
+    if (states.length > 0 && states.every((state) => state === false))
+      return [];
+    if (states.some((state) => state === undefined)) {
+      item.resolutionConfidence = 'unknown';
+      warnings.push(`python-lock-marker-unknown:${item.name}`);
+    }
+    return [
+      {
+        ...item,
+        resolutionTarget: selectedPythonTarget.id,
+        installPath: `${item.installPath ?? `${item.ecosystem}:${item.name}@${item.version}`}#target=${selectedPythonTarget.id}`
+      }
+    ];
+  });
   const unique = new Map<string, DependencyIdentity>();
   const lockRecordById = new Map<
     string,
@@ -3759,7 +4332,10 @@ export async function readOtherEcosystemInventoryDetailed(
         priorRecord.dependencyFingerprint !== currentFingerprint ||
         (priorRecord.record.resolutionConfidence ?? 'lockfile') !==
           (item.resolutionConfidence ?? 'lockfile') ||
-        priorRecord.record.resolutionContext !== item.resolutionContext
+        priorRecord.record.resolutionContext !== item.resolutionContext ||
+        priorRecord.record.resolutionTarget !== item.resolutionTarget ||
+        priorRecord.record.artifactIntegrityStatus !==
+          item.artifactIntegrityStatus
       ) {
         warnings.push(
           `ecosystem-lock-identity-conflict:${item.ecosystem}:${item.name}`
@@ -3896,10 +4472,23 @@ export async function readOtherEcosystemInventoryDetailed(
     requirement: string,
     module?: string,
     marker?: string,
-    extras?: readonly string[]
+    extras?: readonly string[],
+    resolutionTarget?: string
   ): DependencyIdentity | undefined => {
     const index = resolutionByName.get(`${ecosystem}\0${name}`);
-    const candidates = index?.candidates ?? [];
+    let candidates = index?.candidates ?? [];
+    if (ecosystem === 'PyPI') {
+      candidates = candidates.filter(
+        (candidate) => candidate.resolutionConfidence !== 'unknown'
+      );
+      if (resolutionTarget)
+        candidates = candidates.filter(
+          (candidate) =>
+            candidate.resolutionTarget === resolutionTarget &&
+            candidate.resolutionConfidence !== 'unknown'
+        );
+      else if (index?.hasMarkerContexts) return undefined;
+    }
     if (ecosystem === 'Packagist') {
       const matches = filterCandidates(candidates, (candidate) =>
         composerRequirementMatches(candidate.version, requirement)
@@ -3908,7 +4497,7 @@ export async function readOtherEcosystemInventoryDetailed(
       return matches.length === 1 ? matches[0] : undefined;
     }
     let markerCandidates: DependencyIdentity[] = [];
-    if (marker) {
+    if (marker && !resolutionTarget) {
       markerCandidates = index?.byMarker.get(marker) ?? [];
       if (index?.hasMarkerContexts && markerCandidates.length === 0)
         return undefined;
@@ -3977,13 +4566,44 @@ export async function readOtherEcosystemInventoryDetailed(
   resolution: for (const item of output) {
     const parent = identity(item);
     for (const dependency of item.dependencies ?? []) {
+      if (item.ecosystem === 'PyPI' && dependency.marker) {
+        if (!pythonTarget) {
+          warnings.push('python-target-profile-required');
+          continue;
+        }
+        let parentExtras: string[] = [];
+        try {
+          const context = JSON.parse(item.resolutionContext ?? '{}') as {
+            extras?: unknown;
+          };
+          parentExtras = Array.isArray(context.extras)
+            ? context.extras.filter(
+                (extra): extra is string => typeof extra === 'string'
+              )
+            : [];
+        } catch {
+          warnings.push(`python-lock-context-invalid:${item.name}`);
+          continue;
+        }
+        const markerState = evaluatePythonMarkerExpression(
+          dependency.marker,
+          pythonTarget,
+          parentExtras.length > 0 ? parentExtras : ['']
+        );
+        if (markerState === false) continue;
+        if (markerState === undefined) {
+          warnings.push(`python-dependency-marker-unknown:${dependency.name}`);
+          continue;
+        }
+      }
       const target = resolveTarget(
         item.ecosystem,
         dependency.name,
         dependency.requirement,
         dependency.module,
         dependency.marker,
-        dependency.extras
+        dependency.extras,
+        item.resolutionTarget
       );
       if (!target) {
         if (ecosystemResolutionWorkExceeded) {
@@ -4007,7 +4627,10 @@ export async function readOtherEcosystemInventoryDetailed(
           ? { requestedFeatures: dependency.requestedFeatures }
           : {}),
         ...(dependency.alias ? { alias: dependency.alias } : {}),
-        ...(dependency.target ? { target: dependency.target } : {})
+        ...(dependency.target ? { target: dependency.target } : {}),
+        ...(item.resolutionTarget
+          ? { resolutionTarget: item.resolutionTarget }
+          : {})
       });
     }
   }
@@ -4107,7 +4730,10 @@ export async function readOtherEcosystemInventoryDetailed(
       to: dependency.id,
       name: dependency.name,
       requirement: `==${dependency.version}`,
-      section: dependency.development ? 'devDependency' : 'dependency'
+      section: dependency.development ? 'devDependency' : 'dependency',
+      ...(dependency.resolutionTarget
+        ? { resolutionTarget: dependency.resolutionTarget }
+        : {})
     });
   for (const dependency of packages.filter(
     (item) =>
@@ -4136,6 +4762,22 @@ export async function readOtherEcosystemInventoryDetailed(
           (extra): extra is string => typeof extra === 'string'
         )
       : undefined;
+    if (marker && !pythonTarget) {
+      warnings.push('python-target-profile-required');
+      continue;
+    }
+    if (marker && pythonTarget) {
+      const state = evaluatePythonMarkerExpression(
+        marker,
+        pythonTarget,
+        extras?.length ? extras : ['']
+      );
+      if (state === false) continue;
+      if (state === undefined) {
+        warnings.push(`python-requirement-marker-unknown:${dependency.name}`);
+        continue;
+      }
+    }
     edges.push({
       from: 'root',
       to: dependency.id,
@@ -4143,10 +4785,21 @@ export async function readOtherEcosystemInventoryDetailed(
       requirement: `==${dependency.version}`,
       section: dependency.development ? 'devDependency' : 'dependency',
       ...(marker ? { marker } : {}),
-      ...(extras?.length ? { extras } : {})
+      ...(extras?.length ? { extras } : {}),
+      ...(dependency.resolutionTarget
+        ? { resolutionTarget: dependency.resolutionTarget }
+        : {})
     });
   }
   for (const requirement of pythonRootRequirements) {
+    if (requirement.dependencyGroup) {
+      warnings.push('python-dependency-group-selection-unresolved');
+      continue;
+    }
+    if (requirement.nonRegistrySource) {
+      warnings.push('python-root-source-unresolved');
+      continue;
+    }
     if (
       requirement.marker &&
       !validPythonMarkerExpression(requirement.marker)
@@ -4154,13 +4807,37 @@ export async function readOtherEcosystemInventoryDetailed(
       warnings.push(`python-requirement-marker-invalid:${requirement.name}`);
       continue;
     }
+    if (requirement.optionalGroup) {
+      if (!pythonTarget) {
+        warnings.push('python-target-profile-required');
+        continue;
+      }
+      if (!pythonTarget.extras.includes(requirement.optionalGroup)) continue;
+    }
+    if (requirement.marker) {
+      if (!pythonTarget) {
+        warnings.push('python-target-profile-required');
+        continue;
+      }
+      const state = evaluatePythonMarkerExpression(
+        requirement.marker,
+        pythonTarget,
+        pythonTarget.extras
+      );
+      if (state === false) continue;
+      if (state === undefined) {
+        warnings.push(`python-requirement-marker-unknown:${requirement.name}`);
+        continue;
+      }
+    }
     const target = resolveTarget(
       'PyPI',
       requirement.name,
       requirement.requirement,
       undefined,
       requirement.marker,
-      requirement.extras
+      requirement.extras,
+      pythonTarget?.id
     );
     if (!target) {
       warnings.push(`unresolved-PyPI-root-dependency:${requirement.name}`);
@@ -4180,7 +4857,8 @@ export async function readOtherEcosystemInventoryDetailed(
       section: requirement.section,
       ...(requirement.module ? { module: requirement.module } : {}),
       ...(requirement.marker ? { marker: requirement.marker } : {}),
-      ...(requirement.extras ? { extras: requirement.extras } : {})
+      ...(requirement.extras ? { extras: requirement.extras } : {}),
+      ...(pythonTarget ? { resolutionTarget: pythonTarget.id } : {})
     });
   }
   for (const dependency of packages.filter(
@@ -4191,7 +4869,10 @@ export async function readOtherEcosystemInventoryDetailed(
       to: dependency.id,
       name: dependency.name,
       requirement: dependency.version,
-      section: 'dependency'
+      section: 'dependency',
+      ...(dependency.resolutionTarget
+        ? { resolutionTarget: dependency.resolutionTarget }
+        : {})
     });
   if (
     output.some((item) => item.source === 'gradle.lockfile') &&
@@ -4211,6 +4892,75 @@ export async function readOtherEcosystemInventoryDetailed(
     warnings: [...new Set(warnings)].sort(),
     complete: warnings.length === 0
   };
+}
+
+function reconcileGoVendorRequirements(
+  vendorPackages: LockedPackage[],
+  declarations: readonly LockedPackage[],
+  excludedVersions: ReadonlySet<string>,
+  warnings: string[]
+): void {
+  const vendorByName = new Map<string, LockedPackage[]>();
+  for (const item of vendorPackages) {
+    const entries = vendorByName.get(item.name) ?? [];
+    entries.push(item);
+    vendorByName.set(item.name, entries);
+  }
+  const ambiguousNames = new Set<string>();
+  for (const [name, entries] of vendorByName) {
+    if (entries.length < 2) continue;
+    ambiguousNames.add(name);
+    for (const item of entries) {
+      item.resolutionConfidence = 'unknown';
+      delete item.integrity;
+    }
+    warnings.push('go-vendor-module-identity-ambiguous');
+  }
+  const declarationsByName = new Map<string, LockedPackage[]>();
+  for (const declaration of declarations) {
+    const entries = declarationsByName.get(declaration.name) ?? [];
+    entries.push(declaration);
+    declarationsByName.set(declaration.name, entries);
+  }
+  for (const [name, requirements] of declarationsByName) {
+    const candidates = vendorByName.get(name) ?? [];
+    if (candidates.length !== 1) {
+      warnings.push(
+        candidates.length === 0
+          ? 'go-vendor-required-module-missing'
+          : 'go-vendor-module-identity-ambiguous'
+      );
+      continue;
+    }
+    const selected = candidates[0];
+    if (!selected || selected.resolutionConfidence === 'unknown') continue;
+    selected.direct ||= requirements.some((item) => item.direct === true);
+    const selectedExcluded = excludedVersions.has(
+      `${name}@${selected.version}`
+    );
+    const selectedVersion = semver.valid(selected.version);
+    const requirementsValid = requirements.every((requirement) =>
+      Boolean(
+        selectedVersion &&
+        semver.valid(requirement.version) &&
+        semver.gte(selectedVersion, requirement.version)
+      )
+    );
+    if (!requirementsValid || selectedExcluded) {
+      selected.resolutionConfidence = 'unknown';
+      delete selected.integrity;
+      warnings.push(
+        selectedExcluded
+          ? 'go-vendor-selected-excluded-version'
+          : 'go-vendor-requirement-version-mismatch'
+      );
+    }
+  }
+  // A duplicate module path is ambiguous even if one version happens to
+  // satisfy every declaration; the vendor manifest cannot represent two
+  // selected versions for one module path.
+  if (ambiguousNames.size > 0)
+    warnings.push('go-vendor-content-integrity-unverified');
 }
 
 function canonicalPythonName(value: string): string {

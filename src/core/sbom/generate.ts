@@ -12,6 +12,8 @@ import {
 import { digestDependencyGraph } from '../dependencies/graph-digest.js';
 import { readOtherEcosystemInventoryDetailed } from '../dependencies/ecosystem-inventory.js';
 import type { GoCommandRunner } from '../dependencies/go-module-graph.js';
+import type { PythonTargetProfile } from '../dependencies/python-target.js';
+import type { GoTargetProfile } from '../dependencies/go-target.js';
 import {
   npmProvenanceIdentityDigest,
   verifyNpmProvenance,
@@ -153,9 +155,16 @@ function hasValidStrongSri(value: string): boolean {
 function artifactIntegrityStatus(
   dependency: DependencyIdentity,
   verification?: NpmProvenanceVerification
-): 'verified' | 'declared-not-verified' | 'unknown' | 'mismatch' {
+):
+  | 'verified'
+  | 'declared-not-verified'
+  | 'unavailable'
+  | 'unknown'
+  | 'mismatch' {
   if (dependency.ecosystem === 'npm' && verification)
     return verification.artifactIntegrity;
+  if (dependency.artifactIntegrityStatus)
+    return dependency.artifactIntegrityStatus;
   const integrity = dependency.integrity;
   if (!integrity) return 'unknown';
   if (
@@ -236,6 +245,9 @@ function spdxSourceInfo(
   return [
     `Toolip resolution confidence: ${dependency.resolutionConfidence ?? 'lockfile'}`,
     `source: ${dependency.source}`,
+    ...(dependency.resolutionTarget
+      ? [`resolution target: ${dependency.resolutionTarget}`]
+      : []),
     `artifact integrity: ${artifactIntegrityStatus(dependency, verification)}`,
     `publisher trust: ${verification?.status === 'verified' ? 'verified' : verification && ['untrusted', 'invalid'].includes(verification.status) ? 'untrusted' : 'unknown'}`,
     'code safety: not asserted',
@@ -290,6 +302,8 @@ export async function generateSbom(
   options: {
     fileSource?: DependencyFileSource;
     allowGoToolExecution?: boolean;
+    pythonTarget?: PythonTargetProfile;
+    goTarget?: GoTargetProfile;
     goCommandRunner?: GoCommandRunner;
     signal?: AbortSignal;
     npmProvenancePolicy?: NpmProvenancePolicy;
@@ -348,6 +362,8 @@ export async function generateSbom(
     options.fileSource,
     {
       allowGoToolExecution: options.allowGoToolExecution,
+      pythonTarget: options.pythonTarget,
+      goTarget: options.goTarget,
       goCommandRunner: options.goCommandRunner
     }
   );
@@ -453,6 +469,14 @@ export async function generateSbom(
             name: 'toolip:installPath',
             value: dependency.installPath
           },
+          ...(dependency.resolutionTarget
+            ? [
+                {
+                  name: 'toolip:resolutionTarget',
+                  value: dependency.resolutionTarget
+                }
+              ]
+            : []),
           ...provenanceProperties(
             dependency,
             npmProvenance.get(npmProvenanceIdentityDigest(dependency))

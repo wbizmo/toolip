@@ -2,10 +2,20 @@
 
 Toolip reads Python project metadata without running Python, package managers,
 build backends, or project hooks. It uses exact package records from
-`uv.lock`, `poetry.lock`, or `Pipfile.lock`. The TOML parser is bounded by the
+`uv.lock`, `poetry.lock`, `Pipfile.lock`, and supported `requirements*.txt`
+inputs. The TOML parser is bounded by the
 shared dependency-file size limit. `pyproject.toml` declarations provide root
 dependency edges and retain markers, extras, optional groups, and development
 classification when matching the lock graph.
+
+Pipenv root `[packages]` and `[dev-packages]` entries are matched to exact
+`Pipfile.lock` versions using PEP 440 constraints. Lock sources are sent to
+public PyPI only when the named Pipenv index resolves to the public PyPI HTTPS
+endpoint with `verify_ssl = true`; credential-bearing or custom source URLs are hashed in internal
+identity keys and remain unknown. Valid Pipenv hashes are retained as declared,
+not verified bytes. Pipenv's lock format does not carry a complete dependency
+edge graph, so Toolip reports that graph as incomplete while retaining exact
+locked identities and root edges.
 
 uv workspace packages with safe relative `editable` or `directory` sources are
 kept as local workspace identities. They participate in graph relationships
@@ -46,6 +56,34 @@ where `P` is pattern length and `D` is the member path length), with one global
 work cap and `O(D)` temporary space; it does not compile repository patterns
 into backtracking regular expressions.
 
-This does not expand Python targets or prove which markers/extras were active
-in a particular runtime environment. A full Python-version/platform matrix
-remains unsupported; those limits stay explicit in graph coverage.
+Use `toolip scan --python-target '<json>'` or
+`toolip sbom --python-target '<json>'` to resolve one explicit target. The
+bounded JSON object accepts `id`, all of the PEP 508 marker environment keys
+(`implementation_name`, `implementation_version`, `os_name`,
+`platform_machine`, `platform_python_implementation`, `platform_release`,
+`platform_system`, `platform_version`, `python_full_version`, `python_version`,
+and `sys_platform`), plus an optional `extras` array. The serialized profile is
+limited to 4 KiB, environment values to 256 characters, 64 extras, and each
+extra to 128 characters. For example:
+
+```sh
+toolip scan --python-target '{"id":"py312-linux","environment":{"implementation_name":"cpython","implementation_version":"3.12.2","os_name":"posix","platform_machine":"x86_64","platform_python_implementation":"CPython","platform_release":"6.8.0","platform_system":"Linux","platform_version":"test-release","python_full_version":"3.12.2","python_version":"3.12","sys_platform":"linux"},"extras":["fast"]}'
+```
+
+The marker evaluator supports bounded PEP 508 boolean expressions, comparisons,
+`in`/`not in`, and Python version ordering. Unsupported markers, dependency
+groups that need package-manager-specific context, and missing target data stay
+unknown and make coverage incomplete. uv/Poetry lock records carrying group
+membership are currently withheld because the target profile does not select
+dependency groups; Poetry group declarations do not become root edges based on
+the unrelated `extras` selector. A target produces one selected graph;
+Toolip does not union Linux, Windows, Python-version, or extra variants into a
+single installed graph. Selected target IDs are carried into dependency edges
+and CycloneDX properties so downstream OSV/SBOM consumers can preserve scope.
+
+Declared hashes are not proof that Toolip received or hashed artifact bytes.
+Python hash status is `declared-not-verified` when a lock/requirements record
+contains hashes and `unavailable` when it does not; the current static inventory
+does not verify a wheel against an installed file or trusted download.
+Unverified ranges, private/custom indexes, editable/local sources and ambiguous
+target candidates remain unresolved or withheld from public advisory queries.

@@ -50,6 +50,8 @@ import { runTaskDag } from './task-scheduler.js';
 import type { VerifiedRulePack } from '../core/rule-packs.js';
 import type { WasmAnalyzerPlugin } from '../core/analyzer-plugin.js';
 import type { GoCommandRunner } from '../core/dependencies/go-module-graph.js';
+import type { PythonTargetProfile } from '../core/dependencies/python-target.js';
+import type { GoTargetProfile } from '../core/dependencies/go-target.js';
 import type { ReportEvidenceSubject } from '../core/report-signature.js';
 import type {
   NpmProvenancePolicy,
@@ -74,6 +76,10 @@ export type SecurityScorecardOptions = {
   offline?: boolean;
   /** Explicitly run the Go tool on captured metadata to resolve MVS. */
   allowGoToolExecution?: boolean;
+  /** Resolve Python markers/extras for exactly one declared target profile. */
+  pythonTarget?: PythonTargetProfile;
+  /** Select platform-specific files in vendored Go module source. */
+  goTarget?: GoTargetProfile;
   /** Injectable Go process boundary for verified host integrations/tests. */
   goCommandRunner?: GoCommandRunner;
   /** Maximum age allowed for cached OSV records. */
@@ -259,6 +265,8 @@ export async function buildSecurityScorecard(
             options: {
               offline: options.offline ?? false,
               allowGoToolExecution: options.allowGoToolExecution === true,
+              pythonTarget: options.pythonTarget,
+              goTarget: options.goTarget,
               goCommandRunner: options.goCommandRunner,
               maxAdvisoryAgeMs: options.maxAdvisoryAgeMs,
               allowPublicScope: options.allowPublicScope === true,

@@ -36,6 +36,11 @@ export type DependencyIdentity = {
   packageType?: string;
   /** Resolver-specific platform/extra context retained for lock variants. */
   resolutionContext?: string;
+  /** Exact target profile used to resolve an ecosystem-specific graph. */
+  resolutionTarget?: string;
+  /** Declared artifact hash is distinct from bytes independently verified. */
+  artifactIntegrityStatus?:
+    'verified' | 'declared-not-verified' | 'unavailable';
   /** Feature names declared in a first-party Cargo manifest, not active resolution. */
   declaredFeatures?: string[];
 };
@@ -55,6 +60,8 @@ export type DependencyEdge = {
   requestedFeatures?: string[];
   /** Rust/Cargo target cfg expression for a manifest dependency declaration. */
   target?: string;
+  /** Target profile that owns a platform-specific edge. */
+  resolutionTarget?: string;
 };
 
 export type UnresolvedDependencyEdge = {

@@ -6,6 +6,8 @@ import {
   readOtherEcosystemInventory,
   readOtherEcosystemInventoryDetailed
 } from '../../src/core/dependencies/ecosystem-inventory.js';
+import { parsePythonTargetProfile } from '../../src/core/dependencies/python-target.js';
+import { parseGoTargetProfile } from '../../src/core/dependencies/go-target.js';
 
 const roots: string[] = [];
 afterEach(async () =>
@@ -19,7 +21,195 @@ async function fixture(): Promise<string> {
   return root;
 }
 
+function pythonTarget(
+  id: string,
+  overrides: Record<string, string> = {},
+  extras: string[] = []
+) {
+  return parsePythonTargetProfile({
+    id,
+    environment: {
+      implementation_name: 'cpython',
+      implementation_version: '3.11.9',
+      os_name: 'posix',
+      platform_machine: 'x86_64',
+      platform_python_implementation: 'CPython',
+      platform_release: '6.8.0',
+      platform_system: 'Linux',
+      platform_version: 'test-release',
+      python_full_version: '3.11.9',
+      python_version: '3.11',
+      sys_platform: 'linux',
+      ...overrides
+    },
+    extras
+  });
+}
+
 describe('non-npm lockfile inventory', () => {
+  it('resolves Pipenv direct requirements only from public exact lock entries', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'Pipfile'),
+      [
+        '[[source]]',
+        'name = "pypi"',
+        'url = "https://pypi.org/simple"',
+        'verify_ssl = true',
+        '',
+        '[packages]',
+        'requests = ">=2.31,<3"',
+        'conditional = { version = "==2.0.0", markers = "sys_platform == \'win32\'" }',
+        '',
+        '[dev-packages]',
+        'pytest = "==8.0.0"'
+      ].join('\n')
+    );
+    await writeFile(
+      path.join(root, 'Pipfile.lock'),
+      JSON.stringify({
+        _meta: {
+          sources: [
+            { name: 'pypi', url: 'https://pypi.org/simple', verify_ssl: true }
+          ]
+        },
+        default: {
+          requests: {
+            version: '==2.31.0',
+            index: 'pypi',
+            hashes: [`sha256:${'a'.repeat(64)}`]
+          },
+          conditional: {
+            version: '==2.0.0',
+            index: 'pypi',
+            markers: "sys_platform == 'win32'"
+          }
+        },
+        develop: {
+          pytest: { version: '==8.0.0', index: 'pypi' }
+        }
+      })
+    );
+    const graph = await readOtherEcosystemInventoryDetailed(root, undefined, {
+      pythonTarget: pythonTarget('py312-linux', {
+        implementation_version: '3.12.2',
+        python_full_version: '3.12.2',
+        python_version: '3.12'
+      })
+    });
+    expect(graph.packages).toContainEqual(
+      expect.objectContaining({
+        name: 'requests',
+        version: '2.31.0',
+        source: 'Pipfile.lock:pypi',
+        resolutionConfidence: 'lockfile',
+        artifactIntegrityStatus: 'declared-not-verified',
+        resolutionTarget: 'py312-linux'
+      })
+    );
+    expect(graph.packages.some((item) => item.name === 'conditional')).toBe(
+      false
+    );
+    expect(graph.edges).toContainEqual(
+      expect.objectContaining({
+        from: 'root',
+        name: 'requests',
+        requirement: '>=2.31,<3'
+      })
+    );
+    expect(graph.edges.some((edge) => edge.name === 'conditional')).toBe(false);
+    expect(graph.warnings).toContain(
+      'pipfile-lock-transitive-edges-unresolved'
+    );
+    expect(graph.complete).toBe(false);
+  });
+
+  it('withholds Pipenv entries from private indexes and invalid declared hashes', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'Pipfile'),
+      [
+        '[[source]]',
+        'name = "internal"',
+        'url = "https://user:secret@packages.example.test/simple"',
+        'verify_ssl = true',
+        '',
+        '[packages]',
+        'internal_pkg = "==1.2.3"'
+      ].join('\n')
+    );
+    await writeFile(
+      path.join(root, 'Pipfile.lock'),
+      JSON.stringify({
+        _meta: {
+          sources: [
+            {
+              name: 'internal',
+              url: 'https://user:secret@packages.example.test/simple',
+              verify_ssl: true
+            }
+          ]
+        },
+        default: {
+          internal_pkg: {
+            version: '==1.2.3',
+            index: 'internal',
+            hashes: ['not-a-digest']
+          }
+        }
+      })
+    );
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+    expect(
+      graph.packages.find((item) => item.name === 'internal-pkg')
+    ).toMatchObject({ resolutionConfidence: 'unknown' });
+    expect(graph.edges.some((edge) => edge.name === 'internal-pkg')).toBe(
+      false
+    );
+    expect(graph.warnings).toContain('pipfile-lock-source-unverified');
+    expect(graph.warnings).toContain('pipfile-lock-hash-invalid');
+    expect(JSON.stringify(graph)).not.toContain('secret');
+  });
+
+  it('leaves unsupported Poetry and lockfile dependency groups unresolved', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'pyproject.toml'),
+      [
+        '[tool.poetry]',
+        'name = "consumer"',
+        'version = "1.0.0"',
+        '',
+        '[tool.poetry.group.docs.dependencies]',
+        'guide = "^1.0"'
+      ].join('\n')
+    );
+    await writeFile(
+      path.join(root, 'poetry.lock'),
+      [
+        '[[package]]',
+        'name = "guide"',
+        'version = "1.2.0"',
+        'groups = ["docs"]'
+      ].join('\n')
+    );
+
+    const graph = await readOtherEcosystemInventoryDetailed(root, undefined, {
+      pythonTarget: pythonTarget('py312-linux')
+    });
+    expect(graph.packages.find((item) => item.name === 'guide')).toMatchObject({
+      resolutionConfidence: 'unknown'
+    });
+    expect(graph.edges.some((edge) => edge.name === 'guide')).toBe(false);
+    expect(graph.warnings).toContain(
+      'python-lock-dependency-groups-unresolved:poetry.lock'
+    );
+    expect(graph.warnings).toContain(
+      'python-dependency-group-selection-unresolved'
+    );
+    expect(graph.complete).toBe(false);
+  });
+
   it('maps Python ranges to one matching locked instance without inventing versions', async () => {
     const root = await fixture();
     await writeFile(
@@ -162,17 +352,15 @@ describe('non-npm lockfile inventory', () => {
       ].join('\n')
     );
 
-    const graph = await readOtherEcosystemInventoryDetailed(root);
+    const graph = await readOtherEcosystemInventoryDetailed(root, undefined, {
+      pythonTarget: pythonTarget('py311-linux', {}, ['accelerated'])
+    });
     const variants = graph.packages.filter((item) => item.name === 'shared');
-    expect(variants).toHaveLength(2);
-    expect(new Set(variants.map((item) => item.id)).size).toBe(2);
+    expect(variants).toHaveLength(1);
+    expect(new Set(variants.map((item) => item.id)).size).toBe(1);
     expect(variants.every((item) => item.source === 'uv.lock:pypi')).toBe(true);
-    expect(variants.map((item) => item.resolutionContext)).toEqual(
-      expect.arrayContaining([
-        JSON.stringify({ markers: ["python_version < '3.12'"] }),
-        JSON.stringify({ markers: ["python_version >= '3.12'"] })
-      ])
-    );
+    expect(variants[0]?.resolutionTarget).toBe('py311-linux');
+    expect(variants[0]?.resolutionContext).toContain("< '3.12'");
     expect(graph.edges).toContainEqual(
       expect.objectContaining({
         name: 'shared',
@@ -192,9 +380,10 @@ describe('non-npm lockfile inventory', () => {
     expect(graph.edges).toContainEqual(
       expect.objectContaining({
         name: 'fastlib',
-        from: 'root',
+        from: expect.stringContaining('consumer@1.0.0'),
         section: 'optionalDependency',
-        extras: ['accelerated']
+        extras: ['accelerated'],
+        resolutionTarget: 'py311-linux'
       })
     );
     expect(graph.packages).toContainEqual(
@@ -208,6 +397,48 @@ describe('non-npm lockfile inventory', () => {
       'python-source-provenance-unverified:uv.lock'
     );
     expect(graph.complete).toBe(true);
+
+    const windowsGraph = await readOtherEcosystemInventoryDetailed(
+      root,
+      undefined,
+      {
+        pythonTarget: pythonTarget(
+          'py312-windows',
+          {
+            implementation_version: '3.12.2',
+            os_name: 'nt',
+            platform_machine: 'AMD64',
+            platform_release: '11',
+            platform_system: 'Windows',
+            platform_version: '10.0',
+            python_full_version: '3.12.2',
+            python_version: '3.12',
+            sys_platform: 'win32'
+          },
+          []
+        )
+      }
+    );
+    const windowsShared = windowsGraph.packages.filter(
+      (item) => item.name === 'shared'
+    );
+    expect(windowsShared).toHaveLength(1);
+    expect(windowsShared[0]?.resolutionTarget).toBe('py312-windows');
+    expect(windowsShared[0]?.resolutionContext).toContain(">= '3.12'");
+    expect(windowsGraph.edges.some((edge) => edge.name === 'shared')).toBe(
+      false
+    );
+
+    const unselectedGraph = await readOtherEcosystemInventoryDetailed(root);
+    expect(unselectedGraph.complete).toBe(false);
+    expect(unselectedGraph.warnings).toContain(
+      'python-target-profile-required'
+    );
+    expect(
+      unselectedGraph.packages
+        .filter((item) => item.name === 'shared')
+        .every((item) => item.resolutionConfidence === 'unknown')
+    ).toBe(true);
   });
 
   it('marks malformed Python environment markers incomplete instead of resolving them', async () => {
@@ -789,29 +1020,23 @@ describe('non-npm lockfile inventory', () => {
       ].join('\n')
     );
 
-    const graph = await readOtherEcosystemInventoryDetailed(root);
+    const graph = await readOtherEcosystemInventoryDetailed(root, undefined, {
+      pythonTarget: pythonTarget('py311-linux')
+    });
     const shared = graph.packages.filter((item) => item.name === 'shared-pkg');
-    expect(shared).toHaveLength(2);
-    expect(shared.map((item) => item.version)).toEqual(['1.0.0', '2.0.0']);
-    expect(shared.map((item) => item.resolutionConfidence)).toEqual([
-      'lockfile',
-      'lockfile'
-    ]);
-    expect(new Set(shared.map((item) => item.id)).size).toBe(2);
-    expect(
-      shared.map((item) => JSON.parse(item.resolutionContext ?? '{}'))
-    ).toEqual([
-      {
-        markers: ['python_version < "3.12"'],
-        extras: ['fast'],
-        hashes: [`sha256:${'a'.repeat(64)}`]
-      },
-      {
-        markers: ['python_version >= "3.12"'],
-        extras: ['fast'],
-        hashes: [`sha256:${'b'.repeat(64)}`]
-      }
-    ]);
+    expect(shared).toHaveLength(1);
+    expect(shared.map((item) => item.version)).toEqual(['1.0.0']);
+    expect(shared[0]).toMatchObject({
+      resolutionConfidence: 'lockfile',
+      resolutionTarget: 'py311-linux',
+      artifactIntegrityStatus: 'declared-not-verified'
+    });
+    expect(new Set(shared.map((item) => item.id)).size).toBe(1);
+    expect(JSON.parse(shared[0]?.resolutionContext ?? '{}')).toEqual({
+      markers: ['python_version < "3.12"'],
+      extras: ['fast'],
+      hashes: [`sha256:${'a'.repeat(64)}`]
+    });
     expect(graph.edges).toContainEqual(
       expect.objectContaining({
         from: 'root',
@@ -821,6 +1046,26 @@ describe('non-npm lockfile inventory', () => {
       })
     );
     expect(graph.complete).toBe(true);
+
+    const py312Graph = await readOtherEcosystemInventoryDetailed(
+      root,
+      undefined,
+      {
+        pythonTarget: pythonTarget('py312-linux', {
+          implementation_version: '3.12.1',
+          python_full_version: '3.12.1',
+          python_version: '3.12'
+        })
+      }
+    );
+    expect(
+      py312Graph.packages.filter((item) => item.name === 'shared-pkg')
+    ).toMatchObject([
+      {
+        version: '2.0.0',
+        artifactIntegrityStatus: 'declared-not-verified'
+      }
+    ]);
   });
 
   it('keeps unhashed requirement pins as declarations and excludes constraint-only identities', async () => {
@@ -954,6 +1199,11 @@ describe('non-npm lockfile inventory', () => {
     await writeFile(
       path.join(root, 'Pipfile.lock'),
       JSON.stringify({
+        _meta: {
+          sources: [
+            { name: 'pypi', url: 'https://pypi.org/simple', verify_ssl: true }
+          ]
+        },
         default: { requests: { version: '==2.31.0' } },
         develop: { pytest: { version: '==7.4.0' } }
       })
@@ -1647,7 +1897,7 @@ describe('non-npm lockfile inventory', () => {
       [
         'module example.test/app',
         'require example.test/lib v1.2.3',
-        'require example.test/transitive v0.4.0'
+        'require example.test/transitive v0.4.0 // indirect'
       ].join('\n')
     );
     await mkdir(path.join(root, 'vendor'), { recursive: true });
@@ -1705,6 +1955,39 @@ describe('non-npm lockfile inventory', () => {
     expect(graph.complete).toBe(false);
   });
 
+  it('rejects traversal-like Go vendor module and replacement paths', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'go.mod'),
+      'module example.test/app\ngo 1.24.0\n'
+    );
+    await mkdir(path.join(root, 'vendor', 'example.test', 'safe', 'pkg'), {
+      recursive: true
+    });
+    await writeFile(
+      path.join(root, 'vendor', 'example.test', 'safe', 'pkg', 'pkg.go'),
+      'package pkg\n'
+    );
+    await writeFile(
+      path.join(root, 'vendor', 'modules.txt'),
+      [
+        '# example.test/../escape v1.2.3',
+        'example.test/../escape/pkg',
+        '# example.test/local/../../replacement => ../local',
+        'example.test/local/../../replacement/pkg',
+        '# example.test/safe v1.0.0',
+        'example.test/safe/pkg'
+      ].join('\n')
+    );
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+    expect(graph.packages.some((item) => item.name.includes('..'))).toBe(false);
+    expect(
+      graph.packages.find((item) => item.name === 'example.test/safe')
+    ).toMatchObject({ version: 'v1.0.0' });
+    expect(graph.warnings).toContain('go-vendor-module-path-invalid');
+  });
+
   it('builds Go vendored transitive edges from the captured source snapshot', async () => {
     const root = await fixture();
     const files: Record<string, string> = {
@@ -1728,15 +2011,14 @@ describe('non-npm lockfile inventory', () => {
         ')',
         'var _ = `import "example.test/also-ignored"`'
       ].join('\n'),
-      'vendor/example.test/lib/pkg/client.go': [
-        'package client',
-        'import "example.test/transitive/pkg"'
-      ].join('\n'),
       'vendor/example.test/lib/root/root.go': [
         'package root',
         'import "example.test/transitive/pkg"'
       ].join('\n'),
-      'vendor/example.test/lib/pkg/client/client.go': 'package client\n',
+      'vendor/example.test/lib/pkg/client/client.go': [
+        'package client',
+        'import "example.test/transitive/pkg"'
+      ].join('\n'),
       'vendor/example.test/transitive/pkg/transitive.go': 'package pkg\n'
     };
     const fileSource = {
@@ -1776,6 +2058,247 @@ describe('non-npm lockfile inventory', () => {
     );
     expect(graph.warnings).toContain('go-vendor-content-integrity-unverified');
     expect(graph.complete).toBe(false);
+  });
+
+  it('reconciles Go vendor selections with go.mod requirements and rejects lower versions', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'go.mod'),
+      [
+        'module example.test/app',
+        'go 1.24.0',
+        'require example.test/lib v1.2.3'
+      ].join('\n')
+    );
+    await mkdir(path.join(root, 'vendor'), { recursive: true });
+    await writeFile(
+      path.join(root, 'vendor', 'modules.txt'),
+      [
+        '# example.test/lib v1.1.9',
+        '## explicit; go 1.24.0',
+        'example.test/lib/pkg'
+      ].join('\n')
+    );
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+    expect(
+      graph.packages.find((item) => item.name === 'example.test/lib')
+    ).toMatchObject({ resolutionConfidence: 'unknown' });
+    expect(graph.warnings).toContain('go-vendor-requirement-version-mismatch');
+    expect(graph.complete).toBe(false);
+  });
+
+  it('accepts a higher MVS vendor version and carries the declared direct edge', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'go.mod'),
+      'module example.test/app\ngo 1.24.0\nrequire example.test/lib v1.2.3\n'
+    );
+    await mkdir(path.join(root, 'vendor'), { recursive: true });
+    await writeFile(
+      path.join(root, 'vendor', 'modules.txt'),
+      [
+        '# example.test/lib v1.4.0',
+        '## explicit; go 1.24.0',
+        'example.test/lib/pkg'
+      ].join('\n')
+    );
+    await writeFile(
+      path.join(root, 'go.sum'),
+      `example.test/lib v1.4.0 h1:${Buffer.alloc(32, 0x42).toString('base64')}\n`
+    );
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+    expect(
+      graph.packages.find((item) => item.name === 'example.test/lib')
+    ).toMatchObject({
+      version: 'v1.4.0',
+      direct: true,
+      resolutionConfidence: 'lockfile',
+      artifactIntegrityStatus: 'declared-not-verified',
+      integrity: `h1:${Buffer.alloc(32, 0x42).toString('base64')}`
+    });
+    expect(graph.edges).toContainEqual(
+      expect.objectContaining({
+        from: 'root',
+        name: 'example.test/lib'
+      })
+    );
+    expect(graph.warnings).toContain('go-checksum-database-status-unverified');
+  });
+
+  it('withholds ambiguous duplicate Go vendor module versions', async () => {
+    const root = await fixture();
+    await mkdir(path.join(root, 'vendor'), { recursive: true });
+    await writeFile(
+      path.join(root, 'vendor', 'modules.txt'),
+      [
+        '# example.test/lib v1.2.3',
+        'example.test/lib/pkg',
+        '# example.test/lib v1.3.0',
+        'example.test/lib/other'
+      ].join('\n')
+    );
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+    expect(
+      graph.packages
+        .filter((item) => item.name === 'example.test/lib')
+        .every((item) => item.resolutionConfidence === 'unknown')
+    ).toBe(true);
+    expect(graph.warnings).toContain('go-vendor-module-identity-ambiguous');
+  });
+
+  it('withholds a vendored Go version explicitly excluded by go.mod', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'go.mod'),
+      [
+        'module example.test/app',
+        'go 1.24.0',
+        'require example.test/lib v1.2.3',
+        'exclude (',
+        '  example.test/lib v1.2.3',
+        ')'
+      ].join('\n')
+    );
+    await mkdir(path.join(root, 'vendor'), { recursive: true });
+    await writeFile(
+      path.join(root, 'vendor', 'modules.txt'),
+      [
+        '# example.test/lib v1.2.3',
+        '## explicit; go 1.24.0',
+        'example.test/lib/pkg'
+      ].join('\n')
+    );
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+    expect(
+      graph.packages.find((item) => item.name === 'example.test/lib')
+    ).toMatchObject({ resolutionConfidence: 'unknown' });
+    expect(graph.warnings).toContain('go-vendor-selected-excluded-version');
+  });
+
+  it('resolves vendored Go imports separately for Linux and Windows targets', async () => {
+    const root = await fixture();
+    const files: Record<string, string> = {
+      'go.mod': 'module example.test/app\ngo 1.24.0\n',
+      'vendor/modules.txt': [
+        '# example.test/lib v1.2.3',
+        '## explicit; go 1.24.0',
+        'example.test/lib/pkg',
+        '# example.test/linuxdep v0.1.0',
+        'example.test/linuxdep/pkg',
+        '# example.test/windep v0.2.0',
+        'example.test/windep/pkg'
+      ].join('\n'),
+      'main.go': 'package main\nimport "example.test/lib/pkg"\n',
+      'vendor/example.test/lib/pkg/linux.go': [
+        '//go:build linux',
+        '',
+        'package lib',
+        'import "example.test/linuxdep/pkg"'
+      ].join('\n'),
+      'vendor/example.test/lib/pkg/windows.go': [
+        '//go:build windows',
+        '',
+        'package lib',
+        'import "example.test/windep/pkg"'
+      ].join('\n'),
+      'vendor/example.test/linuxdep/pkg/pkg.go': 'package pkg\n',
+      'vendor/example.test/windep/pkg/pkg.go': 'package pkg\n'
+    };
+    const source = {
+      files: Object.keys(files),
+      hasFile: (file: string) => Object.hasOwn(files, file),
+      readText: (file: string) => files[file]
+    };
+    const linux = await readOtherEcosystemInventoryDetailed(root, source, {
+      goTarget: parseGoTargetProfile({
+        id: 'linux-amd64',
+        goos: 'linux',
+        goarch: 'amd64',
+        cgo: false,
+        goVersion: '1.24'
+      })
+    });
+    const linuxLibrary = linux.packages.find(
+      (item) => item.name === 'example.test/lib'
+    );
+    const linuxDependency = linux.packages.find(
+      (item) => item.name === 'example.test/linuxdep'
+    );
+    const windows = await readOtherEcosystemInventoryDetailed(root, source, {
+      goTarget: parseGoTargetProfile({
+        id: 'windows-amd64',
+        goos: 'windows',
+        goarch: 'amd64',
+        cgo: false,
+        goVersion: '1.24'
+      })
+    });
+    const windowsLibrary = windows.packages.find(
+      (item) => item.name === 'example.test/lib'
+    );
+    const windowsDependency = windows.packages.find(
+      (item) => item.name === 'example.test/windep'
+    );
+
+    expect(linuxLibrary?.resolutionTarget).toBe('linux-amd64');
+    expect(linuxDependency?.resolutionTarget).toBe('linux-amd64');
+    expect(linux.edges).toContainEqual(
+      expect.objectContaining({
+        from: linuxLibrary?.id,
+        to: linuxDependency?.id,
+        resolutionTarget: 'linux-amd64'
+      })
+    );
+    expect(
+      linux.edges.some((edge) => edge.name === 'example.test/windep')
+    ).toBe(false);
+    expect(windows.edges).toContainEqual(
+      expect.objectContaining({
+        from: windowsLibrary?.id,
+        to: windowsDependency?.id,
+        resolutionTarget: 'windows-amd64'
+      })
+    );
+    const unknownTarget = await readOtherEcosystemInventoryDetailed(
+      root,
+      source
+    );
+    expect(unknownTarget.warnings).toContain(
+      'go-source-build-target-unresolved'
+    );
+    expect(
+      unknownTarget.edges.some((edge) =>
+        ['example.test/linuxdep', 'example.test/windep'].includes(edge.name)
+      )
+    ).toBe(false);
+  });
+
+  it('does not count Go test-only imports or nested files as vendored packages', async () => {
+    const root = await fixture();
+    const files: Record<string, string> = {
+      'go.mod': 'module example.test/app\ngo 1.24.0\n',
+      'vendor/modules.txt': [
+        '# example.test/lib v1.2.3',
+        'example.test/lib/pkg'
+      ].join('\n'),
+      'main_test.go': ['package app', 'import "example.test/lib/pkg"'].join(
+        '\n'
+      ),
+      'vendor/example.test/lib/pkg/child/child.go': 'package child\n'
+    };
+    const source = {
+      files: Object.keys(files),
+      hasFile: (file: string) => Object.hasOwn(files, file),
+      readText: (file: string) => files[file]
+    };
+    const graph = await readOtherEcosystemInventoryDetailed(root, source);
+    expect(graph.warnings).toContain('go-vendor-manifest-content-mismatch');
+    expect(
+      graph.packages.find((item) => item.name === 'example.test/lib')
+    ).toMatchObject({ direct: false });
+    expect(graph.edges.some((edge) => edge.name === 'example.test/lib')).toBe(
+      false
+    );
   });
 
   it('resolves Maven dependency-tree coordinates and parent edges', async () => {
