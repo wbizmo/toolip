@@ -1,0 +1,94 @@
+{
+  "generator": {
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "commands": [
+      "cargo metadata --offline --format-version 1",
+      "cargo metadata --offline --format-version 1 --filter-platform x86_64-unknown-linux-gnu",
+      "cargo metadata --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc"
+    ],
+    "buildScriptsExecuted": false
+  },
+  "packages": [
+    {
+      "name": "app",
+      "version": "0.1.0",
+      "features": [],
+      "dependencies": [
+        "leaf"
+      ]
+    },
+    {
+      "name": "cli",
+      "version": "0.1.0",
+      "features": [],
+      "dependencies": [
+        "leaf"
+      ]
+    },
+    {
+      "name": "leaf",
+      "version": "0.1.0",
+      "features": [
+        "alpha",
+        "base",
+        "beta",
+        "default",
+        "weak"
+      ],
+      "dependencies": [
+        "opt",
+        "shared"
+      ]
+    },
+    {
+      "name": "opt",
+      "version": "0.1.0",
+      "features": [
+        "common",
+        "default",
+        "extra",
+        "fast"
+      ],
+      "dependencies": []
+    },
+    {
+      "name": "shared",
+      "version": "0.1.0",
+      "features": [
+        "alpha",
+        "base",
+        "common",
+        "default"
+      ],
+      "dependencies": []
+    }
+  ],
+  "targetDependencies": {
+    "x86_64-unknown-linux-gnu": [
+      "leaf",
+      "unix-helper"
+    ],
+    "x86_64-pc-windows-msvc": [
+      "leaf",
+      "windows-helper"
+    ]
+  },
+  "mergedDependencyContexts": {
+    "target": "x86_64-unknown-linux-gnu",
+    "dependency": [
+      {
+        "kind": null,
+        "target": null
+      },
+      {
+        "kind": null,
+        "target": "cfg(target_os = \"linux\")"
+      }
+    ],
+    "features": [
+      "base",
+      "default",
+      "linux"
+    ]
+  }
+}

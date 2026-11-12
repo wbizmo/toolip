@@ -39,6 +39,9 @@ export function digestDependencyGraph(
     ...(pkg.libc ? { libc: [...pkg.libc].sort() } : {}),
     ...(pkg.declaredFeatures
       ? { declaredFeatures: [...pkg.declaredFeatures].sort() }
+      : {}),
+    ...(pkg.activeFeatures
+      ? { activeFeatures: [...pkg.activeFeatures].sort() }
       : {})
   }));
   const edges = graph.edges.map((edge) => ({

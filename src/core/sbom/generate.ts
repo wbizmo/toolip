@@ -234,6 +234,14 @@ function provenanceProperties(
       : []),
     ...(dependency.integrity
       ? [{ name: 'toolip:declaredIntegrity', value: dependency.integrity }]
+      : []),
+    ...(dependency.activeFeatures !== undefined
+      ? [
+          {
+            name: 'toolip:activeCargoFeatures',
+            value: JSON.stringify([...dependency.activeFeatures].sort())
+          }
+        ]
       : [])
   ];
 }
@@ -262,6 +270,11 @@ function spdxSourceInfo(
     ...(dependency.registry ? [`registry: ${dependency.registry}`] : []),
     ...(dependency.integrity
       ? [`declared integrity: ${dependency.integrity}`]
+      : []),
+    ...(dependency.activeFeatures !== undefined
+      ? [
+          `active Cargo features: ${[...dependency.activeFeatures].sort().join(',')}`
+        ]
       : [])
   ].join('; ');
 }
@@ -304,6 +317,7 @@ export async function generateSbom(
     allowGoToolExecution?: boolean;
     pythonTarget?: PythonTargetProfile;
     goTarget?: GoTargetProfile;
+    cargoTarget?: string;
     goCommandRunner?: GoCommandRunner;
     signal?: AbortSignal;
     npmProvenancePolicy?: NpmProvenancePolicy;
@@ -364,6 +378,7 @@ export async function generateSbom(
       allowGoToolExecution: options.allowGoToolExecution,
       pythonTarget: options.pythonTarget,
       goTarget: options.goTarget,
+      cargoTarget: options.cargoTarget,
       goCommandRunner: options.goCommandRunner
     }
   );

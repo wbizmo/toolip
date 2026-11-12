@@ -878,3 +878,50 @@ These are local results only; they do not establish hosted Actions, protected
 `main` trust bootstrap, administrator ruleset configuration, macOS/Windows
 verification or independent review. Issue-specific requirements listed above
 remain incomplete, and all 37 issues remain Partial.
+
+Issue #81 Cargo feature and target-resolution follow-on — 2026-11-12, working
+tree based on pushed checkpoint `d7e03a58c68bd5decd993a0992f62d2592852158`:
+Cargo workspace inventory now statically activates default, requested,
+optional, `dep:`, weak dependency-feature and inherited workspace-dependency
+features across captured workspace packages. An explicit `--cargo-target`
+selection is wired into scan, OSV inventory and SBOM generation. The bounded
+target parser selects matching cfg dependencies for common Linux, Windows,
+Android, ARM, WASI and embedded profiles; unsupported target expressions stay
+incomplete. Target IDs and resolved workspace features are included in graph
+digests and CycloneDX/SPDX output. Cargo.lock dependency source IDs now keep
+same-name/same-version Git and registry packages from being cross-linked.
+Cargo registry package feature sets remain unverified because Cargo.lock does
+not encode them and Toolip does not fetch or execute crate manifests; the
+inventory marks this coverage incomplete. A real Cargo 1.99.1 `metadata
+--offline` reference fixture, generated from inert local manifests without
+build scripts, covers workspace feature unification and Linux/Windows filtered
+dependency edges. Rustc target-cfg reference checks also cover ARM Linux,
+Android, WASI and embedded `none` triples. Focused ecosystem/OSV/SBOM tests
+pass 103/103 across 3 files. Merged normal/target dependency contexts retain
+both Cargo metadata edges, and the bounded feature work queue advances with a
+linear cursor. Registry feature activation remains unverified, and Cargo
+resolver-version semantics, unrecognized cfg properties, native
+cross-platform behavior and a broader Cargo-generated target matrix remain
+acceptance gaps; #81 is still Partial.
+
+Final local verification for this #81 change group, 2026-11-12:
+
+- Node 22.23.5: clean `npm ci --ignore-scripts` and `npm run verify` exit 0.
+  Unit tests pass 1,163 with 3 skipped; coverage tests pass 1,161 with 3
+  skipped. Coverage is 85.45% statements, 79.76% branches, 92.54% functions
+  and 87.63% lines.
+- Node 24.22.1: clean `npm ci --ignore-scripts` and `npm run verify` exit 0
+  with the same counts. `npm run release:check` exits 0; the verified
+  `toolip@2.2.1` tarball contains 522 files (713.8 kB packed, 3.5 MB unpacked)
+  and was removed after local verification.
+- Full and production npm audits report zero vulnerabilities. `npm audit
+signatures` verifies 299 package signatures and 102 attestations. Gitleaks
+  8.30.1 finds no leaks in the 4.63 MB worktree, 60.04 KB staged diff or
+  141-commit history. Actionlint 1.7.12, ShellCheck 0.11.0, seven-workflow
+  policy and the Stage A scanner digest verifier pass. The source digest is
+  `b4b53baff609c3fc4871a398b0242aad54e90867a20d712a8742e19beb2fb586` and is
+  pinned in `stage-a.yml`. `git diff --check` passes.
+
+These are local results, not hosted Actions, protected `main` trust-bootstrap,
+administrator ruleset or independent-review evidence. No issue is marked
+complete; all 37 issues remain Partial.

@@ -80,6 +80,8 @@ export type SecurityScorecardOptions = {
   pythonTarget?: PythonTargetProfile;
   /** Select platform-specific files in vendored Go module source. */
   goTarget?: GoTargetProfile;
+  /** Resolve Cargo cfg dependencies for one explicit Rust target triple. */
+  cargoTarget?: string;
   /** Injectable Go process boundary for verified host integrations/tests. */
   goCommandRunner?: GoCommandRunner;
   /** Maximum age allowed for cached OSV records. */
@@ -267,6 +269,7 @@ export async function buildSecurityScorecard(
               allowGoToolExecution: options.allowGoToolExecution === true,
               pythonTarget: options.pythonTarget,
               goTarget: options.goTarget,
+              cargoTarget: options.cargoTarget,
               goCommandRunner: options.goCommandRunner,
               maxAdvisoryAgeMs: options.maxAdvisoryAgeMs,
               allowPublicScope: options.allowPublicScope === true,

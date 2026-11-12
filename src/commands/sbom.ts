@@ -34,6 +34,7 @@ type SbomOptions = {
   allowGoToolExecution?: boolean;
   pythonTarget?: string;
   goTarget?: string;
+  cargoTarget?: string;
   allowPublicScope?: boolean;
   npmProvenancePolicy?: string;
   goCommandRunner?: GoCommandRunner;
@@ -103,6 +104,10 @@ export function registerSbomCommand(program: Command): void {
       'Select one GOOS/GOARCH target profile for vendor source import resolution.'
     )
     .option(
+      '--cargo-target <triple>',
+      'Resolve Cargo cfg dependencies and workspace features for one explicit Rust target triple.'
+    )
+    .option(
       '--allow-public-scope',
       'Consent to sending scoped npm package names to the public npm registry for provenance verification.'
     )
@@ -169,6 +174,7 @@ export function registerSbomCommand(program: Command): void {
         goTarget: options.goTarget
           ? parseGoTargetProfileJson(options.goTarget)
           : undefined,
+        cargoTarget: options.cargoTarget,
         allowPublicScope: options.allowPublicScope,
         npmProvenancePolicy,
         goCommandRunner: options.goCommandRunner

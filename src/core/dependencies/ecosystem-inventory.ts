@@ -34,6 +34,8 @@ type LockedPackage = {
   version: string;
   ecosystem: DependencyIdentity['ecosystem'];
   source: string;
+  /** Raw Cargo source URL used only for matching lockfile dependency IDs. */
+  cargoLockSource?: string;
   resolutionConfidence?: 'lockfile' | 'declared-pin' | 'workspace' | 'unknown';
   development?: boolean;
   optional?: boolean;
@@ -47,6 +49,7 @@ type LockedPackage = {
   resolutionTarget?: string;
   artifactIntegrityStatus?: DependencyIdentity['artifactIntegrityStatus'];
   declaredFeatures?: string[];
+  activeFeatures?: string[];
   dependencies?: Array<{
     name: string;
     requirement: string;
@@ -57,6 +60,7 @@ type LockedPackage = {
     requestedFeatures?: string[];
     target?: string;
     alias?: string;
+    cargoLockSource?: string;
   }>;
 };
 
@@ -132,6 +136,9 @@ function identity(item: LockedPackage): DependencyIdentity {
     ...(item.declaredFeatures?.length
       ? { declaredFeatures: [...item.declaredFeatures].sort() }
       : {}),
+    ...(item.activeFeatures !== undefined
+      ? { activeFeatures: [...item.activeFeatures].sort() }
+      : {}),
     ...(item.integrity ? { integrity: item.integrity } : {})
   };
 }
@@ -155,6 +162,8 @@ export type OtherEcosystemInventoryOptions = {
   pythonTarget?: PythonTargetProfile;
   /** Resolve vendored source imports for one explicit GOOS/GOARCH target. */
   goTarget?: GoTargetProfile;
+  /** Resolve Cargo target-specific dependencies for one explicit Rust target triple. */
+  cargoTarget?: string;
 };
 
 function exact(value: unknown): value is string {
@@ -591,7 +600,8 @@ function fromTomlLock(
       rawName: unknown,
       rawValue: unknown,
       section: DependencyEdge['section'] = 'dependency',
-      extra?: string
+      extra?: string,
+      cargoLockSource?: string
     ): void => {
       if (
         typeof rawName !== 'string' ||
@@ -653,7 +663,8 @@ function fromTomlLock(
         requirement,
         section: dep?.optional === true ? 'optionalDependency' : section,
         ...(marker ? { marker } : {}),
-        ...(extras?.length ? { extras } : {})
+        ...(extras?.length ? { extras } : {}),
+        ...(cargoLockSource ? { cargoLockSource } : {})
       });
     };
     const rawDependencies = pkg?.dependencies;
@@ -661,9 +672,16 @@ function fromTomlLock(
       for (const rawDependency of rawDependencies) {
         if (typeof rawDependency === 'string' && ecosystem === 'crates.io') {
           const match = rawDependency.match(
-            /^(.+?)\s+([^\s]+)(?:\s+\(([^)]+)\))?$/u
+            /^([A-Za-z0-9_-]{1,256})(?:\s+([^\s]+))?(?:\s+\(([^)]+)\))?$/u
           );
-          if (match?.[1] && match[2]) addDependency(match[1], match[2]);
+          if (match?.[1])
+            addDependency(
+              match[1],
+              match[2] ?? '*',
+              'dependency',
+              undefined,
+              match[3]
+            );
           else warnings.push(`toml-lock-dependency-unresolved:${source}`);
         } else {
           const dependency = asRecord(rawDependency);
@@ -794,6 +812,9 @@ function fromTomlLock(
       version: version.replace(/^v/u, ''),
       ecosystem,
       source: packageSource,
+      ...(ecosystem === 'crates.io' && typeof pkg.source === 'string'
+        ? { cargoLockSource: pkg.source }
+        : {}),
       resolutionConfidence,
       ...(integrity ? { integrity } : {}),
       ...(resolutionContext ? { resolutionContext } : {}),
@@ -880,7 +901,347 @@ type CargoDependencyDeclaration = {
   module?: string;
   target?: string;
   requestedFeatures?: string[];
+  optional: boolean;
+  defaultFeatures: boolean;
 };
+
+type CargoWorkspacePackage = {
+  name: string;
+  version: string;
+  module: string;
+  file: string;
+  declarations: CargoDependencyDeclaration[];
+  manifest: RecordValue;
+  workspaceItem: LockedPackage;
+};
+
+type CargoTargetProfile = {
+  triple: string;
+  arch: string;
+  vendor: string;
+  os: string;
+  env?: string;
+  family?: 'unix' | 'windows' | 'wasm';
+  pointerWidth?: string;
+  endian?: 'little' | 'big';
+};
+
+const cargoTargetOs = new Set([
+  'android',
+  'androideabi',
+  'cuda',
+  'dragonfly',
+  'emscripten',
+  'espidf',
+  'freebsd',
+  'fuchsia',
+  'haiku',
+  'illumos',
+  'ios',
+  'linux',
+  'macos',
+  'netbsd',
+  'none',
+  'openbsd',
+  'solaris',
+  'tvos',
+  'uefi',
+  'unknown',
+  'visionos',
+  'darwin',
+  'wasip1',
+  'wasip2',
+  'wasi',
+  'watchos',
+  'windows'
+]);
+
+function parseCargoTargetProfile(
+  value: string
+): CargoTargetProfile | undefined {
+  if (
+    value.length > 128 ||
+    !/^[A-Za-z0-9_]+(?:-[A-Za-z0-9_.]+){1,4}$/u.test(value)
+  )
+    return undefined;
+  const parts = value.toLowerCase().split('-');
+  const rawArch = parts[0];
+  const rawVendor = parts[1];
+  if (!rawArch || !rawVendor) return undefined;
+  const arch = /^(?:armv|thumbv)/u.test(rawArch)
+    ? 'arm'
+    : /^(?:i[3-6]86)$/u.test(rawArch)
+      ? 'x86'
+      : rawArch === 'armeb' || rawArch === 'aarch64_be'
+        ? rawArch === 'armeb'
+          ? 'arm'
+          : 'aarch64'
+        : rawArch === 'mipsel'
+          ? 'mips'
+          : rawArch === 'mips64el'
+            ? 'mips64'
+            : rawArch === 'powerpc64le'
+              ? 'powerpc64'
+              : /^riscv(?:32|64)(?:gc|imac)?$/u.test(rawArch)
+                ? rawArch.startsWith('riscv32')
+                  ? 'riscv32'
+                  : 'riscv64'
+                : rawArch;
+  let vendor = rawVendor;
+  const osPosition = parts.findIndex(
+    (part, index) => index >= 2 && cargoTargetOs.has(part)
+  );
+  let os: string;
+  let env: string | undefined;
+  if (
+    parts.length === 2 &&
+    rawArch.startsWith('wasm') &&
+    /^wasi(?:p[12])?$/u.test(rawVendor)
+  ) {
+    vendor = 'unknown';
+    os = 'wasi';
+    env = rawVendor === 'wasip1' ? 'p1' : rawVendor === 'wasip2' ? 'p2' : '';
+  } else if (rawVendor === 'none' && osPosition < 0) {
+    vendor = 'unknown';
+    os = 'none';
+    env = '';
+  } else {
+    if (osPosition < 0) return undefined;
+    const rawOs = parts[osPosition] ?? '';
+    os =
+      rawOs === 'androideabi'
+        ? 'android'
+        : rawOs === 'darwin'
+          ? 'macos'
+          : rawOs === 'wasip1' || rawOs === 'wasip2'
+            ? 'wasi'
+            : rawOs;
+    if (rawVendor === 'linux' && os === 'android') vendor = 'unknown';
+    const suffix = parts.slice(osPosition + 1).join('-');
+    if (os === 'android' || os === 'none' || os === 'unknown') env = '';
+    else if (os === 'linux')
+      env = suffix.startsWith('gnu')
+        ? 'gnu'
+        : suffix.startsWith('musl')
+          ? 'musl'
+          : suffix === ''
+            ? ''
+            : undefined;
+    else if (os === 'windows')
+      env = ['gnu', 'msvc'].includes(suffix)
+        ? suffix
+        : suffix === ''
+          ? ''
+          : undefined;
+    else if (os === 'ios' && ['sim', 'macabi'].includes(suffix)) env = '';
+    else
+      env = [
+        '',
+        'gnu',
+        'musl',
+        'msvc',
+        'sgx',
+        'ohos',
+        'newlib',
+        'uclibc',
+        'nto70',
+        'nto71',
+        'p1',
+        'p2'
+      ].includes(suffix)
+        ? suffix
+        : undefined;
+  }
+  const unixOs = new Set([
+    'android',
+    'dragonfly',
+    'freebsd',
+    'haiku',
+    'illumos',
+    'ios',
+    'linux',
+    'macos',
+    'netbsd',
+    'openbsd',
+    'solaris',
+    'tvos',
+    'visionos',
+    'watchos'
+  ]);
+  const pointerWidths = new Map([
+    ['aarch64', '64'],
+    ['arm', '32'],
+    ['arm64ec', '64'],
+    ['i386', '32'],
+    ['i586', '32'],
+    ['i686', '32'],
+    ['mips', '32'],
+    ['mips64', '64'],
+    ['nvptx64', '64'],
+    ['powerpc', '32'],
+    ['powerpc64', '64'],
+    ['riscv32', '32'],
+    ['riscv64', '64'],
+    ['s390x', '64'],
+    ['sparc64', '64'],
+    ['wasm32', '32'],
+    ['wasm64', '64'],
+    ['x86', '32'],
+    ['x86_64', '64']
+  ]);
+  const knownLittleEndian = new Set([
+    'aarch64',
+    'arm',
+    'arm64ec',
+    'i386',
+    'i586',
+    'i686',
+    'riscv32',
+    'riscv64',
+    'nvptx64',
+    'wasm32',
+    'wasm64',
+    'x86',
+    'x86_64'
+  ]);
+  const knownBigEndian = new Set([
+    'mips',
+    'mips64',
+    'powerpc',
+    'powerpc64',
+    's390x',
+    'sparc',
+    'sparc64'
+  ]);
+  const rawLittleEndian = new Set([
+    'mipsel',
+    'mips64el',
+    'powerpc64le',
+    'wasm32',
+    'wasm64'
+  ]);
+  const rawBigEndian = new Set([
+    'armeb',
+    'armv7eb',
+    'aarch64_be',
+    'mips',
+    'mips64',
+    'powerpc'
+  ]);
+  return {
+    triple: value.toLowerCase(),
+    arch,
+    vendor,
+    os,
+    env,
+    ...(os === 'windows'
+      ? { family: 'windows' as const }
+      : unixOs.has(os)
+        ? { family: 'unix' as const }
+        : arch.startsWith('wasm')
+          ? { family: 'wasm' as const }
+          : {}),
+    ...(pointerWidths.has(arch)
+      ? { pointerWidth: pointerWidths.get(arch) }
+      : {}),
+    ...(knownLittleEndian.has(arch) || rawLittleEndian.has(rawArch)
+      ? { endian: 'little' as const }
+      : knownBigEndian.has(arch) || rawBigEndian.has(rawArch)
+        ? { endian: 'big' as const }
+        : {})
+  };
+}
+
+function cargoTargetConditionMatches(
+  condition: string | undefined,
+  target: CargoTargetProfile | undefined
+): boolean | undefined {
+  if (condition === undefined) return true;
+  if (condition.length > 1_024) return undefined;
+  if (!target) return undefined;
+  const normalized = condition.trim();
+  if (!normalized.startsWith('cfg('))
+    return normalized.toLowerCase() === target.triple;
+  if (!normalized.endsWith(')')) return undefined;
+  const source = normalized.slice(4, -1);
+  let offset = 0;
+  const skipWhitespace = () => {
+    while (/\s/u.test(source[offset] ?? '')) offset++;
+  };
+  const parse = (depth: number): boolean | undefined => {
+    if (depth > 16) return undefined;
+    skipWhitespace();
+    const nameMatch = /^[A-Za-z_][A-Za-z0-9_]*/u.exec(source.slice(offset));
+    if (!nameMatch) return undefined;
+    const name = nameMatch[0];
+    offset += name.length;
+    skipWhitespace();
+    if (source[offset] === '(') {
+      offset++;
+      const values: Array<boolean | undefined> = [];
+      while (offset < source.length) {
+        skipWhitespace();
+        if (source[offset] === ')') {
+          offset++;
+          break;
+        }
+        const value = parse(depth + 1);
+        if (value === undefined && !values.length && name === 'not')
+          return undefined;
+        values.push(value);
+        skipWhitespace();
+        if (source[offset] === ',') offset++;
+        else if (source[offset] !== ')') return undefined;
+      }
+      if (source[offset - 1] !== ')') return undefined;
+      if (name === 'not') return values.length === 1 ? !values[0] : undefined;
+      if (name === 'all') {
+        if (values.includes(false)) return false;
+        return values.includes(undefined) ? undefined : true;
+      }
+      if (name === 'any') {
+        if (values.includes(true)) return true;
+        return values.includes(undefined) ? undefined : false;
+      }
+      return undefined;
+    }
+    const values: Record<string, string | undefined> = {
+      target_arch: target.arch,
+      target_env: target.env,
+      target_endian: target.endian,
+      target_family: target.family,
+      target_os: target.os,
+      target_pointer_width: target.pointerWidth,
+      target_vendor: target.vendor
+    };
+    if (source[offset] === '=') {
+      offset++;
+      skipWhitespace();
+      const quote = source[offset];
+      if (quote !== '"' && quote !== "'") return undefined;
+      offset++;
+      let value = '';
+      while (offset < source.length && source[offset] !== quote) {
+        if (source[offset] === '\\') {
+          offset++;
+          if (offset >= source.length) return undefined;
+        }
+        value += source[offset];
+        offset++;
+      }
+      if (source[offset] !== quote) return undefined;
+      offset++;
+      const actual = values[name];
+      return actual === undefined ? undefined : actual === value;
+    }
+    if (name === 'unix') return target.family === 'unix';
+    if (name === 'windows') return target.family === 'windows';
+    return undefined;
+  };
+  const result = parse(0);
+  skipWhitespace();
+  return offset === source.length ? result : undefined;
+}
 
 function cargoPatternMatches(
   pattern: string,
@@ -1067,6 +1428,8 @@ function cargoDependencyDeclarations(
         alias,
         requirement,
         section: spec.optional === true ? 'optionalDependency' : section,
+        optional: spec.optional === true,
+        defaultFeatures: spec['default-features'] !== false,
         ...(dependencyModule !== undefined ? { module: dependencyModule } : {}),
         ...(target ? { target } : {}),
         ...(requestedFeatures.length ? { requestedFeatures } : {})
@@ -1099,6 +1462,262 @@ function cargoDependencyDeclarations(
       readTable(targetTable[key], section, target);
   }
   return result;
+}
+
+function resolveCargoWorkspaceFeatures(
+  packages: readonly CargoWorkspacePackage[],
+  target: CargoTargetProfile | undefined,
+  warnings: string[]
+): {
+  activeFeatures: Map<string, string[]>;
+  enabledDependencies: Map<string, Set<string>>;
+  unresolvedModules: Set<string>;
+} {
+  const byModule = new Map(
+    packages.map((item) => [item.module || 'root', item])
+  );
+  const featureValues = new Map<string, Map<string, string[]>>();
+  const activeFeatures = new Map<string, Set<string>>();
+  const enabledDependencies = new Map<string, Set<string>>();
+  const unresolvedModules = new Set<string>();
+  const pending: Array<{ module: string; feature: string }> = [];
+  const weakFeatureRequests = new Map<string, Set<string>>();
+  const warned = new Set<string>();
+  const warnOnce = (value: string): void => {
+    if (warned.has(value)) return;
+    warned.add(value);
+    warnings.push(value);
+  };
+  const work = { value: 0, exceeded: false };
+  const maximumFeatureWork = maximumEcosystemResolutionWork;
+
+  for (const item of packages) {
+    const module = item.module || 'root';
+    const rawFeatures = asRecord(item.manifest.features) ?? {};
+    const normalized = new Map<string, string[]>();
+    if (Object.keys(rawFeatures).length > 4_096) {
+      warnOnce(`cargo-feature-count-over-budget:${item.file}`);
+      unresolvedModules.add(module);
+    }
+    for (const [name, rawValues] of Object.entries(rawFeatures).slice(
+      0,
+      4_096
+    )) {
+      if (
+        !/^[A-Za-z0-9_-]{1,128}$/u.test(name) ||
+        !Array.isArray(rawValues) ||
+        rawValues.length > 4_096 ||
+        rawValues.some(
+          (value) => typeof value !== 'string' || value.length > 256
+        )
+      ) {
+        warnOnce(`cargo-feature-definition-invalid:${item.file}`);
+        unresolvedModules.add(module);
+        continue;
+      }
+      normalized.set(name, rawValues as string[]);
+    }
+    const dependencyFeatureSuppressions = new Set(
+      [...normalized.values()].flatMap((values) =>
+        values
+          .filter((value) => value.startsWith('dep:'))
+          .map((value) => value.slice(4))
+      )
+    );
+    for (const declaration of item.declarations) {
+      if (
+        declaration.optional &&
+        !dependencyFeatureSuppressions.has(declaration.alias) &&
+        !normalized.has(declaration.alias)
+      )
+        normalized.set(declaration.alias, [`dep:${declaration.alias}`]);
+    }
+    featureValues.set(module, normalized);
+    activeFeatures.set(module, new Set());
+    enabledDependencies.set(module, new Set());
+  }
+
+  const targetState = (
+    item: CargoWorkspacePackage,
+    declaration: CargoDependencyDeclaration
+  ): boolean | undefined => {
+    const state = cargoTargetConditionMatches(declaration.target, target);
+    if (state === undefined) {
+      warnOnce(`cargo-target-context-unverified:${item.file}`);
+      unresolvedModules.add(item.module || 'root');
+    }
+    return state;
+  };
+
+  const enqueueFeature = (module: string, feature: string): void => {
+    const table = featureValues.get(module);
+    if (!table?.has(feature)) {
+      const item = byModule.get(module);
+      warnOnce(
+        `cargo-feature-reference-unresolved:${item?.file ?? 'workspace'}`
+      );
+      unresolvedModules.add(module);
+      return;
+    }
+    const active = activeFeatures.get(module);
+    if (!active || active.has(feature)) return;
+    active.add(feature);
+    pending.push({ module, feature });
+    if (++work.value > maximumFeatureWork) work.exceeded = true;
+  };
+
+  const activateDependency = (
+    parent: CargoWorkspacePackage,
+    alias: string,
+    feature?: string
+  ): void => {
+    const module = parent.module || 'root';
+    const declarations = parent.declarations.filter(
+      (item) => item.alias === alias && targetState(parent, item) !== false
+    );
+    if (declarations.length === 0) {
+      warnOnce(`cargo-feature-dependency-unresolved:${parent.file}`);
+      unresolvedModules.add(module);
+      return;
+    }
+    const aliases = enabledDependencies.get(module);
+    const wasEnabled = aliases?.has(alias) ?? false;
+    aliases?.add(alias);
+    for (const declaration of declarations) {
+      if (declaration.optional && !aliases?.has(alias)) continue;
+      const dependencyModule = declaration.module;
+      const dependency = dependencyModule
+        ? byModule.get(dependencyModule)
+        : undefined;
+      if (!dependency) {
+        if (
+          declaration.defaultFeatures ||
+          declaration.requestedFeatures?.length
+        )
+          warnOnce(
+            `cargo-external-feature-resolution-unverified:${declaration.name}`
+          );
+        continue;
+      }
+      const dependencyKey = dependency.module || 'root';
+      if (
+        declaration.defaultFeatures &&
+        featureValues.get(dependencyKey)?.has('default')
+      )
+        enqueueFeature(dependencyKey, 'default');
+      for (const requested of declaration.requestedFeatures ?? [])
+        enqueueFeature(dependencyKey, requested);
+      if (feature) enqueueFeature(dependencyKey, feature);
+    }
+    if (!wasEnabled) {
+      const weakFeatures = weakFeatureRequests.get(`${module}\0${alias}`);
+      const declaration = declarations.find((item) => item.module);
+      const dependency = declaration?.module
+        ? byModule.get(declaration.module)
+        : undefined;
+      if (dependency)
+        for (const requested of weakFeatures ?? [])
+          enqueueFeature(dependency.module || 'root', requested);
+    }
+  };
+
+  for (const item of packages) {
+    const module = item.module || 'root';
+    const table = featureValues.get(module);
+    if (table?.has('default')) enqueueFeature(module, 'default');
+    for (const declaration of item.declarations) {
+      if (targetState(item, declaration) === false || declaration.optional)
+        continue;
+      activateDependency(item, declaration.alias);
+    }
+    for (const declaration of item.declarations) {
+      if (
+        targetState(item, declaration) === false ||
+        !declaration.optional ||
+        !table?.has(declaration.alias)
+      )
+        continue;
+      const hasExplicitDependencyFeature = [...table.values()].some((values) =>
+        values.includes(`dep:${declaration.alias}`)
+      );
+      if (!hasExplicitDependencyFeature)
+        enqueueFeature(module, declaration.alias);
+    }
+  }
+
+  for (
+    let pendingIndex = 0;
+    pendingIndex < pending.length && !work.exceeded;
+    pendingIndex++
+  ) {
+    const current = pending[pendingIndex];
+    if (!current) continue;
+    const item = byModule.get(current.module);
+    const values = featureValues.get(current.module)?.get(current.feature);
+    if (!item || !values) continue;
+    for (const value of values) {
+      if (++work.value > maximumFeatureWork) {
+        work.exceeded = true;
+        break;
+      }
+      const dependencyFeature = value.match(
+        /^([A-Za-z0-9_-]{1,128})(\?)?\/([A-Za-z0-9_-]{1,128})$/u
+      );
+      if (dependencyFeature?.[1] && dependencyFeature[3]) {
+        const alias = dependencyFeature[1];
+        const requested = dependencyFeature[3];
+        const weak = dependencyFeature[2] === '?';
+        if (weak && !enabledDependencies.get(current.module)?.has(alias)) {
+          const key = `${current.module}\0${alias}`;
+          const requests = weakFeatureRequests.get(key) ?? new Set<string>();
+          requests.add(requested);
+          weakFeatureRequests.set(key, requests);
+          continue;
+        }
+        activateDependency(item, alias, requested);
+        continue;
+      }
+      if (value.startsWith('dep:')) {
+        const alias = value.slice(4);
+        if (!/^[A-Za-z0-9_-]{1,128}$/u.test(alias)) {
+          warnOnce(`cargo-feature-reference-invalid:${item.file}`);
+          unresolvedModules.add(current.module);
+        } else activateDependency(item, alias);
+        continue;
+      }
+      if (featureValues.get(current.module)?.has(value)) {
+        enqueueFeature(current.module, value);
+        continue;
+      }
+      const implicitDependency = item.declarations.find(
+        (declaration) =>
+          declaration.alias === value &&
+          declaration.optional &&
+          targetState(item, declaration) !== false
+      );
+      if (implicitDependency) {
+        activateDependency(item, implicitDependency.alias);
+        continue;
+      }
+      warnOnce(`cargo-feature-reference-unresolved:${item.file}`);
+      unresolvedModules.add(current.module);
+    }
+  }
+
+  if (work.exceeded) {
+    warnings.push('cargo-feature-resolution-work-budget-exceeded');
+    for (const item of packages) unresolvedModules.add(item.module || 'root');
+  }
+
+  return {
+    activeFeatures: new Map(
+      [...activeFeatures]
+        .filter(([module]) => !unresolvedModules.has(module))
+        .map(([module, features]) => [module, [...features].sort()])
+    ),
+    enabledDependencies,
+    unresolvedModules
+  };
 }
 
 async function cargoManifestPaths(
@@ -3404,6 +4023,11 @@ export async function readOtherEcosystemInventoryDetailed(
   const warnings: string[] = [];
   let pythonTarget: PythonTargetProfile | undefined;
   let goTarget: GoTargetProfile | undefined;
+  const cargoTarget = options.cargoTarget
+    ? parseCargoTargetProfile(options.cargoTarget)
+    : undefined;
+  if (options.cargoTarget && !cargoTarget)
+    warnings.push('cargo-target-profile-invalid');
   if (options.pythonTarget) {
     try {
       pythonTarget = parsePythonTargetProfile(options.pythonTarget);
@@ -3670,13 +4294,7 @@ export async function readOtherEcosystemInventoryDetailed(
   );
   const cargoPatternWork = { used: 0, exceeded: false };
   const cargoWorkspaceVersion = asRecord(cargoWorkspace?.package)?.version;
-  const cargoWorkspacePackages: Array<{
-    name: string;
-    version: string;
-    module: string;
-    file: string;
-    declarations: CargoDependencyDeclaration[];
-  }> = [];
+  const cargoWorkspacePackages: CargoWorkspacePackage[] = [];
   let cargoDeclarationWork = 0;
   let cargoDeclarationWarningAdded = false;
   const cargoWorkspaceLockCandidates = new Map<string, LockedPackage[]>();
@@ -3738,12 +4356,6 @@ export async function readOtherEcosystemInventoryDetailed(
       warnings,
       file
     );
-    if (
-      Object.keys(asRecord(manifest.features) ?? {}).length > 0 ||
-      Object.keys(asRecord(manifest.target) ?? {}).length > 0 ||
-      declarations.some((declaration) => declaration.requestedFeatures?.length)
-    )
-      warnings.push(`cargo-active-feature-target-selection-unverified:${file}`);
     const locked =
       cargoWorkspaceLockCandidates.get(
         JSON.stringify([name, version.replace(/^v/u, '')])
@@ -3789,11 +4401,22 @@ export async function readOtherEcosystemInventoryDetailed(
     } else {
       cargoDeclarationWork += workspaceDeclarationWork;
       workspaceItem.dependencies = lockedDependencies.flatMap((dependency) => {
-        const contexts = (declarationsByName.get(dependency.name) ?? []).filter(
-          (context) =>
-            cargoRequirementMatches(dependency.requirement, context.requirement)
+        const declaredContexts = declarationsByName.get(dependency.name) ?? [];
+        const requirementContexts = declaredContexts.filter((context) =>
+          cargoRequirementMatches(dependency.requirement, context.requirement)
         );
-        if (!contexts?.length) return [dependency];
+        const contexts = requirementContexts.filter(
+          (context) =>
+            cargoTargetConditionMatches(context.target, cargoTarget) !== false
+        );
+        if (requirementContexts.length > 0 && contexts.length === 0) return [];
+        if (!contexts.length) {
+          if (declaredContexts.length > 0)
+            warnings.push(
+              `cargo-workspace-dependency-version-unmatched:${file}:${dependency.name}`
+            );
+          return [dependency];
+        }
         return contexts.map((context) => ({
           ...dependency,
           section: context.section,
@@ -3806,7 +4429,58 @@ export async function readOtherEcosystemInventoryDetailed(
         }));
       });
     }
-    cargoWorkspacePackages.push({ name, version, module, file, declarations });
+    cargoWorkspacePackages.push({
+      name,
+      version,
+      module,
+      file,
+      declarations,
+      manifest,
+      workspaceItem
+    });
+  }
+  const cargoFeatureResolution = resolveCargoWorkspaceFeatures(
+    cargoWorkspacePackages,
+    cargoTarget,
+    warnings
+  );
+  if (
+    cargoTarget &&
+    cargoWorkspacePackages.length === 0 &&
+    output.some((item) => item.ecosystem === 'crates.io')
+  )
+    warnings.push('cargo-target-workspace-context-unavailable');
+  if (
+    output.some(
+      (item) =>
+        item.ecosystem === 'crates.io' &&
+        item.source === 'Cargo.lock:registry:crates.io'
+    )
+  )
+    warnings.push('cargo-registry-feature-resolution-unverified');
+  for (const member of cargoWorkspacePackages) {
+    const module = member.module || 'root';
+    const activeFeatures = cargoFeatureResolution.activeFeatures.get(module);
+    if (activeFeatures) member.workspaceItem.activeFeatures = activeFeatures;
+    member.workspaceItem.dependencies = (
+      member.workspaceItem.dependencies ?? []
+    ).filter((dependency) => {
+      if (cargoTargetConditionMatches(dependency.target, cargoTarget) === false)
+        return false;
+      return (
+        dependency.section !== 'optionalDependency' ||
+        cargoFeatureResolution.enabledDependencies
+          .get(module)
+          ?.has(dependency.alias ?? dependency.name) === true
+      );
+    });
+  }
+  if (cargoTarget) {
+    for (const item of output) {
+      if (item.ecosystem !== 'crates.io') continue;
+      item.resolutionTarget = cargoTarget.triple;
+      item.installPath = `${item.installPath ?? `Cargo.lock:${item.name}@${item.version}`}#target=${cargoTarget.triple}`;
+    }
   }
   if (cargoPatternWork.exceeded)
     warnings.push('cargo-workspace-pattern-work-budget-exceeded');
@@ -4429,6 +5103,7 @@ export async function readOtherEcosystemInventoryDetailed(
           extras: edge.extras ? [...edge.extras].sort() : undefined,
           alias: edge.alias,
           target: edge.target,
+          cargoLockSource: edge.cargoLockSource,
           requestedFeatures: edge.requestedFeatures
             ? [...edge.requestedFeatures].sort()
             : undefined
@@ -4457,6 +5132,7 @@ export async function readOtherEcosystemInventoryDetailed(
           (item.resolutionConfidence ?? 'lockfile') ||
         priorRecord.record.resolutionContext !== item.resolutionContext ||
         priorRecord.record.resolutionTarget !== item.resolutionTarget ||
+        priorRecord.record.cargoLockSource !== item.cargoLockSource ||
         priorRecord.record.artifactIntegrityStatus !==
           item.artifactIntegrityStatus
       ) {
@@ -4596,7 +5272,8 @@ export async function readOtherEcosystemInventoryDetailed(
     module?: string,
     marker?: string,
     extras?: readonly string[],
-    resolutionTarget?: string
+    resolutionTarget?: string,
+    cargoLockSource?: string
   ): DependencyIdentity | undefined => {
     const index = resolutionByName.get(`${ecosystem}\0${name}`);
     let candidates = index?.candidates ?? [];
@@ -4643,8 +5320,17 @@ export async function readOtherEcosystemInventoryDetailed(
         resolutionCandidates = withExtraContexts;
     }
     if (ecosystem === 'crates.io') {
-      const cargoMatches = filterCandidates(resolutionCandidates, (candidate) =>
-        cargoRequirementMatches(candidate.version, requirement)
+      const cargoMatches = filterCandidates(
+        resolutionCandidates,
+        (candidate) => {
+          if (
+            cargoLockSource !== undefined &&
+            lockRecordById.get(candidate.id)?.record.cargoLockSource !==
+              cargoLockSource
+          )
+            return false;
+          return cargoRequirementMatches(candidate.version, requirement);
+        }
       );
       if (ecosystemResolutionWorkExceeded) return undefined;
       const moduleMatches = module
@@ -4726,7 +5412,8 @@ export async function readOtherEcosystemInventoryDetailed(
         dependency.module,
         dependency.marker,
         dependency.extras,
-        item.resolutionTarget
+        item.resolutionTarget,
+        dependency.cargoLockSource
       );
       if (!target) {
         if (ecosystemResolutionWorkExceeded) {
@@ -4778,12 +5465,41 @@ export async function readOtherEcosystemInventoryDetailed(
       });
     }
     for (const declaration of member.declarations) {
+      if (
+        !cargoFeatureResolution.enabledDependencies
+          .get(member.module || 'root')
+          ?.has(declaration.alias) ||
+        cargoTargetConditionMatches(declaration.target, cargoTarget) === false
+      )
+        continue;
+      const matchingLockDependencies = (
+        member.workspaceItem.dependencies ?? []
+      ).filter(
+        (dependency) =>
+          dependency.name === declaration.name &&
+          (dependency.alias ?? dependency.name) === declaration.alias &&
+          dependency.target === declaration.target &&
+          cargoRequirementMatches(
+            dependency.requirement,
+            declaration.requirement
+          )
+      );
+      const lockSources = new Set(
+        matchingLockDependencies
+          .map((dependency) => dependency.cargoLockSource)
+          .filter((source): source is string => source !== undefined)
+      );
+      const cargoLockSource =
+        lockSources.size === 1 ? [...lockSources][0] : undefined;
       const target = resolveTarget(
         'crates.io',
         declaration.name,
         declaration.requirement,
         declaration.module,
-        declaration.target
+        undefined,
+        undefined,
+        member.workspaceItem.resolutionTarget,
+        cargoLockSource
       );
       if (!target) {
         warnings.push(
@@ -5002,16 +5718,89 @@ export async function readOtherEcosystemInventoryDetailed(
     !mavenTreeAvailable
   )
     warnings.push('maven-graph-unavailable:gradle.lockfile-has-no-edges');
+  const resolvedEdges = [
+    ...new Map(
+      edges.map((edge) => [
+        JSON.stringify({
+          from: edge.from,
+          to: edge.to,
+          name: edge.name,
+          alias: edge.alias ?? null,
+          requirement: edge.requirement,
+          section: edge.section,
+          marker: edge.marker ?? null,
+          extras: edge.extras ? [...edge.extras].sort() : [],
+          requestedFeatures: edge.requestedFeatures
+            ? [...edge.requestedFeatures].sort()
+            : [],
+          target: edge.target ?? null,
+          resolutionTarget: edge.resolutionTarget ?? null
+        }),
+        edge
+      ])
+    ).values()
+  ].sort((a, b) => `${a.from}:${a.to}`.localeCompare(`${b.from}:${b.to}`));
+  let resolvedPackages = packages;
+  let finalEdges = resolvedEdges;
+  const cargoSelectionUncertain = warnings.some(
+    (warning) =>
+      warning.startsWith('cargo-workspace-') ||
+      warning.startsWith('cargo-manifest-') ||
+      warning.startsWith('cargo-feature-') ||
+      warning.startsWith('cargo-dependency-identity-invalid:') ||
+      warning.startsWith('unresolved-crates.io-') ||
+      warning.startsWith('unresolved-crates.io:') ||
+      warning.startsWith('ecosystem-lock-identity-conflict:')
+  );
+  if (
+    cargoTarget &&
+    cargoWorkspacePackages.length > 0 &&
+    !cargoSelectionUncertain
+  ) {
+    const cargoIds = new Set(
+      packages
+        .filter((item) => item.ecosystem === 'crates.io')
+        .map((item) => item.id)
+    );
+    const reachableCargoIds = new Set<string>();
+    const pendingCargoIds = resolvedEdges
+      .filter((edge) => edge.from === 'root' && cargoIds.has(edge.to))
+      .map((edge) => edge.to);
+    pendingCargoIds.push(
+      ...packages
+        .filter(
+          (item) =>
+            item.ecosystem === 'crates.io' &&
+            item.resolutionConfidence === 'workspace' &&
+            item.workspace === 'root'
+        )
+        .map((item) => item.id)
+    );
+    const edgesBySource = new Map<string, string[]>();
+    for (const edge of resolvedEdges) {
+      if (!cargoIds.has(edge.from) || !cargoIds.has(edge.to)) continue;
+      const targets = edgesBySource.get(edge.from) ?? [];
+      targets.push(edge.to);
+      edgesBySource.set(edge.from, targets);
+    }
+    while (pendingCargoIds.length > 0) {
+      const id = pendingCargoIds.pop();
+      if (!id || reachableCargoIds.has(id)) continue;
+      reachableCargoIds.add(id);
+      pendingCargoIds.push(...(edgesBySource.get(id) ?? []));
+    }
+    resolvedPackages = packages.filter(
+      (item) => item.ecosystem !== 'crates.io' || reachableCargoIds.has(item.id)
+    );
+    finalEdges = resolvedEdges.filter(
+      (edge) =>
+        (!cargoIds.has(edge.from) || reachableCargoIds.has(edge.from)) &&
+        (!cargoIds.has(edge.to) || reachableCargoIds.has(edge.to))
+    );
+  }
   return {
-    packages,
-    edges: [
-      ...new Map(
-        edges.map((edge) => [
-          `${edge.from}\0${edge.to}\0${edge.section}\0${edge.marker ?? ''}\0${(edge.extras ?? []).join(',')}`,
-          edge
-        ])
-      ).values()
-    ].sort((a, b) => `${a.from}:${a.to}`.localeCompare(`${b.from}:${b.to}`)),
+    packages: resolvedPackages,
+    edges: finalEdges,
     warnings: [...new Set(warnings)].sort(),
     complete: warnings.length === 0
   };

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -875,7 +875,7 @@ describe('non-npm lockfile inventory', () => {
       resolutionConfidence: 'lockfile'
     });
     expect(platformHelper).toMatchObject({ direct: true });
-    expect(serdeV2).toMatchObject({ version: '2.0.0', direct: true });
+    expect(serdeV2).toMatchObject({ version: '2.0.0', direct: false });
     expect(serdeV2?.id).not.toBe(serde?.id);
     expect(graph.edges).toContainEqual(
       expect.objectContaining({
@@ -885,7 +885,7 @@ describe('non-npm lockfile inventory', () => {
         requestedFeatures: ['derive']
       })
     );
-    expect(graph.edges).toContainEqual(
+    expect(graph.edges).not.toContainEqual(
       expect.objectContaining({
         from: 'root',
         to: serdeV2?.id,
@@ -912,9 +912,609 @@ describe('non-npm lockfile inventory', () => {
       'ecosystem-workspace-graph-incomplete'
     );
     expect(graph.warnings).toContain(
-      'cargo-active-feature-target-selection-unverified:crates/app/Cargo.toml'
+      'cargo-target-context-unverified:crates/app/Cargo.toml'
     );
     expect(graph.complete).toBe(false);
+  });
+
+  it('resolves Cargo default, optional and unified workspace features against cargo metadata', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'Cargo.toml'),
+      [
+        '[workspace]',
+        'members = ["crates/app", "crates/cli", "crates/leaf", "crates/shared", "crates/opt"]',
+        'default-members = ["crates/app", "crates/cli"]',
+        'resolver = "2"',
+        '',
+        '[workspace.dependencies]',
+        'shared = { path = "crates/shared", default-features = false }'
+      ].join('\n')
+    );
+    const manifests = {
+      'crates/app/Cargo.toml': [
+        '[package]',
+        'name = "app"',
+        'version = "0.1.0"',
+        'edition = "2021"',
+        '',
+        '[dependencies]',
+        'leaf = { path = "../leaf", default-features = false, features = ["alpha"] }'
+      ].join('\n'),
+      'crates/cli/Cargo.toml': [
+        '[package]',
+        'name = "cli"',
+        'version = "0.1.0"',
+        'edition = "2021"',
+        '',
+        '[dependencies]',
+        'leaf = { path = "../leaf", features = ["beta", "weak"] }'
+      ].join('\n'),
+      'crates/leaf/Cargo.toml': [
+        '[package]',
+        'name = "leaf"',
+        'version = "0.1.0"',
+        'edition = "2021"',
+        '',
+        '[features]',
+        'default = ["base"]',
+        'base = ["shared/base"]',
+        'alpha = ["dep:opt", "shared/alpha"]',
+        'beta = ["opt/fast"]',
+        'weak = ["opt?/extra"]',
+        '',
+        '[dependencies]',
+        'shared = { workspace = true, features = ["alpha"] }',
+        'opt = { path = "../opt", optional = true, default-features = false }'
+      ].join('\n'),
+      'crates/shared/Cargo.toml': [
+        '[package]',
+        'name = "shared"',
+        'version = "0.1.0"',
+        'edition = "2021"',
+        '',
+        '[features]',
+        'default = ["common"]',
+        'common = []',
+        'base = []',
+        'alpha = []'
+      ].join('\n'),
+      'crates/opt/Cargo.toml': [
+        '[package]',
+        'name = "opt"',
+        'version = "0.1.0"',
+        'edition = "2021"',
+        '',
+        '[features]',
+        'default = ["common"]',
+        'common = []',
+        'fast = []',
+        'extra = []'
+      ].join('\n')
+    };
+    for (const [file, contents] of Object.entries(manifests)) {
+      const manifestPath = path.join(root, file);
+      await mkdir(path.dirname(manifestPath), { recursive: true });
+      await writeFile(manifestPath, contents);
+    }
+    await writeFile(
+      path.join(root, 'Cargo.lock'),
+      [
+        'version = 4',
+        '',
+        '[[package]]',
+        'name = "app"',
+        'version = "0.1.0"',
+        'dependencies = ["leaf"]',
+        '',
+        '[[package]]',
+        'name = "cli"',
+        'version = "0.1.0"',
+        'dependencies = ["leaf"]',
+        '',
+        '[[package]]',
+        'name = "leaf"',
+        'version = "0.1.0"',
+        'dependencies = ["opt", "shared"]',
+        '',
+        '[[package]]',
+        'name = "opt"',
+        'version = "0.1.0"',
+        '',
+        '[[package]]',
+        'name = "shared"',
+        'version = "0.1.0"'
+      ].join('\n')
+    );
+
+    const reference = JSON.parse(
+      await readFile(
+        new URL(
+          '../fixtures/cargo/feature-resolution-reference.json',
+          import.meta.url
+        ),
+        'utf8'
+      )
+    ) as {
+      packages: Array<{
+        name: string;
+        version: string;
+        features: string[];
+        dependencies: string[];
+      }>;
+    };
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+    const cargoPackages = graph.packages.filter(
+      (item) => item.ecosystem === 'crates.io'
+    );
+
+    for (const expected of reference.packages) {
+      const actual = cargoPackages.find(
+        (item) =>
+          item.name === expected.name && item.version === expected.version
+      );
+      expect(actual).toBeDefined();
+      expect(actual).toHaveProperty('activeFeatures', expected.features);
+      for (const dependencyName of expected.dependencies) {
+        expect(
+          graph.edges.some(
+            (edge) => edge.from === actual?.id && edge.name === dependencyName
+          ),
+          `${expected.name} -> ${dependencyName}`
+        ).toBe(true);
+      }
+    }
+    expect(graph.warnings).not.toContain(
+      'cargo-active-feature-target-selection-unverified:crates/leaf/Cargo.toml'
+    );
+    expect(graph.warnings).not.toContain(
+      'toml-lock-dependency-unresolved:Cargo.lock'
+    );
+  });
+
+  it('preserves merged normal and target Cargo dependency contexts from cargo metadata', async () => {
+    const root = await fixture();
+    try {
+      await writeFile(
+        path.join(root, 'Cargo.toml'),
+        [
+          '[package]',
+          'name = "dup-app"',
+          'version = "0.1.0"',
+          'edition = "2021"',
+          '',
+          '[workspace]',
+          'members = ["helper"]',
+          'resolver = "2"',
+          '',
+          '[dependencies]',
+          'helper = { path = "helper", default-features = false }',
+          '',
+          '[target."cfg(target_os = \\"linux\\")".dependencies]',
+          'helper = { path = "helper", features = ["linux"] }'
+        ].join('\n')
+      );
+      await mkdir(path.join(root, 'helper'), { recursive: true });
+      await writeFile(
+        path.join(root, 'helper/Cargo.toml'),
+        [
+          '[package]',
+          'name = "helper"',
+          'version = "0.1.0"',
+          'edition = "2021"',
+          '',
+          '[features]',
+          'default = ["base"]',
+          'base = []',
+          'linux = []'
+        ].join('\n')
+      );
+      await writeFile(
+        path.join(root, 'Cargo.lock'),
+        [
+          'version = 4',
+          '',
+          '[[package]]',
+          'name = "dup-app"',
+          'version = "0.1.0"',
+          'dependencies = ["helper"]',
+          '',
+          '[[package]]',
+          'name = "helper"',
+          'version = "0.1.0"'
+        ].join('\n')
+      );
+      const reference = JSON.parse(
+        await readFile(
+          new URL(
+            '../fixtures/cargo/feature-resolution-reference.json',
+            import.meta.url
+          ),
+          'utf8'
+        )
+      ) as {
+        mergedDependencyContexts: {
+          target: string;
+          dependency: Array<{ kind: null; target: string | null }>;
+          features: string[];
+        };
+      };
+      const graph = await readOtherEcosystemInventoryDetailed(root, undefined, {
+        cargoTarget: reference.mergedDependencyContexts.target
+      });
+      const app = graph.packages.find((item) => item.name === 'dup-app');
+      const helper = graph.packages.find((item) => item.name === 'helper');
+      const appEdges = graph.edges.filter((edge) => edge.from === app?.id);
+
+      expect(appEdges).toHaveLength(
+        reference.mergedDependencyContexts.dependency.length
+      );
+      expect(appEdges.map((edge) => edge.target ?? null)).toEqual(
+        reference.mergedDependencyContexts.dependency.map((item) => item.target)
+      );
+      expect(helper).toHaveProperty(
+        'activeFeatures',
+        reference.mergedDependencyContexts.features
+      );
+      expect(graph.complete).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('selects Cargo cfg dependencies for explicit targets like cargo metadata', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'Cargo.toml'),
+      [
+        '[workspace]',
+        'members = ["crates/app", "crates/leaf", "crates/unix-helper", "crates/windows-helper"]',
+        'resolver = "2"'
+      ].join('\n')
+    );
+    const manifests = {
+      'crates/app/Cargo.toml': [
+        '[package]',
+        'name = "app"',
+        'version = "0.1.0"',
+        'edition = "2021"',
+        '',
+        '[dependencies]',
+        'leaf = { path = "../leaf" }',
+        '',
+        '[target."cfg(all(unix, target_arch = \\"x86_64\\"))".dependencies]',
+        'unix-helper = { path = "../unix-helper", features = ["posix"] }',
+        '',
+        '[target."cfg(target_os = \\"windows\\")".dependencies]',
+        'windows-helper = { path = "../windows-helper", features = ["windows"] }'
+      ].join('\n'),
+      'crates/leaf/Cargo.toml': [
+        '[package]',
+        'name = "leaf"',
+        'version = "0.1.0"',
+        'edition = "2021"'
+      ].join('\n'),
+      'crates/unix-helper/Cargo.toml': [
+        '[package]',
+        'name = "unix-helper"',
+        'version = "0.1.0"',
+        'edition = "2021"',
+        '',
+        '[features]',
+        'posix = []'
+      ].join('\n'),
+      'crates/windows-helper/Cargo.toml': [
+        '[package]',
+        'name = "windows-helper"',
+        'version = "0.1.0"',
+        'edition = "2021"',
+        '',
+        '[features]',
+        'windows = []'
+      ].join('\n')
+    };
+    for (const [file, contents] of Object.entries(manifests)) {
+      const manifestPath = path.join(root, file);
+      await mkdir(path.dirname(manifestPath), { recursive: true });
+      await writeFile(manifestPath, contents);
+    }
+    await writeFile(
+      path.join(root, 'Cargo.lock'),
+      [
+        'version = 4',
+        '',
+        '[[package]]',
+        'name = "app"',
+        'version = "0.1.0"',
+        'dependencies = ["leaf", "unix-helper", "windows-helper"]',
+        '',
+        '[[package]]',
+        'name = "leaf"',
+        'version = "0.1.0"',
+        '',
+        '[[package]]',
+        'name = "unix-helper"',
+        'version = "0.1.0"',
+        '',
+        '[[package]]',
+        'name = "windows-helper"',
+        'version = "0.1.0"'
+      ].join('\n')
+    );
+    const reference = JSON.parse(
+      await readFile(
+        new URL(
+          '../fixtures/cargo/feature-resolution-reference.json',
+          import.meta.url
+        ),
+        'utf8'
+      )
+    ) as {
+      targetDependencies: Record<string, string[]>;
+    };
+
+    for (const [cargoTarget, expectedNames] of Object.entries(
+      reference.targetDependencies
+    )) {
+      const graph = await readOtherEcosystemInventoryDetailed(root, undefined, {
+        cargoTarget
+      });
+      const app = graph.packages.find((item) => item.name === 'app');
+      const actualNames = graph.edges
+        .filter((edge) => edge.from === app?.id)
+        .map((edge) => graph.packages.find((item) => item.id === edge.to)?.name)
+        .filter((name): name is string => name !== undefined)
+        .sort();
+      expect(actualNames).toEqual(expectedNames);
+      expect(graph.warnings).not.toContain(
+        'cargo-target-context-unverified:crates/app/Cargo.toml'
+      );
+      expect(graph.complete).toBe(true);
+    }
+
+    const unresolved = await readOtherEcosystemInventoryDetailed(root);
+    expect(unresolved.warnings).toContain(
+      'cargo-target-context-unverified:crates/app/Cargo.toml'
+    );
+    expect(unresolved.complete).toBe(false);
+  });
+
+  it('excludes inactive Cargo registry packages from an explicitly selected target graph', async () => {
+    const root = await fixture();
+    const registry = 'registry+https://github.com/rust-lang/crates.io-index';
+    try {
+      await writeFile(
+        path.join(root, 'Cargo.toml'),
+        [
+          '[package]',
+          'name = "target-filter-app"',
+          'version = "0.1.0"',
+          'edition = "2021"',
+          '',
+          '[target."cfg(target_os = \\"linux\\")".dependencies]',
+          'linux-only = "1.0.0"',
+          '',
+          '[target."cfg(target_os = \\"windows\\")".dependencies]',
+          'windows-only = "1.0.0"'
+        ].join('\n')
+      );
+      await writeFile(
+        path.join(root, 'Cargo.lock'),
+        [
+          'version = 4',
+          '',
+          '[[package]]',
+          'name = "target-filter-app"',
+          'version = "0.1.0"',
+          `dependencies = ["linux-only 1.0.0 (${registry})", "windows-only 1.0.0 (${registry})"]`,
+          '',
+          '[[package]]',
+          'name = "linux-only"',
+          'version = "1.0.0"',
+          `source = "${registry}"`,
+          `checksum = "${'b'.repeat(64)}"`,
+          '',
+          '[[package]]',
+          'name = "windows-only"',
+          'version = "1.0.0"',
+          `source = "${registry}"`,
+          `checksum = "${'c'.repeat(64)}"`
+        ].join('\n')
+      );
+
+      const linux = await readOtherEcosystemInventoryDetailed(root, undefined, {
+        cargoTarget: 'x86_64-unknown-linux-gnu'
+      });
+      expect(linux.packages.map((item) => item.name)).toContain('linux-only');
+      expect(linux.packages.map((item) => item.name)).not.toContain(
+        'windows-only'
+      );
+      expect(
+        linux.packages.find((item) => item.name === 'linux-only')
+      ).toMatchObject({
+        direct: true,
+        resolutionTarget: 'x86_64-unknown-linux-gnu'
+      });
+      expect(linux.complete).toBe(false);
+      expect(linux.warnings).toContain(
+        'cargo-registry-feature-resolution-unverified'
+      );
+
+      const allTargets = await readOtherEcosystemInventoryDetailed(root);
+      expect(allTargets.packages.map((item) => item.name)).toContain(
+        'windows-only'
+      );
+      expect(allTargets.complete).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('maps Cargo target triples to cfg values instead of comparing raw components', async () => {
+    const root = await fixture();
+    const conditions = {
+      'arm-helper':
+        'cfg(all(target_arch = "arm", target_os = "linux", target_env = "gnu", target_pointer_width = "32", unix))',
+      'android-helper':
+        'cfg(all(target_arch = "aarch64", target_vendor = "unknown", target_os = "android", target_env = "", unix))',
+      'wasi-helper':
+        'cfg(all(target_arch = "wasm32", target_vendor = "unknown", target_os = "wasi", target_env = "p1", target_family = "wasm"))',
+      'embedded-helper':
+        'cfg(all(target_arch = "arm", target_os = "none", target_env = "", target_pointer_width = "32"))'
+    };
+    try {
+      await writeFile(
+        path.join(root, 'Cargo.toml'),
+        [
+          '[package]',
+          'name = "platform-app"',
+          'version = "0.1.0"',
+          'edition = "2021"',
+          '',
+          '[workspace]',
+          'members = ["crates/arm-helper", "crates/android-helper", "crates/wasi-helper", "crates/embedded-helper"]',
+          'resolver = "2"',
+          '',
+          ...Object.entries(conditions).flatMap(([name, condition]) => [
+            `[target.${JSON.stringify(condition)}.dependencies]`,
+            `${name} = { path = "crates/${name}" }`,
+            ''
+          ])
+        ].join('\n')
+      );
+      for (const name of Object.keys(conditions)) {
+        const manifestPath = path.join(root, 'crates', name);
+        await mkdir(manifestPath, { recursive: true });
+        await writeFile(
+          path.join(manifestPath, 'Cargo.toml'),
+          `[package]\nname = "${name}"\nversion = "0.1.0"\nedition = "2021"\n`
+        );
+      }
+      await writeFile(
+        path.join(root, 'Cargo.lock'),
+        [
+          'version = 4',
+          '',
+          '[[package]]',
+          'name = "platform-app"',
+          'version = "0.1.0"',
+          'dependencies = ["android-helper", "arm-helper", "embedded-helper", "wasi-helper"]',
+          ...Object.keys(conditions).flatMap((name) => [
+            '',
+            '[[package]]',
+            `name = "${name}"`,
+            'version = "0.1.0"'
+          ])
+        ].join('\n')
+      );
+
+      const targets = {
+        'armv7-unknown-linux-gnueabihf': 'arm-helper',
+        'aarch64-linux-android': 'android-helper',
+        'wasm32-wasip1': 'wasi-helper',
+        'thumbv7em-none-eabihf': 'embedded-helper'
+      };
+      for (const [cargoTarget, expectedName] of Object.entries(targets)) {
+        const graph = await readOtherEcosystemInventoryDetailed(
+          root,
+          undefined,
+          { cargoTarget }
+        );
+        const app = graph.packages.find((item) => item.name === 'platform-app');
+        const selectedNames = graph.edges
+          .filter((edge) => edge.from === app?.id)
+          .map(
+            (edge) => graph.packages.find((item) => item.id === edge.to)?.name
+          )
+          .filter((name): name is string => name !== undefined);
+        expect(selectedNames).toEqual([expectedName]);
+        expect(graph.warnings).not.toContain('cargo-target-profile-invalid');
+        expect(graph.complete).toBe(true);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('uses Cargo lock source IDs when identical crate versions come from different sources', async () => {
+    const root = await fixture();
+    const gitSource =
+      'git+https://example.invalid/vendor/shared?rev=release#0123456789abcdef0123456789abcdef01234567';
+    try {
+      await writeFile(
+        path.join(root, 'Cargo.toml'),
+        [
+          '[package]',
+          'name = "source-app"',
+          'version = "0.1.0"',
+          'edition = "2021"',
+          '',
+          '[dependencies]',
+          'shared = { git = "https://example.invalid/vendor/shared", rev = "release" }'
+        ].join('\n')
+      );
+      await writeFile(
+        path.join(root, 'Cargo.lock'),
+        [
+          'version = 4',
+          '',
+          '[[package]]',
+          'name = "source-app"',
+          'version = "0.1.0"',
+          `dependencies = ["shared 1.0.0 (${gitSource})"]`,
+          '',
+          '[[package]]',
+          'name = "shared"',
+          'version = "1.0.0"',
+          `source = "${gitSource}"`,
+          '',
+          '[[package]]',
+          'name = "shared"',
+          'version = "1.0.0"',
+          'source = "registry+https://github.com/rust-lang/crates.io-index"',
+          `checksum = "${'a'.repeat(64)}"`
+        ].join('\n')
+      );
+
+      const graph = await readOtherEcosystemInventoryDetailed(root);
+      const app = graph.packages.find((item) => item.name === 'source-app');
+      const gitPackage = graph.packages.find(
+        (item) =>
+          item.name === 'shared' &&
+          item.source.startsWith('Cargo.lock:git-unverified:')
+      );
+      const registryPackage = graph.packages.find(
+        (item) =>
+          item.name === 'shared' &&
+          item.source === 'Cargo.lock:registry:crates.io'
+      );
+
+      expect(gitPackage).toMatchObject({
+        version: '1.0.0',
+        direct: true,
+        resolutionConfidence: 'unknown'
+      });
+      expect(registryPackage).toMatchObject({
+        version: '1.0.0',
+        direct: false,
+        resolutionConfidence: 'lockfile'
+      });
+      expect(graph.edges).toContainEqual(
+        expect.objectContaining({
+          from: app?.id,
+          to: gitPackage?.id,
+          name: 'shared'
+        })
+      );
+      expect(
+        graph.edges.some(
+          (edge) => edge.from === app?.id && edge.to === registryPackage?.id
+        )
+      ).toBe(false);
+      expect(graph.complete).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('does not guess installed Cargo identities from unsupported lock formats', async () => {

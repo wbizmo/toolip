@@ -487,6 +487,82 @@ describe('OsvVulnerabilityAnalyzer', () => {
     }
   });
 
+  it('passes an explicit Cargo target into OSV inventory and withholds inactive packages', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-osv-cargo-target-')
+    );
+    const queried: string[] = [];
+    const registry = 'registry+https://github.com/rust-lang/crates.io-index';
+    try {
+      await writeFile(
+        path.join(root, 'Cargo.toml'),
+        [
+          '[package]',
+          'name = "target-filter-app"',
+          'version = "0.1.0"',
+          'edition = "2021"',
+          '',
+          '[target."cfg(target_os = \\"linux\\")".dependencies]',
+          'linux-only = "1.0.0"',
+          '',
+          '[target."cfg(target_os = \\"windows\\")".dependencies]',
+          'windows-only = "1.0.0"'
+        ].join('\n')
+      );
+      await writeFile(
+        path.join(root, 'Cargo.lock'),
+        [
+          'version = 4',
+          '',
+          '[[package]]',
+          'name = "target-filter-app"',
+          'version = "0.1.0"',
+          `dependencies = ["linux-only 1.0.0 (${registry})", "windows-only 1.0.0 (${registry})"]`,
+          '',
+          '[[package]]',
+          'name = "linux-only"',
+          'version = "1.0.0"',
+          `source = "${registry}"`,
+          `checksum = "${'b'.repeat(64)}"`,
+          '',
+          '[[package]]',
+          'name = "windows-only"',
+          'version = "1.0.0"',
+          `source = "${registry}"`,
+          `checksum = "${'c'.repeat(64)}"`
+        ].join('\n')
+      );
+      const client = new OsvClient({
+        fetchImplementation: async (_input, init) => {
+          const body = JSON.parse(String(init?.body)) as {
+            queries: Array<{ package: { name: string } }>;
+          };
+          queried.push(...body.queries.map((query) => query.package.name));
+          return new Response(
+            JSON.stringify({
+              results: body.queries.map(() => ({ vulns: [] }))
+            }),
+            { status: 200 }
+          );
+        }
+      });
+
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({
+        root,
+        options: { cargoTarget: 'x86_64-unknown-linux-gnu' }
+      });
+
+      expect(queried).toContain('linux-only');
+      expect(queried).not.toContain('windows-only');
+      expect(result.warnings).toContain(
+        'dependency-graph:cargo-registry-feature-resolution-unverified'
+      );
+      expect(result.coverage?.state).toBe('partial');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('withholds public advisory requests when an npm lock entry has no registry origin', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-origin-'));
     let queryCount = 0;

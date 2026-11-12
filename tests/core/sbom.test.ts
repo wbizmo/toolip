@@ -799,6 +799,117 @@ describe('SBOM generation', () => {
     }
   });
 
+  it('passes an explicit Cargo target through SBOM graph resolution', async () => {
+    const root = await fixture();
+    try {
+      await writeFile(
+        path.join(root, 'Cargo.toml'),
+        [
+          '[package]',
+          'name = "fixture-rust"',
+          'version = "0.1.0"',
+          'edition = "2021"',
+          '',
+          '[workspace]',
+          'members = ["crates/windows-helper"]',
+          'resolver = "2"',
+          '',
+          '[features]',
+          'default = ["safe"]',
+          'safe = []',
+          '',
+          '[target."cfg(target_os = \\"windows\\")".dependencies]',
+          'windows-helper = { path = "crates/windows-helper", features = ["win"] }'
+        ].join('\n')
+      );
+      await mkdir(path.join(root, 'crates/windows-helper'), {
+        recursive: true
+      });
+      await writeFile(
+        path.join(root, 'crates/windows-helper/Cargo.toml'),
+        [
+          '[package]',
+          'name = "windows-helper"',
+          'version = "0.1.0"',
+          'edition = "2021"',
+          '',
+          '[features]',
+          'win = []'
+        ].join('\n')
+      );
+      await writeFile(
+        path.join(root, 'Cargo.lock'),
+        [
+          'version = 4',
+          '',
+          '[[package]]',
+          'name = "fixture-rust"',
+          'version = "0.1.0"',
+          'dependencies = ["windows-helper"]',
+          '',
+          '[[package]]',
+          'name = "windows-helper"',
+          'version = "0.1.0"'
+        ].join('\n')
+      );
+
+      const linux = await generateSbom(root, 'cyclonedx', {
+        cargoTarget: 'x86_64-unknown-linux-gnu'
+      });
+      await expectValidCycloneDx(linux);
+      const linuxComponents = linux.components as Array<{
+        name: string;
+        'bom-ref': string;
+        properties: Array<{ name: string; value: string }>;
+      }>;
+      const rustApp = linuxComponents.find(
+        (component) => component.name === 'fixture-rust'
+      );
+      expect(rustApp?.properties).toEqual(
+        expect.arrayContaining([
+          {
+            name: 'toolip:resolutionTarget',
+            value: 'x86_64-unknown-linux-gnu'
+          },
+          {
+            name: 'toolip:activeCargoFeatures',
+            value: '["default","safe"]'
+          }
+        ])
+      );
+      const linuxDependencies = linux.dependencies as Array<{
+        ref: string;
+        dependsOn: string[];
+      }>;
+      expect(
+        linuxDependencies.find((item) => item.ref === rustApp?.['bom-ref'])
+          ?.dependsOn
+      ).not.toContain(
+        linuxComponents.find(
+          (component) => component.name === 'windows-helper'
+        )?.['bom-ref']
+      );
+
+      const windows = await generateSbom(root, 'spdx', {
+        cargoTarget: 'x86_64-pc-windows-msvc'
+      });
+      expectValidSpdx(windows);
+      const spdxPackages = windows.packages as Array<{
+        name: string;
+        sourceInfo: string;
+      }>;
+      expect(
+        spdxPackages.find((item) => item.name === 'fixture-rust')?.sourceInfo
+      ).toContain('resolution target: x86_64-pc-windows-msvc');
+      expect(
+        spdxPackages.find((item) => item.name === 'fixture-rust')?.sourceInfo
+      ).toContain('active Cargo features: default,safe');
+      expect(spdxPackages.map((item) => item.name)).toContain('windows-helper');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('records unavailable vendored Go artifact integrity without upgrading it to verified', async () => {
     const root = await fixture();
     try {

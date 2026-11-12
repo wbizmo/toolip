@@ -43,6 +43,8 @@ export type DependencyIdentity = {
     'verified' | 'declared-not-verified' | 'unavailable';
   /** Feature names declared in a first-party Cargo manifest, not active resolution. */
   declaredFeatures?: string[];
+  /** Features activated for a workspace Cargo package under the selected profile. */
+  activeFeatures?: string[];
 };
 
 export type DependencyEdge = {

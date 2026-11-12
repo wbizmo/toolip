@@ -106,6 +106,10 @@ export function registerScanCommand(program: Command): void {
       'Select one GOOS/GOARCH target profile for vendor source import resolution.'
     )
     .option(
+      '--cargo-target <triple>',
+      'Resolve Cargo cfg dependencies and workspace features for one explicit Rust target triple.'
+    )
+    .option(
       '--package-health',
       'Opt in to bounded npm maintainer, publisher, release and lifecycle-history signals.'
     )
@@ -174,6 +178,7 @@ export function registerScanCommand(program: Command): void {
         allowGoToolExecution?: boolean;
         pythonTarget?: string;
         goTarget?: string;
+        cargoTarget?: string;
         packageHealth?: boolean;
         licenses?: boolean;
         allowPublicScope?: boolean;
@@ -374,6 +379,7 @@ export function registerScanCommand(program: Command): void {
             goTarget: options.goTarget
               ? parseGoTargetProfileJson(options.goTarget)
               : undefined,
+            cargoTarget: options.cargoTarget,
             includePackageHealth: options.packageHealth,
             includeLicenseAnalysis: options.licenses,
             rulePacks: rulePack ? [rulePack] : undefined,
