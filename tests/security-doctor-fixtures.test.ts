@@ -26,7 +26,14 @@ describe('security doctor hardening', () => {
       const result = await runSecurityDoctor(root);
 
       expect(result.docker.files).toBe(1);
-      expect(result.docker.coverage.state).toBe('complete');
+      expect(result.docker.coverage.state).toBe('partial');
+      expect(
+        result.findings
+          .filter((finding) =>
+            ['TLP-DOCKER-001', 'TLP-DOCKER-006'].includes(finding.ruleId)
+          )
+          .map((finding) => finding.confidence)
+      ).toEqual(['low', 'low']);
       expect(result.findings.map((finding) => finding.ruleId)).toContain(
         'TLP-DOCKER-001'
       );

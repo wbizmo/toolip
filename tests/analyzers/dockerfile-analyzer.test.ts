@@ -183,7 +183,7 @@ describe('DockerfileAnalyzer', () => {
         [
           `ARG RUNTIME=node:20@sha256:${'a'.repeat(64)}`,
           'FROM $' + '{RUNTIME} AS runtime',
-          'USER node',
+          'USER 1000',
           'HEALTHCHECK CMD node healthcheck.js'
         ].join('\n')
       );
@@ -197,7 +197,7 @@ describe('DockerfileAnalyzer', () => {
     }
   });
 
-  it('marks an external build argument in FROM unresolved instead of reporting a clean digest check', async () => {
+  it('marks unresolved and unsupported FROM argument expansions as incomplete', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-arg-'));
     try {
       await writeFile(
@@ -212,6 +212,18 @@ describe('DockerfileAnalyzer', () => {
       expect(
         result.findings.some((finding) => finding.ruleId === 'TLP-DOCKER-003')
       ).toBe(false);
+
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        'FROM $' + '{IMAGE+fallback}\nUSER 1000\nHEALTHCHECK CMD true\n'
+      );
+      const unsupportedExpansion = await new DockerfileAnalyzer().analyze({
+        root
+      });
+      expect(unsupportedExpansion.coverage.state).toBe('partial');
+      expect(unsupportedExpansion.warnings).toContain(
+        'Dockerfile:1: base image uses an unresolved build argument; digest pinning could not be verified'
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -268,7 +280,281 @@ describe('DockerfileAnalyzer', () => {
       );
       expect(
         result.findings.some((finding) => finding.ruleId === 'TLP-DOCKER-001')
+      ).toBe(true);
+      expect(
+        result.findings.find((finding) => finding.ruleId === 'TLP-DOCKER-001')
+      ).toMatchObject({ confidence: 'low', location: { line: 2 } });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('inherits USER and HEALTHCHECK metadata through a named build stage', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-inherit-'));
+    try {
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        [
+          'FROM scratch AS build',
+          'USER 1000',
+          'HEALTHCHECK CMD node healthcheck.js',
+          'RUN npm run build',
+          'FROM build AS runtime',
+          'COPY --from=build /app /app',
+          'CMD ["node", "server.js"]'
+        ].join('\n')
+      );
+
+      const result = await new DockerfileAnalyzer().analyze({ root });
+      expect(
+        result.findings.filter((finding) =>
+          ['TLP-DOCKER-001', 'TLP-DOCKER-006'].includes(finding.ruleId)
+        )
+      ).toEqual([]);
+      expect(result.coverage.state).toBe('complete');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('handles numeric stage references and final USER/HEALTHCHECK overrides', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-index-'));
+    try {
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        [
+          'FROM --platform=linux/amd64 scratch AS build',
+          'USER 1000',
+          'HEALTHCHECK CMD node healthcheck.js',
+          'FROM 0 AS runtime',
+          'USER 0:0',
+          'HEALTHCHECK NONE'
+        ].join('\n')
+      );
+
+      const result = await new DockerfileAnalyzer().analyze({ root });
+      expect(
+        result.findings.find((finding) => finding.ruleId === 'TLP-DOCKER-001')
+      ).toMatchObject({ location: { line: 5 }, confidence: 'high' });
+      expect(
+        result.findings.find((finding) => finding.ruleId === 'TLP-DOCKER-006')
+      ).toMatchObject({ location: { line: 6 }, confidence: 'high' });
+      expect(result.coverage.state).toBe('complete');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps unknown external image metadata incomplete and distinguishes scratch defaults', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-unknown-'));
+    try {
+      await writeFile(path.join(root, 'Dockerfile'), 'FROM example/base:1\n');
+      const external = await new DockerfileAnalyzer().analyze({ root });
+      expect(external.coverage.state).toBe('partial');
+      expect(
+        external.findings.filter((finding) =>
+          ['TLP-DOCKER-001', 'TLP-DOCKER-006'].includes(finding.ruleId)
+        ).map((finding) => finding.confidence)
+      ).toEqual(['low', 'low']);
+
+      await writeFile(path.join(root, 'Dockerfile'), 'FROM scratch\n');
+      const scratch = await new DockerfileAnalyzer().analyze({ root });
+      expect(scratch.coverage.state).toBe('complete');
+      expect(
+        scratch.findings.find((finding) => finding.ruleId === 'TLP-DOCKER-001')
+      ).toMatchObject({ confidence: 'high' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not infer a non-root identity from a username alone', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-user-name-'));
+    try {
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        'FROM scratch\nUSER app\nHEALTHCHECK CMD true\n'
+      );
+
+      const result = await new DockerfileAnalyzer().analyze({ root });
+
+      expect(result.coverage.state).toBe('partial');
+      expect(result.warnings).toContain(
+        'Dockerfile:2: final stage USER is a name whose numeric identity could not be verified'
+      );
+      expect(
+        result.findings.find((finding) => finding.ruleId === 'TLP-DOCKER-001')
+      ).toMatchObject({ confidence: 'low', location: { line: 2 } });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('scans every Docker ENV assignment and ignores empty ARGs and secret mounts', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-env-list-'));
+    try {
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        [
+          'FROM scratch',
+          'USER 1000',
+          'HEALTHCHECK CMD true',
+          'ARG API_TOKEN',
+          'ENV MODE=production API_KEY="synthetic-secret-value" LOG_LEVEL=info',
+          'RUN --mount=type=secret,id=deploy_token cat /run/secrets/deploy_token',
+          'COPY ["local.txt", "/app/local.txt"]'
+        ].join('\n')
+      );
+
+      const result = await new DockerfileAnalyzer().analyze({ root });
+      const secretFindings = result.findings.filter(
+        (finding) => finding.ruleId === 'TLP-DOCKER-002'
+      );
+
+      expect(secretFindings).toHaveLength(1);
+      expect(secretFindings[0]?.location?.line).toBe(5);
+      expect(JSON.stringify(secretFindings)).not.toContain(
+        'synthetic-secret-value'
+      );
+      expect(
+        result.findings.some((finding) => finding.ruleId === 'TLP-DOCKER-004')
       ).toBe(false);
+      expect(result.coverage.state).toBe('complete');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('detects remote ADD in JSON form and remote shell execution in a heredoc', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-heredoc-'));
+    try {
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        [
+          'FROM scratch',
+          'USER 1000',
+          'HEALTHCHECK CMD true',
+          'ADD --chown=1000:1000 ["https://example.invalid/archive.tar", "/tmp/archive.tar"]',
+          "RUN <<'SCRIPT'",
+          'curl https://example.invalid/install.sh | sh',
+          'SCRIPT'
+        ].join('\n')
+      );
+      const result = await new DockerfileAnalyzer().analyze({ root });
+      expect(
+        result.findings.find((finding) => finding.ruleId === 'TLP-DOCKER-004')
+      ).toMatchObject({ location: { line: 4 } });
+      expect(
+        result.findings.find((finding) => finding.ruleId === 'TLP-DOCKER-007')
+      ).toMatchObject({ location: { line: 5 } });
+      expect(result.coverage.state).toBe('complete');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('marks an unterminated Dockerfile heredoc as incomplete', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-heredoc-invalid-')
+    );
+    try {
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        "FROM scratch\nUSER node\nHEALTHCHECK CMD true\nRUN <<'SCRIPT'\necho incomplete\n"
+      );
+      const result = await new DockerfileAnalyzer().analyze({ root });
+      expect(result.coverage.state).toBe('partial');
+      expect(result.warnings).toContain(
+        'Dockerfile:4: unterminated Dockerfile heredoc; instruction semantics are unknown'
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed on invalid FROM references and unknown Dockerfile instructions', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-invalid-'));
+    try {
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        [
+          'FROM scratch AS build',
+          'USER 1000',
+          'HEALTHCHECK CMD true',
+          'FROM 8 AS runtime',
+          'USER 1000',
+          'HEALTHCHECK CMD true',
+          'FROBNICATE dangerous',
+          'ADD ["broken",]'
+        ].join('\n')
+      );
+
+      const result = await new DockerfileAnalyzer().analyze({ root });
+
+      expect(result.coverage.state).toBe('partial');
+      expect(result.warnings).toContain(
+        'Dockerfile:4: FROM references an invalid prior stage index; inherited metadata is unknown'
+      );
+      expect(result.warnings).toContain(
+        'Dockerfile:7: unsupported Dockerfile instruction; semantics are unknown'
+      );
+      expect(result.warnings).toContain(
+        'Dockerfile:8: ADD JSON form is malformed or unsupported; source semantics are unknown'
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('marks dynamic built-in FROM references as unresolved', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-builtin-'));
+    try {
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        [
+          'FROM $TARGETPLATFORM AS runtime',
+          'USER 1000',
+          'HEALTHCHECK --timeout=5s CMD true'
+        ].join('\n')
+      );
+
+      const result = await new DockerfileAnalyzer().analyze({ root });
+
+      expect(result.coverage.state).toBe('partial');
+      expect(result.warnings).toContain(
+        'Dockerfile:1: base image uses an unresolved build argument; digest pinning could not be verified'
+      );
+      expect(
+        result.findings.some((finding) => finding.ruleId === 'TLP-DOCKER-003')
+      ).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not trust inherited metadata when a base stage has ONBUILD triggers', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-onbuild-'));
+    try {
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        [
+          'FROM scratch AS parent',
+          'USER 1000',
+          'HEALTHCHECK CMD true',
+          'ONBUILD USER root',
+          'FROM parent AS runtime'
+        ].join('\n')
+      );
+
+      const result = await new DockerfileAnalyzer().analyze({ root });
+
+      expect(result.coverage.state).toBe('partial');
+      expect(result.warnings).toContain(
+        'Dockerfile:4: ONBUILD instruction effects are not evaluated; derived stage metadata may be unknown'
+      );
+      expect(
+        result.findings.find((finding) => finding.ruleId === 'TLP-DOCKER-001')
+      ).toMatchObject({ confidence: 'low', location: { line: 5 } });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

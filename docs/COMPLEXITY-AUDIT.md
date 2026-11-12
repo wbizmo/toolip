@@ -157,6 +157,29 @@ input/output/memory/time caps and terminable worker. This is isolation from
 event-loop blocking and ambient host APIs, not a claim that arbitrary native
 code is sandboxed.
 
+## Batch 12 Dockerfile stage metadata (2026-11-12)
+
+For a Dockerfile of `B` bytes, `I` normalized instructions and `S` stages, the
+previous implementation selected the final stage and repeatedly filtered its
+instructions in `O(I)` time, with `O(I)` retained instruction/line references.
+It did not model stage inheritance. The current bounded physical-line and
+heredoc pass, indexed stage-alias graph, and forward metadata propagation use
+`O(B + I + S)` time and `O(B + I + S)` additional space. The space bound
+includes the physical-line view, normalized instruction text, heredoc shell
+body copy, stage/instruction references, expected-time alias maps and sets,
+metadata states, warnings and findings. Each instruction is assigned to one
+stage and examined a constant number of times; map/set operations are
+expected/amortized, not deterministic worst-case. Input byte/file budgets come
+from the shared scanner and text reader. No new performance campaign was run:
+this correctness change does not target the benchmarked AST path.
+
+Stage state follows only captured named or numeric prior-stage references.
+External image configuration, UID lookup for named users, and `ONBUILD`
+effects are unresolved inputs, so affected coverage remains partial. Focused
+tests cover inheritance/overrides, scratch defaults, external metadata,
+unknown usernames, malformed references, secrets, remote ADD and heredocs;
+these tests are not release verification.
+
 ## Open work before sign-off
 
 - Complete the source inventory for every material analyzer, parser, resolver,

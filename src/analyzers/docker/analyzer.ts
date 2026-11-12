@@ -30,19 +30,91 @@ type DockerRule = {
   remediation: string;
 };
 
-function declaresLiteralSecret(line: string): boolean {
-  const match = line
-    .trim()
-    .match(/^(?:ARG|ENV)\s+([A-Za-z_][\w-]*)(?:=(.*)|\s+(.+))?$/i);
-  if (
-    !match ||
-    !/(?:TOKEN|SECRET|PASSWORD|API[_-]?KEY|PRIVATE[_-]?KEY)/i.test(
-      match[1] ?? ''
-    )
-  ) {
+function isRootUser(value: string): boolean {
+  const identity = value.trim().split(/\s/u)[0]?.split(':', 1)[0] ?? '';
+  if (identity.toLowerCase() === 'root') return true;
+  if (!/^\d+$/u.test(identity)) return false;
+  try {
+    return BigInt(identity) === 0n;
+  } catch {
     return false;
   }
-  return Boolean((match[2] ?? match[3] ?? '').trim());
+}
+
+function hasVerifiableUserIdentity(value: string): boolean {
+  const identity = value.trim().split(/\s/u)[0]?.split(':', 1)[0] ?? '';
+  return identity.toLowerCase() === 'root' || /^\d+$/u.test(identity);
+}
+
+function isSecretName(value: string): boolean {
+  return /(?:TOKEN|SECRET|PASSWORD|API[_-]?KEY|PRIVATE[_-]?KEY)/iu.test(value);
+}
+
+function unquoteLiteral(value: string): string {
+  const trimmed = value.trim();
+  if (
+    trimmed.length >= 2 &&
+    ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'")))
+  )
+    return trimmed.slice(1, -1);
+  return trimmed;
+}
+
+function isRemoteAddInstruction(line: string): boolean {
+  const match = line.trim().match(/^ADD\s+(.+)$/isu);
+  const rawArgument = match?.[1]?.trim();
+  if (!rawArgument) return false;
+  const argument = rawArgument.replace(/^(?:--[^\s]+\s+)+/u, '').trim();
+  if (!argument) return false;
+  if (argument.startsWith('[')) {
+    try {
+      const parsed: unknown = JSON.parse(argument);
+      return (
+        Array.isArray(parsed) &&
+        parsed.slice(0, -1).some(
+          (source) =>
+            typeof source === 'string' && /^https?:\/\//iu.test(source)
+        )
+      );
+    } catch {
+      return false;
+    }
+  }
+  return /^(?:"|')?https?:\/\//iu.test(argument);
+}
+
+function declaresLiteralSecret(line: string): boolean {
+  const match = line.trim().match(/^(ARG|ENV)\s+(.+)$/iu);
+  if (!match?.[1] || !match[2]) return false;
+  const command = match[1].toUpperCase();
+  const content = match[2].trim();
+  if (command === 'ARG') {
+    const declaration = content.match(/^([A-Za-z_][\w-]*)(?:=(.*))?$/u);
+    return Boolean(
+      declaration?.[1] &&
+        isSecretName(declaration[1]) &&
+        unquoteLiteral(declaration[2] ?? '').length > 0
+    );
+  }
+
+  const assignments = [
+    ...content.matchAll(/(?:^|\s)([A-Za-z_][\w-]*)=("[^"\n]*"|'[^'\n]*'|[^\s]+)/gu)
+  ];
+  if (
+    assignments.some(
+      (assignment) =>
+        isSecretName(assignment[1] ?? '') &&
+        unquoteLiteral(assignment[2] ?? '').length > 0
+    )
+  )
+    return true;
+  const legacy = content.match(/^([A-Za-z_][\w-]*)\s+(.+)$/u);
+  return Boolean(
+    legacy?.[1] &&
+      isSecretName(legacy[1]) &&
+      unquoteLiteral(legacy[2] ?? '').length > 0
+  );
 }
 
 const rules: DockerRule[] = [
@@ -50,28 +122,8 @@ const rules: DockerRule[] = [
     id: 'TLP-DOCKER-001',
     title: 'Container may run as root',
     severity: 'high',
-    test: (_line, lines) => {
-      const lastUser = lines
-        .filter((line) => /^USER\s+/iu.test(line.trim()))
-        .at(-1);
-      if (!lastUser) return true;
-      const identity = lastUser
-        .trim()
-        .replace(/^USER\s+/iu, '')
-        .split(/\s/u)[0];
-      if (!identity || identity.includes('$')) return false;
-      const username = identity.split(':', 1)[0] ?? '';
-      if (username.toLowerCase() === 'root') return true;
-      if (/^\d+$/u.test(username)) {
-        try {
-          return BigInt(username) === 0n;
-        } catch {
-          return false;
-        }
-      }
-      return false;
-    },
-    message: 'No non-root USER instruction was found.',
+    test: (line) => isRootUser(line),
+    message: 'The final stage may run as root.',
     remediation:
       'Create and switch to a dedicated non-root user before the final command.'
   },
@@ -99,7 +151,7 @@ const rules: DockerRule[] = [
     id: 'TLP-DOCKER-004',
     title: 'Remote ADD instruction',
     severity: 'high',
-    test: (line) => /^ADD\s+https?:\/\//i.test(line.trim()),
+    test: isRemoteAddInstruction,
     message: 'ADD downloads remote content during the image build.',
     remediation:
       'Download explicitly, verify checksums, and use COPY for local content.'
@@ -127,8 +179,7 @@ const rules: DockerRule[] = [
         /^HEALTHCHECK\s+NONE(?:\s|$)/iu.test(lastHealthCheck.trim())
       );
     },
-    message:
-      'The final Dockerfile stage has no active HEALTHCHECK instruction; inherited image metadata is not inspected.',
+    message: 'No active HEALTHCHECK could be verified for the final stage.',
     remediation:
       'Add a HEALTHCHECK when the runtime can report meaningful service health.'
   },
@@ -136,11 +187,15 @@ const rules: DockerRule[] = [
     id: 'TLP-DOCKER-007',
     title: 'Remote content is executed during the image build',
     severity: 'high',
-    test: (line) =>
-      /^RUN\s+/i.test(line.trim()) &&
-      /(?:curl|wget)\b[^\n;&|]{0,300}(?:\||&&|;)[ \t]*(?:sh|bash|ash)\b/i.test(
-        line
-      ),
+    test: (line) => {
+      const normalized = line.replace(/\s+/gu, ' ').trim();
+      return (
+        /^RUN\s+/iu.test(normalized) &&
+        /(?:curl|wget)\b[^;&|]{0,300}(?:\||&&|;)[ \t]*(?:sh|bash|ash)\b/iu.test(
+          normalized
+        )
+      );
+    },
     message:
       'The build downloads and executes remote content without a pinned, independently verified artifact.',
     remediation:
@@ -152,7 +207,8 @@ const rules: DockerRule[] = [
 function finding(
   rule: DockerRule,
   relativePath: string,
-  lineNumber: number
+  lineNumber: number,
+  confidence: Finding['confidence'] = 'high'
 ): Finding {
   return {
     id: `${rule.id}:${relativePath}:${lineNumber}`,
@@ -160,7 +216,7 @@ function finding(
     title: rule.title,
     category: 'container',
     severity: rule.severity,
-    confidence: 'high',
+    confidence,
     message: rule.message,
     source: 'dockerfile',
     location: {
@@ -232,7 +288,10 @@ function expandBuildArgs(
       plainName: string | undefined
     ) => {
       const name = bracedName ?? plainName ?? '';
-      if (builtinBuildArgs.has(name)) return `__TOOLIP_BUILTIN_${name}__`;
+      if (builtinBuildArgs.has(name)) {
+        unresolved = true;
+        return `__TOOLIP_BUILTIN_${name}__`;
+      }
       const resolved = values.get(name);
       if (resolved !== undefined && !(operator === ':-' && resolved === ''))
         return resolved;
@@ -241,39 +300,192 @@ function expandBuildArgs(
       return `__TOOLIP_UNKNOWN_${name}__`;
     }
   );
+  if (value.includes('$')) unresolved = true;
   return { value, unresolved };
 }
 
 function resolveFromImage(
   instruction: DockerInstruction,
   buildArgs: ReadonlyMap<string, string | undefined>
-): { line: string; unresolved: boolean } | undefined {
+):
+  | {
+      line: string;
+      image: string;
+      alias?: string;
+      unresolved: boolean;
+    }
+  | undefined {
   const match = instruction.text.match(/^FROM\s+(.+)$/iu);
   if (!match?.[1]) return undefined;
   const tokens = match[1].trim().split(/\s+/u);
   let imageIndex = 0;
-  while (tokens[imageIndex]?.startsWith('--')) imageIndex++;
+  let seenPlatform = false;
+  while (tokens[imageIndex]?.startsWith('--')) {
+    const option = tokens[imageIndex] ?? '';
+    if (option.startsWith('--platform=')) {
+      if (seenPlatform || !option.slice('--platform='.length))
+        return undefined;
+      seenPlatform = true;
+      imageIndex += 1;
+    } else if (option === '--platform') {
+      if (
+        seenPlatform ||
+        !tokens[imageIndex + 1] ||
+        tokens[imageIndex + 1]?.startsWith('--')
+      )
+        return undefined;
+      seenPlatform = true;
+      imageIndex += 2;
+    } else return undefined;
+  }
   if (imageIndex >= tokens.length) return undefined;
+  const imageToken = tokens[imageIndex] ?? '';
+  const aliasKeyword = tokens[imageIndex + 1];
+  const alias = tokens[imageIndex + 2];
+  const hasAlias = aliasKeyword?.toUpperCase() === 'AS';
+  if (
+    !imageToken ||
+    (aliasKeyword !== undefined && !hasAlias) ||
+    (hasAlias && (!alias || !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(alias))) ||
+    tokens.length - imageIndex > (hasAlias ? 3 : 1)
+  )
+    return undefined;
   const expanded = expandBuildArgs(tokens[imageIndex] ?? '', buildArgs);
   tokens[imageIndex] = expanded.value;
-  return { line: `FROM ${tokens.join(' ')}`, unresolved: expanded.unresolved };
+  return {
+    line: `FROM ${tokens.join(' ')}`,
+    image: expanded.value,
+    ...(hasAlias && alias ? { alias } : {}),
+    unresolved: expanded.unresolved
+  };
 }
 
-function parseInstructions(source: string): DockerInstruction[] {
+function parseInstructions(source: string): {
+  instructions: DockerInstruction[];
+  warnings: string[];
+} {
   const physical = source.split(/\r?\n/u);
   const escapeDirective = physical.find((line) =>
     /^\s*#\s*escape=/i.test(line)
   );
+  const warnings: string[] = [];
+  const escapeLine = escapeDirective?.match(/^\s*#\s*escape=([`\\])\s*$/iu);
+  if (escapeDirective && !escapeLine) {
+    const line = physical.indexOf(escapeDirective) + 1;
+    warnings.push(
+      `${line}: invalid Dockerfile escape directive; default escape semantics were used`
+    );
+  }
   const escapeChar =
-    escapeDirective?.match(/^\s*#\s*escape=(.)\s*$/i)?.[1] ?? '\\';
+    escapeLine?.[1] ?? '\\';
   const instructions: DockerInstruction[] = [];
+  const supportedCommands = new Set([
+    'ADD',
+    'ARG',
+    'CMD',
+    'COPY',
+    'ENTRYPOINT',
+    'ENV',
+    'EXPOSE',
+    'FROM',
+    'HEALTHCHECK',
+    'LABEL',
+    'MAINTAINER',
+    'ONBUILD',
+    'RUN',
+    'SHELL',
+    'STOPSIGNAL',
+    'USER',
+    'VOLUME',
+    'WORKDIR'
+  ]);
   let buffer = '';
   let startLine = 1;
+  let continuing = false;
 
-  for (const [index, original] of physical.entries()) {
+  const flush = (index: number): number => {
+    if (!/^\s*[A-Za-z]+(?:\s+|$)/u.test(buffer)) {
+      buffer = '';
+      continuing = false;
+      return index;
+    }
+    const instruction: DockerInstruction = { line: startLine, text: buffer };
+    const command = buffer.match(/^\s*([A-Za-z]+)/u)?.[1]?.toUpperCase();
+    if (command && !supportedCommands.has(command))
+      warnings.push(
+        `${startLine}: unsupported Dockerfile instruction; semantics are unknown`
+      );
+    if (command === 'ADD') {
+      const argument = buffer
+        .replace(/^\s*ADD\s+/iu, '')
+        .replace(/^(?:--[^\s]+\s+)+/u, '')
+        .trim();
+      if (argument.startsWith('[')) {
+        let validJsonForm = false;
+        try {
+          const parsed: unknown = JSON.parse(argument);
+          validJsonForm =
+            Array.isArray(parsed) &&
+            parsed.length >= 2 &&
+            parsed.every((value) => typeof value === 'string');
+        } catch {
+          validJsonForm = false;
+        }
+        if (!validJsonForm)
+          warnings.push(
+            `${startLine}: ADD JSON form is malformed or unsupported; source semantics are unknown`
+          );
+      }
+    }
+    const heredocs =
+      ['RUN', 'COPY', 'ADD'].includes(command ?? '')
+        ? [...buffer.matchAll(/<<(-?)\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_]+))/gu)].map(
+            (match) => ({
+              delimiter: match[2] ?? match[3] ?? match[4] ?? '',
+              stripTabs: Boolean(match[1])
+            })
+          )
+        : [];
+    const heredocOperators =
+      ['RUN', 'COPY', 'ADD'].includes(command ?? '')
+        ? (buffer.match(/<</gu) ?? []).length
+        : 0;
+    if (heredocOperators > heredocs.length)
+      warnings.push(
+        `${startLine}: unsupported or malformed Dockerfile heredoc marker; instruction semantics are unknown`
+      );
+    const body: string[] = [];
+    let consumed = index;
+    for (const heredoc of heredocs) {
+      let terminated = false;
+      while (consumed + 1 < physical.length) {
+        consumed += 1;
+        const line = physical[consumed] ?? '';
+        const terminator = heredoc.stripTabs ? line.replace(/^\t+/u, '') : line;
+        if (terminator === heredoc.delimiter) {
+          terminated = true;
+          break;
+        }
+        if (command === 'RUN') body.push(line);
+      }
+      if (!terminated)
+        warnings.push(
+          `${startLine}: unterminated Dockerfile heredoc; instruction semantics are unknown`
+        );
+    }
+    if (command === 'RUN' && body.length > 0)
+      instruction.text = `${instruction.text}\n${body.join('\n')}`;
+    instructions.push(instruction);
+    buffer = '';
+    continuing = false;
+    return consumed;
+  };
+
+  for (let index = 0; index < physical.length; index += 1) {
+    const original = physical[index] ?? '';
     const lineNumber = index + 1;
     const line = original.trimEnd();
-    if (!buffer && (!line.trim() || /^\s*#/u.test(line))) continue;
+    if (!line.trim() || /^\s*#/u.test(line)) continue;
     if (!buffer) startLine = lineNumber;
 
     let trailingEscapes = 0;
@@ -287,50 +499,280 @@ function parseInstructions(source: string): DockerInstruction[] {
     const continued = trailingEscapes % 2 === 1;
     const fragment = continued ? line.slice(0, -1).trim() : line.trim();
     buffer = buffer ? `${buffer} ${fragment}` : fragment;
+    continuing = continued;
     if (continued) continue;
-
-    if (/^\s*[A-Za-z]+(?:\s+|$)/u.test(buffer)) {
-      instructions.push({ line: startLine, text: buffer });
-    }
-    buffer = '';
+    index = flush(index);
   }
-  if (buffer && /^\s*[A-Za-z]+(?:\s+|$)/u.test(buffer)) {
-    instructions.push({ line: startLine, text: buffer });
+  if (buffer) {
+    if (continuing)
+      warnings.push(
+        `${startLine}: unterminated Dockerfile line continuation; instruction semantics are unknown`
+      );
+    flush(physical.length - 1);
   }
-  return instructions;
+  return { instructions, warnings };
 }
 
-function finalStage(instructions: DockerInstruction[]): {
+type DockerStage = {
+  from: DockerInstruction;
+  image: string;
+  alias?: string;
+  baseStage?: number;
+  baseKind: 'stage' | 'scratch' | 'external' | 'unknown';
   instructions: DockerInstruction[];
-  lines: string[];
-  fromLine: number;
-} {
-  let start = instructions.findIndex((item) => /^\s*FROM\s+/i.test(item.text));
-  for (let index = start + 1; index < instructions.length; index++) {
-    if (/^\s*FROM\s+/i.test(instructions[index]?.text ?? '')) start = index;
+  onBuildUnknown: boolean;
+};
+
+type DockerStageState = {
+  user?: string;
+  userKnown: boolean;
+  userUnknownReason?: 'variable' | 'name' | 'syntax';
+  userLine?: number;
+  healthCheck?: 'active' | 'none';
+  healthCheckKnown: boolean;
+  healthCheckLine?: number;
+};
+
+type DockerStageGraph = {
+  stages: DockerStage[];
+  states: DockerStageState[];
+  baseKindByFrom: Map<DockerInstruction, DockerStage['baseKind']>;
+  warnings: string[];
+};
+
+function buildDockerStageGraph(
+  instructions: readonly DockerInstruction[],
+  buildArgs: ReadonlyMap<string, string | undefined>
+): DockerStageGraph {
+  const stages: DockerStage[] = [];
+  const aliases = new Map<string, number>();
+  const ambiguousAliases = new Set<string>();
+  const baseKindByFrom = new Map<
+    DockerInstruction,
+    DockerStage['baseKind']
+  >();
+  const warnings: string[] = [];
+  let current: DockerStage | undefined;
+
+  for (const instruction of instructions) {
+    if (!/^FROM\s+/iu.test(instruction.text)) {
+      if (current) current.instructions.push(instruction);
+      else if (!/^ARG\s+/iu.test(instruction.text))
+        warnings.push(
+          `${instruction.line}: instruction appears before the first FROM; stage semantics are unknown`
+        );
+      continue;
+    }
+    const parsed = resolveFromImage(instruction, buildArgs);
+    if (!parsed) {
+      warnings.push(
+        `${instruction.line}: FROM instruction could not be parsed; stage metadata is unknown`
+      );
+      current = {
+        from: instruction,
+        image: '',
+        baseKind: 'unknown',
+        instructions: [],
+        onBuildUnknown: false
+      };
+      stages.push(current);
+      baseKindByFrom.set(instruction, 'unknown');
+      continue;
+    }
+
+    const image = parsed.image;
+    const stageIndex = stages.length;
+    let baseKind: DockerStage['baseKind'] = 'external';
+    let baseStage: number | undefined;
+    if (parsed.unresolved) {
+      baseKind = 'unknown';
+      warnings.push(
+        `${instruction.line}: base image uses an unresolved build argument; digest pinning could not be verified`
+      );
+    } else if (image.toLowerCase() === 'scratch') {
+      baseKind = 'scratch';
+    } else if (/^\d+$/u.test(image)) {
+      const numericIndex = Number(image);
+      if (Number.isSafeInteger(numericIndex) && numericIndex < stageIndex) {
+        baseKind = 'stage';
+        baseStage = numericIndex;
+      } else {
+        baseKind = 'unknown';
+        warnings.push(
+          `${instruction.line}: FROM references an invalid prior stage index; inherited metadata is unknown`
+        );
+      }
+    } else {
+      const key = image.toLowerCase();
+      const resolvedStage = aliases.get(key);
+      if (resolvedStage !== undefined) {
+        baseKind = 'stage';
+        baseStage = resolvedStage;
+      } else if (ambiguousAliases.has(key)) {
+        baseKind = 'unknown';
+        warnings.push(
+          `${instruction.line}: FROM uses an ambiguous stage alias; inherited metadata is unknown`
+        );
+      }
+    }
+
+    const stage: DockerStage = {
+      from: instruction,
+      image,
+      ...(parsed.alias ? { alias: parsed.alias } : {}),
+      ...(baseStage !== undefined ? { baseStage } : {}),
+      baseKind,
+      instructions: [],
+      onBuildUnknown: false
+    };
+    stages.push(stage);
+    baseKindByFrom.set(instruction, baseKind);
+    current = stage;
+    if (parsed.alias) {
+      const key = parsed.alias.toLowerCase();
+      if (aliases.has(key) || ambiguousAliases.has(key)) {
+        aliases.delete(key);
+        ambiguousAliases.add(key);
+        warnings.push(
+          `${instruction.line}: duplicate stage alias is ambiguous`
+        );
+      } else aliases.set(key, stageIndex);
+    }
   }
-  const finalInstructions = instructions.slice(Math.max(0, start));
-  return {
-    instructions: finalInstructions,
-    lines: finalInstructions.map((item) => item.text),
-    fromLine: instructions[Math.max(0, start)]?.line ?? 1
-  };
-}
 
-function finalUserInstruction(
-  instructions: readonly DockerInstruction[]
-): DockerInstruction | undefined {
-  return instructions
-    .filter((instruction) => /^USER\s+/iu.test(instruction.text.trim()))
-    .at(-1);
-}
+  for (const stage of stages) {
+    const onBuild = stage.instructions.find((instruction) =>
+      /^ONBUILD\s+/iu.test(instruction.text)
+    );
+    if (onBuild) {
+      stage.onBuildUnknown = true;
+      warnings.push(
+        `${onBuild.line}: ONBUILD instruction effects are not evaluated; derived stage metadata may be unknown`
+      );
+    }
+  }
 
-function finalHealthCheckInstruction(
-  instructions: readonly DockerInstruction[]
-): DockerInstruction | undefined {
-  return instructions
-    .filter((instruction) => /^HEALTHCHECK\s+/iu.test(instruction.text.trim()))
-    .at(-1);
+  const states: DockerStageState[] = [];
+  for (const stage of stages) {
+    const inherited =
+      stage.baseStage === undefined ? undefined : states[stage.baseStage];
+    let state: DockerStageState =
+      inherited
+        ? { ...inherited }
+        : stage.baseKind === 'scratch'
+          ? {
+              user: '0',
+              userKnown: true,
+              healthCheck: 'none',
+              healthCheckKnown: true
+            }
+          : {
+              userKnown: false,
+              healthCheckKnown: false
+            };
+    if (
+      inherited &&
+      stage.baseStage !== undefined &&
+      stages[stage.baseStage]?.onBuildUnknown
+    ) {
+      state = {
+        ...state,
+        user: undefined,
+        userKnown: false,
+        userUnknownReason: undefined,
+        userLine: undefined,
+        healthCheck: undefined,
+        healthCheckKnown: false,
+        healthCheckLine: undefined
+      };
+    }
+    for (const instruction of stage.instructions) {
+      const user = instruction.text.match(/^USER\s+(.+)$/iu)?.[1]?.trim();
+      if (user !== undefined) {
+        const identity = user.split(/\s/u)[0] ?? '';
+        const unresolved = identity.includes('$');
+        const syntaxValid = /^\S+$/u.test(user);
+        const known = syntaxValid && hasVerifiableUserIdentity(identity);
+        state = {
+          ...state,
+          user: known ? identity : undefined,
+          userKnown: known,
+          ...(!known
+            ? {
+                userUnknownReason: !syntaxValid
+                  ? 'syntax'
+                  : unresolved
+                    ? 'variable'
+                    : 'name'
+              }
+            : { userUnknownReason: undefined }),
+          userLine: instruction.line
+        };
+      } else if (/^USER(?:\s|$)/iu.test(instruction.text)) {
+        state = {
+          ...state,
+          user: undefined,
+          userKnown: false,
+          userUnknownReason: 'syntax',
+          userLine: instruction.line
+        };
+      }
+      const health = instruction.text.match(/^HEALTHCHECK\s+(.+)$/iu)?.[1];
+      if (health !== undefined) {
+        const healthTokens = health.trim().split(/\s+/u);
+        let cursor = 0;
+        let healthSyntaxValid = true;
+        while (healthTokens[cursor]?.startsWith('--')) {
+          const option = healthTokens[cursor] ?? '';
+          const optionName = option.split('=', 1)[0];
+          if (
+            ![
+              '--interval',
+              '--timeout',
+              '--start-period',
+              '--start-interval',
+              '--retries'
+            ].includes(optionName ?? '')
+          ) {
+            healthSyntaxValid = false;
+            break;
+          }
+          if (option.includes('=')) {
+            if (!option.split('=').slice(1).join('=')) healthSyntaxValid = false;
+            cursor += 1;
+          } else if (healthTokens[cursor + 1]) cursor += 2;
+          else {
+            healthSyntaxValid = false;
+            break;
+          }
+        }
+        const healthCommand = healthTokens[cursor]?.toUpperCase();
+        const isNone = cursor === 0 && healthCommand === 'NONE' && healthTokens.length === 1;
+        const isCommand = healthCommand === 'CMD' && cursor + 1 < healthTokens.length;
+        if (!healthSyntaxValid || (!isNone && !isCommand)) {
+          warnings.push(
+            `${instruction.line}: HEALTHCHECK syntax is unsupported; active state is unknown`
+          );
+          state = { ...state, healthCheck: undefined, healthCheckKnown: false };
+          continue;
+        }
+        state = {
+          ...state,
+          healthCheck: isNone ? 'none' : 'active',
+          healthCheckKnown: true,
+          healthCheckLine: instruction.line
+        };
+      } else if (/^HEALTHCHECK(?:\s|$)/iu.test(instruction.text)) {
+        state = { ...state, healthCheckKnown: false };
+        warnings.push(
+          `${instruction.line}: HEALTHCHECK syntax is unsupported; active state is unknown`
+        );
+      }
+    }
+    states.push(state);
+  }
+
+  return { stages, states, baseKindByFrom, warnings };
 }
 
 export class DockerfileAnalyzer implements Analyzer {
@@ -368,6 +810,7 @@ export class DockerfileAnalyzer implements Analyzer {
     let failed = 0;
     let cancelled = false;
     let bytesAnalyzed = 0;
+    let stageMetadataIncomplete = false;
 
     for (const file of scanner.files) {
       if (!/(^|\/)Dockerfile(?:\.[^/]+)?$/i.test(file.relativePath)) continue;
@@ -392,51 +835,106 @@ export class DockerfileAnalyzer implements Analyzer {
 
       dockerfiles += 1;
       bytesAnalyzed += read.bytes;
-      const instructions = parseInstructions(read.content);
+      const parsed = parseInstructions(read.content);
+      const instructions = parsed.instructions;
+      if (parsed.warnings.length > 0) stageMetadataIncomplete = true;
+      warnings.push(
+        ...parsed.warnings.map(
+          (warning) => `${file.relativePath}:${warning}`
+        )
+      );
       const rootRule = rules[0];
       const healthCheckRule = rules[5];
       const lineRules = [...rules.slice(1, 5), ...rules.slice(6)];
       const fileFindings: Finding[] = [];
-      const final = finalStage(instructions);
       const allLines = instructions.map((item) => item.text);
       const buildArgs = globalDockerArgs(instructions);
-      const lastUser = finalUserInstruction(final.instructions);
-      const userValue = lastUser?.text
-        .trim()
-        .replace(/^USER\s+/iu, '')
-        .split(/\s/u)[0];
-      const unresolvedFinalUser = Boolean(userValue?.includes('$'));
-      if (unresolvedFinalUser) {
+      const stageGraph = buildDockerStageGraph(instructions, buildArgs);
+      if (stageGraph.warnings.length > 0) stageMetadataIncomplete = true;
+      warnings.push(
+        ...stageGraph.warnings.map(
+          (warning) => `${file.relativePath}:${warning}`
+        )
+      );
+      if (!stageGraph.stages.length) {
+        stageMetadataIncomplete = true;
         warnings.push(
-          `${file.relativePath}:${lastUser?.line ?? final.fromLine}: final stage USER uses an unresolved variable; non-root execution could not be verified`
+          `${file.relativePath}:1: no valid FROM stage was found; Dockerfile stage semantics are unknown`
         );
-      }
+      } else {
+        const finalStage = stageGraph.stages.at(-1);
+        const finalState = stageGraph.states.at(-1);
+        if (!finalStage || !finalState) {
+          stageMetadataIncomplete = true;
+          warnings.push(
+            `${file.relativePath}:1: final stage metadata could not be resolved`
+          );
+        } else {
+          if (!finalState.userKnown) {
+            stageMetadataIncomplete = true;
+            warnings.push(
+              finalState.userUnknownReason === 'variable'
+                ? `${file.relativePath}:${finalState.userLine ?? finalStage.from.line}: final stage USER uses an unresolved variable; non-root execution could not be verified`
+                : finalState.userUnknownReason === 'syntax'
+                  ? `${file.relativePath}:${finalState.userLine ?? finalStage.from.line}: final stage USER syntax is unsupported; non-root execution could not be verified`
+                : finalState.userUnknownReason === 'name'
+                  ? `${file.relativePath}:${finalState.userLine ?? finalStage.from.line}: final stage USER is a name whose numeric identity could not be verified`
+                  : `${file.relativePath}:${finalStage.from.line}: inherited/default USER metadata is unknown; non-root execution could not be verified`
+            );
+            if (rootRule)
+              fileFindings.push(
+                finding(
+                  rootRule,
+                  file.relativePath,
+                  finalState.userLine ?? finalStage.from.line,
+                  'low'
+                )
+              );
+          } else if (rootRule?.test(finalState.user ?? '', [])) {
+            fileFindings.push(
+              finding(
+                rootRule,
+                file.relativePath,
+                finalState.userLine ?? finalStage.from.line
+              )
+            );
+          }
 
-      if (!unresolvedFinalUser && rootRule?.test('', final.lines)) {
-        fileFindings.push(
-          finding(rootRule, file.relativePath, lastUser?.line ?? final.fromLine)
-        );
-      }
-
-      if (healthCheckRule?.test('', final.lines)) {
-        const lastHealthCheck = finalHealthCheckInstruction(final.instructions);
-        fileFindings.push(
-          finding(
-            healthCheckRule,
-            file.relativePath,
-            lastHealthCheck?.line ?? final.fromLine
-          )
-        );
+          if (!finalState.healthCheckKnown) {
+            stageMetadataIncomplete = true;
+            warnings.push(
+              `${file.relativePath}:${finalStage.from.line}: inherited/default HEALTHCHECK metadata is unknown`
+            );
+            if (healthCheckRule)
+              fileFindings.push(
+                finding(
+                  healthCheckRule,
+                  file.relativePath,
+                  finalStage.from.line,
+                  'low'
+                )
+              );
+          } else if (finalState.healthCheck !== 'active' && healthCheckRule) {
+            fileFindings.push(
+              finding(
+                healthCheckRule,
+                file.relativePath,
+                finalState.healthCheckLine ?? finalStage.from.line
+              )
+            );
+          }
+        }
       }
 
       for (const instruction of instructions) {
         const resolvedFrom = resolveFromImage(instruction, buildArgs);
-        if (resolvedFrom?.unresolved) {
-          warnings.push(
-            `${file.relativePath}:${instruction.line}: base image uses an unresolved build argument; digest pinning could not be verified`
-          );
-        }
+        const baseKind = stageGraph.baseKindByFrom.get(instruction);
         for (const rule of lineRules) {
+          if (
+            rule.id === 'TLP-DOCKER-003' &&
+            ['stage', 'scratch'].includes(baseKind ?? '')
+          )
+            continue;
           const testedLine =
             rule.id === 'TLP-DOCKER-003' &&
             resolvedFrom &&
@@ -444,7 +942,10 @@ export class DockerfileAnalyzer implements Analyzer {
               ? resolvedFrom.line
               : instruction.text;
           if (
-            !(rule.id === 'TLP-DOCKER-003' && resolvedFrom?.unresolved) &&
+            !(
+              rule.id === 'TLP-DOCKER-003' &&
+              (resolvedFrom?.unresolved || !resolvedFrom)
+            ) &&
             rule.test(testedLine, allLines)
           ) {
             fileFindings.push(
@@ -468,12 +969,7 @@ export class DockerfileAnalyzer implements Analyzer {
           failed,
           cancelled
         });
-        const unresolvedFromArgs = warnings.some(
-          (warning) =>
-            warning.includes('base image uses an unresolved build argument') ||
-            warning.includes('final stage USER uses an unresolved variable')
-        );
-        return unresolvedFromArgs
+        return stageMetadataIncomplete
           ? {
               ...coverage,
               state:
@@ -481,7 +977,7 @@ export class DockerfileAnalyzer implements Analyzer {
                   ? ('failed' as const)
                   : ('partial' as const),
               reason:
-                'one or more base image or final USER references could not be resolved'
+                'one or more Dockerfile stage bases or inherited runtime metadata could not be verified'
             }
           : coverage;
       })(),

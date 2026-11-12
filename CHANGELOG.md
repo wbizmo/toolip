@@ -45,6 +45,8 @@ The format follows Keep a Changelog principles, and Toolip uses semantic version
 - Keep Go `go.mod` requirements unknown until Minimal Version Selection is resolved; add explicit bounded Go-tool resolution against captured metadata with fresh checksum-database verification for scan and SBOM.
 - Scan captured local Terraform modules and report remote, dynamic, missing, or escaping module sources as incomplete infrastructure coverage.
 - Omit matched Dockerfile instruction text from findings entirely; secret values no longer depend on a name-based evidence redactor.
+- Build an indexed Dockerfile stage graph so named and numeric stage bases inherit `USER` and `HEALTHCHECK` metadata; report unknown external-image metadata, username-to-UID mappings, unresolved arguments and unsupported parser paths as incomplete, while detecting remote `ADD` variants and heredoc shell execution without exposing source text.
+- Exercise trusted signed declarative rule packs against Terraform and YAML files through Security Doctor; these are literal source matches, not semantic custom IaC policy evaluation.
 - Keep signature-verified WASM analyzer bytes in module-private storage so callers cannot mutate executable code after verification.
 - Preserve a pushed upgrade branch when `gh pr create` fails ambiguously; delete it only after GitHub confirms no pull request references that head.
 - Keep Composer branch labels such as `dev-main` in the graph with unknown resolution confidence instead of treating them as exact released versions.

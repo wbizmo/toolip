@@ -43,19 +43,32 @@ values are not copied into evidence. Local composite actions and indirect shell
 wrappers require separate review, and the analyzer does not claim a complete
 GitHub Actions expression or shell data-flow model.
 
-Dockerfiles are parsed with bounded continuation handling, global build-argument
-expansion for `FROM`, and final-stage scoping for root-user and health-check
-checks. The effective final `USER` is the last `USER` instruction in the final
-stage; a later root switch is not masked by an earlier non-root user. An
-unresolved `USER` variable makes Docker coverage partial. The last
-`HEALTHCHECK` instruction controls the stage, so `HEALTHCHECK NONE` is reported
-even if an earlier check was declared. The health-check finding describes the
-Dockerfile instruction state and does not infer metadata inherited from an
-external base image. This parser is not a complete Dockerfile frontend.
+Dockerfiles are parsed as bounded text with continuation and supported
+heredoc handling, global build-argument expansion for `FROM`, JSON-form `ADD`,
+and an indexed stage graph. Named and numeric `FROM` references inherit
+verified `USER` and `HEALTHCHECK` state from an earlier stage; later
+instructions override that state. `scratch` is modeled as UID 0 with no
+health check. External base-image metadata is not downloaded or inferred, so
+unknown inherited user/health-check state emits low-confidence candidates and
+partial coverage. A non-root username is not treated as a verified UID.
+Unresolved arguments, invalid or ambiguous stage references, unsupported
+instructions, `ONBUILD` effects, and malformed continuations/heredocs also
+remain incomplete. Literal local signed rule-pack rules can be applied to
+Terraform and YAML source files through Security Doctor, but the IaC analyzer
+does not interpret such rules as semantic HCL/YAML policy expressions. This is
+not a complete Dockerfile frontend or image metadata resolver.
 
-For a file with `B` source bytes and `N` parsed scalar nodes, scanning is
+For a file with `B` source bytes and `N` parsed scalar nodes, IaC scanning is
 `O(B + N·D)` time and `O(B + N)` temporary space, where YAML path depth `D` is
 capped at 100 and aliases, visits, file size, file count, and aggregate bytes
 are bounded by the shared scanner budgets. Terraform block scans use one
 comment/string/heredoc masking pass and bounded resource-local matching. Finding
 output is deterministically sorted before it is returned.
+
+For Dockerfiles with `I` parsed instructions and `S` stages, continuation and
+heredoc parsing plus stage graph construction/state propagation are
+`O(B + I + S)` time and `O(B + I + S)` temporary space, including the split
+physical-line view, normalized instructions, stage references and findings.
+Map/set operations use expected/amortized bounds. Source bytes and per-file
+budgets come from the shared scanner and text reader; external image metadata
+resolution and complete Docker grammar are intentionally not attempted.

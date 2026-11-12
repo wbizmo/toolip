@@ -187,6 +187,66 @@ describe('signed declarative rule packs', () => {
     ).toBe(false);
   }, 15_000);
 
+  it('applies a trusted signed rule pack to Terraform and YAML inputs', async () => {
+    const root = await temporaryDirectory('toolip-iac-rule-pack-project-');
+    const packRoot = await temporaryDirectory('toolip-iac-rule-pack-');
+    await mkdir(path.join(root, 'manifests'));
+    await writeFile(
+      path.join(root, 'main.tf'),
+      'resource "aws_s3_bucket" "example" {\n  marker = "SIGNED_IAC_POLICY_MARKER"\n}\n'
+    );
+    await writeFile(
+      path.join(root, 'manifests', 'deployment.yaml'),
+      'apiVersion: apps/v1\nmetadata:\n  annotations:\n    note: SIGNED_IAC_POLICY_MARKER\n'
+    );
+
+    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+    const payload = {
+      ...rulePackPayload(),
+      rules: [
+        {
+          ...rulePackPayload().rules[0],
+          id: 'TLP-EXAMPLE-002',
+          literal: 'SIGNED_IAC_POLICY_MARKER',
+          fileExtensions: ['.tf', '.yaml']
+        }
+      ]
+    };
+    const envelope = {
+      ...payload,
+      signature: {
+        algorithm: 'Ed25519',
+        keyId: 'iac-policy-v1',
+        value: sign(
+          null,
+          Buffer.from(canonicalEvidenceJson(payload)),
+          privateKey
+        ).toString('base64')
+      }
+    };
+    const packPath = await writePack(packRoot, JSON.stringify(envelope));
+    const pack = await loadRulePackFile(packPath, {
+      publicKeyPem: publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+      trustedKeyId: 'iac-policy-v1',
+      now: Date.parse('2026-11-07T00:00:00.000Z')
+    });
+
+    const result = await runSecurityDoctor(root, { rulePacks: [pack] });
+    const findings = result.findings.filter(
+      (finding) => finding.ruleId === 'TLP-EXAMPLE-002'
+    );
+
+    expect(pack.trust).toBe('signature');
+    expect(findings.map((finding) => finding.location?.file)).toEqual([
+      'main.tf',
+      'manifests/deployment.yaml'
+    ]);
+    expect(findings.every((finding) => finding.source === 'signed-rule-pack:example')).toBe(
+      true
+    );
+    expect(JSON.stringify(findings)).not.toContain('SIGNED_IAC_POLICY_MARKER');
+  }, 15_000);
+
   it('rejects executable-shaped rules and expired packs', async () => {
     const root = await temporaryDirectory('toolip-rule-pack-');
     const invalid = {
