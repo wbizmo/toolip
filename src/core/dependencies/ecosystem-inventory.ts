@@ -2079,6 +2079,7 @@ function fromJavaDependencyGraph(
       .update(`${source}\0${rootIdentity}\0${rootIndex}`)
       .digest('hex')
       .slice(0, 16)}`;
+    const moduleOutputStart = output.length;
     const rootChildren = root.children ?? root.dependencies;
     if (rootChildren === undefined) {
       warnings.push(`java-export-edges-unavailable:${source}`);
@@ -2241,6 +2242,34 @@ function fromJavaDependencyGraph(
         Math.max(0, maxPackages - queue.length)
       ))
         queue.push({ value: child, parent: resolved, depth: item.depth + 1 });
+    }
+    const modulePackages = output.slice(moduleOutputStart);
+    const packagesByArtifact = new Map<
+      string,
+      { name: string; versions: Set<string>; packages: LockedPackage[] }
+    >();
+    for (const dependency of modulePackages) {
+      const key = JSON.stringify([
+        dependency.name,
+        dependency.packageType ?? 'jar',
+        dependency.classifier ?? ''
+      ]);
+      const group = packagesByArtifact.get(key) ?? {
+        name: dependency.name,
+        versions: new Set<string>(),
+        packages: []
+      };
+      group.versions.add(dependency.version);
+      group.packages.push(dependency);
+      packagesByArtifact.set(key, group);
+    }
+    for (const { name, versions, packages } of packagesByArtifact.values()) {
+      if (versions.size < 2) continue;
+      warnings.push(
+        `java-export-version-conflict-unresolved:${source}:${name}`
+      );
+      for (const dependency of packages)
+        dependency.resolutionConfidence = 'unknown';
     }
   }
   return output;

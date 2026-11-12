@@ -551,6 +551,47 @@ describe('SBOM generation', () => {
     }
   });
 
+  it('emits exact Gradle multi-module graph versions in CycloneDX', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-sbom-gradle-fixture-')
+    );
+    try {
+      const captured = await readFile(
+        new URL(
+          '../fixtures/java/gradle/gradle-dependencies.json',
+          import.meta.url
+        ),
+        'utf8'
+      );
+      await writeFile(path.join(root, 'gradle-dependencies.json'), captured);
+
+      const document = await generateSbom(root, 'cyclonedx');
+      const components = document.components as Array<{
+        name: string;
+        purl: string;
+      }>;
+      expect(components).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'org.apache.commons:commons-lang3',
+            purl: 'pkg:maven/org.apache.commons/commons-lang3@3.15.0'
+          }),
+          expect.objectContaining({
+            name: 'org.apache.commons:commons-lang3',
+            purl: 'pkg:maven/org.apache.commons/commons-lang3@3.16.0'
+          }),
+          expect.objectContaining({
+            name: 'org.apache.commons:commons-text',
+            purl: 'pkg:maven/org.apache.commons/commons-text@1.12.0'
+          })
+        ])
+      );
+      await expectValidCycloneDx(document);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('emits the exact Maven text-tree classifier PURL', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-sbom-maven-text-')

@@ -3340,6 +3340,34 @@ describe('non-npm lockfile inventory', () => {
     ).toBe(true);
   });
 
+  it('withholds Maven JSON versions when conflict output omits the winner marker', async () => {
+    const root = await fixture();
+    const captured = await readFile(
+      new URL('../fixtures/java/maven-conflict-tree.json', import.meta.url),
+      'utf8'
+    );
+    await writeFile(path.join(root, 'maven-dependency-tree.json'), captured);
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+    const commons = graph.packages.filter(
+      (item) => item.name === 'org.apache.commons:commons-lang3'
+    );
+
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain(
+      'java-export-version-conflict-unresolved:maven-dependency-tree.json:org.apache.commons:commons-lang3'
+    );
+    expect(commons.map(({ version }) => version).sort()).toEqual([
+      '3.14.0',
+      '3.15.0'
+    ]);
+    expect(
+      commons.every(
+        ({ resolutionConfidence }) => resolutionConfidence === 'unknown'
+      )
+    ).toBe(true);
+  });
+
   it('imports real Gradle module exports and nested lockfiles without inventing edges', async () => {
     const exportedRoot = await fixture();
     const exportText = await readFile(
@@ -3429,11 +3457,47 @@ describe('non-npm lockfile inventory', () => {
     expect(locked.edges).toEqual([]);
   });
 
+  it('keeps Gradle lockfile discovery incomplete when its file budget is exceeded', async () => {
+    const root = await fixture();
+    const files = [
+      'settings.gradle',
+      ...Array.from(
+        { length: 129 },
+        (_, index) => `module-${String(index).padStart(3, '0')}/gradle.lockfile`
+      )
+    ];
+    const content = new Map<string, string>([
+      ['settings.gradle', "include 'module-*'\n"],
+      ...files
+        .slice(1)
+        .map(
+          (file, index) =>
+            [file, `org.example:library-${index}:1.0.0=runtimeClasspath\n`] as [
+              string,
+              string
+            ]
+        )
+    ]);
+    const source = {
+      files,
+      hasFile: (file: string) => content.has(file),
+      readText: (file: string) => content.get(file)
+    };
+
+    const graph = await readOtherEcosystemInventoryDetailed(root, source);
+
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain(
+      'gradle-workspace-lockfile-budget-exceeded'
+    );
+    expect(graph.packages).toHaveLength(128);
+  });
+
   it('imports Gradle resolved JSON and marks declaration-only Java projects incomplete', async () => {
     const gradleRoot = await fixture();
     await writeFile(
       path.join(gradleRoot, 'build.gradle.kts'),
-      'plugins { java }\n'
+      'throw RuntimeException("Toolip must not evaluate Gradle build files")\n'
     );
     await writeFile(
       path.join(gradleRoot, 'gradle-dependencies.json'),

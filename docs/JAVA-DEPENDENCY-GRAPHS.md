@@ -53,6 +53,10 @@ represented by an imported graph make coverage incomplete. Toolip does not
 substitute a declared version range or unresolved property with a guessed
 installed version. JSON imports are bounded to 100,000 nodes and 512 levels;
 the shared dependency file reader also applies its regular-file and byte limits.
+Maven's verbose JSON exporter can include both sides of a version conflict
+without identifying the evicted node. When one module contains multiple
+versions of the same group, artifact, type and classifier, Toolip marks those
+versions unknown, withholds them from OSV and reports incomplete coverage.
 Maven scopes are validated against the supported scope set. Gradle's common
 `api`, `implementation`, compile/runtime classpath, and test configurations map
 to dependency sections; unknown scopes and malformed `optional` or `omitted`

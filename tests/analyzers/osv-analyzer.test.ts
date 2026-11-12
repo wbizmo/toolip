@@ -1604,7 +1604,35 @@ describe('OsvVulnerabilityAnalyzer', () => {
           }
           return new Response(
             JSON.stringify({
-              results: body.queries.map(() => ({ vulns: [] }))
+              results: body.queries.map((query) => ({
+                vulns:
+                  query.package.ecosystem === 'Maven' &&
+                  query.package.name === 'org.apache.commons:commons-lang3'
+                    ? [
+                        {
+                          id: 'GHSA-toolip-maven-range-test',
+                          summary: 'Fixture Maven version range',
+                          affected: [
+                            {
+                              package: {
+                                ecosystem: 'Maven',
+                                name: 'org.apache.commons:commons-lang3'
+                              },
+                              ranges: [
+                                {
+                                  type: 'ECOSYSTEM',
+                                  events: [
+                                    { introduced: '0' },
+                                    { fixed: '3.17.0' }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    : []
+              }))
             }),
             { status: 200 }
           );
@@ -1619,6 +1647,66 @@ describe('OsvVulnerabilityAnalyzer', () => {
       expect(queried).toContain('org.apache.commons:commons-lang3@3.16.0');
       expect(queried).toContain('org.junit.jupiter:junit-jupiter-api@5.11.4');
       expect(result.coverage?.state).toBe('complete');
+      const finding = result.findings.find(
+        (item) =>
+          item.metadata?.vulnerabilityId === 'GHSA-toolip-maven-range-test'
+      );
+      expect(finding?.metadata).toMatchObject({
+        package: 'org.apache.commons:commons-lang3',
+        ecosystem: 'Maven',
+        installedVersion: '3.16.0'
+      });
+      expect(finding?.remediation.fixedVersion).toBe('3.17.0');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('withholds OSV queries when Maven JSON omits the conflict winner', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-osv-maven-conflict-')
+    );
+    const queried: string[] = [];
+    try {
+      const captured = await readFile(
+        new URL('../fixtures/java/maven-conflict-tree.json', import.meta.url),
+        'utf8'
+      );
+      await writeFile(path.join(root, 'maven-dependency-tree.json'), captured);
+      const client = new OsvClient({
+        fetchImplementation: async (_input, init) => {
+          const body = JSON.parse(String(init?.body)) as {
+            queries: Array<{
+              package: { ecosystem: string; name: string };
+              version: string;
+            }>;
+          };
+          for (const query of body.queries) {
+            if (query.package.ecosystem === 'Maven')
+              queried.push(`${query.package.name}@${query.version}`);
+          }
+          return new Response(
+            JSON.stringify({
+              results: body.queries.map(() => ({ vulns: [] }))
+            }),
+            { status: 200 }
+          );
+        }
+      });
+
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({
+        root,
+        options: { allowPublicScope: true }
+      });
+
+      expect(queried).not.toContain('org.apache.commons:commons-lang3@3.14.0');
+      expect(queried).not.toContain('org.apache.commons:commons-lang3@3.15.0');
+      expect(result.coverage?.state).toBe('partial');
+      expect(
+        result.warnings.some((warning) =>
+          warning.includes('java-export-version-conflict-unresolved')
+        )
+      ).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
