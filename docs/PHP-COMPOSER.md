@@ -8,7 +8,10 @@ entry points.
 
 Composer lock entries retain exact Packagist name and version, production or
 development classification, and dependency edges. PHP and `ext-*` / `lib-*`
-platform requirements are not treated as third-party packages. Root and
+platform requirements, including Composer's own runtime/plugin API packages,
+are not treated as third-party packages. Package names and requirement records
+are validated before graph resolution. A platform-only lock with empty package
+sections is a complete empty graph. Root and
 transitive version constraints are checked against the locked version; an
 incompatible or ambiguous match remains unresolved and makes graph coverage
 incomplete.
@@ -24,6 +27,16 @@ dependency edges. Branch aliases such as `dev-main`, invalid versions,
 unsupported path patterns, missing manifests, and paths outside the project
 remain explicitly unverified or incomplete. A local workspace identity is not
 sent to OSV as a third-party package.
+
+Non-path custom repositories do not establish public Packagist provenance.
+When the root Composer manifest configures an unknown/custom repository, or is
+missing beside a lockfile, non-path lock packages remain present but have
+unknown resolution confidence and are withheld from public OSV queries. Only
+the implicit/default Packagist origin, or the explicit official HTTPS endpoint
+`repo.packagist.org`, keeps that public query path. Repository URLs and
+credentials are never copied into inventory warnings or source labels. Path
+lock URLs must be project-relative; URI schemes, absolute paths and traversal
+paths remain unverified.
 
 This is a read-only project profile and dependency inventory. It does not
 execute Composer plugins or scripts, install dependencies, or apply

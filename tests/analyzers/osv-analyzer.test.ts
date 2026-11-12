@@ -1399,7 +1399,15 @@ describe('OsvVulnerabilityAnalyzer', () => {
         JSON.stringify({
           packages: [
             { name: 'vendor/library', version: '1.2.0' },
-            { name: 'vendor/branch', version: 'dev-main' }
+            { name: 'vendor/branch', version: 'dev-main' },
+            {
+              name: 'vendor/local',
+              version: '1.0.0',
+              dist: {
+                type: 'path',
+                url: 'https://private.example/packages/local?token=secret'
+              }
+            }
           ]
         })
       );
@@ -1408,7 +1416,8 @@ describe('OsvVulnerabilityAnalyzer', () => {
         JSON.stringify({
           require: {
             'vendor/library': '^1.0',
-            'vendor/branch': 'dev-main'
+            'vendor/branch': 'dev-main',
+            'vendor/local': '^1.0'
           }
         })
       );
@@ -1468,8 +1477,12 @@ describe('OsvVulnerabilityAnalyzer', () => {
       expect(queried.get('Maven')).toContain('org.example:core@4.2.0');
       expect(queried.get('Packagist')).toContain('vendor/library@1.2.0');
       expect(queried.get('Packagist')).not.toContain('vendor/branch@dev-main');
+      expect(queried.get('Packagist')).not.toContain('vendor/local@1.0.0');
       expect(result.warnings).toContain(
         'dependency-graph:composer-branch-version-unverified:vendor/branch'
+      );
+      expect(JSON.stringify(result)).not.toMatch(
+        /private\.example|token=secret/iu
       );
       const declaredPinFinding = result.findings.find(
         (finding) => finding.metadata?.package === 'requests'
@@ -1485,6 +1498,55 @@ describe('OsvVulnerabilityAnalyzer', () => {
         (finding) => finding.metadata?.package === 'example.test/lib'
       );
       expect(goFinding).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('withholds Packagist queries when Composer lock origin is a private repository', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-osv-composer-private-repository-')
+    );
+    let requestCount = 0;
+    try {
+      await writeFile(
+        path.join(root, 'composer.json'),
+        JSON.stringify({
+          repositories: [
+            {
+              type: 'composer',
+              url: 'https://private.example/registry?token=secret'
+            }
+          ],
+          require: { 'company/internal-library': '^1.0' }
+        })
+      );
+      await writeFile(
+        path.join(root, 'composer.lock'),
+        JSON.stringify({
+          packages: [{ name: 'company/internal-library', version: '1.2.0' }],
+          'packages-dev': []
+        })
+      );
+      const client = new OsvClient({
+        fetchImplementation: async () => {
+          requestCount += 1;
+          return new Response(JSON.stringify({ results: [] }), { status: 200 });
+        }
+      });
+
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({
+        root
+      });
+
+      expect(requestCount).toBe(0);
+      expect(result.coverage?.state).toBe('failed');
+      expect(result.warnings).toContain(
+        'dependency-graph:composer-repository-provenance-unverified'
+      );
+      expect(JSON.stringify(result)).not.toMatch(
+        /private\.example|token=secret/u
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -934,6 +934,34 @@ describe('non-npm lockfile inventory', () => {
     expect(graph.warnings).toContain('cargo-lock-version-unsupported');
   });
 
+  it('rejects Cargo lock entries with invalid crate names or non-semver versions', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'Cargo.lock'),
+      [
+        'version = 4',
+        '',
+        '[[package]]',
+        'name = "../serde"',
+        'version = "1.0.0"',
+        'source = "registry+https://github.com/rust-lang/crates.io-index"',
+        `checksum = "${'a'.repeat(64)}"`,
+        '',
+        '[[package]]',
+        'name = "serde"',
+        'version = "latest"',
+        'source = "registry+https://github.com/rust-lang/crates.io-index"',
+        `checksum = "${'b'.repeat(64)}"`
+      ].join('\n')
+    );
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+
+    expect(graph.packages).toEqual([]);
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain('toml-lock-package-unresolved:Cargo.lock');
+  });
+
   it('marks duplicate exact lock identities with conflicting checksums unknown', async () => {
     const root = await fixture();
     await writeFile(
@@ -1414,6 +1442,126 @@ describe('non-npm lockfile inventory', () => {
         requirement: 'dev-main'
       })
     );
+  });
+
+  it('ignores Composer platform requirements and rejects external path identities', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'composer.json'),
+      JSON.stringify({
+        require: {
+          php: '^8.2',
+          'php-64bit': '*',
+          'ext-json': '*',
+          'composer-plugin-api': '^2.0',
+          'composer-runtime-api': '^2.0'
+        }
+      })
+    );
+    await writeFile(
+      path.join(root, 'composer.lock'),
+      JSON.stringify({
+        packages: [
+          {
+            name: 'vendor/local',
+            version: '1.2.0',
+            dist: {
+              type: 'path',
+              url: 'https://private.example/packages/local?token=secret'
+            }
+          },
+          { name: '../outside', version: '1.0.0' }
+        ],
+        'packages-dev': []
+      })
+    );
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+
+    expect(graph.packages).toHaveLength(1);
+    expect(graph.packages[0]).toMatchObject({
+      name: 'vendor/local',
+      resolutionConfidence: 'unknown',
+      source: 'composer.lock:path-unverified',
+      direct: false
+    });
+    expect(graph.warnings).toContain(
+      'composer-lock-package-unresolved:packages'
+    );
+    expect(JSON.stringify(graph)).not.toMatch(/private\.example|token=secret/u);
+    expect(graph.complete).toBe(false);
+  });
+
+  it('treats an empty Composer graph with only platform requirements as complete', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'composer.json'),
+      JSON.stringify({
+        require: {
+          php: '^8.2',
+          'ext-json': '*',
+          'composer-runtime-api': '^2.0'
+        }
+      })
+    );
+    await writeFile(
+      path.join(root, 'composer.lock'),
+      JSON.stringify({ packages: [], 'packages-dev': [] })
+    );
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+
+    expect(graph.packages).toEqual([]);
+    expect(graph.edges).toEqual([]);
+    expect(graph.warnings).toEqual([]);
+    expect(graph.complete).toBe(true);
+  });
+
+  it('marks Composer packages from custom repositories unknown without exposing repository URLs', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'composer.json'),
+      JSON.stringify({
+        repositories: [
+          {
+            type: 'composer',
+            url: 'https://private.example/registry?token=secret'
+          }
+        ],
+        require: { 'company/internal-library': '^1.0' }
+      })
+    );
+    await writeFile(
+      path.join(root, 'composer.lock'),
+      JSON.stringify({
+        packages: [{ name: 'company/internal-library', version: '1.2.0' }],
+        'packages-dev': []
+      })
+    );
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+
+    expect(graph.packages).toContainEqual(
+      expect.objectContaining({
+        name: 'company/internal-library',
+        version: '1.2.0',
+        direct: true,
+        resolutionConfidence: 'unknown',
+        source: 'composer.lock:repository-unverified'
+      })
+    );
+    expect(graph.edges).toContainEqual(
+      expect.objectContaining({
+        from: 'root',
+        name: 'company/internal-library',
+        requirement: '^1.0'
+      })
+    );
+    expect(graph.warnings).toContain(
+      'composer-repository-provenance-unverified'
+    );
+    expect(JSON.stringify(graph)).not.toMatch(/private\.example|token=secret/u);
+    expect(graph.complete).toBe(false);
   });
 
   it('does not infer installed versions from ranges or malformed lockfiles', async () => {
@@ -2605,5 +2753,52 @@ describe('non-npm lockfile inventory', () => {
       'maven-resolved-graph-unavailable:pom.xml'
     );
     expect(unresolved.complete).toBe(false);
+  });
+
+  it('marks Java export graphs incomplete when a dependency scope is unknown', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'gradle-dependencies.json'),
+      JSON.stringify({
+        modules: [
+          {
+            group: 'org.acme',
+            module: 'service',
+            version: '1.0.0',
+            dependencies: [
+              {
+                group: 'org.example',
+                module: 'library',
+                version: '2.4.0',
+                scope: 'customProductionScope',
+                dependencies: []
+              }
+            ]
+          }
+        ]
+      })
+    );
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+
+    expect(graph.packages).toContainEqual(
+      expect.objectContaining({
+        name: 'org.example:library',
+        version: '2.4.0',
+        direct: true,
+        development: false
+      })
+    );
+    expect(graph.edges).toContainEqual(
+      expect.objectContaining({
+        from: 'root',
+        name: 'org.example:library',
+        section: 'dependency'
+      })
+    );
+    expect(graph.warnings).toContain(
+      'java-export-scope-unresolved:gradle-dependencies.json'
+    );
+    expect(graph.complete).toBe(false);
   });
 });

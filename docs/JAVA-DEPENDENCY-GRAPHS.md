@@ -27,6 +27,10 @@ represented by an imported graph make coverage incomplete. Toolip does not
 substitute a declared version range or unresolved property with a guessed
 installed version. JSON imports are bounded to 100,000 nodes and 512 levels;
 the shared dependency file reader also applies its regular-file and byte limits.
+Maven scopes are validated against the supported scope set. Gradle's common
+`api`, `implementation`, compile/runtime classpath, and test configurations map
+to dependency sections; unknown scopes and malformed `optional` or `omitted`
+flags keep the exact coordinate visible but mark graph coverage incomplete.
 
 This import support does not establish artifact provenance, run Maven/Gradle
 advisory tests, or verify that the exported file was generated from the current

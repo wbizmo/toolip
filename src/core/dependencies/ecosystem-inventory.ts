@@ -75,6 +75,27 @@ const maximumPythonWorkspaceManifests = 5_000;
 const maximumPythonWorkspaceEntries = 50_000;
 const maximumWorkspaceGlobWork = 16_000_000;
 const maximumEcosystemResolutionWork = 250_000;
+const javaScopes = new Set([
+  'compile',
+  'provided',
+  'runtime',
+  'test',
+  'system',
+  'import'
+]);
+const gradleScopeAliases = new Map([
+  ['api', 'compile'],
+  ['implementation', 'compile'],
+  ['compileclasspath', 'compile'],
+  ['compileonly', 'provided'],
+  ['runtimeonly', 'runtime'],
+  ['runtimeclasspath', 'runtime'],
+  ['testapi', 'test'],
+  ['testcompileclasspath', 'test'],
+  ['testimplementation', 'test'],
+  ['testruntimeclasspath', 'test'],
+  ['testfixtures', 'test']
+]);
 
 function asRecord(value: unknown): RecordValue | undefined {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -144,6 +165,36 @@ function exact(value: unknown): value is string {
   );
 }
 
+function validCargoPackageName(value: string): boolean {
+  return value.length <= 256 && /^[A-Za-z0-9_-]+$/u.test(value);
+}
+
+function validComposerPackageName(value: string): boolean {
+  if (value.length > 512) return false;
+  const parts = value.toLowerCase().split('/');
+  return (
+    parts.length === 2 &&
+    parts.every(
+      (part) =>
+        part !== '.' && part !== '..' && /^[a-z0-9][a-z0-9_.-]*$/u.test(part)
+    )
+  );
+}
+
+function isComposerPlatformPackage(name: string): boolean {
+  const normalized = name.toLowerCase();
+  return (
+    normalized === 'php' ||
+    normalized.startsWith('php-') ||
+    normalized === 'hhvm' ||
+    normalized.startsWith('ext-') ||
+    normalized.startsWith('lib-') ||
+    normalized === 'composer' ||
+    normalized === 'composer-plugin-api' ||
+    normalized === 'composer-runtime-api'
+  );
+}
+
 function validPythonPackageName(value: string): boolean {
   return (
     value.length <= 256 &&
@@ -157,8 +208,11 @@ function fromJsonLock(
   source: string,
   warnings: string[]
 ): LockedPackage[] {
-  if (!value || typeof value !== 'object') return [];
-  const record = value as Record<string, unknown>;
+  const record = asRecord(value);
+  if (!record) {
+    if (ecosystem === 'Packagist') warnings.push('composer-lock-invalid');
+    return [];
+  }
   if (ecosystem === 'PyPI' && ('default' in record || 'develop' in record)) {
     const output: LockedPackage[] = [];
     for (const section of ['default', 'develop']) {
@@ -215,83 +269,92 @@ function fromJsonLock(
     const output: LockedPackage[] = [];
     for (const section of ['packages', 'packages-dev']) {
       const entries = record[section];
-      if (!Array.isArray(entries)) continue;
+      if (entries === undefined && section === 'packages-dev') continue;
+      if (!Array.isArray(entries)) {
+        warnings.push(`composer-lock-section-invalid:${section}`);
+        continue;
+      }
       for (const item of entries) {
-        if (!item || typeof item !== 'object') continue;
-        const pkg = item as Record<string, unknown>;
+        const pkg = asRecord(item);
         if (
-          typeof pkg.name === 'string' &&
-          typeof pkg.version === 'string' &&
-          exact(pkg.version)
+          !pkg ||
+          typeof pkg.name !== 'string' ||
+          !validComposerPackageName(pkg.name) ||
+          typeof pkg.version !== 'string' ||
+          !exact(pkg.version)
         ) {
-          const version = pkg.version.replace(/^v/u, '');
-          const stableVersion = semver.valid(version) !== null;
-          const distribution = asRecord(pkg.dist);
-          const packageSource = asRecord(pkg.source);
-          const isPathRepository =
-            distribution?.type === 'path' || packageSource?.type === 'path';
-          const rawPath =
-            typeof distribution?.url === 'string'
-              ? distribution.url
-              : typeof packageSource?.url === 'string'
-                ? packageSource.url
-                : undefined;
-          const normalizedPath = rawPath
-            ? path.posix.normalize(
-                rawPath.replaceAll('\\', '/').replace(/^\.\//u, '')
-              )
-            : undefined;
-          const safePath = Boolean(
-            normalizedPath &&
-            !path.posix.isAbsolute(rawPath?.replaceAll('\\', '/') ?? '') &&
-            normalizedPath !== '..' &&
-            !normalizedPath.startsWith('../') &&
-            !normalizedPath.includes('\0')
-          );
-          output.push({
-            name: pkg.name.toLowerCase(),
-            version,
-            ecosystem,
-            source: isPathRepository
-              ? safePath
-                ? 'composer.lock:path-repository'
-                : 'composer.lock:path-unverified'
-              : source,
-            ...(!isPathRepository && !stableVersion
-              ? { resolutionConfidence: 'unknown' as const }
-              : {}),
-            ...(isPathRepository
-              ? {
-                  resolutionConfidence: safePath
-                    ? ('workspace' as const)
-                    : ('unknown' as const),
-                  ...(safePath ? { module: normalizedPath } : {})
-                }
-              : {}),
-            development: section === 'packages-dev',
-            dependencies: Object.entries(
-              pkg.require && typeof pkg.require === 'object'
-                ? (pkg.require as Record<string, unknown>)
-                : {}
-            ).flatMap(([name, requirement]) =>
-              typeof requirement === 'string' &&
-              name.toLowerCase() !== 'php' &&
-              !name.toLowerCase().startsWith('ext-') &&
-              !name.toLowerCase().startsWith('lib-')
-                ? [
-                    {
-                      name: name.toLowerCase(),
-                      requirement,
-                      section:
-                        section === 'packages-dev'
-                          ? ('devDependency' as const)
-                          : ('dependency' as const)
-                    }
-                  ]
-                : []
-            )
-          });
+          warnings.push(`composer-lock-package-unresolved:${section}`);
+          continue;
         }
+        const name = pkg.name.toLowerCase();
+        const version = pkg.version.replace(/^v/u, '');
+        const stableVersion = semver.valid(version) !== null;
+        const distribution = asRecord(pkg.dist);
+        const packageSource = asRecord(pkg.source);
+        const isPathRepository =
+          distribution?.type === 'path' || packageSource?.type === 'path';
+        const rawPath =
+          typeof distribution?.url === 'string'
+            ? distribution.url
+            : typeof packageSource?.url === 'string'
+              ? packageSource.url
+              : undefined;
+        const normalizedPath = rawPath
+          ? safeComposerRelativePath(rawPath)
+          : undefined;
+        const safePath = normalizedPath !== undefined;
+        const rawRequirements = pkg.require;
+        const requirements = asRecord(rawRequirements);
+        if (rawRequirements !== undefined && !requirements)
+          warnings.push(`composer-lock-require-invalid:${name}`);
+        const dependencies = Object.entries(requirements ?? {}).flatMap(
+          ([dependencyName, requirement]) => {
+            const normalizedName = dependencyName.toLowerCase();
+            if (isComposerPlatformPackage(normalizedName)) return [];
+            if (
+              !validComposerPackageName(dependencyName) ||
+              typeof requirement !== 'string' ||
+              requirement.length === 0 ||
+              requirement.length > 4_096
+            ) {
+              warnings.push(`composer-lock-require-unresolved:${name}`);
+              return [];
+            }
+            return [
+              {
+                name: normalizedName,
+                requirement,
+                section:
+                  section === 'packages-dev'
+                    ? ('devDependency' as const)
+                    : ('dependency' as const)
+              }
+            ];
+          }
+        );
+        output.push({
+          name,
+          version,
+          ecosystem,
+          source: isPathRepository
+            ? safePath
+              ? 'composer.lock:path-repository'
+              : 'composer.lock:path-unverified'
+            : source,
+          ...(!isPathRepository && !stableVersion
+            ? { resolutionConfidence: 'unknown' as const }
+            : {}),
+          ...(isPathRepository
+            ? {
+                resolutionConfidence: safePath
+                  ? ('workspace' as const)
+                  : ('unknown' as const),
+                ...(safePath ? { module: normalizedPath } : {})
+              }
+            : {}),
+          development: section === 'packages-dev',
+          dependencies
+        });
       }
     }
     return output;
@@ -511,6 +574,10 @@ function fromTomlLock(
     if (
       typeof packageName !== 'string' ||
       (ecosystem === 'PyPI' && !validPythonPackageName(packageName)) ||
+      (ecosystem === 'crates.io' &&
+        (!validCargoPackageName(packageName) ||
+          typeof version !== 'string' ||
+          semver.valid(version) === null)) ||
       typeof version !== 'string' ||
       !exact(version) ||
       version.length > 256 ||
@@ -526,8 +593,16 @@ function fromTomlLock(
       section: DependencyEdge['section'] = 'dependency',
       extra?: string
     ): void => {
-      if (typeof rawName !== 'string' || !rawName || rawName.length > 256)
+      if (
+        typeof rawName !== 'string' ||
+        !rawName ||
+        rawName.length > 256 ||
+        (ecosystem === 'crates.io' && !validCargoPackageName(rawName))
+      ) {
+        if (ecosystem === 'crates.io')
+          warnings.push(`toml-lock-dependency-unresolved:${source}`);
         return;
+      }
       const dep = asRecord(rawValue);
       const name =
         ecosystem === 'PyPI' ? canonicalPythonName(rawName) : rawName;
@@ -1332,10 +1407,31 @@ function fromJavaDependencyGraph(
         warnings.push(`java-export-conflict-omitted:${source}`);
         continue;
       }
-      const scope =
-        typeof dependency.scope === 'string'
-          ? dependency.scope.toLowerCase()
-          : 'compile';
+      let scope = 'compile';
+      if (dependency.scope !== undefined) {
+        if (typeof dependency.scope !== 'string') {
+          warnings.push(`java-export-scope-unresolved:${source}`);
+        } else {
+          scope = dependency.scope.toLowerCase();
+        }
+      }
+      if (
+        dependency.omitted !== undefined &&
+        typeof dependency.omitted !== 'boolean'
+      )
+        warnings.push(`java-export-omitted-state-invalid:${source}`);
+      if (
+        dependency.optional !== undefined &&
+        typeof dependency.optional !== 'boolean'
+      )
+        warnings.push(`java-export-optional-state-invalid:${source}`);
+      if (source === 'gradle-dependencies.json') {
+        scope = gradleScopeAliases.get(scope) ?? scope;
+      }
+      if (!javaScopes.has(scope)) {
+        warnings.push(`java-export-scope-unresolved:${source}`);
+        scope = 'compile';
+      }
       const section: DependencyEdge['section'] =
         dependency.optional === true
           ? 'optionalDependency'
@@ -3450,7 +3546,7 @@ export async function readOtherEcosystemInventoryDetailed(
       output.push(...packages);
       if (file === 'Pipfile.lock' && packages.length > 0)
         warnings.push('pipfile-lock-transitive-edges-unresolved');
-      if (packages.length === 0)
+      if (packages.length === 0 && file !== 'composer.lock')
         warnings.push(`no-exact-package-records:${file}`);
     } catch {
       warnings.push(`invalid-or-unreadable-lockfile:${file}`);
@@ -3488,34 +3584,55 @@ export async function readOtherEcosystemInventoryDetailed(
   >();
   const composerWorkspaceFiles = new Set<string>();
   let composerPathPatterns: string[] = [];
+  let composerRegistryProvenanceKnown = false;
   if (composerManifestText !== undefined) {
     try {
-      const manifest = JSON.parse(composerManifestText) as Record<
-        string,
-        unknown
-      >;
+      const manifest = asRecord(JSON.parse(composerManifestText));
+      if (!manifest) throw new Error('composer-manifest-not-object');
+      composerRegistryProvenanceKnown =
+        composerRepositoryProvenanceKnown(manifest);
       composerPathPatterns = composerPathRepositoryPatterns(manifest, warnings);
       for (const [field, section] of [
         ['require', 'dependency'],
         ['require-dev', 'devDependency']
       ] as const) {
-        const entries = manifest[field];
-        if (!entries || typeof entries !== 'object' || Array.isArray(entries))
+        const rawEntries = manifest[field];
+        if (rawEntries === undefined) continue;
+        const entries = asRecord(rawEntries);
+        if (!entries) {
+          warnings.push(`composer-manifest-requirements-invalid:${field}`);
           continue;
+        }
         for (const [name, requirement] of Object.entries(entries)) {
           const normalizedName = name.toLowerCase();
+          if (isComposerPlatformPackage(normalizedName)) continue;
           if (
-            typeof requirement === 'string' &&
-            normalizedName !== 'php' &&
-            !normalizedName.startsWith('ext-') &&
-            !normalizedName.startsWith('lib-')
-          )
-            composerDirect.set(normalizedName, { requirement, section });
+            !validComposerPackageName(name) ||
+            typeof requirement !== 'string' ||
+            requirement.length === 0 ||
+            requirement.length > 4_096
+          ) {
+            warnings.push('composer-manifest-requirement-unresolved');
+            continue;
+          }
+          composerDirect.set(normalizedName, { requirement, section });
         }
       }
     } catch {
       warnings.push('invalid-manifest:composer.json');
     }
+  }
+  if (!composerRegistryProvenanceKnown) {
+    let affectedPackages = false;
+    for (const item of output) {
+      if (item.ecosystem !== 'Packagist' || item.source !== 'composer.lock')
+        continue;
+      item.source = 'composer.lock:repository-unverified';
+      item.resolutionConfidence = 'unknown';
+      affectedPackages = true;
+    }
+    if (affectedPackages)
+      warnings.push('composer-repository-provenance-unverified');
   }
 
   const cargoManifestFiles = await cargoManifestPaths(
@@ -3605,7 +3722,12 @@ export async function readOtherEcosystemInventoryDetailed(
             typeof cargoWorkspaceVersion === 'string'
           ? cargoWorkspaceVersion
           : undefined;
-    if (!name || !/^[A-Za-z0-9_-]{1,256}$/u.test(name) || !exact(version)) {
+    if (
+      !name ||
+      !validCargoPackageName(name) ||
+      !exact(version) ||
+      semver.valid(version) === null
+    ) {
       warnings.push(`cargo-workspace-identity-unresolved:${file}`);
       continue;
     }
@@ -4320,7 +4442,8 @@ export async function readOtherEcosystemInventoryDetailed(
     if (
       item.ecosystem === 'Packagist' &&
       item.source === 'composer.lock' &&
-      item.resolutionConfidence === 'unknown'
+      item.resolutionConfidence === 'unknown' &&
+      semver.valid(item.version) === null
     )
       warnings.push(`composer-branch-version-unverified:${item.name}`);
     const dependency = identity(item);
@@ -4967,6 +5090,29 @@ function canonicalPythonName(value: string): string {
   return value.toLowerCase().replace(/[-_.]+/gu, '-');
 }
 
+function safeComposerRelativePath(value: string): string | undefined {
+  if (value.length === 0 || value.length > 4_096 || /[\p{Cc}\0]/u.test(value))
+    return undefined;
+  const normalizedSeparators = value.replaceAll('\\', '/');
+  if (
+    normalizedSeparators.startsWith('//') ||
+    path.posix.isAbsolute(normalizedSeparators) ||
+    /^[A-Za-z][A-Za-z0-9+.-]*:/u.test(normalizedSeparators)
+  )
+    return undefined;
+  const normalized = path.posix.normalize(
+    normalizedSeparators.replace(/^\.\//u, '')
+  );
+  if (
+    normalized === '.' ||
+    normalized === '..' ||
+    normalized.startsWith('../') ||
+    normalized.includes('\0')
+  )
+    return undefined;
+  return normalized;
+}
+
 function composerPathRepositoryPatterns(
   manifest: RecordValue,
   warnings: string[]
@@ -4988,6 +5134,8 @@ function composerPathRepositoryPatterns(
     const normalized = path.posix.normalize(url.replace(/^\.\//u, ''));
     if (
       !normalized ||
+      /^[A-Za-z][A-Za-z0-9+.-]*:/u.test(url) ||
+      url.startsWith('//') ||
       path.posix.isAbsolute(url) ||
       normalized === '..' ||
       normalized.startsWith('../') ||
@@ -5005,6 +5153,35 @@ function composerPathRepositoryPatterns(
   if (unique.length > maximumComposerPathRepositories)
     warnings.push('composer-path-repository-budget-exceeded');
   return unique.slice(0, maximumComposerPathRepositories);
+}
+
+function composerRepositoryProvenanceKnown(manifest: RecordValue): boolean {
+  const repositories = manifest.repositories;
+  if (repositories === undefined) return true;
+  if (!Array.isArray(repositories)) return false;
+  for (const rawRepository of repositories) {
+    const repository = asRecord(rawRepository);
+    if (repository?.type === 'path') continue;
+    if (repository?.type === 'composer' && typeof repository.url === 'string') {
+      try {
+        const url = new URL(repository.url);
+        if (
+          url.protocol === 'https:' &&
+          url.hostname === 'repo.packagist.org' &&
+          (url.pathname === '/' || url.pathname === '') &&
+          !url.username &&
+          !url.password &&
+          !url.search &&
+          !url.hash
+        )
+          continue;
+      } catch {
+        // Unknown repository origins stay outside public registry trust.
+      }
+    }
+    return false;
+  }
+  return true;
 }
 
 function composerPathMatches(pattern: string, directory: string): boolean {
@@ -5102,7 +5279,7 @@ function composerWorkspacePackage(
   if (
     !manifest ||
     typeof manifest.name !== 'string' ||
-    !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(manifest.name) ||
+    !validComposerPackageName(manifest.name) ||
     typeof manifest.version !== 'string' ||
     !exact(manifest.version)
   ) {
@@ -5115,16 +5292,25 @@ function composerWorkspacePackage(
     ['require', 'dependency'],
     ['require-dev', 'devDependency']
   ] as const) {
-    const requirements = asRecord(manifest[field]);
+    const rawRequirements = manifest[field];
+    if (rawRequirements === undefined) continue;
+    const requirements = asRecord(rawRequirements);
+    if (!requirements) {
+      warnings.push(`composer-workspace-requirements-invalid:${file}`);
+      continue;
+    }
     for (const [name, requirement] of Object.entries(requirements ?? {})) {
       const normalizedName = name.toLowerCase();
+      if (isComposerPlatformPackage(normalizedName)) continue;
       if (
+        !validComposerPackageName(name) ||
         typeof requirement !== 'string' ||
-        normalizedName === 'php' ||
-        normalizedName.startsWith('ext-') ||
-        normalizedName.startsWith('lib-')
-      )
+        requirement.length === 0 ||
+        requirement.length > 4_096
+      ) {
+        warnings.push(`composer-workspace-requirement-unresolved:${file}`);
         continue;
+      }
       dependencies.push({
         name: normalizedName,
         requirement,

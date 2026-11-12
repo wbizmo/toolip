@@ -1,10 +1,15 @@
 # Rust and Cargo dependency inventory
 
 Toolip reads Cargo.lock v3/v4 as data; it never invokes Cargo, build scripts,
-procedural macros, or project code during inventory. Registry packages from the
-official crates.io index require a lockfile SHA-256 checksum before they are
-queried as resolved third-party dependencies. Git and unresolved path sources
-remain provenance-unknown and are withheld from OSV queries.
+procedural macros, or project code during inventory. Package identities require
+a valid Cargo crate name and semantic version; malformed names, versions, or
+dependency entries make coverage incomplete rather than creating an advisory
+identity. Registry packages from the official crates.io index require a
+lockfile SHA-256 checksum before they are queried as resolved third-party
+dependencies. That checksum is declared lock data, not independent
+verification of downloaded crate bytes or checksum-database inclusion. Git and
+unresolved path sources remain provenance-unknown and are withheld from OSV
+queries.
 
 For a declared Cargo workspace, Toolip matches captured `Cargo.toml` member
 manifests to exact package name/version identities in Cargo.lock, records
