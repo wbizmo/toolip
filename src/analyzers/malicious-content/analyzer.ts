@@ -83,6 +83,10 @@ export function shouldInspectMaliciousContent(
 }
 const executableReference =
   /(?:\bnode(?:\.exe)?\s+|\b(?:bash|sh|zsh|pwsh|powershell)(?:\.exe)?\s+(?:-File\s+)?|\bpython(?:3)?\s+|\bdeno\s+run\s+|\b(?:bun|ruby|perl|php)(?:\.exe)?\s+(?:run\s+)?|\bcmd(?:\.exe)?\s+\/(?:c|k)\s+)(["']?)([^\s"';&|]+)\1/giu;
+const nodePreloadReference =
+  /\bnode(?:\.exe)?\s+(?:--require|-r|--import|--loader)(?:=|\s+)(["']?)(\.{1,2}\/[^\s"';&|]+)\1/giu;
+const nodeOptionsPreloadReference =
+  /\bNODE_OPTIONS\s*=\s*["']?(?:--require|-r|--import|--loader)(?:=|\s+)(["']?)(\.{1,2}\/[^\s"';&|]+)\1/giu;
 const directLocalExecutionReference =
   /(?:^|[;&|]\s*)(?:exec\s+)?(["']?)(\.{1,2}\/[^\s"';&|]+)\1/gmu;
 const localImport =
@@ -149,6 +153,8 @@ function contentAnalysis(source: string): Readonly<{
   const references = new Set<string>();
   const patterns = [
     executableReference,
+    nodePreloadReference,
+    nodeOptionsPreloadReference,
     directLocalExecutionReference,
     localImport,
     shellSourceReference
@@ -157,11 +163,12 @@ function contentAnalysis(source: string): Readonly<{
     pattern.lastIndex = 0;
     for (const match of source.matchAll(pattern)) {
       const value =
-        pattern === executableReference
+        pattern === executableReference ||
+        pattern === nodePreloadReference ||
+        pattern === nodeOptionsPreloadReference ||
+        pattern === directLocalExecutionReference
           ? match[2]
-          : pattern === directLocalExecutionReference
-            ? match[2]
-            : match[1];
+          : match[1];
       if (value) references.add(value);
       if (references.size > MAX_CACHED_REFERENCES_PER_CONTENT) break;
     }
@@ -186,6 +193,73 @@ function stableId(parts: readonly string[]): string {
     .update(parts.join('\0'))
     .digest('hex')
     .slice(0, 24);
+}
+
+/**
+ * Read the JSONC subset used by VS Code tasks: comments and trailing commas.
+ * Quoted strings stay byte-for-byte intact; unterminated comments fail closed.
+ * O(B) time and O(B) space for B input code units under caller byte limits.
+ */
+function parseEditorTaskJsonc(source: string): unknown {
+  const chars = source.split('');
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < chars.length; i++) {
+    const char = chars[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === '/' && chars[i + 1] === '/') {
+      chars[i++] = ' ';
+      chars[i] = ' ';
+      while (
+        i + 1 < chars.length &&
+        chars[i + 1] !== '\n' &&
+        chars[i + 1] !== '\r'
+      )
+        chars[++i] = ' ';
+    } else if (char === '/' && chars[i + 1] === '*') {
+      chars[i++] = ' ';
+      chars[i] = ' ';
+      let terminated = false;
+      while (++i < chars.length) {
+        const current = chars[i];
+        chars[i] = current === '\n' || current === '\r' ? current : ' ';
+        if (current === '*' && chars[i + 1] === '/') {
+          chars[++i] = ' ';
+          terminated = true;
+          break;
+        }
+      }
+      if (!terminated) throw new SyntaxError('Unterminated JSONC comment');
+    }
+  }
+  inString = false;
+  escaped = false;
+  for (let i = 0; i < chars.length; i++) {
+    const char = chars[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+    } else if (char === ',') {
+      let next = i + 1;
+      while (next < chars.length && /\s/u.test(chars[next])) next++;
+      if (chars[next] === '}' || chars[next] === ']') chars[i] = ' ';
+    }
+  }
+  return JSON.parse(chars.join(''));
 }
 
 function safeJson(content: string): unknown {
@@ -228,7 +302,14 @@ function malformedEntrypoint(file: MaliciousContentFile): boolean {
       return true;
     }
   }
-  const parsed = safeJson(file.content);
+  let parsed: unknown;
+  try {
+    parsed = file.path.endsWith('/tasks.json')
+      ? parseEditorTaskJsonc(file.content)
+      : safeJson(file.content);
+  } catch {
+    return true;
+  }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
     return true;
   const record = parsed as Record<string, unknown>;
@@ -304,6 +385,11 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
     directLocalExecutionReference.lastIndex = 0;
     for (const match of source.matchAll(directLocalExecutionReference))
       addReference(references, match[2] ?? '');
+    for (const pattern of [nodePreloadReference, nodeOptionsPreloadReference]) {
+      pattern.lastIndex = 0;
+      for (const match of source.matchAll(pattern))
+        addReference(references, match[2] ?? '');
+    }
   };
   for (const file of files) {
     if (file.path !== 'package.json' && !file.path.endsWith('/package.json'))
@@ -344,7 +430,12 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
       !file.path.endsWith('/.vscode/tasks.json')
     )
       continue;
-    const tasks = safeJson(file.content);
+    let tasks: unknown;
+    try {
+      tasks = parseEditorTaskJsonc(file.content);
+    } catch {
+      continue; // malformedEntrypoint() marks this input incomplete
+    }
     if (tasks && typeof tasks === 'object' && !Array.isArray(tasks)) {
       const taskList = (tasks as { tasks?: unknown }).tasks;
       if (Array.isArray(taskList))
@@ -761,6 +852,16 @@ export function analyzeMaliciousContent(
         )) {
           const nested = match[2];
           if (nested && !enqueue(target, nested)) break;
+        }
+        for (const pattern of [
+          nodePreloadReference,
+          nodeOptionsPreloadReference
+        ]) {
+          pattern.lastIndex = 0;
+          for (const match of targetText.matchAll(pattern)) {
+            const nested = match[2];
+            if (nested && !enqueue(target, nested)) break;
+          }
         }
       }
     }

@@ -1103,3 +1103,37 @@ Full local verification for this checkpoint:
 These are local Linux results. All 37 issues remain **Partial**; hosted CI,
 macOS/Windows runs, protected-main bootstrap, and independent review remain
 outstanding.
+
+## P0 execution-chain parser checkpoint — 2026-11-12
+
+**Status: code checkpoint, not completion of #95 or #96.** The ordinary
+malicious-content analyzer and the independently trusted Stage A scanner now
+accept bounded VS Code tasks.json JSONC (comments and trailing commas),
+preserve comment markers inside quoted strings, and fail closed on unterminated
+block comments or malformed task structures. This prevents legitimate JSONC
+auto-run tasks from being omitted as an unsupported manifest.
+
+Node preload entrypoints using node -r, node --require, node --import,
+node --loader, and literal NODE_OPTIONS preload forms are traced to
+relative local files before any lifecycle command executes. Synthetic tests
+cover automatic task -> encoded local loader and npm lifecycle -> preload
+loader, without executing fixtures. The trusted scanner source digest is
+repinned at all three Stage A workflow locations; this changes only the
+_proposed_ protected workflow on this draft branch.
+
+Outstanding #95/#96 acceptance includes more shell/runtime indirection,
+non-npm artifact provenance, large-file and false-positive/false-negative
+calibration, cross-platform behavior, independently trusted main bootstrap,
+server-enforced branch protections, fork PR dry runs, and reviewer acceptance.
+No external protection or release-readiness claim is made here.
+
+## Advisory bundle schema source-control correction — 2026-11-12
+
+The documented #67 offline advisory v1 JSON Schema had not been checked into
+the repository because the root toolip-*.json ignore rule covered its filename.
+The schema is now committed with a narrow ignore-rule exception and fixture
+checks for valid documents, invalid manifest identity, and malformed SHA-256.
+The schema validates structure only: actual record counts, freshness, bundle
+integrity, signed provenance, and source trust are checked by the runtime.
+This resolves the missing-file failure in the source-tree snapshot test, but
+does not establish external snapshot interoperability or #67 acceptance.

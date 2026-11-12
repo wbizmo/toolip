@@ -2722,6 +2722,73 @@ function workflowRunCommands(source) {
   return commands;
 }
 
+/**
+ * Read the JSONC subset used by VS Code tasks: comments and trailing commas.
+ * Quoted strings stay byte-for-byte intact; unterminated comments fail closed.
+ * O(B) time and O(B) space for B input code units under caller byte limits.
+ */
+function parseEditorTaskJsonc(source) {
+  const chars = source.split('');
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < chars.length; i++) {
+    const char = chars[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === '/' && chars[i + 1] === '/') {
+      chars[i++] = ' ';
+      chars[i] = ' ';
+      while (
+        i + 1 < chars.length &&
+        chars[i + 1] !== '\n' &&
+        chars[i + 1] !== '\r'
+      )
+        chars[++i] = ' ';
+    } else if (char === '/' && chars[i + 1] === '*') {
+      chars[i++] = ' ';
+      chars[i] = ' ';
+      let terminated = false;
+      while (++i < chars.length) {
+        const current = chars[i];
+        chars[i] = current === '\n' || current === '\r' ? current : ' ';
+        if (current === '*' && chars[i + 1] === '/') {
+          chars[++i] = ' ';
+          terminated = true;
+          break;
+        }
+      }
+      if (!terminated) throw new SyntaxError('Unterminated JSONC comment');
+    }
+  }
+  inString = false;
+  escaped = false;
+  for (let i = 0; i < chars.length; i++) {
+    const char = chars[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+    } else if (char === ',') {
+      let next = i + 1;
+      while (next < chars.length && /\s/u.test(chars[next])) next++;
+      if (chars[next] === '}' || chars[next] === ']') chars[i] = ' ';
+    }
+  }
+  return JSON.parse(chars.join(''));
+}
+
 function packageManifestNames(texts) {
   const names = new Map();
   for (const [file, source] of texts) {
@@ -2778,7 +2845,9 @@ function localReferences(source, sourcePath, packagesByName, texts) {
     /\b(?:require|import)\s*\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/gu,
     /\b(?:load|require)\s+['"](\.{1,2}\/[^'"]+)['"]/gu,
     /\b(?:node|sh|bash|zsh|pwsh|powershell|python(?:3)?|deno|bun|ruby|perl|php)(?:\.exe)?\s+(['"]?)(\.{0,2}\/[^\s'";&|]+|[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*)\1/giu,
-    /\bcmd(?:\.exe)?\s+\/(?:c|k)\s+(['"]?)(\.{0,2}\/[^\s'";&|]+|[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*)\1/giu
+    /\bcmd(?:\.exe)?\s+\/(?:c|k)\s+(['"]?)(\.{0,2}\/[^\s'";&|]+|[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*)\1/giu,
+    /\bnode(?:\.exe)?\s+(?:--require|-r|--import|--loader)(?:=|\s+)(["']?)(\.{1,2}\/[^\s"';&|]+)\1/giu,
+    /\bNODE_OPTIONS\s*=\s*["']?(?:--require|-r|--import|--loader)(?:=|\s+)(["']?)(\.{1,2}\/[^\s"';&|]+)\1/giu
   ];
   for (const pattern of patterns)
     for (const match of source.matchAll(pattern)) {
@@ -2800,7 +2869,7 @@ function localReferences(source, sourcePath, packagesByName, texts) {
     sourcePath.endsWith('/.vscode/tasks.json')
   ) {
     try {
-      const parsed = JSON.parse(source);
+      const parsed = parseEditorTaskJsonc(source);
       const tasks = Array.isArray(parsed.tasks) ? parsed.tasks : [];
       const byLabel = new Map();
       for (const task of tasks) {
@@ -3093,7 +3162,9 @@ function scanText(name, text, incompleteReasons = []) {
   ) {
     let parsed;
     try {
-      parsed = JSON.parse(text);
+      parsed = name.endsWith('/tasks.json')
+        ? parseEditorTaskJsonc(text)
+        : JSON.parse(text);
     } catch {
       throw new Error(`Malformed execution manifest: ${name}`);
     }

@@ -603,6 +603,15 @@ describe('trusted Stage A Git-object scanner', () => {
     );
   });
 
+  it('rejects unterminated JSONC block comments instead of approving editor tasks', async () => {
+    const fixture = await repo({
+      '.vscode/tasks.json': '{"tasks":[{"command":"node init"}], /* unfinished'
+    });
+    expect(() => scanGitTree(fixture.root, fixture.sha)).toThrow(
+      'Malformed execution manifest'
+    );
+  });
+
   it('fails closed on malformed editor task schemas and dynamic auto-run targets', async () => {
     const malformed = await repo({
       '.vscode/tasks.json': JSON.stringify({ tasks: { runOn: 'folderOpen' } })
@@ -1029,6 +1038,47 @@ describe('trusted Stage A Git-object scanner', () => {
       expect.arrayContaining([
         expect.stringContaining('init'),
         expect.stringContaining('execution-chain:.vscode/tasks.json -> init')
+      ])
+    );
+  });
+
+  it('recognizes JSONC folder-open tasks before suspicious loaders execute', async () => {
+    const fixture = await repo({
+      '.vscode/tasks.json': [
+        '{',
+        '  // This file uses valid VS Code JSONC.',
+        '  "version": "2.0.0",',
+        '  "tasks": [{ "runOptions": { "runOn": "folderOpen" }, "command": "node init", },],',
+        '}'
+      ].join('\n'),
+      init: 'const payload = atob(encoded); eval(payload);'
+    });
+    const result = scanGitTree(fixture.root, fixture.sha, {
+      changedPaths: ['.vscode/tasks.json']
+    });
+    expect(result.status).toBe('blocked');
+    expect(result.findings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('execution-chain:.vscode/tasks.json -> init')
+      ])
+    );
+  });
+
+  it('blocks Node preload loaders before an npm lifecycle script can execute', async () => {
+    const fixture = await repo({
+      'package.json': JSON.stringify({
+        scripts: { prepare: 'node --require ./init.js ./safe.js' }
+      }),
+      'safe.js': 'console.log("ok");',
+      'init.js': 'const payload = atob(encoded); eval(payload);'
+    });
+    const result = scanGitTree(fixture.root, fixture.sha, {
+      changedPaths: ['package.json']
+    });
+    expect(result.status).toBe('blocked');
+    expect(result.findings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('execution-chain:package.json -> init.js')
       ])
     );
   });

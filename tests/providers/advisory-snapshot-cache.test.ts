@@ -88,6 +88,14 @@ describe('AdvisorySnapshotCache', () => {
     const ajv = new Ajv2020({ allErrors: true, strict: false });
     addFormats(ajv);
     expect(ajv.validate(schema, document)).toBe(true);
+    const invalidManifest = structuredClone(document);
+    (invalidManifest.manifest as { format: string }).format =
+      'untrusted-source';
+    expect(ajv.validate(schema, invalidManifest)).toBe(false);
+    const invalidHash = structuredClone(document);
+    invalidHash.sha256 = 'not-a-sha256';
+    expect(ajv.validate(schema, invalidHash)).toBe(false);
+
     expect(Object.keys(document.records)).toEqual([
       'exploit-intel:v1:epss:CVE-2026-12345',
       'exploit-intel:v1:kev',

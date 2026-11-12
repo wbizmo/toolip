@@ -23,6 +23,7 @@ replit.nix
 
 .toolip-vault.json
 toolip-*.json
+!docs/schemas/toolip-advisory-bundle-v1.schema.json
 toolip-*.md
 sprint*-*.json
 sprint*-*.md

@@ -23,6 +23,32 @@ describe('non-executing malicious content chain analysis', () => {
     ]);
   });
 
+  it('traces Node preload flags to local files before a lifecycle script starts', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({
+          scripts: { prepare: 'node --require ./init.js ./safe.js' }
+        })
+      },
+      { path: 'safe.js', content: 'console.log("ok");' },
+      {
+        path: 'init.js',
+        content: 'const payload = atob(encoded); eval(payload);'
+      }
+    ]);
+    expect(result.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleId: 'TLP-MAL-001',
+          metadata: expect.objectContaining({
+            trace: expect.arrayContaining(['package.json', 'init.js'])
+          })
+        })
+      ])
+    );
+  });
+
   it('traces an encoded tool-config loader into an extensionless outbound target', () => {
     const result = analyzeMaliciousContent([
       {
@@ -46,6 +72,33 @@ describe('non-executing malicious content chain analysis', () => {
       'https://collector.invalid'
     );
     expect(JSON.stringify(result.findings)).not.toContain('GITHUB_TOKEN');
+  });
+
+  it('reads VS Code JSONC tasks with comments and trailing commas before tracing auto-run scripts', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: '.vscode/tasks.json',
+        content: [
+          '{',
+          '  // VS Code permits JSONC in tasks.json',
+          '  "version": "2.0.0",',
+          '  "tasks": [{ "runOptions": { "runOn": "folderOpen" }, "command": "node init", },],',
+          '}'
+        ].join('\n')
+      },
+      { path: 'init', content: 'const payload = atob(encoded); eval(payload);' }
+    ]);
+    expect(result.coverage.state).toBe('complete');
+    expect(result.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleId: 'TLP-MAL-001',
+          metadata: expect.objectContaining({
+            trace: ['.vscode/tasks.json', 'init']
+          })
+        })
+      ])
+    );
   });
 
   it('detects an editor folder-open task through nested local references without running them', () => {
@@ -409,6 +462,30 @@ describe('non-executing malicious content chain analysis', () => {
     ]);
     expect(result.coverage.state).toBe('partial');
     expect(result.coverage.skipped).toBe(1);
+  });
+
+  it('keeps comment-like URL text intact and fails closed on unterminated JSONC comments', () => {
+    const benign = analyzeMaliciousContent([
+      {
+        path: '.vscode/tasks.json',
+        content: [
+          '{',
+          '  // Allowed comment.',
+          '  "tasks": [{ "label": "https://example.invalid/a/*literal*/", "command": "echo ok", },],',
+          '}'
+        ].join('\n')
+      }
+    ]);
+    expect(benign.coverage.state).toBe('complete');
+    expect(benign.findings).toHaveLength(0);
+
+    const malformed = analyzeMaliciousContent([
+      {
+        path: '.vscode/tasks.json',
+        content: '{"tasks":[{"command":"node init"}], /* unfinished'
+      }
+    ]);
+    expect(malformed.coverage.state).not.toBe('complete');
   });
 
   it('marks structurally malformed editor tasks as incomplete', () => {
