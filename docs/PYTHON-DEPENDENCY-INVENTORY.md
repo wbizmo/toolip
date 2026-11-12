@@ -16,6 +16,12 @@ identity keys and remain unknown. Valid Pipenv hashes are retained as declared,
 not verified bytes. Pipenv's lock format does not carry a complete dependency
 edge graph, so Toolip reports that graph as incomplete while retaining exact
 locked identities and root edges.
+Pipfile lock source metadata is indexed once per inventory, while preserving
+duplicate source names as ambiguous. Source records are capped at 128, lock
+package records at 10,000, and Pipfile root dependency tables at 10,000
+entries. Lock processing yields between batches and honors cancellation. A
+budget overrun reports incomplete coverage instead of silently dropping the
+remaining identities. The bounded JSON parse itself is synchronous.
 
 uv workspace packages with safe relative `editable` or `directory` sources are
 kept as local workspace identities. They participate in graph relationships

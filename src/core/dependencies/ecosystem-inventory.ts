@@ -88,6 +88,9 @@ const maximumGradleLockBytes = 32 * 1024 * 1024;
 const maximumGoSourceFiles = 20_000;
 const maximumGoSourceFileBytes = 1_048_576;
 const maximumGoSourceBytes = 32 * 1024 * 1024;
+const maximumPythonLockPackages = 10_000;
+const maximumPipfileLockSources = 128;
+const maximumPipfileRequirements = 10_000;
 const maximumPythonRequirementFiles = 128;
 const maximumPythonRequirementDepth = 16;
 const maximumPythonRequirementBytes = 32 * 1024 * 1024;
@@ -351,6 +354,62 @@ function validPythonPackageName(value: string): boolean {
   );
 }
 
+const pipfileLockSupportedFields = new Set([
+  'version',
+  'hashes',
+  'markers',
+  'extras',
+  'index',
+  'git',
+  'ref',
+  'path',
+  'file',
+  'editable',
+  'subdirectory',
+  'url'
+]);
+
+type PipfileLockSourceIndex = {
+  records: RecordValue[];
+  byName: Map<string, RecordValue[]>;
+  known: boolean;
+};
+
+function pipfileLockSourceIndex(
+  lock: RecordValue,
+  warnings: string[]
+): PipfileLockSourceIndex {
+  const metadata = asRecord(lock._meta);
+  const rawSources = metadata?.sources;
+  if (rawSources === undefined)
+    return { records: [], byName: new Map(), known: true };
+  if (!Array.isArray(rawSources)) {
+    warnings.push('pipfile-lock-sources-invalid');
+    return { records: [], byName: new Map(), known: false };
+  }
+  if (rawSources.length > maximumPipfileLockSources) {
+    warnings.push('pipfile-lock-source-budget-exceeded');
+    return { records: [], byName: new Map(), known: false };
+  }
+  const records: RecordValue[] = [];
+  const byName = new Map<string, RecordValue[]>();
+  let known = true;
+  for (const raw of rawSources) {
+    const record = asRecord(raw);
+    if (!record) {
+      known = false;
+      continue;
+    }
+    records.push(record);
+    if (typeof record.name !== 'string') continue;
+    const named = byName.get(record.name) ?? [];
+    named.push(record);
+    byName.set(record.name, named);
+  }
+  if (!known) warnings.push('pipfile-lock-sources-invalid');
+  return { records, byName, known };
+}
+
 async function fromJsonLock(
   value: unknown,
   ecosystem: LockedPackage['ecosystem'],
@@ -366,12 +425,26 @@ async function fromJsonLock(
   }
   if (ecosystem === 'PyPI' && ('default' in record || 'develop' in record)) {
     const output: LockedPackage[] = [];
+    const sources = pipfileLockSourceIndex(record, warnings);
     let pipfilePackageCount = 0;
+    let packageBudgetExceeded = false;
     for (const section of ['default', 'develop']) {
-      const entries = record[section];
-      if (!entries || typeof entries !== 'object') continue;
-      for (const [name, raw] of Object.entries(entries)) {
+      const rawEntries = record[section];
+      if (rawEntries === undefined) continue;
+      const entries = asRecord(rawEntries);
+      if (!entries) {
+        warnings.push(`pipfile-lock-section-invalid:${section}`);
+        continue;
+      }
+      for (const name in entries) {
+        if (!Object.hasOwn(entries, name)) continue;
+        if (pipfilePackageCount >= maximumPythonLockPackages) {
+          warnings.push('pipfile-lock-package-budget-exceeded');
+          packageBudgetExceeded = true;
+          break;
+        }
         await yieldForCancellation(++pipfilePackageCount, signal);
+        const raw = entries[name];
         const pkg = asRecord(raw);
         const version = pkg?.version;
         if (
@@ -384,7 +457,7 @@ async function fromJsonLock(
           warnings.push('pipfile-lock-package-unresolved');
           continue;
         }
-        const registry = pipfileLockRegistry(record, pkg, warnings);
+        const registry = pipfileLockRegistry(sources, pkg, warnings);
         const hashes = pipfileLockHashes(pkg, warnings);
         const marker =
           typeof pkg.markers === 'string' ? pkg.markers : undefined;
@@ -415,6 +488,7 @@ async function fromJsonLock(
           installPath: `Pipfile.lock:${section}:${canonicalPythonName(name)}@${version.replace(/^==?/u, '')}${marker ? `:marker-${createHash('sha256').update(marker).digest('hex').slice(0, 16)}` : ''}`
         });
       }
+      if (packageBudgetExceeded) break;
     }
     return output;
   }
@@ -606,26 +680,12 @@ async function fromJsonLock(
 }
 
 function pipfileLockRegistry(
-  lock: Record<string, unknown>,
+  sources: PipfileLockSourceIndex,
   pkg: Record<string, unknown>,
   warnings: string[]
 ): { source: string; confidence: 'lockfile' | 'unknown' } {
-  const supportedFields = new Set([
-    'version',
-    'hashes',
-    'markers',
-    'extras',
-    'index',
-    'git',
-    'ref',
-    'path',
-    'file',
-    'editable',
-    'subdirectory',
-    'url'
-  ]);
   if (
-    Object.keys(pkg).some((key) => !supportedFields.has(key)) ||
+    Object.keys(pkg).some((key) => !pipfileLockSupportedFields.has(key)) ||
     ['git', 'ref', 'path', 'file', 'editable', 'subdirectory', 'url'].some(
       (key) => pkg[key] !== undefined
     )
@@ -633,19 +693,19 @@ function pipfileLockRegistry(
     warnings.push('pipfile-lock-source-unverified');
     return { source: 'Pipfile.lock:source-unverified', confidence: 'unknown' };
   }
-  const metadata = asRecord(lock._meta);
-  const sources = Array.isArray(metadata?.sources)
-    ? metadata.sources.map(asRecord).filter((source) => source !== undefined)
-    : [];
+  if (!sources.known) {
+    warnings.push('pipfile-lock-source-unresolved');
+    return { source: 'Pipfile.lock:source-unverified', confidence: 'unknown' };
+  }
   const selectedName = typeof pkg.index === 'string' ? pkg.index : undefined;
   if (pkg.index !== undefined && typeof pkg.index !== 'string') {
     warnings.push('pipfile-lock-source-unresolved');
     return { source: 'Pipfile.lock:source-unverified', confidence: 'unknown' };
   }
   const selected = selectedName
-    ? sources.filter((source) => source?.name === selectedName)
-    : sources.length === 1
-      ? sources
+    ? (sources.byName.get(selectedName) ?? [])
+    : sources.records.length === 1
+      ? sources.records
       : [];
   if (selected.length !== 1 || typeof selected[0]?.url !== 'string') {
     warnings.push('pipfile-lock-source-unresolved');
@@ -3779,12 +3839,15 @@ function pythonPipfileRequirements(
       warnings.push('pipfile-dependency-table-invalid');
       continue;
     }
-    const packages = Object.entries(entries);
-    if (packages.length > 10_000) {
-      warnings.push('pipfile-dependency-budget-exceeded');
-      packages.length = 10_000;
-    }
-    for (const [name, raw] of packages) {
+    let packageCount = 0;
+    for (const name in entries) {
+      if (!Object.hasOwn(entries, name)) continue;
+      if (packageCount >= maximumPipfileRequirements) {
+        warnings.push('pipfile-dependency-budget-exceeded');
+        break;
+      }
+      packageCount += 1;
+      const raw = entries[name];
       const spec = asRecord(raw);
       const version = typeof raw === 'string' ? raw : spec?.version;
       const extras = Array.isArray(spec?.extras) ? spec.extras : [];

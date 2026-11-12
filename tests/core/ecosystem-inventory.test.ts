@@ -171,6 +171,96 @@ describe('non-npm lockfile inventory', () => {
     expect(JSON.stringify(graph)).not.toContain('secret');
   });
 
+  it('fails closed when Pipenv lock source records exceed their budget', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'Pipfile.lock'),
+      JSON.stringify({
+        _meta: {
+          sources: Array.from({ length: 129 }, (_, index) => ({
+            name: index === 0 ? 'pypi' : `source-${index}`,
+            url: 'https://pypi.org/simple',
+            verify_ssl: true
+          }))
+        },
+        default: {
+          requests: { version: '==2.31.0', index: 'pypi' }
+        }
+      })
+    );
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain('pipfile-lock-source-budget-exceeded');
+    expect(graph.packages[0]).toMatchObject({
+      name: 'requests',
+      resolutionConfidence: 'unknown'
+    });
+  });
+
+  it('bounds Pipenv lock package records and reports the omitted identities', async () => {
+    const root = await fixture();
+    const packages = Object.fromEntries(
+      Array.from({ length: 10_001 }, (_, index) => [
+        `package-${String(index).padStart(6, '0')}`,
+        { version: '==1.0.0' }
+      ])
+    );
+    await writeFile(
+      path.join(root, 'Pipfile.lock'),
+      JSON.stringify({
+        _meta: {
+          sources: [
+            { name: 'pypi', url: 'https://pypi.org/simple', verify_ssl: true }
+          ]
+        },
+        default: packages,
+        develop: { omitted: { version: '==1.0.0' } }
+      })
+    );
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain('pipfile-lock-package-budget-exceeded');
+    expect(graph.packages).toHaveLength(10_000);
+    expect(graph.packages.some((item) => item.name === 'omitted')).toBe(false);
+  });
+
+  it('cancels Pipenv lock processing between bounded package batches', async () => {
+    const root = await fixture();
+    const files = new Map<string, string>([
+      [
+        'Pipfile.lock',
+        JSON.stringify({
+          default: Object.fromEntries(
+            Array.from({ length: 10_000 }, (_, index) => [
+              `package-${index}`,
+              { version: '==1.0.0' }
+            ])
+          )
+        })
+      ]
+    ]);
+    const controller = new AbortController();
+    const fileSource = {
+      files: [...files.keys()],
+      hasFile: (relativePath: string) => files.has(relativePath),
+      readText: (relativePath: string) => {
+        if (relativePath === 'Pipfile.lock')
+          setTimeout(() => controller.abort(), 0);
+        return files.get(relativePath);
+      }
+    };
+
+    await expect(
+      readOtherEcosystemInventoryDetailed(root, fileSource, {
+        signal: controller.signal
+      })
+    ).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
   it('leaves unsupported Poetry and lockfile dependency groups unresolved', async () => {
     const root = await fixture();
     await writeFile(
