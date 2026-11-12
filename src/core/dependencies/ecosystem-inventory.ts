@@ -69,6 +69,11 @@ const maximumComposerWorkspaceManifests = 5_000;
 const maximumComposerWorkspaceEntries = 50_000;
 const maximumComposerPathRepositories = 128;
 const maximumCargoWorkspaceManifests = 5_000;
+const maximumGradleWorkspaceManifests = 5_000;
+const maximumGradleWorkspaceEntries = 50_000;
+const maximumGradleWorkspaceLockfiles = 128;
+const maximumGradleLockfileBytes = 8 * 1024 * 1024;
+const maximumGradleLockBytes = 32 * 1024 * 1024;
 const maximumGoSourceFiles = 20_000;
 const maximumGoSourceFileBytes = 1_048_576;
 const maximumGoSourceBytes = 32 * 1024 * 1024;
@@ -89,14 +94,22 @@ const javaScopes = new Set([
 ]);
 const gradleScopeAliases = new Map([
   ['api', 'compile'],
+  ['apielements', 'compile'],
   ['implementation', 'compile'],
   ['compileclasspath', 'compile'],
+  ['compileonlyapi', 'provided'],
   ['compileonly', 'provided'],
+  ['annotationprocessor', 'provided'],
   ['runtimeonly', 'runtime'],
   ['runtimeclasspath', 'runtime'],
+  ['runtimeelements', 'runtime'],
   ['testapi', 'test'],
+  ['testapielements', 'test'],
+  ['testcompileonly', 'test'],
   ['testcompileclasspath', 'test'],
   ['testimplementation', 'test'],
+  ['testannotationprocessor', 'test'],
+  ['testruntimeonly', 'test'],
   ['testruntimeclasspath', 'test'],
   ['testfixtures', 'test']
 ]);
@@ -1783,8 +1796,114 @@ async function cargoManifestPaths(
   return paths.sort();
 }
 
-function fromGradleLock(text: string): LockedPackage[] {
+async function gradleWorkspaceFiles(
+  root: string,
+  fileSource: DependencyFileSource | undefined,
+  warnings: string[]
+): Promise<{ manifests: string[]; lockfiles: string[] }> {
+  const isSafeRelativePath = (file: string): boolean =>
+    file.length <= 4_096 &&
+    !file.startsWith('/') &&
+    !file.includes('\\') &&
+    !file.includes('\0') &&
+    !file
+      .split('/')
+      .some((segment) => segment === '..' || segment === '.' || segment === '');
+  const collect = (files: readonly string[]) => {
+    const safeFiles = files.filter(isSafeRelativePath);
+    const manifests = safeFiles
+      .filter((file) =>
+        /^(?:build|settings)\.gradle(?:\.kts)?$/u.test(
+          path.posix.basename(file)
+        )
+      )
+      .sort();
+    const lockfiles = safeFiles
+      .filter((file) => path.posix.basename(file) === 'gradle.lockfile')
+      .sort();
+    if (manifests.length > maximumGradleWorkspaceManifests)
+      warnings.push('gradle-workspace-manifest-budget-exceeded');
+    if (lockfiles.length > maximumGradleWorkspaceLockfiles)
+      warnings.push('gradle-workspace-lockfile-budget-exceeded');
+    return {
+      manifests: manifests.slice(0, maximumGradleWorkspaceManifests),
+      lockfiles: lockfiles.slice(0, maximumGradleWorkspaceLockfiles)
+    };
+  };
+  if (fileSource) return collect(fileSource.files);
+
+  let rootChildren: Dirent[];
+  try {
+    rootChildren = await readdir(root, { withFileTypes: true });
+  } catch {
+    warnings.push('gradle-workspace-directory-unavailable');
+    return { manifests: [], lockfiles: [] };
+  }
+  if (
+    !rootChildren.some(
+      (entry) =>
+        entry.isFile() &&
+        (entry.name === 'gradle.lockfile' ||
+          /^(?:build|settings)\.gradle(?:\.kts)?$/u.test(entry.name))
+    )
+  )
+    return { manifests: [], lockfiles: [] };
+
+  const pending: Array<{ directory: string; depth: number }> = [
+    { directory: '', depth: 0 }
+  ];
+  const files: string[] = [];
+  let entries = 0;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current) continue;
+    if (current.depth > 32) {
+      warnings.push('gradle-workspace-depth-budget-exceeded');
+      continue;
+    }
+    let children: Dirent[];
+    try {
+      children = await readdir(path.join(root, current.directory), {
+        withFileTypes: true
+      });
+    } catch {
+      warnings.push('gradle-workspace-directory-unavailable');
+      continue;
+    }
+    children.sort((left, right) => left.name.localeCompare(right.name));
+    for (const child of children) {
+      if (++entries > maximumGradleWorkspaceEntries) {
+        warnings.push('gradle-workspace-entry-budget-exceeded');
+        return collect(files);
+      }
+      const relative = current.directory
+        ? `${current.directory}/${child.name}`
+        : child.name;
+      if (
+        child.isDirectory() &&
+        !child.isSymbolicLink() &&
+        ![
+          '.git',
+          '.gradle',
+          'build',
+          'dist',
+          'node_modules',
+          'target'
+        ].includes(child.name)
+      ) {
+        pending.push({ directory: relative, depth: current.depth + 1 });
+      } else if (child.isFile()) {
+        files.push(relative);
+      }
+    }
+  }
+  return collect(files);
+}
+
+function fromGradleLock(text: string, file: string): LockedPackage[] {
   const output: LockedPackage[] = [];
+  const directory = path.posix.dirname(file);
+  const module = directory === '.' ? 'root' : directory;
   for (const line of text.split(/\r?\n/u)) {
     const match = line
       .trim()
@@ -1794,7 +1913,9 @@ function fromGradleLock(text: string): LockedPackage[] {
         name: `${match[1]}:${match[2]}`,
         version: match[3],
         ecosystem: 'Maven',
-        source: 'gradle.lockfile'
+        source: 'gradle.lockfile',
+        module,
+        installPath: `gradle:${file}:${match[1]}:${match[2]}@${match[3]}`
       });
   }
   return output;
@@ -2004,7 +2125,19 @@ function fromJavaDependencyGraph(
         dependency.artifactId ?? dependency.module ?? dependency.name;
       const version = dependency.version;
       const packageType = dependency.type ?? 'jar';
-      const classifier = dependency.classifier;
+      const classifier =
+        source === 'maven-dependency-tree.json' &&
+        (dependency.classifier === '' || dependency.classifier === null)
+          ? undefined
+          : dependency.classifier;
+      const parseExportFlag = (flag: unknown): boolean | undefined => {
+        if (typeof flag === 'boolean') return flag;
+        if (source === 'maven-dependency-tree.json') {
+          if (flag === 'true') return true;
+          if (flag === 'false') return false;
+        }
+        return undefined;
+      };
       const isValidName = (part: unknown): part is string =>
         typeof part === 'string' &&
         part.length > 0 &&
@@ -2022,10 +2155,22 @@ function fromJavaDependencyGraph(
         warnings.push(`java-export-coordinate-unresolved:${source}`);
         continue;
       }
-      if (dependency.omitted === true) {
+      const omitted =
+        dependency.omitted === undefined
+          ? false
+          : parseExportFlag(dependency.omitted);
+      if (omitted === true) {
         warnings.push(`java-export-conflict-omitted:${source}`);
         continue;
       }
+      if (omitted === undefined)
+        warnings.push(`java-export-omitted-state-invalid:${source}`);
+      const optional =
+        dependency.optional === undefined
+          ? false
+          : parseExportFlag(dependency.optional);
+      if (optional === undefined)
+        warnings.push(`java-export-optional-state-invalid:${source}`);
       let scope = 'compile';
       if (dependency.scope !== undefined) {
         if (typeof dependency.scope !== 'string') {
@@ -2034,16 +2179,6 @@ function fromJavaDependencyGraph(
           scope = dependency.scope.toLowerCase();
         }
       }
-      if (
-        dependency.omitted !== undefined &&
-        typeof dependency.omitted !== 'boolean'
-      )
-        warnings.push(`java-export-omitted-state-invalid:${source}`);
-      if (
-        dependency.optional !== undefined &&
-        typeof dependency.optional !== 'boolean'
-      )
-        warnings.push(`java-export-optional-state-invalid:${source}`);
       if (source === 'gradle-dependencies.json') {
         scope = gradleScopeAliases.get(scope) ?? scope;
       }
@@ -2052,7 +2187,7 @@ function fromJavaDependencyGraph(
         scope = 'compile';
       }
       const section: DependencyEdge['section'] =
-        dependency.optional === true
+        optional === true
           ? 'optionalDependency'
           : scope === 'test' || scope === 'provided'
             ? 'devDependency'
@@ -4866,18 +5001,36 @@ export async function readOtherEcosystemInventoryDetailed(
   }
 
   let gradleLockAvailable = false;
-  let gradleLockPackages: LockedPackage[] = [];
-  try {
-    const gradleText = await readInput(root, 'gradle.lockfile', fileSource);
-    if (gradleText !== undefined) {
+  const gradleLockPackages: LockedPackage[] = [];
+  let gradleLockBytes = 0;
+  const gradleWorkspace = await gradleWorkspaceFiles(
+    root,
+    fileSource,
+    warnings
+  );
+  for (const gradleLockPath of gradleWorkspace.lockfiles) {
+    try {
+      const gradleText = await readInput(root, gradleLockPath, fileSource);
+      if (gradleText === undefined) continue;
+      const fileBytes = Buffer.byteLength(gradleText, 'utf8');
+      if (fileBytes > maximumGradleLockfileBytes) {
+        warnings.push(`gradle-lockfile-byte-budget-exceeded:${gradleLockPath}`);
+        continue;
+      }
+      if (gradleLockBytes + fileBytes > maximumGradleLockBytes) {
+        warnings.push('gradle-lockfiles-total-byte-budget-exceeded');
+        break;
+      }
+      gradleLockBytes += fileBytes;
       gradleLockAvailable = true;
-      loadedLockfiles.add('gradle.lockfile');
-      gradleLockPackages = fromGradleLock(gradleText);
-      if (gradleLockPackages.length === 0)
-        warnings.push('no-exact-package-records:gradle.lockfile');
+      loadedLockfiles.add(gradleLockPath);
+      const packages = fromGradleLock(gradleText, gradleLockPath);
+      gradleLockPackages.push(...packages);
+      if (packages.length === 0)
+        warnings.push(`no-exact-package-records:${gradleLockPath}`);
+    } catch {
+      warnings.push(`invalid-or-unreadable-lockfile:${gradleLockPath}`);
     }
-  } catch {
-    warnings.push('invalid-or-unreadable-lockfile:gradle.lockfile');
   }
   let mavenTreeAvailable = false;
   let gradleGraphAvailable = false;
@@ -4947,22 +5100,15 @@ export async function readOtherEcosystemInventoryDetailed(
   });
   if (pom !== undefined && !mavenTreeAvailable)
     warnings.push('maven-resolved-graph-unavailable:pom.xml');
-  const gradleManifests = fileSource
-    ? fileSource.files.filter((file) =>
-        /^(?:build|settings)\.gradle(?:\.kts)?$/u.test(file)
-      )
-    : await readdir(root).catch(() => []);
   if (
-    gradleManifests.some((file) =>
-      /^(?:build|settings)\.gradle(?:\.kts)?$/u.test(file)
-    ) &&
+    gradleWorkspace.manifests.length > 0 &&
     !gradleGraphAvailable &&
     !gradleLockAvailable
   )
     warnings.push('gradle-resolved-graph-unavailable');
   const projectFiles = fileSource
     ? [...fileSource.files]
-    : await readdir(root).catch(() => []);
+    : [...(await readdir(root).catch(() => [])), ...gradleWorkspace.manifests];
   const projectFileSet = new Set(projectFiles);
   const hasRoot = (name: string): boolean => projectFileSet.has(name);
   const hasPythonManifest =
@@ -5715,7 +5861,7 @@ export async function readOtherEcosystemInventoryDetailed(
     });
   if (
     output.some((item) => item.source === 'gradle.lockfile') &&
-    !mavenTreeAvailable
+    !gradleGraphAvailable
   )
     warnings.push('maven-graph-unavailable:gradle.lockfile-has-no-edges');
   const resolvedEdges = [

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
@@ -1574,6 +1574,51 @@ describe('OsvVulnerabilityAnalyzer', () => {
         (finding) => finding.metadata?.package === 'example.test/lib'
       );
       expect(goFinding).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('queries the exact Maven versions captured from parent properties and a BOM', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-osv-maven-reference-')
+    );
+    const queried: string[] = [];
+    try {
+      const captured = await readFile(
+        new URL('../fixtures/java/maven-parent-bom-tree.json', import.meta.url),
+        'utf8'
+      );
+      await writeFile(path.join(root, 'maven-dependency-tree.json'), captured);
+      const client = new OsvClient({
+        fetchImplementation: async (_input, init) => {
+          const body = JSON.parse(String(init?.body)) as {
+            queries: Array<{
+              package: { ecosystem: string; name: string };
+              version: string;
+            }>;
+          };
+          for (const query of body.queries) {
+            if (query.package.ecosystem === 'Maven')
+              queried.push(`${query.package.name}@${query.version}`);
+          }
+          return new Response(
+            JSON.stringify({
+              results: body.queries.map(() => ({ vulns: [] }))
+            }),
+            { status: 200 }
+          );
+        }
+      });
+
+      const result = await new OsvVulnerabilityAnalyzer(client).analyze({
+        root,
+        options: { allowPublicScope: true }
+      });
+
+      expect(queried).toContain('org.apache.commons:commons-lang3@3.16.0');
+      expect(queried).toContain('org.junit.jupiter:junit-jupiter-api@5.11.4');
+      expect(result.coverage?.state).toBe('complete');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

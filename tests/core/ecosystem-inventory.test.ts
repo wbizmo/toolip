@@ -3300,6 +3300,135 @@ describe('non-npm lockfile inventory', () => {
     expect(graph.complete).toBe(false);
   });
 
+  it('imports the Maven dependency plugin JSON with managed exact versions', async () => {
+    const root = await fixture();
+    const captured = await readFile(
+      new URL('../fixtures/java/maven-parent-bom-tree.json', import.meta.url),
+      'utf8'
+    );
+    await writeFile(path.join(root, 'maven-dependency-tree.json'), captured);
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+    const commons = graph.packages.filter(
+      (item) => item.name === 'org.apache.commons:commons-lang3'
+    );
+    const junit = graph.packages.find(
+      (item) => item.name === 'org.junit.jupiter:junit-jupiter-api'
+    );
+
+    expect(graph.complete).toBe(true);
+    expect(graph.warnings).not.toContain(
+      'java-export-optional-state-invalid:maven-dependency-tree.json'
+    );
+    expect(graph.warnings).not.toContain(
+      'java-export-coordinate-unresolved:maven-dependency-tree.json'
+    );
+    expect(commons.map(({ version }) => version)).toEqual(['3.16.0', '3.16.0']);
+    expect(new Set(commons.map(({ id }) => id)).size).toBe(2);
+    expect(junit).toMatchObject({
+      version: '5.11.4',
+      direct: true,
+      development: true
+    });
+    expect(
+      graph.edges.some(
+        (edge) =>
+          edge.from !== 'root' &&
+          edge.name === 'org.apache.commons:commons-lang3' &&
+          edge.requirement === '3.16.0'
+      )
+    ).toBe(true);
+  });
+
+  it('imports real Gradle module exports and nested lockfiles without inventing edges', async () => {
+    const exportedRoot = await fixture();
+    const exportText = await readFile(
+      new URL(
+        '../fixtures/java/gradle/gradle-dependencies.json',
+        import.meta.url
+      ),
+      'utf8'
+    );
+    await writeFile(
+      path.join(exportedRoot, 'gradle-dependencies.json'),
+      exportText
+    );
+    await writeFile(
+      path.join(exportedRoot, 'settings.gradle'),
+      "include 'api', 'service'\n"
+    );
+    for (const module of ['api', 'service']) {
+      const lockText = await readFile(
+        new URL(
+          `../fixtures/java/gradle/${module}/gradle.lockfile`,
+          import.meta.url
+        ),
+        'utf8'
+      );
+      await mkdir(path.join(exportedRoot, module), { recursive: true });
+      await writeFile(
+        path.join(exportedRoot, module, 'gradle.lockfile'),
+        lockText
+      );
+    }
+    const exported = await readOtherEcosystemInventoryDetailed(exportedRoot);
+    expect(exported.complete).toBe(true);
+    expect(exported.warnings).not.toContain(
+      'maven-graph-unavailable:gradle.lockfile-has-no-edges'
+    );
+    expect(
+      exported.packages
+        .filter((item) => item.name === 'org.apache.commons:commons-lang3')
+        .map(({ version }) => version)
+        .sort()
+    ).toEqual(['3.15.0', '3.16.0']);
+    expect(exported.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'org.apache.commons:commons-lang3',
+          requirement: '3.16.0'
+        }),
+        expect.objectContaining({
+          name: 'org.apache.commons:commons-text',
+          requirement: '1.12.0'
+        })
+      ])
+    );
+
+    const lockRoot = await fixture();
+    for (const module of ['api', 'service']) {
+      const lockText = await readFile(
+        new URL(
+          `../fixtures/java/gradle/${module}/gradle.lockfile`,
+          import.meta.url
+        ),
+        'utf8'
+      );
+      await mkdir(path.join(lockRoot, module), { recursive: true });
+      await writeFile(path.join(lockRoot, module, 'gradle.lockfile'), lockText);
+    }
+    await writeFile(
+      path.join(lockRoot, 'settings.gradle'),
+      "include 'api', 'service'\n"
+    );
+
+    const locked = await readOtherEcosystemInventoryDetailed(lockRoot);
+    expect(locked.complete).toBe(false);
+    expect(locked.warnings).toContain(
+      'maven-graph-unavailable:gradle.lockfile-has-no-edges'
+    );
+    expect(
+      locked.packages
+        .filter((item) => item.name === 'org.apache.commons:commons-lang3')
+        .map(({ version, workspace }) => [version, workspace])
+        .sort((left, right) => String(left[1]).localeCompare(String(right[1])))
+    ).toEqual([
+      ['3.16.0', 'api'],
+      ['3.15.0', 'service']
+    ]);
+    expect(locked.edges).toEqual([]);
+  });
+
   it('imports Gradle resolved JSON and marks declaration-only Java projects incomplete', async () => {
     const gradleRoot = await fixture();
     await writeFile(
@@ -3371,6 +3500,8 @@ describe('non-npm lockfile inventory', () => {
                 module: 'library',
                 version: '2.4.0',
                 scope: 'customProductionScope',
+                optional: 'false',
+                omitted: 'false',
                 dependencies: []
               }
             ]
@@ -3398,6 +3529,12 @@ describe('non-npm lockfile inventory', () => {
     );
     expect(graph.warnings).toContain(
       'java-export-scope-unresolved:gradle-dependencies.json'
+    );
+    expect(graph.warnings).toContain(
+      'java-export-optional-state-invalid:gradle-dependencies.json'
+    );
+    expect(graph.warnings).toContain(
+      'java-export-omitted-state-invalid:gradle-dependencies.json'
     );
     expect(graph.complete).toBe(false);
   });

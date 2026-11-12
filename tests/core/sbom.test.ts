@@ -517,6 +517,40 @@ describe('SBOM generation', () => {
     }
   });
 
+  it('emits Maven parent and BOM resolved fixture versions in CycloneDX', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-sbom-maven-fixture-')
+    );
+    try {
+      const captured = await readFile(
+        new URL('../fixtures/java/maven-parent-bom-tree.json', import.meta.url),
+        'utf8'
+      );
+      await writeFile(path.join(root, 'maven-dependency-tree.json'), captured);
+
+      const document = await generateSbom(root, 'cyclonedx');
+      const components = document.components as Array<{
+        name: string;
+        purl: string;
+      }>;
+      expect(components).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'org.apache.commons:commons-lang3',
+            purl: 'pkg:maven/org.apache.commons/commons-lang3@3.16.0'
+          }),
+          expect.objectContaining({
+            name: 'org.junit.jupiter:junit-jupiter-api',
+            purl: 'pkg:maven/org.junit.jupiter/junit-jupiter-api@5.11.4'
+          })
+        ])
+      );
+      await expectValidCycloneDx(document);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('emits the exact Maven text-tree classifier PURL', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-sbom-maven-text-')
