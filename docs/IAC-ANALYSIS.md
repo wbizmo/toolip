@@ -44,7 +44,7 @@ wrappers require separate review, and the analyzer does not claim a complete
 GitHub Actions expression or shell data-flow model.
 
 Dockerfiles are parsed as bounded text with continuation and supported
-heredoc handling, global build-argument expansion for `FROM`, JSON-form `ADD`,
+heredoc handling, global build-argument expansion for `FROM` (defaults remain overridable and cannot prove an immutable pin), JSON-form `ADD`,
 and an indexed stage graph. Named and numeric `FROM` references inherit
 verified `USER` and `HEALTHCHECK` state from an earlier stage; later
 instructions override that state. `scratch` is modeled as UID 0 with no

@@ -6,6 +6,113 @@ import { describe, expect, it } from 'vitest';
 import { DockerfileAnalyzer } from '../../src/analyzers/docker/analyzer.js';
 
 describe('DockerfileAnalyzer', () => {
+  it('distinguishes external unpinned COPY sources from local stages and digest-pinned sources', async () => {
+    const digest = 'a'.repeat(64);
+    const scenarios = [
+      {
+        body: 'COPY --from=example.invalid/build:latest /bin/tool /tool',
+        line: 2,
+        finding: true,
+        incomplete: false
+      },
+      {
+        body:
+          'COPY --from=example.invalid/build@sha256:' +
+          digest +
+          ' /bin/tool /tool',
+        finding: false,
+        incomplete: false
+      },
+      {
+        body: 'COPY --from=builder /bin/tool /tool',
+        local: true,
+        finding: false,
+        incomplete: false
+      },
+      {
+        body: 'COPY --from=$REMOTE_IMAGE /bin/tool /tool',
+        finding: false,
+        incomplete: true
+      },
+      {
+        body: 'COPY --from=5 /bin/tool /tool',
+        finding: false,
+        incomplete: true
+      }
+    ];
+    for (const scenario of scenarios) {
+      const root = await mkdtemp(
+        path.join(os.tmpdir(), 'toolip-docker-copy-from-')
+      );
+      try {
+        const lines = scenario.local
+          ? [
+              'FROM scratch AS builder',
+              'FROM scratch',
+              scenario.body,
+              'USER 1000',
+              'HEALTHCHECK CMD true'
+            ]
+          : [
+              'FROM scratch',
+              scenario.body,
+              'USER 1000',
+              'HEALTHCHECK CMD true'
+            ];
+        await writeFile(path.join(root, 'Dockerfile'), lines.join('\n'));
+        const result = await new DockerfileAnalyzer().analyze({ root });
+        expect(
+          result.findings.some((item) => item.ruleId === 'TLP-DOCKER-008')
+        ).toBe(scenario.finding);
+        if (scenario.finding) {
+          const copy = result.findings.find(
+            (item) => item.ruleId === 'TLP-DOCKER-008'
+          );
+          expect(copy?.location?.line).toBe(scenario.line);
+          expect(JSON.stringify(copy)).not.toContain('example.invalid');
+        }
+        expect(result.coverage.state === 'partial').toBe(scenario.incomplete);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('does not trust an overridable global ARG default as immutable base-image pinning', async () => {
+    for (const imageLine of [
+      'FROM $IMAGE',
+      'FROM $' + '{IMAGE}',
+      'FROM ${IMAGE:-node:20@sha256:' + 'a'.repeat(64) + '}'
+    ]) {
+      const root = await mkdtemp(
+        path.join(os.tmpdir(), 'toolip-arg-override-')
+      );
+      try {
+        await writeFile(
+          path.join(root, 'Dockerfile'),
+          [
+            'ARG IMAGE=node:20@sha256:' + 'a'.repeat(64),
+            imageLine,
+            'USER 1000',
+            'HEALTHCHECK CMD true'
+          ].join('\n')
+        );
+        const result = await new DockerfileAnalyzer().analyze({ root });
+        expect(result.coverage.state).toBe('partial');
+        expect(result.warnings).toEqual(
+          expect.arrayContaining([
+            expect.stringContaining('unresolved build argument')
+          ])
+        );
+        expect(
+          result.findings.find((finding) => finding.ruleId === 'TLP-DOCKER-003')
+        ).toBeUndefined();
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  });
+
   it('does not accept a short or malformed base digest as an immutable image pin', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-docker-short-digest-')
@@ -282,7 +389,12 @@ describe('DockerfileAnalyzer', () => {
       expect(
         result.findings.some((finding) => finding.ruleId === 'TLP-DOCKER-003')
       ).toBe(false);
-      expect(result.coverage.state).toBe('complete');
+      expect(result.coverage.state).toBe('partial');
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('unresolved build argument')
+        ])
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }

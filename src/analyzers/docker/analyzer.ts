@@ -212,6 +212,17 @@ const rules: DockerRule[] = [
   }
 ];
 
+const remoteCopyRule: DockerRule = {
+  id: 'TLP-DOCKER-008',
+  title: 'Unpinned external image used as COPY source',
+  severity: 'medium',
+  test: () => false,
+  message:
+    'COPY imports bytes from an external image without a verified digest pin.',
+  remediation:
+    'Use COPY --from with an immutable image digest or a verified earlier stage.'
+};
+
 /** Creates the canonical finding for one Dockerfile rule match. */
 function finding(
   rule: DockerRule,
@@ -336,10 +347,10 @@ function resolveFromImage(
     if (option.startsWith('--platform=')) {
       if (seenPlatform || !option.slice('--platform='.length)) return undefined;
       seenPlatform = true;
-      platformUnknown ||= expandBuildArgs(
-        option.slice('--platform='.length),
-        buildArgs
-      ).unresolved;
+      const rawPlatform = option.slice('--platform='.length);
+      platformUnknown ||=
+        rawPlatform.includes('$') ||
+        expandBuildArgs(rawPlatform, buildArgs).unresolved;
       imageIndex += 1;
     } else if (option === '--platform') {
       if (
@@ -349,10 +360,10 @@ function resolveFromImage(
       )
         return undefined;
       seenPlatform = true;
-      platformUnknown ||= expandBuildArgs(
-        tokens[imageIndex + 1] ?? '',
-        buildArgs
-      ).unresolved;
+      const rawPlatform = tokens[imageIndex + 1] ?? '';
+      platformUnknown ||=
+        rawPlatform.includes('$') ||
+        expandBuildArgs(rawPlatform, buildArgs).unresolved;
       imageIndex += 2;
     } else return undefined;
   }
@@ -368,13 +379,15 @@ function resolveFromImage(
     tokens.length - imageIndex > (hasAlias ? 3 : 1)
   )
     return undefined;
-  const expanded = expandBuildArgs(tokens[imageIndex] ?? '', buildArgs);
+  const imageExpression = tokens[imageIndex] ?? '';
+  const expanded = expandBuildArgs(imageExpression, buildArgs);
   tokens[imageIndex] = expanded.value;
   return {
     line: `FROM ${tokens.join(' ')}`,
     image: expanded.value,
     ...(hasAlias && alias ? { alias } : {}),
-    unresolved: expanded.unresolved || platformUnknown
+    unresolved:
+      expanded.unresolved || imageExpression.includes('$') || platformUnknown
   };
 }
 
@@ -573,6 +586,7 @@ type DockerStageGraph = {
   stages: DockerStage[];
   states: DockerStageState[];
   baseKindByFrom: Map<DockerInstruction, DockerStage['baseKind']>;
+  remoteCopyLines: number[];
   warnings: string[];
 };
 
@@ -807,7 +821,68 @@ function buildDockerStageGraph(
     states.push(state);
   }
 
-  return { stages, states, baseKindByFrom, warnings };
+  const remoteCopyLines: number[] = [];
+  for (let index = 0; index < stages.length; index++) {
+    const stage = stages[index];
+    if (!stage) continue;
+    for (const instruction of stage.instructions) {
+      if (!/^COPY(?:\s|$)/iu.test(instruction.text)) continue;
+      const argument = instruction.text.replace(/^COPY\s+/iu, '');
+      const from = /(?:^|\s)--from=(\S+)/u.exec(argument)?.[1];
+      if (from === undefined) {
+        if (/(?:^|\s)--from(?:\s|$|=)/u.test(argument))
+          warnings.push(
+            instruction.line +
+              ': malformed COPY --from option; source identity is unknown'
+          );
+        continue;
+      }
+      // Only an already-declared stage alias or backwards numeric index
+      // is an internal source; later stages cannot be addressed.
+      if (
+        from.includes('$') ||
+        from.includes('\\') ||
+        from.includes(String.fromCharCode(96)) ||
+        from.includes('__TOOLIP_')
+      ) {
+        warnings.push(
+          instruction.line +
+            ': COPY --from variable or escape is unresolved; source provenance is unknown'
+        );
+        continue;
+      }
+      if (/^\d+$/u.test(from)) {
+        const stageNumber = Number(from);
+        if (Number.isSafeInteger(stageNumber) && stageNumber < index) continue;
+        warnings.push(
+          instruction.line +
+            ': COPY --from references a future/invalid stage index'
+        );
+        continue;
+      }
+      const alias = aliases.get(from.toLowerCase());
+      if (alias !== undefined && alias < index) continue;
+      if (alias !== undefined || ambiguousAliases.has(from.toLowerCase())) {
+        warnings.push(
+          instruction.line + ': COPY --from stage alias is future or ambiguous'
+        );
+        continue;
+      }
+      if (
+        !/^[A-Za-z0-9][A-Za-z0-9._/:-]*(?:@sha256:[a-f0-9]{64})?$/iu.test(from)
+      ) {
+        warnings.push(
+          instruction.line +
+            ': COPY --from external image syntax is unsupported'
+        );
+        continue;
+      }
+      if (!/^[^@\s]+@sha256:[a-f0-9]{64}$/iu.test(from))
+        remoteCopyLines.push(instruction.line);
+    }
+  }
+
+  return { stages, states, baseKindByFrom, remoteCopyLines, warnings };
 }
 
 export class DockerfileAnalyzer implements Analyzer {
@@ -959,6 +1034,9 @@ export class DockerfileAnalyzer implements Analyzer {
         }
       }
 
+      for (const line of stageGraph.remoteCopyLines) {
+        fileFindings.push(finding(remoteCopyRule, file.relativePath, line));
+      }
       for (const instruction of instructions) {
         const resolvedFrom = resolveFromImage(instruction, buildArgs);
         const baseKind = stageGraph.baseKindByFrom.get(instruction);
@@ -968,21 +1046,31 @@ export class DockerfileAnalyzer implements Analyzer {
             ['stage', 'scratch'].includes(baseKind ?? '')
           )
             continue;
-          const testedLine =
+          const modeledDefault =
             rule.id === 'TLP-DOCKER-003' &&
             resolvedFrom &&
-            !resolvedFrom.unresolved
+            !resolvedFrom.line.includes('__TOOLIP_UNKNOWN_') &&
+            !resolvedFrom.line.includes('__TOOLIP_BUILTIN_') &&
+            resolvedFrom.image !== '';
+          // An overridable but known ARG default is still useful evidence of
+          // an unpinned image, but is only low confidence. Unknown variables
+          // cannot establish either an immutably pinned or an unpinned image.
+          const inspectFrom =
+            rule.id !== 'TLP-DOCKER-003' ||
+            (resolvedFrom !== undefined &&
+              (!resolvedFrom.unresolved || modeledDefault));
+          const testedLine =
+            rule.id === 'TLP-DOCKER-003' && modeledDefault
               ? resolvedFrom.line
               : instruction.text;
-          if (
-            !(
-              rule.id === 'TLP-DOCKER-003' &&
-              (resolvedFrom?.unresolved || !resolvedFrom)
-            ) &&
-            rule.test(testedLine, allLines)
-          ) {
+          if (inspectFrom && rule.test(testedLine, allLines)) {
             fileFindings.push(
-              finding(rule, file.relativePath, instruction.line)
+              finding(
+                rule,
+                file.relativePath,
+                instruction.line,
+                resolvedFrom?.unresolved && modeledDefault ? 'low' : 'high'
+              )
             );
           }
         }

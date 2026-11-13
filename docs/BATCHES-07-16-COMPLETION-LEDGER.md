@@ -1318,3 +1318,27 @@ CodeRabbit/CodeQL and all provider-backed acceptance remain separate gates.
 
 No CI, GitHub branch rule, report, npm release or unpublished build is
 claimed to be an external validation of this checkpoint.
+
+## 2026-11-13 Dockerfile implementation checkpoint (issue #63)
+
+**Code added, issue still incomplete:** The stage graph now distinguishes
+bounded `COPY --from=<prior-stage>` references from an external
+image `COPY --from=<registry/image:tag>`. The latter emits the
+new `TLP-DOCKER-008` finding unless pinned with an exact
+SHA-256 digest. Variable-based, invalid-index and ambiguous or future-stage
+references remain **partial coverage**, never proof of a trusted source.
+Global `ARG` defaults used in `FROM` may be
+externally overridden and can no longer establish verified base-image
+pinning, even when their declared default embeds a digest. Previously
+checked unpinned defaults remain low-confidence evidence. All reports
+retain redacted instruction data; the analyzer does not execute Docker or
+resolve external image metadata. The focused 28-case Dockerfile test
+suite and TypeScript typecheck passed.
+
+**Remaining code acceptance:** Complete Dockerfile ARG escape/continuation
+grammar and unsupported-instruction corpus, final-stage inheritance
+adversarial fixtures, platform-specific input cases, and broader
+integration/negative fixtures; native Node/OS CI, security review and
+package verification remain independent release acceptance gates.
+No issue closure, PR promotion, tag or release is authorized by this
+checkpoint.
