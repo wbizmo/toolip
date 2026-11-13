@@ -31,6 +31,23 @@ describe('sensitive data flow candidates', () => {
     expect(JSON.stringify(finding)).not.toContain('bearer');
   });
 
+  it('treats console.table and console.dir as disclosure sinks without leaking source names', () => {
+    const findings = analyzeAstSource(
+      'src/trace.ts',
+      [
+        'const authToken = process.env.PRIVATE_API_TOKEN;',
+        'console.table({ authToken });',
+        'console.dir({ authToken }, { depth: 4 });'
+      ].join('\n')
+    ).filter((item) => item.ruleId === 'TLP-DATA-001');
+    expect(findings.map((item) => item.location?.line)).toEqual([2, 3]);
+    expect(findings.every((item) => item.metadata?.sinkClass === 'log')).toBe(
+      true
+    );
+    expect(JSON.stringify(findings)).not.toContain('PRIVATE_API_TOKEN');
+    expect(JSON.stringify(findings)).not.toContain('authToken');
+  });
+
   it('detects credential exposure in responses and outbound requests', () => {
     const findings = analyzeAstSource(
       'src/routes/token.ts',

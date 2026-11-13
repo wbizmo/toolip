@@ -3205,11 +3205,13 @@ function sensitiveOutputSink(
     ? (propertyPath(target.expression) ?? []).map((part) => part.toLowerCase())
     : [];
   if (
-    ['log', 'info', 'warn', 'error', 'debug', 'trace'].includes(method) &&
-    (receiver === 'console' ||
-      receiver === 'logger' ||
-      receiver === 'log' ||
-      receiver?.endsWith('logger'))
+    (['log', 'info', 'warn', 'error', 'debug', 'trace'].includes(method) &&
+      (receiver === 'console' ||
+        receiver === 'logger' ||
+        receiver === 'log' ||
+        receiver?.endsWith('logger'))) ||
+    (receiver === 'console' &&
+      ['table', 'dir', 'dirxml', 'assert', 'timelog'].includes(method))
   )
     return 'log';
   if (

@@ -153,6 +153,7 @@ function makeGraph(
     name: string;
     requirement: string;
     section: DependencyEdge['section'];
+    optional?: boolean;
   }>,
   warnings: string[]
 ): NpmDependencyGraph {
@@ -161,6 +162,8 @@ function makeGraph(
   const unresolvedDependencies: UnresolvedDependencyEdge[] = [];
   for (const spec of edgeSpecs) {
     if (!spec.target) {
+      // A missing optional peer is not a missing required installation.
+      if (spec.optional && spec.section === 'peerDependency') continue;
       unresolvedDependencies.push({
         from: spec.from,
         name: spec.name,
@@ -232,6 +235,7 @@ function parseSections(
   name: string;
   requirement: string;
   section: DependencyEdge['section'];
+  optional?: boolean;
 }> {
   const result: Array<{
     from: string;
@@ -239,6 +243,7 @@ function parseSections(
     name: string;
     requirement: string;
     section: DependencyEdge['section'];
+    optional?: boolean;
   }> = [];
   const fields: ReadonlyArray<readonly [string, DependencyEdge['section']]> = [
     ['dependencies', 'dependency'],
@@ -274,7 +279,11 @@ function parseSections(
           : resolve(name, resolveRequirement),
         name,
         requirement,
-        section
+        section,
+        ...(section === 'peerDependency' &&
+        record(record(sections.peerDependenciesMeta)?.[name])?.optional === true
+          ? { optional: true }
+          : {})
       });
     }
   }

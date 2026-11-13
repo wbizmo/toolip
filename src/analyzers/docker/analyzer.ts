@@ -144,9 +144,14 @@ const rules: DockerRule[] = [
     id: 'TLP-DOCKER-003',
     title: 'Unpinned base image tag',
     severity: 'medium',
-    test: (line) =>
-      /^FROM\s+\S+(?::latest)?(?:\s|$)/i.test(line.trim()) &&
-      !/@sha256:/i.test(line),
+    test: (line) => {
+      const image = line
+        .trim()
+        .match(
+          /^FROM\s+(?:(?:--platform=\S+|--platform\s+\S+)\s+)?(\S+)/iu
+        )?.[1];
+      return Boolean(image && !/^[^@\s]+@sha256:[a-f\d]{64}$/iu.test(image));
+    },
     message: 'The base image is not pinned by digest.',
     remediation:
       'Pin trusted base images by immutable digest and review updates deliberately.'
@@ -324,11 +329,16 @@ function resolveFromImage(
   const tokens = match[1].trim().split(/\s+/u);
   let imageIndex = 0;
   let seenPlatform = false;
+  let platformUnknown = false;
   while (tokens[imageIndex]?.startsWith('--')) {
     const option = tokens[imageIndex] ?? '';
     if (option.startsWith('--platform=')) {
       if (seenPlatform || !option.slice('--platform='.length)) return undefined;
       seenPlatform = true;
+      platformUnknown ||= expandBuildArgs(
+        option.slice('--platform='.length),
+        buildArgs
+      ).unresolved;
       imageIndex += 1;
     } else if (option === '--platform') {
       if (
@@ -338,6 +348,10 @@ function resolveFromImage(
       )
         return undefined;
       seenPlatform = true;
+      platformUnknown ||= expandBuildArgs(
+        tokens[imageIndex + 1] ?? '',
+        buildArgs
+      ).unresolved;
       imageIndex += 2;
     } else return undefined;
   }
@@ -359,7 +373,7 @@ function resolveFromImage(
     line: `FROM ${tokens.join(' ')}`,
     image: expanded.value,
     ...(hasAlias && alias ? { alias } : {}),
-    unresolved: expanded.unresolved
+    unresolved: expanded.unresolved || platformUnknown
   };
 }
 
@@ -368,17 +382,29 @@ function parseInstructions(source: string): {
   warnings: string[];
 } {
   const physical = source.split(/\r?\n/u);
-  const escapeDirective = physical.find((line) =>
-    /^\s*#\s*escape=/i.test(line)
-  );
   const warnings: string[] = [];
-  const escapeLine = escapeDirective?.match(/^\s*#\s*escape=([`\\])\s*$/iu);
-  if (escapeDirective && !escapeLine) {
-    const line = physical.indexOf(escapeDirective) + 1;
-    warnings.push(
-      `${line}: invalid Dockerfile escape directive; default escape semantics were used`
-    );
+  // Only leading directives can alter parser escaping. Blank lines, ordinary
+  // comments and instructions terminate the directive prefix.
+  let escapeDirective: string | undefined;
+  let directivePrefixLength = 0;
+  for (const line of physical) {
+    const directive = line.match(/^\s*#\s*(syntax|escape|check)=/iu);
+    if (!directive) break;
+    directivePrefixLength++;
+    if (directive[1]?.toLowerCase() !== 'escape') continue;
+    if (escapeDirective !== undefined) {
+      warnings.push(
+        `${directivePrefixLength}: duplicate Dockerfile escape directive; syntax semantics are unknown`
+      );
+      continue;
+    }
+    escapeDirective = line;
   }
+  const escapeLine = escapeDirective?.match(/^\s*#\s*escape=([`\\])\s*$/iu);
+  if (escapeDirective && !escapeLine)
+    warnings.push(
+      `${physical.indexOf(escapeDirective) + 1}: invalid Dockerfile escape directive; default escape semantics were used`
+    );
   const escapeChar = escapeLine?.[1] ?? '\\';
   const instructions: DockerInstruction[] = [];
   const supportedCommands = new Set([
@@ -487,7 +513,14 @@ function parseInstructions(source: string): {
     const original = physical[index] ?? '';
     const lineNumber = index + 1;
     const line = original.trimEnd();
-    if (!line.trim() || /^\s*#/u.test(line)) continue;
+    if (!line.trim()) continue;
+    if (/^\s*#/u.test(line)) {
+      if (index >= directivePrefixLength && /^\s*#\s*escape=/iu.test(line))
+        warnings.push(
+          `${lineNumber}: late parser escape directive ignored; Dockerfile semantics require review`
+        );
+      continue;
+    }
     if (!buffer) startLine = lineNumber;
 
     let trailingEscapes = 0;

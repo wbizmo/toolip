@@ -1085,6 +1085,47 @@ describe('trusted Stage A Git-object scanner', () => {
     );
   });
 
+  it('blocks a two-step static shell alias from lifecycle script to encoded payload', async () => {
+    const fixture = await repo({
+      'package.json': JSON.stringify({
+        scripts: { prepare: 'sh ./runner.sh' }
+      }),
+      'runner.sh': 'target=./payload.orc; launch=$target; node "$launch"',
+      'payload.orc': 'const decoded = atob(encoded); eval(decoded);'
+    });
+    const result = scanGitTree(fixture.root, fixture.sha, {
+      changedPaths: ['package.json']
+    });
+    expect(result.status).toBe('blocked');
+    expect(result.findings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(
+          'execution-chain:package.json -> runner.sh -> payload.orc'
+        )
+      ])
+    );
+  });
+
+  it('does not fabricate an execution chain through single-quoted shell aliases', async () => {
+    const fixture = await repo({
+      'package.json': JSON.stringify({
+        scripts: { prepare: 'sh ./runner.sh' }
+      }),
+      'runner.sh': 'target=./payload.orc; launch=\'$target\'; node "$launch"',
+      'payload.orc': 'const decoded = atob(encoded); eval(decoded);'
+    });
+    const result = scanGitTree(fixture.root, fixture.sha, {
+      changedPaths: ['package.json']
+    });
+    expect(
+      result.findings.some((finding) =>
+        finding.includes(
+          'execution-chain:package.json -> runner.sh -> payload.orc'
+        )
+      )
+    ).toBe(false);
+  });
+
   it('blocks Node preload loaders before an npm lifecycle script can execute', async () => {
     const fixture = await repo({
       'package.json': JSON.stringify({

@@ -466,6 +466,55 @@ foo@^1.0.0:
     );
   });
 
+  it('does not treat an intentionally absent optional Yarn peer as an unresolved required edge', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'package.json'),
+      JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        dependencies: { foo: '^1.0.0' },
+        peerDependencies: { optionalPeer: '^2.0.0' },
+        peerDependenciesMeta: { optionalPeer: { optional: true } }
+      })
+    );
+    await writeFile(
+      path.join(root, 'yarn.lock'),
+      '__metadata:\n  version: 8\n  cacheKey: 10c0\n\n"foo@npm:^1.0.0":\n  version: 1.2.0\n  resolution: "foo@npm:1.2.0"\n'
+    );
+    const graph = await readNpmDependencyGraph(root);
+    expect(graph).toMatchObject({ manager: 'yarn', complete: true });
+    expect(graph.unresolvedDependencies).toEqual([]);
+    expect(graph.rootDependencies).toHaveLength(1);
+  });
+
+  it('still flags an absent required Yarn peer as unresolved', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'package.json'),
+      JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        dependencies: { foo: '^1.0.0' },
+        peerDependencies: { requiredPeer: '^2.0.0' }
+      })
+    );
+    await writeFile(
+      path.join(root, 'yarn.lock'),
+      '__metadata:\n  version: 8\n  cacheKey: 10c0\n\n"foo@npm:^1.0.0":\n  version: 1.2.0\n  resolution: "foo@npm:1.2.0"\n'
+    );
+    const graph = await readNpmDependencyGraph(root);
+    expect(graph.complete).toBe(false);
+    expect(graph.unresolvedDependencies).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'requiredPeer',
+          section: 'peerDependency'
+        })
+      ])
+    );
+  });
+
   it('marks pnpm unsafe tarball URLs incomplete without retaining credentials', async () => {
     const root = await fixture();
     await writeFile(

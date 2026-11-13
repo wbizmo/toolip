@@ -1235,3 +1235,34 @@ before its designated roadmap phase.
   Berry in CycloneDX and SPDX (`tests/core/sbom.test.ts`).
 - **#67:** signed advisory snapshot JSON Schema is checked in and
   validated (`docs/schemas/toolip-advisory-bundle-v1.schema.json`).
+
+### Further coding progress — 2026-11-13 (pre-acceptance checkpoint)
+
+The following changes were implemented locally after the 22/14/1
+classification. **They do not make any of the 14 code-incomplete issues
+code-complete**. Reassess each only after its full implementation scope is closed.
+
+- **#63 Dockerfile:** malformed `@sha256:` digests no longer count as
+  immutable image pins; unresolved `FROM --platform` is partial; escape
+  directives after the opening parser directive block are ignored and
+  reported incomplete. Added positive/negative tests (25 Dockerfile tests).
+- **#64 pnpm/Yarn:** a missing optional Yarn peer explicitly marked
+  `peerDependenciesMeta.optional` no longer produces a fictitious missing
+  required edge, while missing required peers remain incomplete.
+  The resolver focused suite passed 20 tests.
+- **#91 sensitive flow:** `console.table` and `console.dir` are now
+  recognized as credential-disclosure logging sinks, with redacted
+  source evidence; 10 focused tests passed.
+- **#95 and #96 execution-chain security:** non-executing analysis
+  follows one or two unambiguous, ordered shell aliases to local files.
+  Reassignment and POSIX single-quoted aliases do not produce
+  fabricated execution traces. Normal and trusted Stage A tests
+  passed 95 across two focused suites. The protected trusted scanner
+  digest is updated after the full source changes.
+
+Node 24 unit verification at this source state: **1,207 passed,
+3 skipped across 125 suites**. Coverage, build, packed artifact,
+Node 22, supported operating systems, CodeQL and CodeRabbit
+must be recorded from their actual executions; do not infer passage
+from this unit result. All 37 issue checklists and `Refs #N` remain open.
+

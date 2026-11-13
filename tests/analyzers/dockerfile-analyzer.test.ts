@@ -6,6 +6,71 @@ import { describe, expect, it } from 'vitest';
 import { DockerfileAnalyzer } from '../../src/analyzers/docker/analyzer.js';
 
 describe('DockerfileAnalyzer', () => {
+  it('does not accept a short or malformed base digest as an immutable image pin', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-short-digest-')
+    );
+    try {
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        'FROM node:20@sha256:abc\nUSER 1000\nHEALTHCHECK CMD true\n'
+      );
+      const result = await new DockerfileAnalyzer().analyze({ root });
+      expect(
+        result.findings.find((finding) => finding.ruleId === 'TLP-DOCKER-003')
+      ).toMatchObject({ location: { line: 1 } });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores late escape directives and marks their unsupported USER result incomplete', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-late-escape-')
+    );
+    try {
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        [
+          'FROM scratch',
+          '# escape=`',
+          'USER 1000 \\',
+          ':0',
+          'HEALTHCHECK CMD true'
+        ].join('\n')
+      );
+      const result = await new DockerfileAnalyzer().analyze({ root });
+      expect(result.coverage.state).toBe('partial');
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('late parser escape directive')
+        ])
+      );
+      expect(
+        result.findings.find((finding) => finding.ruleId === 'TLP-DOCKER-001')
+      ).toMatchObject({ confidence: 'low', location: { line: 3 } });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('marks unresolved FROM platform expressions as incomplete even when user and health are explicit', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-platform-')
+    );
+    try {
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        'FROM --platform=$' +
+          '{TARGETPLATFORM} scratch\nUSER 1000\nHEALTHCHECK CMD true\n'
+      );
+      const result = await new DockerfileAnalyzer().analyze({ root });
+      expect(result.coverage.state).toBe('partial');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('detects root execution and secret-like ENV declarations', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-'));
 

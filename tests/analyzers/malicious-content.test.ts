@@ -45,6 +45,76 @@ describe('non-executing malicious content chain analysis', () => {
     ]);
   });
 
+  it('traces two literal shell aliases to a local suspicious payload without execution', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({ scripts: { prepare: 'sh ./runner.sh' } })
+      },
+      {
+        path: 'runner.sh',
+        content: 'target=./payload.orc; launch=$target; node "$launch"'
+      },
+      {
+        path: 'payload.orc',
+        content: 'const decoded = atob(encoded); eval(decoded);'
+      }
+    ]);
+    expect(
+      result.findings.find(
+        (finding) => finding.location.file === 'package.json'
+      )?.metadata?.trace
+    ).toEqual(['package.json', 'runner.sh', 'payload.orc']);
+  });
+
+  it('does not interpolate a single-quoted shell alias', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({ scripts: { prepare: 'sh ./runner.sh' } })
+      },
+      {
+        path: 'runner.sh',
+        content: 'target=./payload.orc; launch=\'$target\'; node "$launch"'
+      },
+      {
+        path: 'payload.orc',
+        content: 'const decoded = atob(encoded); eval(decoded);'
+      }
+    ]);
+    const trace = result.findings.find(
+      (finding) => finding.location.file === 'package.json'
+    )?.metadata?.trace;
+    expect(trace).not.toEqual(['package.json', 'runner.sh', 'payload.orc']);
+  });
+
+  it('keeps reassigned transitive shell aliases unresolved', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({ scripts: { prepare: 'sh ./runner.sh' } })
+      },
+      {
+        path: 'runner.sh',
+        content:
+          'target=./first.js; target=./second.js; launch=$target; node "$launch"'
+      },
+      {
+        path: 'first.js',
+        content: 'const decoded = atob(encoded); eval(decoded);'
+      },
+      {
+        path: 'second.js',
+        content: 'const decoded = atob(encoded); eval(decoded);'
+      }
+    ]);
+    const traced = result.findings.find(
+      (finding) => finding.location.file === 'package.json'
+    )?.metadata?.trace;
+    expect(traced).not.toEqual(['package.json', 'runner.sh', 'first.js']);
+    expect(traced).not.toEqual(['package.json', 'runner.sh', 'second.js']);
+  });
+
   it('does not claim a single target when shell assignment is ambiguous', () => {
     const result = analyzeMaliciousContent([
       {

@@ -2845,34 +2845,54 @@ function workspacePackageTarget(selector, cwd, packagesByName, texts) {
  */
 function staticShellTargets(source) {
   const assignments = new Map();
+  // Only literal project-relative targets and exact, non-reassigned aliases
+  // are accepted. No shell interpolation, sourcing or evaluation occurs.
   const assignmentPattern =
-    /(?:^|[;\n])\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(["']?)(\.{1,2}\/[A-Za-z0-9_./-]+)\2(?=\s*(?:;|\n|$))/gmu;
+    /(?:^|[;\n])\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(["']?)(\.{1,2}\/[A-Za-z0-9_./-]+|\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*))\2(?=\s*(?:;|\n|$))/gmu;
   for (const match of source.matchAll(assignmentPattern)) {
     const name = match[1];
     if (!name) continue;
     const previous = assignments.get(name);
+    // In POSIX shell, single quotes suppress parameter expansion.
+    const singleQuotedAlias =
+      match[2] === "'" && (match[3] ?? '').startsWith('$');
     assignments.set(
       name,
-      previous
+      previous || singleQuotedAlias
         ? { ambiguous: true }
-        : {
-            value: match[3],
-            position: match.index ?? 0
-          }
+        : { value: match[3], position: match.index ?? 0 }
     );
   }
+  // Prevent cycles and computational amplification from malicious aliases.
+  const resolveTarget = (name, before, visited, depth) => {
+    if (depth > 16 || visited.has(name)) return undefined;
+    const assignment = assignments.get(name);
+    if (
+      !assignment ||
+      assignment.ambiguous ||
+      assignment.position === undefined ||
+      assignment.position >= before ||
+      !assignment.value
+    )
+      return undefined;
+    if (/^\.{1,2}\/[A-Za-z0-9_./-]+$/u.test(assignment.value))
+      return assignment.value;
+    const alias = assignment.value.match(
+      /^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))$/u
+    );
+    const aliasName = alias?.[1] ?? alias?.[2];
+    if (!aliasName) return undefined;
+    visited.add(name);
+    return resolveTarget(aliasName, assignment.position, visited, depth + 1);
+  };
   const targets = new Set();
   const executionPattern =
     /\b(?:node(?:\.exe)?|bash|sh|zsh|python(?:3)?|ruby|perl|php|bun)(?:\.exe)?\s+(?:"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))"|\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*))(?=\s|[;&|]|$)/gmu;
   for (const match of source.matchAll(executionPattern)) {
     const name = match[1] ?? match[2] ?? match[3] ?? match[4];
-    const assignment = assignments.get(name);
-    if (
-      !assignment?.ambiguous &&
-      assignment?.value &&
-      assignment.position < (match.index ?? 0)
-    )
-      targets.add(assignment.value);
+    if (!name) continue;
+    const target = resolveTarget(name, match.index ?? 0, new Set(), 0);
+    if (target) targets.add(target);
   }
   return [...targets].sort();
 }
