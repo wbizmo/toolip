@@ -19,6 +19,7 @@ type LockedInstance = {
   name: string;
   version: string;
   installPath: string;
+  installName?: string;
   integrity?: string;
   resolved?: string;
   dev?: boolean;
@@ -29,6 +30,7 @@ type LockedInstance = {
   optionalDependencies?: RecordValue;
   peerDependencies?: RecordValue;
   peerDependenciesMeta?: RecordValue;
+  artifactIntegrityStatus?: 'declared-not-verified' | 'unavailable';
 };
 
 type WorkspaceManifestBudget = { count: number; bytes: number };
@@ -53,13 +55,62 @@ function safeResolved(value: unknown): string | undefined {
       url.username ||
       url.password ||
       (url.port !== '' && url.port !== '443') ||
-      url.hash
+      url.search ||
+      (url.hash !== '' && !supportedTarballDigest(url.hash.slice(1)))
     )
       return undefined;
     return `${url.protocol}//${url.host}${url.pathname}`;
   } catch {
     return undefined;
   }
+}
+
+function supportedTarballDigest(value: string): boolean {
+  if (/^[a-f0-9]{40}$/iu.test(value)) return true;
+  const match = value.match(/^sha(256|384|512)-([A-Za-z0-9+/]+={0,2})$/u);
+  if (!match?.[1] || !match[2]) return false;
+  const digest = Buffer.from(match[2], 'base64');
+  const expectedBytes = match[1] === '512' ? 64 : match[1] === '384' ? 48 : 32;
+  return (
+    digest.length === expectedBytes && digest.toString('base64') === match[2]
+  );
+}
+
+export function npmIntegrityStatus(value: unknown): {
+  status: 'declared-not-verified' | 'unavailable';
+  malformed: boolean;
+} {
+  if (value === undefined) return { status: 'unavailable', malformed: false };
+  if (typeof value !== 'string' || value.length > 2_048)
+    return { status: 'unavailable', malformed: true };
+  const tokens = value.trim().split(/\s+/u);
+  if (tokens.length === 0 || tokens.some((token) => token.length === 0))
+    return { status: 'unavailable', malformed: true };
+  let strong = false;
+  for (const token of tokens) {
+    const match = token.match(/^sha(1|256|384|512)-([A-Za-z0-9+/]+={0,2})$/u);
+    if (!match?.[1] || !match[2])
+      return { status: 'unavailable', malformed: true };
+    const digest = Buffer.from(match[2], 'base64');
+    const expectedBytes =
+      match[1] === '512'
+        ? 64
+        : match[1] === '384'
+          ? 48
+          : match[1] === '256'
+            ? 32
+            : 20;
+    if (
+      digest.length !== expectedBytes ||
+      digest.toString('base64') !== match[2]
+    )
+      return { status: 'unavailable', malformed: true };
+    if (match[1] !== '1') strong = true;
+  }
+  return {
+    status: strong ? 'declared-not-verified' : 'unavailable',
+    malformed: false
+  };
 }
 
 function packageIdentity(
@@ -75,9 +126,13 @@ function packageIdentity(
     name: item.name,
     version: item.version,
     direct,
+    installName: item.installName ?? item.name,
     development: development || item.dev === true,
     optional: item.optional ? true : undefined,
     integrity: item.integrity,
+    ...(item.artifactIntegrityStatus === undefined
+      ? {}
+      : { artifactIntegrityStatus: item.artifactIntegrityStatus }),
     resolved: item.resolved,
     registry: item.resolved ? new URL(item.resolved).origin : undefined,
     source: manager === 'pnpm' ? 'pnpm-lock.yaml' : 'yarn.lock',
@@ -180,7 +235,8 @@ function makeGraph(
     edges.push({
       from: spec.from,
       to,
-      name: spec.name,
+      name: spec.target.name,
+      ...(spec.target.name !== spec.name ? { alias: spec.name } : {}),
       requirement: spec.requirement,
       section: spec.section
     });
@@ -206,7 +262,7 @@ function makeGraph(
         .filter((edge) => edge.from === 'root' || packageIds.has(edge.from))
         .filter((edge) => packageIds.has(edge.to))
         .map((edge) => [
-          `${edge.from}\0${edge.to}\0${edge.name}\0${edge.requirement}\0${edge.section}`,
+          `${edge.from}\0${edge.to}\0${edge.name}\0${edge.alias ?? ''}\0${edge.requirement}\0${edge.section}`,
           edge
         ])
     ).values()
@@ -215,7 +271,9 @@ function makeGraph(
     manager,
     packages,
     edges: validEdges.sort((a, b) =>
-      `${a.from}:${a.name}:${a.to}`.localeCompare(`${b.from}:${b.name}:${b.to}`)
+      `${a.from}:${a.alias ?? ''}:${a.name}:${a.to}`.localeCompare(
+        `${b.from}:${b.alias ?? ''}:${b.name}:${b.to}`
+      )
     ),
     unresolvedDependencies,
     rootDependencies: [...directIds].sort(),
@@ -414,6 +472,9 @@ export async function readPnpmDependencyGraph(
       safeResolved(resolution.tarball) === undefined
     )
       warnings.push(`pnpm source URL is unsafe: ${locator.slice(0, 200)}`);
+    const integrity = npmIntegrityStatus(resolution?.integrity);
+    if (integrity.malformed)
+      warnings.push(`pnpm integrity is malformed: ${locator.slice(0, 200)}`);
     const item: LockedInstance = {
       locator,
       name: parsed.name,
@@ -423,6 +484,9 @@ export async function readPnpmDependencyGraph(
         typeof resolution?.integrity === 'string'
           ? resolution.integrity.slice(0, 1_024)
           : undefined,
+      ...(resolution?.integrity === undefined
+        ? {}
+        : { artifactIntegrityStatus: integrity.status }),
       resolved: safeResolved(resolution?.tarball),
       dev: entry.dev === true,
       optional: entry.optional === true,
@@ -978,7 +1042,7 @@ export async function readYarnDependencyGraph(
     if (
       !metadata ||
       !Number.isSafeInteger(metadata.version) ||
-      Number(metadata.version) < 1
+      ![4, 5, 6, 8].includes(Number(metadata.version))
     )
       throw new Error('Yarn Berry lockfile metadata is missing or invalid');
   }
@@ -1055,13 +1119,56 @@ export async function readYarnDependencyGraph(
       );
       continue;
     }
+    // Berry serializes workspaces in yarn.lock with a synthetic
+    // `0.0.0-use.local` version. The authoritative version and manifest data
+    // come from the bounded workspace files already read above. Do not expose
+    // these lock bookkeeping records as additional installed packages.
+    if (!classic && entry.linkType === 'soft') {
+      const workspaceResolution =
+        typeof entry.resolution === 'string'
+          ? yarnDescriptorName(entry.resolution)
+          : undefined;
+      if (workspaceResolution?.selector.startsWith('workspace:')) {
+        const workspace = workspacesByName.get(workspaceResolution.name);
+        const isRootWorkspace = workspaceResolution.selector === 'workspace:.';
+        if (
+          !isRootWorkspace &&
+          workspace?.locator !== workspaceResolution.selector
+        )
+          warnings.push(
+            `Yarn workspace locator does not match a captured manifest: ${groupedDescriptor.slice(0, 200)}`
+          );
+        continue;
+      }
+    }
     const fallbackName = validDescriptors[0]?.info.name;
     if (!fallbackName) continue;
     const resolution =
       typeof entry.resolution === 'string'
         ? entry.resolution
         : `${fallbackName}@${entry.version}`;
-    const name = yarnDescriptorName(resolution)?.name ?? fallbackName;
+    const integrity = npmIntegrityStatus(entry.integrity);
+    if (integrity.malformed)
+      warnings.push(
+        `Yarn integrity is malformed: ${groupedDescriptor.slice(0, 200)}`
+      );
+    const aliasTargets = validDescriptors.map(({ info }) => {
+      if (!info.selector.startsWith('npm:')) return info.name;
+      return (
+        yarnDescriptorName(info.selector.slice('npm:'.length))?.name ??
+        info.name
+      );
+    });
+    const uniqueAliasTargets = [...new Set(aliasTargets)];
+    if (uniqueAliasTargets.length !== 1 || !uniqueAliasTargets[0]) {
+      warnings.push(
+        `Yarn descriptor has ambiguous alias identity: ${groupedDescriptor.slice(0, 200)}`
+      );
+      continue;
+    }
+    const name = classic
+      ? uniqueAliasTargets[0]
+      : (yarnDescriptorName(resolution)?.name ?? uniqueAliasTargets[0]);
     // Berry's `resolution` commonly points every peer-qualified virtual
     // locator at the same downloaded archive. That archive identity is not an
     // installed-instance identity: the virtual descriptor's hash records the
@@ -1092,7 +1199,10 @@ export async function readYarnDependencyGraph(
         ? `virtual:${virtualContexts[0]}#${resolutionReference}`
         : resolutionReference
       : undefined;
-    const identityKey = `${name}\0${entry.version}\0${String(entry.integrity ?? '')}\0${resolution}\0${safeResolved(entry.resolved) ?? ''}\0${virtualContexts.join(',')}`;
+    const requestedNames = [
+      ...new Set(validDescriptors.map(({ info }) => info.name))
+    ].sort();
+    const identityKey = `${name}\0${requestedNames.join(',')}\0${entry.version}\0${String(entry.integrity ?? '')}\0${resolution}\0${safeResolved(entry.resolved) ?? ''}\0${virtualContexts.join(',')}`;
     let item = instancesByLocator.get(identityKey);
     if (!item) {
       const virtualName = createHash('sha256')
@@ -1103,11 +1213,17 @@ export async function readYarnDependencyGraph(
         locator: `${resolution}#${createHash('sha256').update(identityKey).digest('hex').slice(0, 16)}`,
         name,
         version: entry.version,
+        installName: requestedNames.length === 1 ? requestedNames[0] : name,
         installPath: `yarn:pnp/${virtualName}`,
         integrity:
           typeof entry.integrity === 'string'
             ? entry.integrity.slice(0, 1_024)
-            : undefined,
+            : typeof entry.checksum === 'string'
+              ? entry.checksum.slice(0, 1_024)
+              : undefined,
+        ...(entry.integrity === undefined
+          ? {}
+          : { artifactIntegrityStatus: integrity.status }),
         resolved: safeResolved(entry.resolved),
         dev: entry.dev === true,
         optional: entry.optional === true,
@@ -1149,6 +1265,15 @@ export async function readYarnDependencyGraph(
     requirement: string
   ): LockedInstance | undefined => {
     if (requirement.startsWith('workspace:')) return workspacesByName.get(name);
+    if (classic) {
+      const workspace = workspacesByName.get(name);
+      if (
+        workspace &&
+        semver.validRange(requirement) &&
+        semver.satisfies(workspace.version, requirement)
+      )
+        return workspace;
+    }
     const yarnRequirement = requirement.startsWith('npm:')
       ? requirement
       : `npm:${requirement}`;

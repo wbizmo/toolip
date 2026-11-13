@@ -12,6 +12,8 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ReachabilityAnalyzer } from '../../src/analyzers/reachability/reachability-analyzer.js';
 
+const strongIntegrity = `sha512-${Buffer.alloc(64, 0x5a).toString('base64')}`;
+
 describe('ReachabilityAnalyzer', () => {
   it('marks imported packages as reachable', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-reachability-'));
@@ -201,7 +203,7 @@ importers:
 packages:
   shared@1.0.0:
     resolution:
-      integrity: sha512-ZGly
+      integrity: ${strongIntegrity}
 snapshots:
   shared@1.0.0: {}
 `
@@ -266,7 +268,7 @@ snapshots:
 shared@^1.0.0:
   version "1.2.0"
   resolved "https://registry.npmjs.org/shared/-/shared-1.2.0.tgz"
-  integrity sha512-c2hhcmVk
+  integrity ${strongIntegrity}
 `
       );
       await mkdir(path.join(root, 'node_modules/shared'), { recursive: true });
@@ -788,6 +790,94 @@ shared@^1.0.0:
       expect(archiveLocation.warnings).toContainEqual(
         expect.stringContaining('yarn-pnp-archive-content-unverified:')
       );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('binds Yarn PnP aliases to the exact target locator and installed identity', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-reachability-yarn-alias-')
+    );
+    const marker = path.join(root, 'pnp-executed');
+    try {
+      const packageDirectory = path.join(
+        root,
+        '.yarn/unplugged/react18/node_modules/react'
+      );
+      await mkdir(packageDirectory, { recursive: true });
+      await writeFile(
+        path.join(root, 'package.json'),
+        JSON.stringify({
+          name: 'fixture',
+          version: '1.0.0',
+          dependencies: { 'react18-alias': 'npm:react@18.2.0' }
+        })
+      );
+      await writeFile(
+        path.join(root, 'yarn.lock'),
+        `__metadata:\n  version: 8\n\n"react18-alias@npm:react@18.2.0":\n  version: 18.2.0\n  resolution: "react@npm:18.2.0"\n  checksum: 10c0/abc123\n  languageName: node\n  linkType: hard\n`
+      );
+      await writeFile(
+        path.join(packageDirectory, 'package.json'),
+        JSON.stringify({ name: 'react', version: '18.2.0' })
+      );
+      const pnpState = {
+        packageRegistryData: [
+          [
+            'fixture',
+            [
+              [
+                'workspace:.',
+                {
+                  packageLocation: './',
+                  packageDependencies: [
+                    ['react18-alias', ['react', 'npm:18.2.0']]
+                  ]
+                }
+              ]
+            ]
+          ],
+          [
+            'react',
+            [
+              [
+                'npm:18.2.0',
+                {
+                  packageLocation:
+                    './.yarn/unplugged/react18/node_modules/react/',
+                  packageDependencies: []
+                }
+              ]
+            ]
+          ]
+        ]
+      };
+      await writeFile(
+        path.join(root, '.pnp.cjs'),
+        `const RAW_RUNTIME_STATE = ${JSON.stringify(pnpState)};\nrequire('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran');\n`
+      );
+      await writeFile(
+        path.join(root, 'entry.ts'),
+        "import React from 'react18-alias'; void React;\n"
+      );
+
+      const result = await new ReachabilityAnalyzer().analyze({ root });
+      const packages = result.metadata?.packages as Array<{
+        packageName: string;
+        packageVersion: string;
+        installPath: string;
+        state: string;
+      }>;
+      expect(packages).toContainEqual(
+        expect.objectContaining({
+          packageName: 'react',
+          packageVersion: '18.2.0',
+          installPath: '.yarn/unplugged/react18/node_modules/react',
+          state: 'reachable'
+        })
+      );
+      await expect(access(marker)).rejects.toThrow();
     } finally {
       await rm(root, { recursive: true, force: true });
     }

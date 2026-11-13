@@ -402,6 +402,7 @@ node dist/src/index.js --help
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [Project snapshots and incremental analysis](docs/PROJECT-SNAPSHOTS.md)
 - [Analysis status and exit codes](docs/ANALYSIS-STATUS.md)
 - [Engineering standards](docs/ENGINEERING.md)
 - [Vulnerability intelligence](docs/VULNERABILITY-INTELLIGENCE.md)

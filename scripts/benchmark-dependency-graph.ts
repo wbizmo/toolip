@@ -459,7 +459,7 @@ async function benchmarkAstDirectoryIndex(size: number): Promise<void> {
     directories.add(path.join(root, 'src', `module-${index}`));
   }
   const queries = [...directories].slice(1);
-  const fixtureSha256 = createHash()
+  const fixtureSha256 = createHash('sha256')
     .update([...directories].sort().join('\0'))
     .digest('hex');
 
@@ -485,7 +485,7 @@ async function benchmarkAstDirectoryIndex(size: number): Promise<void> {
     directoryQueries: indexed.result.queryCount
   });
 
-  if (size <= 10_000) {
+  if (size <= 1_000) {
     const legacy = await measure(async () => {
       let candidateVisits = 0;
       let returnedChildren = 0;
@@ -522,7 +522,7 @@ async function benchmarkAstDirectoryIndex(size: number): Promise<void> {
     });
   } else {
     emit('ast-source-directory-full-scan-reference', size, 'skipped', {
-      reason: 'legacy directory scan is quadratic and capped at 10,000 queries',
+      reason: 'quadratic full-scan reference is capped at 1,000 queries',
       baselineRevision: '41a3a9319b19bfb2c2290bafd1bb9fab794ddcd0'
     });
   }
@@ -839,7 +839,7 @@ async function benchmarkSecretLocations(size: number): Promise<void> {
   emit('secret-locations-optimized', size, 'single-pass', {
     ...optimized,
     result: optimized.result,
-    fixtureSha256: createHash().update(content).digest('hex'),
+    fixtureSha256: createHash('sha256').update(content).digest('hex'),
     sourceBytes: Buffer.byteLength(content)
   });
 
@@ -865,7 +865,7 @@ async function benchmarkSecretLocations(size: number): Promise<void> {
     emit('secret-locations-legacy-prefix-split-reference', size, 'baseline', {
       ...legacy,
       result: legacy.result,
-      fixtureSha256: createHash().update(content).digest('hex'),
+      fixtureSha256: createHash('sha256').update(content).digest('hex'),
       sourceBytes: Buffer.byteLength(content),
       baselineRevision: 'cf94e2103e7d2ced05a0acf68251bcc8fd7ab125'
     });

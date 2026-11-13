@@ -1,11 +1,25 @@
+import { createHash } from 'node:crypto';
 import { deserialize, serialize } from 'node:v8';
 import { MAX_CONCURRENT_OPERATIONS } from './concurrency.js';
 
 export const MAX_ANALYSIS_TASK_CONCURRENCY = MAX_CONCURRENT_OPERATIONS;
+export const MAX_ANALYSIS_TASKS = 100_000;
+export const MAX_ANALYSIS_TASK_DEPENDENCIES = 1_000_000;
+export const MAX_ANALYSIS_TASK_METADATA_BYTES = 16 * 1024 * 1024;
+export const MAX_ANALYSIS_CACHE_ENTRIES = 100_000;
+export const MAX_ANALYSIS_CACHE_BYTES = 64 * 1024 * 1024;
+export const MAX_ANALYSIS_CACHE_ENTRY_BYTES = 4 * 1024 * 1024;
+const defaultAnalysisCacheEntries = 10_000;
+const maximumTaskIdBytes = 1_024;
+const maximumCacheKeyBytes = 1_024;
+const maximumTaskVersionBytes = 1_024;
+const maximumTaskInputFingerprintBytes = 4_096;
 
 export type AnalysisTask<T> = Readonly<{
   id: string;
   dependsOn?: readonly string[];
+  /** Content/config identity for this task; omit only when the whole snapshot is an input. */
+  inputFingerprint?: string;
   run: (signal: AbortSignal) => Promise<T>;
 }>;
 
@@ -14,27 +28,35 @@ export type TaskOutcome<T> =
   | { id: string; state: 'failed'; error: string }
   | { id: string; state: 'blocked' | 'cancelled'; reason: string };
 
-/** FIFO cache scoped by a snapshot, with process-wide and per-entry byte limits. */
+/** FIFO cache with bounded payload, key, entry count and corrupt-entry recovery. */
 export class AnalysisResultCache {
   private readonly values = new Map<string, Buffer>();
   private currentBytes = 0;
+  private currentKeyBytes = 0;
   private cacheHits = 0;
   private cacheMisses = 0;
   private cacheEvictions = 0;
 
   constructor(
-    private readonly maxEntries = 10_000,
-    private readonly maxBytes = 64 * 1024 * 1024,
-    private readonly maxEntryBytes = 4 * 1024 * 1024
+    private readonly maxEntries = defaultAnalysisCacheEntries,
+    private readonly maxBytes = MAX_ANALYSIS_CACHE_BYTES,
+    private readonly maxEntryBytes = MAX_ANALYSIS_CACHE_ENTRY_BYTES,
+    private readonly maxKeyBytes = maximumCacheKeyBytes
   ) {
     if (
       !Number.isSafeInteger(maxEntries) ||
       maxEntries < 1 ||
+      maxEntries > MAX_ANALYSIS_CACHE_ENTRIES ||
       !Number.isSafeInteger(maxBytes) ||
       maxBytes < 1 ||
+      maxBytes > MAX_ANALYSIS_CACHE_BYTES ||
       !Number.isSafeInteger(maxEntryBytes) ||
       maxEntryBytes < 1 ||
-      maxEntryBytes > maxBytes
+      maxEntryBytes > MAX_ANALYSIS_CACHE_ENTRY_BYTES ||
+      maxEntryBytes > maxBytes ||
+      !Number.isSafeInteger(maxKeyBytes) ||
+      maxKeyBytes < 1 ||
+      maxKeyBytes > maximumCacheKeyBytes
     )
       throw new Error('cache entry and byte budgets are invalid');
   }
@@ -44,27 +66,54 @@ export class AnalysisResultCache {
     taskId: string,
     taskVersion: string
   ): T | undefined {
+    const result = this.read<T>(snapshotId, taskId, taskVersion);
+    return result.found ? result.value : undefined;
+  }
+
+  /** Reads a value and its exact serialized digest in one cache operation. */
+  read<T>(
+    snapshotId: string,
+    taskId: string,
+    taskVersion: string
+  ): { found: true; value: T; digest: string } | { found: false } {
     const key = cacheKey(snapshotId, taskId, taskVersion);
+    if (
+      key === undefined ||
+      Buffer.byteLength(key, 'utf8') > this.maxKeyBytes
+    ) {
+      this.cacheMisses++;
+      return { found: false };
+    }
     const value = this.values.get(key);
     if (value === undefined) {
       this.cacheMisses++;
-      return undefined;
+      return { found: false };
     }
     try {
       const decoded = deserialize(value) as T;
       this.cacheHits++;
-      return decoded;
+      return {
+        found: true,
+        value: decoded,
+        digest: createHash('sha256').update(value).digest('hex')
+      };
     } catch {
       this.values.delete(key);
       this.currentBytes -= value.byteLength;
+      this.currentKeyBytes -= Buffer.byteLength(key, 'utf8');
       this.cacheEvictions++;
       this.cacheMisses++;
-      return undefined;
+      return { found: false };
     }
   }
 
   has(snapshotId: string, taskId: string, taskVersion: string): boolean {
-    return this.values.has(cacheKey(snapshotId, taskId, taskVersion));
+    const key = cacheKey(snapshotId, taskId, taskVersion);
+    return (
+      key !== undefined &&
+      Buffer.byteLength(key, 'utf8') <= this.maxKeyBytes &&
+      this.values.has(key)
+    );
   }
 
   set<T>(
@@ -73,32 +122,57 @@ export class AnalysisResultCache {
     taskVersion: string,
     value: T
   ): void {
+    this.setWithDigest(snapshotId, taskId, taskVersion, value);
+  }
+
+  /** Stores a value and returns its digest even when the size cap skips storage. */
+  setWithDigest<T>(
+    snapshotId: string,
+    taskId: string,
+    taskVersion: string,
+    value: T
+  ): string | undefined {
     const key = cacheKey(snapshotId, taskId, taskVersion);
+    if (key === undefined) return undefined;
+    const keyBytes = Buffer.byteLength(key, 'utf8');
     const forgetPrevious = (): void => {
       const previous = this.values.get(key);
       if (!previous) return;
       this.values.delete(key);
       this.currentBytes -= previous.byteLength;
+      this.currentKeyBytes -= keyBytes;
       this.cacheEvictions++;
     };
+    if (keyBytes > this.maxKeyBytes) {
+      forgetPrevious();
+      return undefined;
+    }
     let encoded: Buffer;
     try {
       encoded = serialize(value);
     } catch {
       forgetPrevious();
-      return;
+      return undefined;
     }
-    if (encoded.byteLength > this.maxEntryBytes) {
+    const digest = createHash('sha256').update(encoded).digest('hex');
+    if (
+      encoded.byteLength > this.maxEntryBytes ||
+      encoded.byteLength + keyBytes > this.maxBytes
+    ) {
       forgetPrevious();
-      return;
+      return digest;
     }
     const previous = this.values.get(key);
-    if (previous) this.currentBytes -= previous.byteLength;
+    if (previous) {
+      this.currentBytes -= previous.byteLength;
+      this.currentKeyBytes -= keyBytes;
+    }
     this.values.set(key, encoded);
     this.currentBytes += encoded.byteLength;
+    this.currentKeyBytes += keyBytes;
     while (
       this.values.size > this.maxEntries ||
-      this.currentBytes > this.maxBytes
+      this.currentBytes + this.currentKeyBytes > this.maxBytes
     ) {
       const oldest = this.values.keys().next().value as string | undefined;
       if (oldest === undefined) break;
@@ -106,9 +180,11 @@ export class AnalysisResultCache {
       this.values.delete(oldest);
       if (evicted) {
         this.currentBytes -= evicted.byteLength;
+        this.currentKeyBytes -= Buffer.byteLength(oldest, 'utf8');
         this.cacheEvictions++;
       }
     }
+    return digest;
   }
 
   get size(): number {
@@ -119,31 +195,46 @@ export class AnalysisResultCache {
     return this.currentBytes;
   }
 
+  get retainedByteSize(): number {
+    return this.currentBytes + this.currentKeyBytes;
+  }
+
   get metrics(): Readonly<{
     hits: number;
     misses: number;
     evictions: number;
     entries: number;
     retainedSerializedBytes: number;
+    retainedKeyBytes: number;
+    retainedBytes: number;
   }> {
     return Object.freeze({
       hits: this.cacheHits,
       misses: this.cacheMisses,
       evictions: this.cacheEvictions,
       entries: this.values.size,
-      retainedSerializedBytes: this.currentBytes
+      retainedSerializedBytes: this.currentBytes,
+      retainedKeyBytes: this.currentKeyBytes,
+      retainedBytes: this.retainedByteSize
     });
   }
 }
 
-function cacheKey(snapshotId: string, taskId: string, version: string): string {
+function cacheKey(
+  snapshotId: string,
+  taskId: string,
+  version: string
+): string | undefined {
   if (
     [snapshotId, taskId, version].some((part) => !part || part.includes('\0'))
   )
     throw new Error(
       'cache key components must be non-empty and cannot contain NUL'
     );
-  return `${snapshotId}\0${taskId}\0${version}`;
+  const key = `${snapshotId}\0${taskId}\0${version}`;
+  return Buffer.byteLength(key, 'utf8') <= maximumCacheKeyBytes
+    ? key
+    : undefined;
 }
 
 function queuePush(queue: string[], value: string): void {
@@ -186,7 +277,9 @@ function queuePop(queue: string[]): string | undefined {
  * Executes an analysis DAG with deterministic output and bounded concurrency.
  * Validation and graph construction are O(V+E); scheduling is O((V+E) log V)
  * from the lexicographic ready-queue heap, plus task work W. Memory is
- * O(V+E+C), including outcomes and the ready queue.
+ * O(V+E+C+R), including outcomes R retained task-result bytes and the ready
+ * queue. The graph is capped at 100,000 tasks, 1,000,000 dependency entries,
+ * 16 MiB of ID metadata, 1 KiB per task ID and 32 active tasks.
  */
 export async function runTaskDag<T>(
   tasks: readonly AnalysisTask<T>[],
@@ -202,15 +295,51 @@ export async function runTaskDag<T>(
       `analysis task concurrency must be an integer from 1 to ${MAX_ANALYSIS_TASK_CONCURRENCY}`
     );
   const limit = requestedConcurrency;
+  if (tasks.length > MAX_ANALYSIS_TASKS)
+    throw new RangeError(`analysis task count exceeds ${MAX_ANALYSIS_TASKS}`);
   const byId = new Map<string, AnalysisTask<T>>();
+  let metadataBytes = 0;
   for (const task of tasks) {
-    if (!task.id || byId.has(task.id))
-      throw new Error(`duplicate or empty task id: ${task.id}`);
+    if (!task || typeof task !== 'object')
+      throw new TypeError('analysis task entries must be objects');
+    if (
+      typeof task.id !== 'string' ||
+      !task.id ||
+      Buffer.byteLength(task.id, 'utf8') > maximumTaskIdBytes ||
+      byId.has(task.id)
+    )
+      throw new Error(`invalid, oversized, or duplicate task id: ${task.id}`);
+    metadataBytes += Buffer.byteLength(task.id, 'utf8');
+    if (metadataBytes > MAX_ANALYSIS_TASK_METADATA_BYTES)
+      throw new RangeError(
+        `analysis task metadata exceeds ${MAX_ANALYSIS_TASK_METADATA_BYTES} bytes`
+      );
     byId.set(task.id, task);
   }
   const remaining = new Map<string, number>();
   const dependents = new Map<string, string[]>();
+  let dependencyCount = 0;
   for (const task of tasks) {
+    if (task.dependsOn !== undefined && !Array.isArray(task.dependsOn))
+      throw new TypeError(`dependencies for ${task.id} must be an array`);
+    dependencyCount += task.dependsOn?.length ?? 0;
+    if (dependencyCount > MAX_ANALYSIS_TASK_DEPENDENCIES)
+      throw new RangeError(
+        `analysis dependency entries exceed ${MAX_ANALYSIS_TASK_DEPENDENCIES}`
+      );
+    for (const dependency of task.dependsOn ?? []) {
+      if (
+        typeof dependency !== 'string' ||
+        !dependency ||
+        Buffer.byteLength(dependency, 'utf8') > maximumTaskIdBytes
+      )
+        throw new Error(`invalid dependency task id for ${task.id}`);
+      metadataBytes += Buffer.byteLength(dependency, 'utf8');
+      if (metadataBytes > MAX_ANALYSIS_TASK_METADATA_BYTES)
+        throw new RangeError(
+          `analysis task metadata exceeds ${MAX_ANALYSIS_TASK_METADATA_BYTES} bytes`
+        );
+    }
     const dependencies = new Set(task.dependsOn ?? []);
     for (const dependency of dependencies) {
       if (!byId.has(dependency))
@@ -336,9 +465,14 @@ export async function runTaskDag<T>(
   });
 }
 
-/** Reuses only successful task results for the same snapshot and task version. */
+/**
+ * Reuses successful task results by stable cache scope, task version, explicit
+ * input fingerprint, and the exact serialized outputs of graph dependencies.
+ * Changing one input invalidates its task; dependents invalidate only when
+ * that task's output bytes change.
+ */
 export async function runIncrementalTaskDag<T>(
-  snapshotId: string,
+  cacheScope: string,
   tasks: readonly (AnalysisTask<T> & { version: string })[],
   options: {
     concurrency?: number;
@@ -346,24 +480,80 @@ export async function runIncrementalTaskDag<T>(
     cache: AnalysisResultCache;
   }
 ): Promise<TaskOutcome<T>[]> {
-  if (!snapshotId)
-    throw new Error('snapshot id is required for cached analysis');
+  if (typeof cacheScope !== 'string' || !cacheScope)
+    throw new Error('cache scope is required for incremental analysis');
+  if (tasks.length > MAX_ANALYSIS_TASKS)
+    throw new RangeError(`analysis task count exceeds ${MAX_ANALYSIS_TASKS}`);
+  let fingerprintMetadataBytes = 0;
+  for (const task of tasks) {
+    if (
+      typeof task.version !== 'string' ||
+      !task.version ||
+      Buffer.byteLength(task.version, 'utf8') > maximumTaskVersionBytes
+    )
+      throw new Error(`invalid or oversized version for task ${task.id}`);
+    if (
+      task.inputFingerprint !== undefined &&
+      (typeof task.inputFingerprint !== 'string' ||
+        !task.inputFingerprint ||
+        Buffer.byteLength(task.inputFingerprint, 'utf8') >
+          maximumTaskInputFingerprintBytes)
+    )
+      throw new Error(
+        `invalid or oversized input fingerprint for task ${task.id}`
+      );
+    fingerprintMetadataBytes +=
+      Buffer.byteLength(task.version, 'utf8') +
+      Buffer.byteLength(task.inputFingerprint ?? '', 'utf8');
+    if (fingerprintMetadataBytes > MAX_ANALYSIS_TASK_METADATA_BYTES)
+      throw new RangeError(
+        `analysis task fingerprints exceed ${MAX_ANALYSIS_TASK_METADATA_BYTES} bytes`
+      );
+  }
+  const outputDigests = new Map<string, string>();
   const wrapped = tasks.map((task) => ({
     ...task,
     run: async (signal: AbortSignal): Promise<T> => {
-      if (options.cache.has(snapshotId, task.id, task.version)) {
-        const cached = options.cache.get<T>(snapshotId, task.id, task.version);
-        // `undefined` can be a valid serialized task value. A second has()
-        // distinguishes it from a corrupt entry that get() evicted.
-        if (
-          cached !== undefined ||
-          options.cache.has(snapshotId, task.id, task.version)
+      const dependencies = [...new Set(task.dependsOn ?? [])].sort();
+      const dependencyDigests = dependencies.map(
+        (id) => [id, outputDigests.get(id)] as const
+      );
+      const hasStableDependencyDigests = dependencyDigests.every(
+        (entry) => entry[1] !== undefined
+      );
+      // The scope already separates cache namespaces; keep the legacy
+      // no-fingerprint mode cheap while requiring explicit fingerprints for
+      // per-task selective invalidation.
+      const inputFingerprint = task.inputFingerprint ?? 'scope-input';
+      const version = createHash('sha256')
+        .update(
+          JSON.stringify({
+            version: task.version,
+            inputFingerprint,
+            dependencyDigests: hasStableDependencyDigests
+              ? dependencyDigests
+              : undefined
+          })
         )
-          return cached as T;
+        .digest('hex');
+      const canCache = hasStableDependencyDigests && !signal.aborted;
+      if (canCache) {
+        const cached = options.cache.read<T>(cacheScope, task.id, version);
+        if (cached.found) {
+          outputDigests.set(task.id, cached.digest);
+          return cached.value;
+        }
       }
       const value = await task.run(signal);
-      if (!signal.aborted)
-        options.cache.set(snapshotId, task.id, task.version, value);
+      if (!signal.aborted && hasStableDependencyDigests) {
+        const digest = options.cache.setWithDigest(
+          cacheScope,
+          task.id,
+          version,
+          value
+        );
+        if (digest) outputDigests.set(task.id, digest);
+      }
       return value;
     }
   }));

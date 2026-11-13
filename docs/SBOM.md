@@ -6,6 +6,18 @@ Gradle exports, and Composer where the corresponding exact inventory is
 available. Missing or ambiguous resolution stays incomplete; manifest ranges
 are not presented as installed versions.
 
+The npm-compatible resolver recognizes npm `package-lock.json` formats 2 and
+3, pnpm lockfile formats 6 through 9, Yarn Classic v1, and Yarn Berry metadata
+formats 4, 5, 6 and 8 (Yarn 2–4). Unsupported versions and ambiguous lockfiles
+remain incomplete. Exact lock identities preserve workspace location, install
+name, alias key, peer context, dependency edges, registry origin and declared
+integrity where the format supplies them. Berry workspace bookkeeping entries
+with synthetic `0.0.0-use.local` versions are resolved from captured workspace
+manifests and are not exposed as registry packages. Lockfile integrity is
+provenance metadata only: a digest recorded in a lockfile is always
+`declared-not-verified` until an independent artifact check succeeds. A
+manifest range alone never creates a resolved installed identity.
+
 ## CycloneDX
 
 ```bash

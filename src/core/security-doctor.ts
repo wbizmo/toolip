@@ -96,6 +96,8 @@ export type SecurityDoctorResult = {
       evictions: number;
       entries: number;
       retainedSerializedBytes: number;
+      retainedKeyBytes: number;
+      retainedBytes: number;
     };
   };
   analyzerPlugins: Array<{
@@ -347,7 +349,9 @@ export async function runSecurityDoctor(
     misses: 0,
     evictions: 0,
     entries: 0,
-    retainedSerializedBytes: 0
+    retainedSerializedBytes: 0,
+    retainedKeyBytes: 0,
+    retainedBytes: 0
   };
   const suppliedContext =
     typeof rootOrContext === 'string' ? undefined : rootOrContext;
@@ -1011,7 +1015,9 @@ export async function runSecurityDoctor(
           misses: current.misses - resultCacheBefore.misses,
           evictions: current.evictions - resultCacheBefore.evictions,
           entries: current.entries,
-          retainedSerializedBytes: current.retainedSerializedBytes
+          retainedSerializedBytes: current.retainedSerializedBytes,
+          retainedKeyBytes: current.retainedKeyBytes,
+          retainedBytes: current.retainedBytes
         };
       })()
     },

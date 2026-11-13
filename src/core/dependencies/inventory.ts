@@ -4,6 +4,7 @@ import { lstat } from 'node:fs/promises';
 import semver from 'semver';
 import { ToolipError } from '../../errors/toolip-error.js';
 import {
+  npmIntegrityStatus,
   readBoundedDependencyText,
   readPnpmDependencyGraph,
   readYarnDependencyGraph
@@ -17,6 +18,8 @@ export type DependencyIdentity = {
   version: string;
   direct: boolean;
   development: boolean;
+  /** Name used at the install/import location; it can differ for an alias. */
+  installName?: string;
   /** Only reachable through optionalDependencies. */
   optional?: boolean;
   /** Lockfile `os` / `cpu` / `libc` constraints (npm allow-list with `!` blocks). */
@@ -207,24 +210,43 @@ function identityId(
 function sanitizedNpmResolution(value: unknown): {
   resolved?: string;
   registry?: string;
+  unsafe?: boolean;
 } {
-  if (typeof value !== 'string' || value.length > 2_048) return {};
+  if (typeof value !== 'string')
+    return value === undefined ? {} : { unsafe: true };
+  if (value.length > 2_048) return { unsafe: true };
   const gitPrefix = value.startsWith('git+') ? 'git+' : '';
   const candidate = gitPrefix ? value.slice(gitPrefix.length) : value;
   try {
     const url = new URL(candidate);
-    if (!['https:', 'http:', 'ssh:'].includes(url.protocol)) return {};
-    const resolved = `${gitPrefix}${url.protocol}//${url.host}${url.pathname}`;
     if (
-      gitPrefix ||
-      url.username ||
-      url.password ||
-      !['https:', 'http:'].includes(url.protocol)
+      !['https:', 'ssh:'].includes(url.protocol) ||
+      (url.port !== '' && url.port !== '443')
     )
-      return { resolved };
-    return { resolved, registry: url.origin };
+      return { unsafe: true };
+    // Preserve exact source identity in a redacted graph without accepting a
+    // credential-bearing URL as verified registry provenance.
+    const unsafeCredentials = Boolean(
+      url.username || url.password || url.search
+    );
+    if (gitPrefix) {
+      const revision = url.hash.slice(1);
+      if (!/^[a-f0-9]{40,64}$/iu.test(revision)) return { unsafe: true };
+      return {
+        resolved: `git+${url.protocol}//${url.host}${url.pathname}#${revision.toLowerCase()}`
+      };
+    }
+    if (
+      url.protocol !== 'https:' ||
+      (url.hash && !/^[a-f0-9]{40}$/iu.test(url.hash.slice(1)))
+    )
+      return { unsafe: true };
+    const resolved = `${url.protocol}//${url.host}${url.pathname}`;
+    return unsafeCredentials
+      ? { resolved, unsafe: true }
+      : { resolved, registry: url.origin };
   } catch {
-    return {};
+    return { unsafe: true };
   }
 }
 
@@ -419,6 +441,10 @@ export async function readNpmDependencyGraph(
       continue;
     }
     const resolution = sanitizedNpmResolution(entry.resolved);
+    const integrity = npmIntegrityStatus(entry.integrity);
+    if (resolution.unsafe && !entry.link)
+      warnings.push('npm-lockfile-source-url-unsafe');
+    if (integrity.malformed) warnings.push('npm-lockfile-integrity-malformed');
 
     identitiesByPath.set(installPath, {
       id: identityId(installPath, name, entry.version),
@@ -434,6 +460,10 @@ export async function readNpmDependencyGraph(
       source: 'package-lock',
       resolutionConfidence: 'lockfile',
       installPath,
+      installName: npmInstallName(installPath, name),
+      ...(entry.integrity === undefined
+        ? {}
+        : { artifactIntegrityStatus: integrity.status }),
       workspace: !installPath.startsWith('node_modules/')
         ? installPath
         : undefined,
@@ -496,7 +526,9 @@ export async function readNpmDependencyGraph(
       edges.push({
         from,
         to: target.id,
-        ...requirement
+        ...requirement,
+        name: target.name,
+        ...(target.name !== requirement.name ? { alias: requirement.name } : {})
       });
 
       if (from === 'root') {
@@ -527,6 +559,16 @@ export async function readNpmDependencyGraph(
     complete: warnings.length === 0,
     warnings: [...new Set(warnings)].sort()
   };
+}
+
+function npmInstallName(installPath: string, resolvedName: string): string {
+  const marker = 'node_modules/';
+  const markerIndex = installPath.lastIndexOf(marker);
+  if (markerIndex < 0) return resolvedName;
+  const parts = installPath.slice(markerIndex + marker.length).split('/');
+  return parts[0]?.startsWith('@') && parts[1]
+    ? `${parts[0]}/${parts[1]}`
+    : (parts[0] ?? resolvedName);
 }
 
 export async function readNpmDependencyInventory(

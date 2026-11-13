@@ -1,0 +1,13 @@
+{
+  "name": "toolip-lock-golden-root",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "dependencies": {
+    "@toolip-fixture/app-18": "1.0.0",
+    "@toolip-fixture/app-19": "1.0.0",
+    "@toolip-fixture/optional-peer": "1.0.0",
+    "react18-alias": "npm:react@18.2.0",
+    "react19-alias": "npm:react@19.0.0"
+  }
+}

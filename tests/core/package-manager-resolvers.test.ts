@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -6,12 +6,34 @@ import {
   readNpmDependencyGraph,
   readNpmDependencyInventory
 } from '../../src/core/dependencies/inventory.js';
+import { ReachabilityAnalyzer } from '../../src/analyzers/reachability/reachability-analyzer.js';
+import { generateSbom } from '../../src/core/sbom/generate.js';
 
 const roots: string[] = [];
+const strongIntegrity = `sha512-${Buffer.alloc(64, 0x5a).toString('base64')}`;
 
 async function fixture(): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-lock-resolver-'));
   roots.push(root);
+  return root;
+}
+
+async function generatedManagerFixture(manager: string): Promise<string> {
+  const root = await fixture();
+  const fixtureRoot = path.resolve('tests/fixtures/package-managers');
+  const projectRoot = manager.startsWith('yarn-berry-')
+    ? path.join(fixtureRoot, manager, 'project')
+    : path.join(fixtureRoot, 'project');
+  await cp(projectRoot, root, { recursive: true });
+  const lockfile = manager.startsWith('npm-')
+    ? 'package-lock.json'
+    : manager.startsWith('pnpm-')
+      ? 'pnpm-lock.yaml'
+      : 'yarn.lock';
+  await copyFile(
+    path.join(fixtureRoot, manager, lockfile),
+    path.join(root, lockfile)
+  );
   return root;
 }
 
@@ -22,6 +44,333 @@ afterEach(async () => {
 });
 
 describe('pnpm and Yarn exact dependency graphs', () => {
+  it.each([
+    ['npm-v2', '18.2.0'],
+    ['npm-v3', '18.2.0'],
+    ['pnpm-v8', '18.2.0'],
+    ['pnpm-v9', '18.2.0'],
+    ['yarn-classic-v1', '18.2.0'],
+    ['yarn-berry-v2', undefined],
+    ['yarn-berry-v3', undefined],
+    ['yarn-berry-v4', undefined]
+  ] as const)(
+    'matches manager-generated %s workspace and exact lock identities',
+    async (manager, reactVersion) => {
+      const root = await generatedManagerFixture(manager);
+      const graph = await readNpmDependencyGraph(root);
+
+      expect(graph).toMatchObject({
+        complete: true,
+        unresolvedDependencies: []
+      });
+      expect(
+        graph.packages.filter((item) =>
+          item.name.startsWith('@toolip-fixture/')
+        )
+      ).toHaveLength(3);
+      expect(
+        graph.packages.some((item) => item.version === '0.0.0-use.local')
+      ).toBe(false);
+      expect(graph.packages).toHaveLength(
+        manager.startsWith('yarn-berry-')
+          ? 3
+          : manager.startsWith('pnpm-')
+            ? 11
+            : 13
+      );
+      expect(graph.edges).toHaveLength(
+        manager === 'npm-v2' || manager === 'npm-v3'
+          ? 19
+          : manager === 'pnpm-v9'
+            ? 18
+            : manager === 'pnpm-v8'
+              ? 17
+              : manager === 'yarn-classic-v1'
+                ? 16
+                : 3
+      );
+      expect(
+        graph.edges.every(
+          (edge) =>
+            graph.packages.some((item) => item.id === edge.to) &&
+            (edge.from === 'root' ||
+              graph.packages.some((item) => item.id === edge.from))
+        )
+      ).toBe(true);
+      for (const [workspacePath, appName] of [
+        ['packages/app-18', '@toolip-fixture/app-18'],
+        ['packages/app-19', '@toolip-fixture/app-19'],
+        ['packages/optional-peer', '@toolip-fixture/optional-peer']
+      ]) {
+        const workspace = graph.packages.find(
+          (item) => item.workspace === workspacePath
+        );
+        expect(workspace?.name).toBe(appName);
+        expect(graph.edges).toContainEqual(
+          expect.objectContaining({
+            from: 'root',
+            to: workspace?.id,
+            name: appName
+          })
+        );
+      }
+      if (reactVersion) {
+        expect(
+          graph.packages
+            .filter((item) => item.name === 'react')
+            .map((item) => item.version)
+            .filter((version) => version === reactVersion)
+        ).not.toHaveLength(0);
+        for (const [alias, version] of [
+          ['react18-alias', '18.2.0'],
+          ['react19-alias', '19.0.0']
+        ]) {
+          const target = graph.edges.find((edge) => edge.alias === alias);
+          expect(target).toMatchObject({ name: 'react', alias });
+          expect(
+            graph.packages.find((item) => item.id === target?.to)?.version
+          ).toBe(version);
+        }
+        for (const [workspacePath, version] of [
+          ['packages/app-18', '18.2.0'],
+          ['packages/app-19', '19.0.0']
+        ]) {
+          const owner = graph.packages.find(
+            (item) => item.workspace === workspacePath
+          );
+          for (const name of ['react', 'react-dom']) {
+            const edge = graph.edges.find(
+              (item) => item.from === owner?.id && item.name === name
+            );
+            expect(edge).toBeDefined();
+            expect(
+              graph.packages.find((item) => item.id === edge?.to)
+            ).toMatchObject({ name, version });
+          }
+        }
+        if (manager.startsWith('npm-')) {
+          expect(
+            graph.packages.find(
+              (item) => item.installPath === 'node_modules/react18-alias'
+            )
+          ).toMatchObject({ name: 'react', installName: 'react18-alias' });
+          expect(
+            graph.packages.find(
+              (item) => item.installPath === 'node_modules/react19-alias'
+            )
+          ).toMatchObject({ name: 'react', installName: 'react19-alias' });
+          expect(
+            graph.packages.find(
+              (item) => item.installPath === 'node_modules/react'
+            )
+          ).toMatchObject({ name: 'react', installName: 'react' });
+          expect(
+            graph.packages.find(
+              (item) =>
+                item.installPath === 'packages/app-19/node_modules/react-dom'
+            )
+          ).toMatchObject({ name: 'react-dom', installName: 'react-dom' });
+        }
+        expect(
+          graph.packages
+            .filter((item) => item.name === 'react' && item.integrity)
+            .every(
+              (item) => item.artifactIntegrityStatus === 'declared-not-verified'
+            )
+        ).toBe(true);
+      }
+
+      const cyclonedx = await generateSbom(root, 'cyclonedx');
+      const cyclonedxPurls = (
+        cyclonedx.components as Array<{ purl?: string }>
+      ).map((item) => item.purl);
+      const spdx = await generateSbom(root, 'spdx');
+      const spdxPurls = (
+        spdx.packages as Array<{
+          externalRefs?: Array<{
+            referenceType?: string;
+            referenceLocator?: string;
+          }>;
+        }>
+      )
+        .flatMap((item) => item.externalRefs ?? [])
+        .filter((item) => item.referenceType === 'purl')
+        .map((item) => item.referenceLocator);
+      const expectedPurl = reactVersion
+        ? 'pkg:npm/react@18.2.0'
+        : 'pkg:npm/%40toolip-fixture/app-18@1.0.0';
+      expect(cyclonedxPurls).toContain(expectedPurl);
+      expect(spdxPurls).toContain(expectedPurl);
+      if (reactVersion) {
+        for (const version of ['18.2.0', '19.0.0']) {
+          const expectedInstances = graph.packages.filter(
+            (item) => item.name === 'react' && item.version === version
+          ).length;
+          const purl = `pkg:npm/react@${version}`;
+          expect(cyclonedxPurls.filter((item) => item === purl)).toHaveLength(
+            expectedInstances
+          );
+          expect(spdxPurls.filter((item) => item === purl)).toHaveLength(
+            expectedInstances
+          );
+        }
+      }
+    }
+  );
+
+  it.each(['npm-v3', 'yarn-classic-v1'] as const)(
+    'uses the actual installed alias path for %s reachability',
+    async (manager) => {
+      const root = await generatedManagerFixture(manager);
+      await mkdir(path.join(root, 'node_modules', 'react18-alias'), {
+        recursive: true
+      });
+      await writeFile(
+        path.join(root, 'node_modules', 'react18-alias', 'package.json'),
+        JSON.stringify({
+          name: 'react',
+          version: '18.2.0',
+          main: 'index.js'
+        })
+      );
+      await writeFile(
+        path.join(root, 'node_modules', 'react18-alias', 'index.js'),
+        'module.exports = {};'
+      );
+      await writeFile(
+        path.join(root, 'entry.ts'),
+        "import React from 'react18-alias'; export default React;"
+      );
+
+      const result = await new ReachabilityAnalyzer().analyze({ root });
+      const packages = result.metadata?.packages as Array<{
+        packageName: string;
+        packageVersion: string;
+        installPath: string;
+        state: string;
+      }>;
+      expect(
+        packages.find(
+          (item) =>
+            item.packageName === 'react' &&
+            item.packageVersion === '18.2.0' &&
+            item.installPath === 'node_modules/react18-alias'
+        )?.state
+      ).toBe('reachable');
+    }
+  );
+
+  it('keeps npm alias identity, custom registry origin and integrity unverified', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: {
+          '': {
+            dependencies: { alias: 'npm:@scope/real@^1.0.0' }
+          },
+          'node_modules/alias': {
+            name: '@scope/real',
+            version: '1.4.2',
+            resolved:
+              'https://packages.example.test/npm/@scope/real/-/real-1.4.2.tgz',
+            integrity: strongIntegrity
+          }
+        }
+      })
+    );
+
+    const graph = await readNpmDependencyGraph(root);
+    const target = graph.packages.find((item) => item.name === '@scope/real');
+    expect(graph).toMatchObject({ manager: 'npm', complete: true });
+    expect(target).toMatchObject({
+      id: expect.stringContaining('node_modules/alias'),
+      version: '1.4.2',
+      registry: 'https://packages.example.test',
+      integrity: strongIntegrity,
+      artifactIntegrityStatus: 'declared-not-verified',
+      resolutionConfidence: 'lockfile'
+    });
+    expect(target?.artifactIntegrityStatus).not.toBe('verified');
+    expect(graph.edges).toContainEqual(
+      expect.objectContaining({
+        from: 'root',
+        to: target?.id,
+        name: '@scope/real',
+        alias: 'alias',
+        requirement: 'npm:@scope/real@^1.0.0'
+      })
+    );
+  });
+
+  it('derives npm root and nested scoped install names from lock paths', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: {
+          '': {},
+          'node_modules/@scope/pkg': {
+            version: '2.1.0',
+            resolved: 'https://registry.npmjs.org/@scope/pkg/-/pkg-2.1.0.tgz'
+          },
+          'node_modules/parent': { version: '1.0.0' },
+          'node_modules/parent/node_modules/@scope/pkg': {
+            version: '3.4.0',
+            resolved: 'https://registry.npmjs.org/@scope/pkg/-/pkg-3.4.0.tgz'
+          }
+        }
+      })
+    );
+
+    const graph = await readNpmDependencyGraph(root);
+    expect(
+      graph.packages
+        .filter((item) => item.name === '@scope/pkg')
+        .map((item) => [item.installPath, item.installName, item.version])
+        .sort(([left], [right]) => String(left).localeCompare(String(right)))
+    ).toEqual([
+      ['node_modules/@scope/pkg', '@scope/pkg', '2.1.0'],
+      ['node_modules/parent/node_modules/@scope/pkg', '@scope/pkg', '3.4.0']
+    ]);
+  });
+
+  it('marks malformed npm integrity and credential-bearing source URLs incomplete', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: {
+          '': {},
+          'node_modules/private-pkg': {
+            version: '1.0.0',
+            resolved:
+              'https://user:secret@packages.example.test/private-pkg.tgz',
+            integrity: 'sha512-not-a-digest'
+          }
+        }
+      })
+    );
+
+    const graph = await readNpmDependencyGraph(root);
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain('npm-lockfile-source-url-unsafe');
+    expect(graph.warnings).toContain('npm-lockfile-integrity-malformed');
+    expect(graph.packages[0]).toMatchObject({
+      artifactIntegrityStatus: 'unavailable'
+    });
+    expect(graph.packages[0]).not.toHaveProperty('registry');
+    // Retain only the redacted locator for compatibility with source identity;
+    // the warning and absent registry prohibit treating it as trusted.
+    expect(graph.packages[0]?.resolved).toBe(
+      'https://packages.example.test/private-pkg.tgz'
+    );
+    expect(JSON.stringify(graph)).not.toContain('secret');
+  });
+
   it('resolves pnpm importer specifiers and peer-qualified package instances exactly', async () => {
     const root = await fixture();
     await writeFile(
@@ -36,7 +385,7 @@ importers:
 packages:
   '@scope/direct@2.1.0':
     resolution:
-      integrity: sha512-ZGly
+      integrity: ${strongIntegrity}
   'leaf@1.0.0(react@18.2.0)':
     resolution: {}
 snapshots:
@@ -59,7 +408,7 @@ snapshots:
       version: '2.1.0',
       direct: true,
       manager: 'pnpm',
-      integrity: 'sha512-ZGly'
+      integrity: strongIntegrity
     });
     expect(leaf?.id).toBe('pnpm:leaf@1.0.0(react@18.2.0)');
     expect(graph.edges).toContainEqual(
@@ -86,7 +435,7 @@ importers:
 packages:
   '@scope/real@2.4.1':
     resolution:
-      integrity: sha512-c2Njb3BlZA==
+      integrity: ${strongIntegrity}
 snapshots:
   '@scope/real@2.4.1': {}
 `
@@ -100,7 +449,8 @@ snapshots:
       expect.objectContaining({
         from: 'root',
         to: target?.id,
-        name: 'alias',
+        name: '@scope/real',
+        alias: 'alias',
         requirement: 'npm:@scope/real@^2.0.0'
       })
     );
@@ -148,26 +498,26 @@ importers:
 packages:
   react-dom@18.2.0:
     resolution:
-      integrity: sha512-cmVhYWN0ZG9tLTE4
+      integrity: ${strongIntegrity}
     peerDependencies:
       react: ^18.2.0
   react-dom@19.0.0:
     resolution:
-      integrity: sha512-cmVhYWN0ZG9tLTE5
+      integrity: ${strongIntegrity}
     peerDependencies:
       react: ^19.0.0
   react@18.2.0:
     resolution:
-      integrity: sha512-cmVhYWN0LTE4
+      integrity: ${strongIntegrity}
   react@19.0.0:
     resolution:
-      integrity: sha512-cmVhYWN0LTE5
+      integrity: ${strongIntegrity}
   scheduler@0.23.2:
     resolution:
-      integrity: sha512-c2NoZWR1bGVyLTAyMw==
+      integrity: ${strongIntegrity}
   scheduler@0.25.0:
     resolution:
-      integrity: sha512-c2NoZWR1bGVyLTAyNQ==
+      integrity: ${strongIntegrity}
 snapshots:
   react-dom@18.2.0(react@18.2.0):
     dependencies:
@@ -364,7 +714,7 @@ snapshots:
 foo@^1.0.0:
   version "1.2.0"
   resolved "https://registry.npmjs.org/foo/-/foo-1.2.0.tgz"
-  integrity sha512-Zm9v
+  integrity ${strongIntegrity}
   dependencies:
     child "^2.0.0"
 
@@ -381,7 +731,7 @@ child@^2.0.0:
       version: '1.2.0',
       direct: true,
       resolved: 'https://registry.npmjs.org/foo/-/foo-1.2.0.tgz',
-      integrity: 'sha512-Zm9v'
+      integrity: strongIntegrity
     });
     expect(graph.edges).toContainEqual(
       expect.objectContaining({
@@ -394,6 +744,7 @@ child@^2.0.0:
 
   it.each([
     ['plain HTTP', 'http://registry.npmjs.org/foo/-/foo-1.2.0.tgz'],
+    ['credential query', 'https://registry.npmjs.org/foo.tgz?token=secret'],
     [
       'credentialed HTTPS',
       'https://user:secret@registry.npmjs.org/foo/-/foo-1.2.0.tgz'
@@ -414,7 +765,7 @@ child@^2.0.0:
 foo@^1.0.0:
   version "1.2.0"
   resolved "${resolved}"
-  integrity sha512-Zm9v
+  integrity ${strongIntegrity}
 `
       );
 
@@ -464,6 +815,65 @@ foo@^1.0.0:
     expect(graph.edges).toContainEqual(
       expect.objectContaining({ from: foo?.id, to: child?.id })
     );
+  });
+
+  it('accepts supported Yarn Berry lock metadata versions and rejects unknown versions', async () => {
+    for (const version of [4, 5, 6, 8]) {
+      const root = await fixture();
+      await writeFile(
+        path.join(root, 'package.json'),
+        JSON.stringify({ name: 'empty', version: '1.0.0' })
+      );
+      await writeFile(
+        path.join(root, 'yarn.lock'),
+        `__metadata:\n  version: ${version}\n`
+      );
+      await expect(readNpmDependencyGraph(root)).resolves.toMatchObject({
+        manager: 'yarn',
+        complete: true
+      });
+    }
+
+    const unsupported = await fixture();
+    await writeFile(
+      path.join(unsupported, 'package.json'),
+      JSON.stringify({ name: 'empty', version: '1.0.0' })
+    );
+    await writeFile(
+      path.join(unsupported, 'yarn.lock'),
+      '__metadata:\n  version: 99\n'
+    );
+    await expect(readNpmDependencyGraph(unsupported)).rejects.toThrow(
+      /Yarn Berry lockfile metadata/u
+    );
+  });
+
+  it('accepts Yarn Classic tarball checksum fragments without treating them as trust', async () => {
+    const root = await fixture();
+    const sha1 = 'a'.repeat(40);
+    await writeFile(
+      path.join(root, 'package.json'),
+      JSON.stringify({ dependencies: { foo: '^1.0.0' } })
+    );
+    await writeFile(
+      path.join(root, 'yarn.lock'),
+      `# yarn lockfile v1
+
+foo@^1.0.0:
+  version "1.2.0"
+  resolved "https://registry.yarnpkg.com/foo/-/foo-1.2.0.tgz#${sha1}"
+  integrity ${strongIntegrity}
+`
+    );
+
+    const graph = await readNpmDependencyGraph(root);
+    expect(graph).toMatchObject({ manager: 'yarn', complete: true });
+    expect(graph.packages[0]).toMatchObject({
+      version: '1.2.0',
+      resolved: 'https://registry.yarnpkg.com/foo/-/foo-1.2.0.tgz',
+      registry: 'https://registry.yarnpkg.com',
+      artifactIntegrityStatus: 'declared-not-verified'
+    });
   });
 
   it('does not treat an intentionally absent optional Yarn peer as an unresolved required edge', async () => {
@@ -527,20 +937,19 @@ foo@^1.0.0:
     );
     await writeFile(
       path.join(root, 'yarn.lock'),
-      [
-        '__metadata:',
-        '  version: 8',
-        '  cacheKey: 10c0',
-        '"foo@npm:^1.0.0":',
-        '  version: 1.2.0',
-        '  resolution: "foo@npm:1.2.0"',
-        '  peerDependencies:',
-        '    optionalPeer: "npm:^2.0.0"',
-        '    requiredPeer: "npm:^3.0.0"',
-        '  peerDependenciesMeta:',
-        '    optionalPeer:',
-        '      optional: true'
-      ].join('\n') + '\n'
+      `__metadata:
+  version: 8
+  cacheKey: 10c0
+"foo@npm:^1.0.0":
+  version: 1.2.0
+  resolution: "foo@npm:1.2.0"
+  peerDependencies:
+    optionalPeer: "npm:^2.0.0"
+    requiredPeer: "npm:^3.0.0"
+  peerDependenciesMeta:
+    optionalPeer:
+      optional: true
+`
     );
     const graph = await readNpmDependencyGraph(root);
     expect(graph.complete).toBe(false);
@@ -570,7 +979,7 @@ packages:
   foo@1.2.0:
     resolution:
       tarball: 'http://user:secret@registry.example/foo.tgz'
-      integrity: sha512-Zm9v
+      integrity: ${strongIntegrity}
 snapshots:
   foo@1.2.0: {}
 `

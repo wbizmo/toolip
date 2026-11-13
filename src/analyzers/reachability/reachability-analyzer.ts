@@ -15,6 +15,7 @@ import { sourceProvenanceFor } from '../../core/source-provenance.js';
 import { TextFileReader } from '../../core/text-file-reader.js';
 import {
   readNpmDependencyGraph,
+  type DependencyIdentity,
   type DependencyFileSource
 } from '../../core/dependencies/inventory.js';
 import { extractPackageImports, type ImportReference } from './import-graph.js';
@@ -34,6 +35,7 @@ const maxYarnNodeModulesEntries = 100_000;
 type InstalledPackageManifest = {
   name: string;
   version: string;
+  installName: string;
   directory: string;
 };
 
@@ -334,7 +336,7 @@ function createRootBoundResolverHost(root: string): ts.ModuleResolutionHost {
 
 async function discoverYarnNodeModules(
   root: string,
-  expectedNames: ReadonlySet<string>,
+  expectedInstances: ReadonlyMap<string, readonly DependencyIdentity[]>,
   reader: TextFileReader,
   signal?: AbortSignal
 ): Promise<{
@@ -345,6 +347,7 @@ async function discoverYarnNodeModules(
   const packages: InstalledPackageManifest[] = [];
   const unresolvedNames = new Set<string>();
   const warnings = new Set<string>();
+  const expectedNames = new Set(expectedInstances.keys());
   const pending = [path.join(root, 'node_modules')];
   const visited = new Set<string>();
   let entriesRead = 0;
@@ -417,13 +420,19 @@ async function discoverYarnNodeModules(
               value &&
               typeof value === 'object' &&
               'name' in value &&
-              value.name === packageName &&
+              typeof value.name === 'string' &&
               'version' in value &&
-              typeof value.version === 'string'
+              typeof value.version === 'string' &&
+              (expectedInstances.get(packageName) ?? []).some(
+                (expected) =>
+                  expected.name === value.name &&
+                  expected.version === value.version
+              )
             ) {
               packages.push({
-                name: packageName,
+                name: value.name,
                 version: value.version,
+                installName: packageName,
                 directory: candidate
               });
             } else {
@@ -519,6 +528,7 @@ export class ReachabilityAnalyzer implements Analyzer {
     const referenceKeys = new Map<string, Set<string>>();
     const unresolved = new Set<string>();
     const dependenciesByName = new Map<string, typeof dependencies>();
+    const dependenciesByRequestName = new Map<string, typeof dependencies>();
     const yarnWorkspaceIds = new Map<string, string>();
     const yarnEdgesByOwnerAndName = new Map<string, Set<string>>();
     const resolverHost = createRootBoundResolverHost(scannerContext.root);
@@ -534,8 +544,19 @@ export class ReachabilityAnalyzer implements Analyzer {
       const sameName = dependenciesByName.get(dependency.name) ?? [];
       sameName.push(dependency);
       dependenciesByName.set(dependency.name, sameName);
+      dependenciesByRequestName.set(dependency.name, sameName);
       if (dependency.manager === 'yarn' && dependency.workspace)
         yarnWorkspaceIds.set(dependency.workspace, dependency.id);
+    }
+    const dependencyById = new Map(dependencies.map((item) => [item.id, item]));
+    for (const edge of dependencyGraph.edges) {
+      if (!edge.alias) continue;
+      const target = dependencyById.get(edge.to);
+      if (!target) continue;
+      const sameName = dependenciesByRequestName.get(edge.alias) ?? [];
+      if (!sameName.some((item) => item.id === target.id))
+        sameName.push(target);
+      dependenciesByRequestName.set(edge.alias, sameName);
     }
     if (!dependencyGraph.complete)
       for (const dependency of dependencies) unresolved.add(dependency.id);
@@ -557,7 +578,7 @@ export class ReachabilityAnalyzer implements Analyzer {
       );
     if (!yarnPnpMode) {
       for (const edge of dependencyGraph.edges) {
-        const key = `${edge.from}\0${edge.name}`;
+        const key = `${edge.from}\0${edge.alias ?? edge.name}`;
         const targets = yarnEdgesByOwnerAndName.get(key) ?? new Set<string>();
         targets.add(edge.to);
         yarnEdgesByOwnerAndName.set(key, targets);
@@ -669,7 +690,8 @@ export class ReachabilityAnalyzer implements Analyzer {
             edge.from === 'root' ? rootPackage : pnpById.get(edge.from);
           const target = pnpById.get(edge.to);
           const identity = identityById.get(edge.to);
-          const binding = owner?.dependencies.get(edge.name);
+          const requestName = edge.alias ?? edge.name;
+          const binding = owner?.dependencies.get(requestName);
           const bindingMatches =
             binding !== undefined &&
             target !== undefined &&
@@ -681,7 +703,7 @@ export class ReachabilityAnalyzer implements Analyzer {
             addWarning(`yarn-pnp-dependency-binding-unverified:${edge.to}`);
             continue;
           }
-          const key = `${edge.from}\0${edge.name}`;
+          const key = `${edge.from}\0${requestName}`;
           const targets = yarnEdgesByOwnerAndName.get(key) ?? new Set<string>();
           targets.add(edge.to);
           yarnEdgesByOwnerAndName.set(key, targets);
@@ -691,11 +713,18 @@ export class ReachabilityAnalyzer implements Analyzer {
           unresolved.add(dependency.id);
       }
     }
+    const expectedYarnInstances = new Map<string, DependencyIdentity[]>();
+    for (const dependency of yarnDependencies) {
+      const installName = dependency.installName ?? dependency.name;
+      const instances = expectedYarnInstances.get(installName) ?? [];
+      instances.push(dependency);
+      expectedYarnInstances.set(installName, instances);
+    }
     const yarnInstalled =
       yarnDependencies.length && !yarnPnpMode
         ? await discoverYarnNodeModules(
             scannerContext.root,
-            new Set(yarnDependencies.map((dependency) => dependency.name)),
+            expectedYarnInstances,
             metadataReader,
             context.signal
           )
@@ -705,25 +734,27 @@ export class ReachabilityAnalyzer implements Analyzer {
     const yarnPathsByVersion = new Map<string, InstalledPackageManifest[]>();
     if (!yarnPnpMode) {
       for (const dependency of yarnDependencies) {
-        const key = `${dependency.name}\0${dependency.version}`;
+        const installName = dependency.installName ?? dependency.name;
+        const key = `${installName}\0${dependency.name}\0${dependency.version}`;
         const instances = yarnInstancesByVersion.get(key) ?? [];
         instances.push(dependency);
         yarnInstancesByVersion.set(key, instances);
       }
       for (const installed of yarnInstalled.packages) {
-        const key = `${installed.name}\0${installed.version}`;
+        const key = `${installed.installName}\0${installed.name}\0${installed.version}`;
         const locations = yarnPathsByVersion.get(key) ?? [];
         locations.push(installed);
         yarnPathsByVersion.set(key, locations);
       }
       for (const dependency of yarnDependencies) {
-        const key = `${dependency.name}\0${dependency.version}`;
+        const installName = dependency.installName ?? dependency.name;
+        const key = `${installName}\0${dependency.name}\0${dependency.version}`;
         const identities = yarnInstancesByVersion.get(key) ?? [];
         const locations = yarnPathsByVersion.get(key) ?? [];
         if (
           identities.length !== 1 ||
           locations.length === 0 ||
-          yarnInstalled.unresolvedNames.has(dependency.name)
+          yarnInstalled.unresolvedNames.has(installName)
         ) {
           unresolved.add(dependency.id);
           addWarning(`yarn-installed-instance-unresolved:${dependency.id}`);
@@ -921,7 +952,7 @@ export class ReachabilityAnalyzer implements Analyzer {
             addWarning(
               `${file.relativePath}: package resolution escaped the project root`
             );
-            for (const dependency of dependenciesByName.get(
+            for (const dependency of dependenciesByRequestName.get(
               reference.packageName
             ) ?? [])
               unresolved.add(dependency.id);
@@ -939,7 +970,7 @@ export class ReachabilityAnalyzer implements Analyzer {
 
         if (!packageId) {
           let matchedDependency = false;
-          for (const dependency of dependenciesByName.get(
+          for (const dependency of dependenciesByRequestName.get(
             reference.packageName
           ) ?? []) {
             unresolved.add(dependency.id);

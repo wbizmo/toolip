@@ -131,6 +131,8 @@ export type SecurityScorecardResult = {
       evictions: number;
       entries: number;
       retainedSerializedBytes: number;
+      retainedKeyBytes: number;
+      retainedBytes: number;
     };
   };
   analyzerPlugins: Array<{
@@ -783,14 +785,18 @@ export async function buildSecurityScorecard(
               misses: 0,
               evictions: 0,
               entries: 0,
-              retainedSerializedBytes: 0
+              retainedSerializedBytes: 0,
+              retainedKeyBytes: 0,
+              retainedBytes: 0
             })
           : {
               hits: 0,
               misses: 0,
               evictions: 0,
               entries: 0,
-              retainedSerializedBytes: 0
+              retainedSerializedBytes: 0,
+              retainedKeyBytes: 0,
+              retainedBytes: 0
             }
     }
   };

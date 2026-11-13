@@ -228,6 +228,31 @@ describe('immutable project snapshots', () => {
     expect(changed.findings).toHaveLength(warm.findings.length);
   }, 30_000);
 
+  it('returns equivalent results from concurrent scans sharing one immutable snapshot and cache', async () => {
+    const root = await project();
+    await writeFile(
+      path.join(root, 'src', 'a.ts'),
+      'export function run(value: string) { return eval(value); }\n'
+    );
+    const snapshot = await createProjectSnapshot(root);
+    const cache = new AnalysisResultCache();
+    const [left, right] = await Promise.all([
+      runSecurityDoctor(root, { snapshot, analysisCache: cache }),
+      runSecurityDoctor(root, { snapshot, analysisCache: cache })
+    ]);
+
+    expect(JSON.stringify(left.findings)).toBe(JSON.stringify(right.findings));
+    expect(left.coverage.state).toBe('complete');
+    expect(right.coverage.state).toBe('complete');
+    expect(left.cacheMetrics.resultCache.retainedBytes).toBeLessThanOrEqual(
+      64 * 1024 * 1024
+    );
+    expect(right.cacheMetrics.resultCache.retainedBytes).toBeLessThanOrEqual(
+      64 * 1024 * 1024
+    );
+    expect(cache.metrics.entries).toBeLessThanOrEqual(10_000);
+  }, 30_000);
+
   it('retains unaffected AST chunks after an independent source edit', async () => {
     const root = await project();
     await writeFile(
