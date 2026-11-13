@@ -163,7 +163,20 @@ function containsVersionPredicate(node: ts.Node, entityName: string): boolean {
   return found;
 }
 
-function isSerializableTransaction(write: ts.Node): boolean {
+function callRootReceiver(call: ts.CallExpression): string | undefined {
+  let receiver: ts.Expression = call.expression;
+  while (
+    ts.isPropertyAccessExpression(receiver) ||
+    ts.isElementAccessExpression(receiver)
+  )
+    receiver = receiver.expression;
+  return ts.isIdentifier(receiver) ? receiver.text : undefined;
+}
+
+function isSerializableTransaction(
+  read: ts.CallExpression,
+  write: ts.CallExpression
+): boolean {
   for (
     let current: ts.Node | undefined = write;
     current;
@@ -175,7 +188,27 @@ function isSerializableTransaction(write: ts.Node): boolean {
     if (
       !ts.isCallExpression(call) ||
       !call.arguments.includes(current as ts.Expression) ||
-      !['transaction', '$transaction'].includes(methodName(call) ?? '')
+      !ts.isPropertyAccessExpression(call.expression)
+    )
+      continue;
+    const method = call.expression.name.text;
+    const receiver = callRootReceiver(call);
+    if (!(
+      (method === '$transaction' &&
+        ['db', 'prisma', 'database', 'client'].includes(receiver ?? '')) ||
+      (method === 'transaction' &&
+        ['dataSource', 'entityManager'].includes(receiver ?? ''))
+    ))
+      continue;
+    // An isolation option on a helper method says nothing about the
+    // isolation of database reads/writes. Even for a supported client, both
+    // calls must use its callback-scoped transaction handle.
+    const handle = current.parameters[0]?.name;
+    if (
+      !handle ||
+      !ts.isIdentifier(handle) ||
+      callRootReceiver(read) !== handle.text ||
+      callRootReceiver(write) !== handle.text
     )
       continue;
     const options = call.arguments[1];
@@ -196,27 +229,6 @@ function isSerializableTransaction(write: ts.Node): boolean {
     });
   }
   return false;
-}
-
-function hasAtomicOperation(node: ts.Node): boolean {
-  let found = false;
-  const walk = (child: ts.Node): void => {
-    if (found) return;
-    if (ts.isCallExpression(child)) {
-      const name = methodName(child);
-      if (
-        name &&
-        /^(?:compareAndSwap|compareExchange|updateIfVersion)$/iu.test(name)
-      ) {
-        found = true;
-        return;
-      }
-    }
-    if (child !== node && ts.isFunctionLike(child)) return;
-    ts.forEachChild(child, walk);
-  };
-  walk(node);
-  return found;
 }
 
 const concurrentSideEffectMethods = new Set([
@@ -646,8 +658,7 @@ function findReadCheckWrite(
       for (const write of writes) {
         if (
           containsVersionPredicate(write, entityName) ||
-          hasAtomicOperation(write) ||
-          isSerializableTransaction(write)
+          isSerializableTransaction(readCall, write)
         )
           continue;
         findings.push(

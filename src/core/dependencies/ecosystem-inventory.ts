@@ -210,6 +210,8 @@ export type OtherEcosystemInventoryOptions = {
   goTarget?: GoTargetProfile;
   /** Resolve Cargo target-specific dependencies for one explicit Rust target triple. */
   cargoTarget?: string;
+  /** Authenticated checkout identity for imported JVM exports, when available. */
+  sourceRevision?: string;
 };
 
 function exact(value: unknown): value is string {
@@ -415,7 +417,8 @@ async function fromJsonLock(
   ecosystem: LockedPackage['ecosystem'],
   source: string,
   warnings: string[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  pythonTarget?: PythonTargetProfile
 ): Promise<LockedPackage[]> {
   throwIfAborted(signal);
   const record = asRecord(value);
@@ -426,6 +429,32 @@ async function fromJsonLock(
   if (ecosystem === 'PyPI' && ('default' in record || 'develop' in record)) {
     const output: LockedPackage[] = [];
     const sources = pipfileLockSourceIndex(record, warnings);
+    const metadata = asRecord(record._meta);
+    const requirements = asRecord(metadata?.requires);
+    let pythonTargetCompatible = true;
+    if (metadata?.requires !== undefined && !requirements) {
+      warnings.push('pipfile-lock-python-target-invalid');
+      pythonTargetCompatible = false;
+    }
+    if (requirements) {
+      for (const field of ['python_version', 'python_full_version'] as const) {
+        const required = requirements[field];
+        if (required === undefined) continue;
+        if (
+          typeof required !== 'string' ||
+          !/^\d+\.\d+(?:\.\d+)?$/u.test(required)
+        ) {
+          warnings.push('pipfile-lock-python-target-invalid');
+          pythonTargetCompatible = false;
+        } else if (!pythonTarget) {
+          warnings.push('pipfile-lock-python-target-unverified');
+          pythonTargetCompatible = false;
+        } else if (pythonTarget.environment[field] !== required) {
+          warnings.push('pipfile-lock-python-target-mismatch');
+          pythonTargetCompatible = false;
+        }
+      }
+    }
     let pipfilePackageCount = 0;
     let packageBudgetExceeded = false;
     for (const section of ['default', 'develop']) {
@@ -466,7 +495,10 @@ async function fromJsonLock(
           (marker !== undefined && validPythonMarkerExpression(marker));
         if (!markerValid) warnings.push('pipfile-lock-marker-invalid');
         const resolutionConfidence =
-          registry.confidence === 'unknown' || !hashes.valid || !markerValid
+          registry.confidence === 'unknown' ||
+          !hashes.valid ||
+          !markerValid ||
+          !pythonTargetCompatible
             ? 'unknown'
             : 'lockfile';
         const contextFields = {
@@ -773,6 +805,7 @@ function fromTomlLock(
   warnings: string[]
 ): LockedPackage[] {
   const output: LockedPackage[] = [];
+  const cargoInstances = new Map<string, LockedPackage>();
   const stable = (value: unknown): string => {
     if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
     const record = asRecord(value);
@@ -1101,7 +1134,26 @@ function fromTomlLock(
     const variant = resolutionContext
       ? `:context-${createHash('sha256').update(resolutionContext).digest('hex').slice(0, 16)}`
       : '';
-    output.push({
+    const cargoKey =
+      ecosystem === 'crates.io'
+        ? JSON.stringify([normalizedName, version, pkg.source ?? null])
+        : undefined;
+    if (cargoKey && cargoInstances.has(cargoKey)) {
+      const previous = cargoInstances.get(cargoKey);
+      if (previous) {
+        previous.resolutionConfidence = 'unknown';
+        previous.integrity = undefined;
+        previous.dependencies = [];
+      }
+      warnings.push(
+        'cargo-lock-duplicate-identity:' + normalizedName + '@' + version
+      );
+      warnings.push(
+        'ecosystem-lock-identity-conflict:crates.io:' + normalizedName
+      );
+      continue;
+    }
+    const locked: LockedPackage = {
       name: normalizedName,
       version: version.replace(/^v/u, ''),
       ecosystem,
@@ -1115,7 +1167,9 @@ function fromTomlLock(
       ...(packageModule ? { module: packageModule } : {}),
       installPath: `${packageSource}:${packageModule ?? ''}:${normalizedName}@${version}${variant}`,
       dependencies
-    });
+    };
+    output.push(locked);
+    if (cargoKey) cargoInstances.set(cargoKey, locked);
   }
   return output;
 }
@@ -2318,6 +2372,82 @@ function mavenTreeDepth(prefix: string): number | undefined {
   return 1 + prefix.length / 3;
 }
 
+/**
+ * An exported JVM graph cannot establish that it describes *this* source
+ * checkout by carrying exact versions alone. Bind its manifest byte digests
+ * to the same bounded read-only input used for inventory; refuse malformed,
+ * missing, partial or stale proof without discarding the observed graph.
+ *
+ * toolipSource.manifestHashes is an explicit export contract, NOT a signature.
+ * A separately authenticated revision can also be supplied by the caller.
+ */
+async function verifyJavaExportSource(
+  value: unknown,
+  source: 'maven-dependency-tree.json' | 'gradle-dependencies.json',
+  root: string,
+  fileSource: DependencyFileSource | undefined,
+  manifests: readonly string[],
+  warnings: string[],
+  expectedRevision?: string,
+  signal?: AbortSignal
+): Promise<boolean> {
+  if (manifests.length === 0) return expectedRevision === undefined;
+  const manifestPaths = [...new Set(manifests)].sort();
+  if (manifestPaths.length > maximumGradleWorkspaceManifests) {
+    warnings.push(`java-export-source-manifest-budget-exceeded:${source}`);
+    return false;
+  }
+  const document = asRecord(value);
+  const proof = asRecord(document?.toolipSource);
+  const hashes = asRecord(proof?.manifestHashes);
+  if (
+    !hashes ||
+    Object.keys(hashes).length !== manifestPaths.length ||
+    manifestPaths.some((file) => !Object.hasOwn(hashes, file))
+  ) {
+    warnings.push(`java-export-source-provenance-unverified:${source}`);
+    return false;
+  }
+  if (
+    expectedRevision !== undefined &&
+    (typeof proof?.sourceRevision !== 'string' ||
+      proof.sourceRevision !== expectedRevision)
+  ) {
+    warnings.push(`java-export-source-revision-mismatch:${source}`);
+    return false;
+  }
+  let bytes = 0;
+  for (const manifest of manifestPaths) {
+    throwIfAborted(signal);
+    const expected = hashes[manifest];
+    if (typeof expected !== 'string' || !/^[a-f0-9]{64}$/u.test(expected)) {
+      warnings.push(`java-export-source-provenance-invalid:${source}`);
+      return false;
+    }
+    let actual: string | undefined;
+    try {
+      actual = await readInput(root, manifest, fileSource);
+    } catch {
+      warnings.push(`java-export-source-manifest-unreadable:${source}`);
+      return false;
+    }
+    if (actual === undefined) {
+      warnings.push(`java-export-source-manifest-unavailable:${source}`);
+      return false;
+    }
+    bytes += Buffer.byteLength(actual);
+    if (bytes > maximumGradleLockBytes) {
+      warnings.push(`java-export-source-manifest-budget-exceeded:${source}`);
+      return false;
+    }
+    if (createHash('sha256').update(actual).digest('hex') !== expected) {
+      warnings.push(`java-export-source-digest-mismatch:${source}`);
+      return false;
+    }
+  }
+  return true;
+}
+
 /** Parses Maven/Gradle exported resolved graphs without invoking build tooling. */
 function fromJavaDependencyGraph(
   value: unknown,
@@ -3048,6 +3178,7 @@ function resolveGoToolGraph(input: {
 
 function goSumChecksums(text: string, warnings: string[]): Map<string, string> {
   const checksums = new Map<string, string>();
+  const manifestChecksums = new Map<string, string>();
   const conflicting = new Set<string>();
   for (const line of text.split(/\r?\n/u)) {
     const trimmed = line.trim();
@@ -3070,8 +3201,19 @@ function goSumChecksums(text: string, warnings: string[]): Map<string, string> {
       warnings.push('go-checksum-format-invalid');
       continue;
     }
-    if (moduleManifestSum) continue;
-    const key = `${decodeGoModulePath(fields[0])}@${match[1].replace(/^v/u, '')}`;
+    const key = `${decodeGoModulePath(fields[0])}@${match[1].replace(/^v/u, '')}${moduleManifestSum ? '/go.mod' : ''}`;
+    if (moduleManifestSum) {
+      if (conflicting.has(key)) continue;
+      const existing = manifestChecksums.get(key);
+      if (existing && existing !== checksum) {
+        manifestChecksums.delete(key);
+        conflicting.add(key);
+        warnings.push(`go-checksum-conflict:${key}`);
+      } else {
+        manifestChecksums.set(key, checksum);
+      }
+      continue;
+    }
     if (conflicting.has(key)) continue;
     const prior = checksums.get(key);
     if (prior && prior !== checksum) {
@@ -3082,7 +3224,7 @@ function goSumChecksums(text: string, warnings: string[]): Map<string, string> {
     }
     checksums.set(key, checksum);
   }
-  if (checksums.size > 0)
+  if (checksums.size > 0 || manifestChecksums.size > 0)
     warnings.push('go-checksum-database-status-unverified');
   return checksums;
 }
@@ -4629,7 +4771,8 @@ export async function readOtherEcosystemInventoryDetailed(
         ecosystem,
         source,
         warnings,
-        options.signal
+        options.signal,
+        pythonTarget
       );
       output.push(...packages);
       if (file === 'Pipfile.lock' && packages.length > 0)
@@ -5420,13 +5563,26 @@ export async function readOtherEcosystemInventoryDetailed(
     );
     if (gradleExport !== undefined) {
       loadedLockfiles.add('gradle-dependencies.json');
+      const document = JSON.parse(gradleExport) as unknown;
+      const verified = await verifyJavaExportSource(
+        document,
+        'gradle-dependencies.json',
+        root,
+        fileSource,
+        gradleWorkspace.manifests,
+        warnings,
+        options.sourceRevision ?? fileSource?.sourceRevision,
+        options.signal
+      );
       const graph = fromJavaDependencyGraph(
-        JSON.parse(gradleExport) as unknown,
+        document,
         'Maven',
         'gradle-dependencies.json',
         warnings
       );
       gradleGraphAvailable = true;
+      if (!verified)
+        for (const item of graph) item.resolutionConfidence = 'unknown';
       output.push(...graph);
     }
   } catch {
@@ -5440,13 +5596,35 @@ export async function readOtherEcosystemInventoryDetailed(
     );
     if (mavenExport !== undefined) {
       loadedLockfiles.add('maven-dependency-tree.json');
+      const document = JSON.parse(mavenExport) as unknown;
+      const mavenManifests = fileSource
+        ? [...fileSource.files].filter(
+            (file) =>
+              /(?:^|\/)pom\.xml$/u.test(file) &&
+              !file.split('/').some((part) => part === '.' || part === '..')
+          )
+        : (await readInput(root, 'pom.xml', fileSource)) !== undefined
+          ? ['pom.xml']
+          : [];
+      const verified = await verifyJavaExportSource(
+        document,
+        'maven-dependency-tree.json',
+        root,
+        fileSource,
+        mavenManifests,
+        warnings,
+        options.sourceRevision ?? fileSource?.sourceRevision,
+        options.signal
+      );
       const graph = fromJavaDependencyGraph(
-        JSON.parse(mavenExport) as unknown,
+        document,
         'Maven',
         'maven-dependency-tree.json',
         warnings
       );
       mavenTreeAvailable = true;
+      if (!verified)
+        for (const item of graph) item.resolutionConfidence = 'unknown';
       output.push(...graph);
     }
   } catch {

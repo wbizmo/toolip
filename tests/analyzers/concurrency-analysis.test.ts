@@ -77,6 +77,58 @@ describe('AST concurrency candidates', () => {
     ).toBe(false);
   });
 
+  it('does not trust a custom transaction method as a serializable database lock', () => {
+    const findings = analyzeAstSource(
+      'src/purchase.ts',
+      `async function purchase(id: string) {
+  await utility.transaction(async () => {
+    const item = await db.item.findUnique({ where: { id } });
+    if (item.stock > 0) {
+      await db.item.update({ where: { id }, data: { stock: item.stock - 1 } });
+    }
+  }, { isolationLevel: 'Serializable' });
+}`
+    );
+    expect(
+      findings.filter((finding) => finding.ruleId === 'TLP-RACE-002')
+    ).toHaveLength(1);
+  });
+
+  it('does not trust a serializable callback whose database operations bypass its transaction client', () => {
+    const findings = analyzeAstSource(
+      'src/purchase.ts',
+      `async function purchase(id: string) {
+  await db.$transaction(async (tx) => {
+    const item = await db.item.findUnique({ where: { id } });
+    if (item.stock > 0) {
+      await db.item.update({ where: { id }, data: { stock: item.stock - 1 } });
+    }
+  }, { isolationLevel: 'Serializable' });
+}`
+    );
+    expect(
+      findings.filter((finding) => finding.ruleId === 'TLP-RACE-002')
+    ).toHaveLength(1);
+  });
+
+  it('does not mistake a nested unrelated CAS call for an atomic database update', () => {
+    const findings = analyzeAstSource(
+      'src/spend.ts',
+      `async function spend(id: string) {
+        const account = await db.account.findUnique({ where: { id } });
+        if (account.balance > 0) {
+          await db.account.update({
+            where: { id },
+            data: { balance: account.balance - compareAndSwap(otherCounter, id) }
+          });
+        }
+      }`
+    );
+    expect(
+      findings.filter((finding) => finding.ruleId === 'TLP-RACE-002')
+    ).toHaveLength(1);
+  });
+
   it('does not treat safe independent Promise.all work as a race', () => {
     const findings = analyzeAstSource(
       'src/batch.ts',

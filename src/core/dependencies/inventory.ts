@@ -77,6 +77,8 @@ export type UnresolvedDependencyEdge = {
 
 export type DependencyFileSource = Readonly<{
   files: readonly string[];
+  /** Bound Git revision from a trusted immutable source; never infer from export data. */
+  sourceRevision?: string;
   hasFile: (relativePath: string) => boolean;
   readText: (relativePath: string) => string | undefined;
 }>;

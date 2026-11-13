@@ -1064,6 +1064,51 @@ describe('trusted Stage A Git-object scanner', () => {
     );
   });
 
+  it('blocks tar xvf unpack-and-execute in changed shell code', async () => {
+    const source = await repo({
+      'package.json': JSON.stringify({
+        scripts: { prepare: 'sh ./runner.sh' }
+      }),
+      'runner.sh': '#!/bin/sh\ntar xvf archive.tar && node ./payload/init'
+    });
+    const result = scanGitTree(source.root, source.sha, {
+      changedPaths: ['runner.sh']
+    });
+    expect(result.status).toBe('blocked');
+    expect(result.findings).toEqual(
+      expect.arrayContaining([expect.stringContaining('#archive-execution')])
+    );
+  });
+
+  it('blocks extraction and execution but not archive creation in changed lifecycle shell wrappers', async () => {
+    const malicious = await repo({
+      'package.json': JSON.stringify({
+        scripts: { prepare: 'sh ./runner.sh' }
+      }),
+      'runner.sh': '#!/bin/sh\ntar -xzf payload.tar.gz && node ./payload/init'
+    });
+    const blocked = scanGitTree(malicious.root, malicious.sha, {
+      changedPaths: ['runner.sh']
+    });
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.findings).toEqual(
+      expect.arrayContaining([expect.stringContaining('#archive-execution')])
+    );
+    const harmless = await repo({
+      'package.json': JSON.stringify({ scripts: { build: 'sh ./runner.sh' } }),
+      'runner.sh': '#!/bin/sh\ntar -czf dist.tar.gz ./dist && node ./build.js',
+      'build.js': 'console.log("built");'
+    });
+    const accepted = scanGitTree(harmless.root, harmless.sha, {
+      changedPaths: ['runner.sh']
+    });
+    expect(
+      accepted.findings.some((finding) =>
+        finding.includes('#archive-execution')
+      )
+    ).toBe(false);
+  });
+
   it('blocks a wrapper that executes a uniquely assigned local shell variable', async () => {
     const fixture = await repo({
       'package.json': JSON.stringify({

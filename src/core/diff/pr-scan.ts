@@ -393,6 +393,7 @@ async function dependencyInventoryAtCommit(
   }
   const fileSource: DependencyFileSource = Object.freeze({
     files: Object.freeze([...contents.keys()].sort()),
+    sourceRevision: commit,
     hasFile: (relativePath) => contents.has(relativePath),
     readText: (relativePath) => contents.get(relativePath)
   });

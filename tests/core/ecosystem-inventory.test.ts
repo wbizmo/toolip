@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -122,6 +123,51 @@ describe('non-npm lockfile inventory', () => {
       'pipfile-lock-transitive-edges-unresolved'
     );
     expect(graph.complete).toBe(false);
+  });
+
+  it('does not trust Pipenv lock records generated for an incompatible Python target', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'Pipfile.lock'),
+      JSON.stringify({
+        _meta: {
+          requires: { python_version: '3.11' },
+          sources: [
+            { name: 'pypi', url: 'https://pypi.org/simple', verify_ssl: true }
+          ]
+        },
+        default: {
+          requests: { version: '==2.31.0', index: 'pypi' }
+        }
+      })
+    );
+    const wrong = await readOtherEcosystemInventoryDetailed(root, undefined, {
+      pythonTarget: pythonTarget('py312-linux', {
+        python_version: '3.12',
+        python_full_version: '3.12.1',
+        implementation_version: '3.12.1'
+      })
+    });
+    expect(wrong.complete).toBe(false);
+    expect(wrong.warnings).toContain('pipfile-lock-python-target-mismatch');
+    expect(
+      wrong.packages.find((pkg) => pkg.name === 'requests')
+        ?.resolutionConfidence
+    ).toBe('unknown');
+    const matching = await readOtherEcosystemInventoryDetailed(
+      root,
+      undefined,
+      {
+        pythonTarget: pythonTarget('py311-linux', {
+          python_version: '3.11',
+          python_full_version: '3.11.9',
+          implementation_version: '3.11.9'
+        })
+      }
+    );
+    expect(matching.warnings).not.toContain(
+      'pipfile-lock-python-target-mismatch'
+    );
   });
 
   it('withholds Pipenv entries from private indexes and invalid declared hashes', async () => {
@@ -2914,6 +2960,29 @@ describe('non-npm lockfile inventory', () => {
     );
   });
 
+  it('reports conflicting Go module-manifest checksums even when the module archive hash matches', async () => {
+    const root = await fixture();
+    const h1 = 'h1:' + Buffer.alloc(32, 1).toString('base64');
+    const h2 = 'h1:' + Buffer.alloc(32, 2).toString('base64');
+    await writeFile(
+      path.join(root, 'go.mod'),
+      'module example.test/app\nrequire example.test/lib v1.2.3\n'
+    );
+    await writeFile(
+      path.join(root, 'go.sum'),
+      [
+        'example.test/lib v1.2.3/go.mod ' + h1,
+        'example.test/lib v1.2.3/go.mod ' + h2,
+        'example.test/lib v1.2.3 ' + h1
+      ].join('\n')
+    );
+    const inventory = await readOtherEcosystemInventoryDetailed(root);
+    expect(inventory.complete).toBe(false);
+    expect(inventory.warnings).toContain(
+      'go-checksum-conflict:example.test/lib@1.2.3/go.mod'
+    );
+  });
+
   it('marks replaced Go module instances unknown and rejects conflicting go.sum hashes', async () => {
     const root = await fixture();
     await writeFile(
@@ -3688,6 +3757,132 @@ describe('non-npm lockfile inventory', () => {
     expect(graph.complete).toBe(false);
   });
 
+  it('checks Maven export revision against a trusted dependency source rather than a self-reported SHA', async () => {
+    const root = await fixture();
+    const pom = '<project><modelVersion>4.0.0</modelVersion></project>';
+    const sourceRevision = 'a'.repeat(40);
+    await writeFile(path.join(root, 'pom.xml'), pom);
+    const exportDoc = {
+      toolipSource: {
+        manifestHashes: {
+          'pom.xml': createHash('sha256').update(pom).digest('hex')
+        },
+        sourceRevision
+      },
+      modules: [
+        {
+          groupId: 'example',
+          artifactId: 'app',
+          version: '1.0.0',
+          children: [
+            {
+              groupId: 'example',
+              artifactId: 'core',
+              version: '2.0.0',
+              children: []
+            }
+          ]
+        }
+      ]
+    };
+    const files = new Map([
+      ['pom.xml', pom],
+      ['maven-dependency-tree.json', JSON.stringify(exportDoc)]
+    ]);
+    const fileSource = (revision: string) => ({
+      files: [...files.keys()],
+      sourceRevision: revision,
+      hasFile: (name: string) => files.has(name),
+      readText: (name: string) => files.get(name)
+    });
+    const matched = await readOtherEcosystemInventoryDetailed(
+      root,
+      fileSource(sourceRevision)
+    );
+    expect(matched.warnings).not.toContain(
+      'java-export-source-revision-mismatch:maven-dependency-tree.json'
+    );
+    expect(
+      matched.packages.find((item) => item.name === 'example:core')
+        ?.resolutionConfidence
+    ).toBe('lockfile');
+    const mismatched = await readOtherEcosystemInventoryDetailed(
+      root,
+      fileSource('b'.repeat(40))
+    );
+    expect(mismatched.warnings).toContain(
+      'java-export-source-revision-mismatch:maven-dependency-tree.json'
+    );
+    expect(
+      mismatched.packages.find((item) => item.name === 'example:core')
+        ?.resolutionConfidence
+    ).toBe('unknown');
+  });
+
+  it('requires a Maven export to be bound to the actual scanned pom bytes', async () => {
+    const root = await fixture();
+    const pom = '<project><modelVersion>4.0.0</modelVersion></project>';
+    await writeFile(path.join(root, 'pom.xml'), pom);
+    const doc = {
+      modules: [
+        {
+          groupId: 'example',
+          artifactId: 'app',
+          version: '1.0.0',
+          children: [
+            {
+              groupId: 'example',
+              artifactId: 'leaf',
+              version: '2.0.0',
+              children: []
+            }
+          ]
+        }
+      ],
+      toolipSource: {
+        manifestHashes: {
+          'pom.xml': createHash('sha256').update(pom).digest('hex')
+        }
+      }
+    };
+    await writeFile(
+      path.join(root, 'maven-dependency-tree.json'),
+      JSON.stringify(doc)
+    );
+    const verified = await readOtherEcosystemInventoryDetailed(root);
+    expect(verified.warnings).not.toContain(
+      'java-export-source-provenance-unverified:maven-dependency-tree.json'
+    );
+    expect(verified.warnings).not.toContain(
+      'java-export-source-digest-mismatch:maven-dependency-tree.json'
+    );
+
+    await writeFile(path.join(root, 'pom.xml'), pom.replace('4.0.0', '4.0.1'));
+    const stale = await readOtherEcosystemInventoryDetailed(root);
+    expect(stale.complete).toBe(false);
+    expect(stale.warnings).toContain(
+      'java-export-source-digest-mismatch:maven-dependency-tree.json'
+    );
+    expect(
+      stale.packages.find((item) => item.name === 'example:leaf')
+        ?.resolutionConfidence
+    ).toBe('unknown');
+
+    await writeFile(
+      path.join(root, 'maven-dependency-tree.json'),
+      JSON.stringify({ modules: doc.modules })
+    );
+    const unbound = await readOtherEcosystemInventoryDetailed(root);
+    expect(unbound.complete).toBe(false);
+    expect(unbound.warnings).toContain(
+      'java-export-source-provenance-unverified:maven-dependency-tree.json'
+    );
+    expect(
+      unbound.packages.find((item) => item.name === 'example:leaf')
+        ?.resolutionConfidence
+    ).toBe('unknown');
+  });
+
   it('imports the Maven dependency plugin JSON with managed exact versions', async () => {
     const root = await fixture();
     const captured = await readFile(
@@ -3769,9 +3964,20 @@ describe('non-npm lockfile inventory', () => {
       path.join(exportedRoot, 'gradle-dependencies.json'),
       exportText
     );
+    const settingsSource = "include 'api', 'service'\n";
+    await writeFile(path.join(exportedRoot, 'settings.gradle'), settingsSource);
     await writeFile(
-      path.join(exportedRoot, 'settings.gradle'),
-      "include 'api', 'service'\n"
+      path.join(exportedRoot, 'gradle-dependencies.json'),
+      JSON.stringify({
+        ...(JSON.parse(exportText) as Record<string, unknown>),
+        toolipSource: {
+          manifestHashes: {
+            'settings.gradle': createHash('sha256')
+              .update(settingsSource)
+              .digest('hex')
+          }
+        }
+      })
     );
     for (const module of ['api', 'service']) {
       const lockText = await readFile(
@@ -3883,13 +4089,19 @@ describe('non-npm lockfile inventory', () => {
 
   it('imports Gradle resolved JSON and marks declaration-only Java projects incomplete', async () => {
     const gradleRoot = await fixture();
-    await writeFile(
-      path.join(gradleRoot, 'build.gradle.kts'),
-      'throw RuntimeException("Toolip must not evaluate Gradle build files")\n'
-    );
+    const gradleSource =
+      'throw RuntimeException("Toolip must not evaluate Gradle build files")\n';
+    await writeFile(path.join(gradleRoot, 'build.gradle.kts'), gradleSource);
     await writeFile(
       path.join(gradleRoot, 'gradle-dependencies.json'),
       JSON.stringify({
+        toolipSource: {
+          manifestHashes: {
+            'build.gradle.kts': createHash('sha256')
+              .update(gradleSource)
+              .digest('hex')
+          }
+        },
         modules: [
           {
             group: 'org.acme',

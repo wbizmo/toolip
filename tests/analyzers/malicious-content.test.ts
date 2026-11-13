@@ -479,6 +479,43 @@ describe('non-executing malicious content chain analysis', () => {
     ]);
   });
 
+  it('distinguishes harmless archive creation from unpack-and-execute behavior', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({
+          scripts: { build: 'tar -czf dist.tar.gz ./dist && node ./build.js' }
+        })
+      },
+      { path: 'build.js', content: 'console.log("built");' }
+    ]);
+    expect(
+      result.findings.some((finding) =>
+        JSON.stringify(finding.metadata?.behaviorSignals ?? []).includes(
+          'archive-extraction-and-execution'
+        )
+      )
+    ).toBe(false);
+  });
+
+  it('recognizes tar extraction with POSIX option bundles lacking a dash', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({
+          scripts: { prepare: 'tar xvf bundle.tar && node ./payload/init' }
+        })
+      }
+    ]);
+    expect(
+      result.findings.some((finding) =>
+        JSON.stringify(finding.metadata?.behaviorSignals ?? []).includes(
+          'archive-extraction-and-execution'
+        )
+      )
+    ).toBe(true);
+  });
+
   it('reports archive extraction followed by execution as an unresolved chain', () => {
     const result = analyzeMaliciousContent([
       {

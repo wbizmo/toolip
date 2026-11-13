@@ -63,6 +63,32 @@ describe('sensitive data flow candidates', () => {
     ]);
   });
 
+  it('recognizes explicitly annotated sensitive schema fields with non-sensitive names', () => {
+    const root = '/toolip-sensitive-annotated';
+    const code = [
+      'interface Employee {',
+      '  /** @sensitive */ payrollCode: string;',
+      '  publicAlias: string;',
+      '}',
+      'function logProfile(employee: Employee) {',
+      '  logger.info({ raw: employee.payrollCode });',
+      '  logger.info({ safe: employee.publicAlias });',
+      '}'
+    ].join('\n');
+    const project = createAstProjectAnalysis([
+      {
+        filePath: 'employee.ts',
+        absolutePath: root + '/employee.ts',
+        content: code
+      }
+    ]);
+    const findings = analyzeAstSource('employee.ts', code, project).filter(
+      (finding) => finding.ruleId === 'TLP-DATA-001'
+    );
+    expect(findings.map((finding) => finding.location?.line)).toEqual([6]);
+    expect(JSON.stringify(findings)).not.toContain('payrollCode');
+  });
+
   it('tracks credential values through async local parameters and return aliases', () => {
     const findings = analyzeAstSource(
       'src/telemetry.ts',
@@ -108,6 +134,20 @@ export async function handler() {
     );
     expect(findings).toHaveLength(1);
     expect(findings[0]?.metadata?.sinkClass).toBe('log');
+    expect(JSON.stringify(findings)).not.toContain('API_TOKEN');
+  });
+
+  it('does not trust a locally shadowed redaction helper or an arbitrary property method', () => {
+    const findings = analyzeAstSource(
+      'src/logging.ts',
+      [
+        'function redactSensitive(value: string) { return value; }',
+        'const token = process.env.API_TOKEN;',
+        'logger.info(redactSensitive(token));',
+        'logger.info(helper.maskSecret(token));'
+      ].join('\n')
+    ).filter((item) => item.ruleId === 'TLP-DATA-001');
+    expect(findings).toHaveLength(2);
     expect(JSON.stringify(findings)).not.toContain('API_TOKEN');
   });
 

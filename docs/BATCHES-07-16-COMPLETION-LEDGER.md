@@ -1266,3 +1266,55 @@ Node 22, supported operating systems, CodeQL and CodeRabbit
 must be recorded from their actual executions; do not infer passage
 from this unit result. All 37 issue checklists and `Refs #N` remain open.
 
+## 2026-11-13 implementation checkpoint (not acceptance)
+
+This checkpoint is the actual source/test delta from the PR #104 baseline
+\`e316d34266df45a1a2500b31459885b7178a151b\`. It corrects earlier
+false-negative/false-positive behavior, but **it does not promote an issue
+to code-complete merely because a focused test passes**. The 14 issue
+statuses in the acceptance matrix above remain incomplete until their
+entire remaining code gaps have been implemented. All GitHub issues remain
+open; this combined PR must remain Draft.
+
+| Issue | Verified source implementation added                                                                                                                                                                                                     | Code still required before issue-level code completion                                                                                                        |
+| ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #40   | Bounded immutable discovery now enforces unique path identities and prevents forged reused paths without introducing a repeated per-file prefix traversal.                                                                               | Finish the codebase-wide worst-case hot-path/time-space inventory, close detected high-growth paths and record independent dimension curves.                  |
+| #56   | Snapshot capture now rejects duplicate/forged relative-to-absolute identities; the doctor preserves **partial** coverage under a low scan budget rather than throwing. Corrupt cache, import-component and cancellation fixtures remain. | Finish concurrent scan/worker retained-memory and cancellation audit with equivalence tests under load.                                                       |
+| #60   | An SSRF hostname allowlist is no longer proof against DNS rebinding; only public literal IPv4 with redirects rejected can suppress the candidate, excluding special-use IP blocks.                                                       | Close dynamic/external API taint and remaining filesystem identity/race cases without unbounded checker work.                                                 |
+| #61   | Scoped query ownership no longer accepts an unrelated \`include\` filter, and \`OR\` branches must each constrain access (including recognized shared grants).                                                                           | Finish framework guard aliases/re-exports, indirect grants and measured framework corpus false-negative/positive rates.                                       |
+| #63   | Dockerfile escaped \`FROM\` variables no longer become trusted digest pins.                                                                                                                                                              | Finish Docker ARG escape/continuation semantics and final-stage inheritance/remote-image uncertainty corpus.                                                  |
+| #64   | Yarn Berry retains package-level optional/required peer metadata; pnpm continues to rely on exact snapshot peer resolutions rather than inventing manifest edges.                                                                        | Complete authoritative registry-origin/hoisting and generated package-manager protocol matrices.                                                              |
+| #79   | Pipenv lock metadata's required Python version is matched against the explicit target; mismatches remain \`unknown\` rather than installed proof.                                                                                        | Add trusted transitive metadata and independent wheel/source-archive hash verification.                                                                       |
+| #80   | Conflicting \`go.sum\` \`/go.mod\` hashes now raise explicit risk even if archive hashes agree.                                                                                                                                          | Close vendored-byte and offline checksum-database proof and multi-module replacement/retract cases.                                                           |
+| #81   | Conflicting Cargo.lock duplicate source/name/version identities are deduplicated, flagged \`unknown\` and their ambiguous outgoing edges suppressed, while preserving the existing conflict warning.                                     | Compare target/feature-unification results against authoritative Cargo metadata and registry artifact bytes.                                                  |
+| #82   | JVM export manifests now use captured byte hashes and, when available, the trusted snapshot/PR Git revision. Stale, unbound or mismatched exports preserve observed packages but downgrade resolution confidence to \`unknown\`.         | Complete parent/BOM conflict and multi-module authoritative-export provenance fixtures.                                                                       |
+| #89   | Transaction isolation suppresses a race only for recognized callback-scoped database clients; unrelated nested CAS calls no longer suppress non-atomic write candidates.                                                                 | Finish cross-file async race, Redis/lock model, uncertain await and concurrency-corpus acceptance.                                                            |
+| #91   | TypeScript \`@sensitive\`/related field tags flow through the project checker into redacted output findings; locally shadowed helpers and arbitrary object methods are not assumed to redact.                                            | Close external serializer/redaction contracts and dynamic outbound-flow coverage.                                                                             |
+| #95   | Archive creation/list operations are no longer mistaken for unpack-and-execute; positive bundled \`tar -x\` and POSIX \`tar xvf\` execution chains remain detected without running payloads.                                             | Expand bounded indirect/runtime wrappers, disguised formats and false-positive measurement corpus.                                                            |
+| #96   | The same archive-chain correction is enforced in the protected Stage A scanner, with fail-closed benign/malicious workflow fixtures and updated three-way trusted-source digest pin.                                                     | Complete non-npm artifact-origin/provenance support and trusted bootstrap/ruleset integration; GitHub-owned protections also require maintainer verification. |
+
+### Verified local quality gates for this checkpoint
+
+Node 24.22.3 \`npm run verify\` exited **0** after the fixes above:
+**125 unit test files, 1,230 tests passed and 3 skipped**; coverage
+**124 test files, 1,228 tests passed and 3 skipped**.
+The V8 coverage report measured **85.90% statements, 80.48% branches,
+92.62% functions and 88.26% lines**. Typecheck, Biome lint, Prettier
+formatting, lock/policy checks, npm audit, build and installed/packed-package
+verification passed. This is local Node 24 evidence, **not Node 22 or
+Windows/macOS CI**. The initial 2026-11-13 full run exposed an explicit
+budget-limit integration regression; it was fixed and the clean full rerun
+passed. Another instrumentation-only run required a more realistic timeout
+for the 513-file AST correctness fixture.
+
+The code checks tied to these changes live in
+\`tests/application/project-snapshot.test.ts\`,
+\`tests/git/coverage-gating.test.ts\`,
+\`tests/core/ecosystem-inventory.test.ts\`,
+\`tests/core/package-manager-resolvers.test.ts\`,
+\`tests/analyzers/{ast-security-analyzer,authorization-analysis,concurrency-analysis,dockerfile-analyzer,sensitive-data-flow,malicious-content}.test.ts\`,
+and \`tests/core/stage-a-gate.test.ts\`. Cross-platform Node/OS acceptance,
+CodeRabbit/CodeQL and all provider-backed acceptance remain separate gates.
+
+No CI, GitHub branch rule, report, npm release or unpublished build is
+claimed to be an external validation of this checkpoint.

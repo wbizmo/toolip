@@ -371,12 +371,17 @@ export async function runSecurityDoctor(
       // supplies a context whose files changed after discovery. The ordinary
       // bounded readers below will report those files as skipped; AST analysis
       // remains unavailable rather than reading a different source revision.
-      if (
-        !suppliedContext ||
-        !(error instanceof Error) ||
-        !error.message.startsWith('snapshot incomplete for ')
-      )
-        throw error;
+      const expectedPartialSnapshot =
+        error instanceof Error &&
+        error.message === 'snapshot file count exceeds the configured budget';
+      const contextChanged =
+        suppliedContext &&
+        error instanceof Error &&
+        error.message.startsWith('snapshot incomplete for ');
+      if (!expectedPartialSnapshot && !contextChanged) throw error;
+      // The bounded file readers below still report every unscanned file
+      // as skipped; a strict immutable snapshot cannot claim completeness
+      // for a caller who deliberately selected a smaller scan budget.
     }
   }
   const context = snapshot

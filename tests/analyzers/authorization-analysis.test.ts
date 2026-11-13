@@ -100,6 +100,52 @@ describe('route authorization candidates', () => {
     );
   });
 
+  it('does not accept an included relation filter as ownership on the loaded resource', () => {
+    const findings = analyzeAstSource(
+      'src/routes/documents.ts',
+      `router.get('/documents/:id', async (req, res) => {
+  const document = await db.document.findFirst({
+    where: { id: req.params.id },
+    include: { auditEvents: { where: { tenantId: req.user.tenantId } } }
+  });
+  return res.json(document);
+});`
+    );
+    expect(findings.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      true
+    );
+  });
+
+  it('requires ownership constraints in every OR branch, but accepts AND and shared-grant exceptions', () => {
+    const unsafe = analyzeAstSource(
+      'src/routes/documents.ts',
+      `router.get('/documents/:id', async (req, res) => {
+  return db.document.findFirst({
+    where: { OR: [{ id: req.params.id, tenantId: req.user.tenantId }, { id: req.params.id }] }
+  });
+});`
+    );
+    expect(unsafe.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      true
+    );
+    const shared = analyzeAstSource(
+      'src/routes/documents.ts',
+      `router.get('/documents/:id', async (req, res) => {
+  return db.document.findFirst({
+    where: { id: req.params.id,
+      OR: [
+        { tenantId: req.user.tenantId },
+        { sharedWith: { some: { userId: req.user.id } } }
+      ]
+    }
+  });
+});`
+    );
+    expect(shared.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      false
+    );
+  });
+
   it('recognizes unique authenticated tenant aliases and rejects ambiguous ones', () => {
     const scoped = analyzeAstSource(
       'src/routes/invoices.ts',

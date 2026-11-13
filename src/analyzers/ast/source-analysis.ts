@@ -2255,9 +2255,27 @@ function isCredentialEnvironmentSource(expression: ts.Expression): boolean {
   );
 }
 
-function isSensitiveDataSource(expression: ts.Expression): boolean {
+function isSensitiveDataSource(
+  expression: ts.Expression,
+  checker?: ts.TypeChecker
+): boolean {
   if (isCredentialEnvironmentSource(expression)) return true;
   if (!isMemberAccessRoot(expression)) return false;
+  if (checker && ts.isPropertyAccessExpression(expression)) {
+    const symbol = checker.getSymbolAtLocation(expression.name);
+    if (
+      symbol?.declarations?.some((declaration) =>
+        ts
+          .getJSDocTags(declaration)
+          .some((tag) =>
+            /^(?:sensitive|confidential|pii|toolipSensitive)$/iu.test(
+              tag.tagName.text
+            )
+          )
+      )
+    )
+      return true;
+  }
   const parent = expression.parent;
   if (ts.isCallExpression(parent) && parent.expression === expression)
     return false;
@@ -2274,15 +2292,48 @@ function isProcessEnvironmentObject(
   );
 }
 
+const locallyBoundRedactionNames = new WeakMap<
+  ts.SourceFile,
+  ReadonlySet<string>
+>();
+
+function redactionNamesDefinedInSource(
+  source: ts.SourceFile
+): ReadonlySet<string> {
+  const cached = locallyBoundRedactionNames.get(source);
+  if (cached) return cached;
+  const bound = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (
+      (ts.isFunctionDeclaration(node) ||
+        ts.isFunctionExpression(node) ||
+        ts.isVariableDeclaration(node) ||
+        ts.isParameter(node) ||
+        ts.isImportSpecifier(node) ||
+        ts.isImportClause(node)) &&
+      node.name &&
+      ts.isIdentifier(node.name) &&
+      redactionHelpers.has(node.name.text)
+    )
+      bound.add(node.name.text);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  locallyBoundRedactionNames.set(source, bound);
+  return bound;
+}
+
 function isRedactionCall(expression: ts.Expression): boolean {
   if (!ts.isCallExpression(expression)) return false;
   const target = expression.expression;
-  const name = ts.isPropertyAccessExpression(target)
-    ? target.name.text
-    : ts.isIdentifier(target)
-      ? target.text
-      : '';
-  return redactionHelpers.has(name);
+  // A method on an arbitrary object is never a verified redactor. A local
+  // binding can shadow a familiar helper name and may simply return input;
+  // keep it as an exposure candidate rather than treating a name as proof.
+  return (
+    ts.isIdentifier(target) &&
+    redactionHelpers.has(target.text) &&
+    !redactionNamesDefinedInSource(expression.getSourceFile()).has(target.text)
+  );
 }
 
 function collectSensitiveNames(
@@ -2295,7 +2346,8 @@ function collectSensitiveNames(
     sourceFiles,
     scopes,
     (expression) =>
-      !isRedactionCall(expression) && isSensitiveDataSource(expression),
+      !isRedactionCall(expression) &&
+      isSensitiveDataSource(expression, checker),
     true,
     checker,
     maxWork
@@ -2310,6 +2362,8 @@ export type AstProjectInput = {
 
 export type AstProjectAnalysis = {
   sourceFiles: Map<string, ts.SourceFile>;
+  /** In-process only: resolved types and schema tags for this source revision. */
+  checker?: ts.TypeChecker;
   scopes: WeakMap<ts.Node, Scope>;
   resourceMiddlewareFunctions: WeakMap<
     ts.Identifier,
@@ -2639,6 +2693,7 @@ export function createAstProjectAnalysis(
   }
   return {
     sourceFiles,
+    checker,
     scopes,
     resourceMiddlewareFunctions,
     taint: collectTaintedNames(
@@ -3131,10 +3186,14 @@ function isSensitiveValue(
   expression: ts.Expression,
   scope: Scope,
   sensitive: TaintedNames,
-  callReturns: WeakMap<ts.CallExpression, FlowBinding>
+  callReturns: WeakMap<ts.CallExpression, FlowBinding>,
+  checker?: ts.TypeChecker
 ): boolean {
   if (isRedactionCall(expression)) return false;
-  if (isMemberAccessRoot(expression) && isSensitiveDataSource(expression))
+  if (
+    isMemberAccessRoot(expression) &&
+    isSensitiveDataSource(expression, checker)
+  )
     return true;
   if (ts.isIdentifier(expression)) {
     for (
@@ -3159,7 +3218,7 @@ function isSensitiveValue(
     if (
       ts.isExpression(node) &&
       isMemberAccessRoot(node) &&
-      isSensitiveDataSource(node)
+      isSensitiveDataSource(node, checker)
     ) {
       found = true;
       return;
@@ -3366,6 +3425,33 @@ function failClosed(statement: ts.Statement): boolean {
   return false;
 }
 
+/**
+ * DNS names can rebind after a hostname allowlist check. Only canonical,
+ * explicitly public IPv4 literals avoid a DNS resolution race at this sink;
+ * all other URL host checks remain SSRF candidates for human validation.
+ */
+function isPublicLiteralIpv4(host: string): boolean {
+  if (isIP(host) !== 4) return false;
+  const octets = host.split('.').map(Number);
+  const [a, b, c] = octets;
+  if (a === undefined || b === undefined || c === undefined) return false;
+  return !(
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    a >= 224 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && (b === 0 || b === 168)) ||
+    (a === 198 && b >= 18 && b <= 19) ||
+    (a === 198 && b === 51 && c === 100) ||
+    (a === 203 && b === 0 && c === 113) ||
+    (a === 192 && b === 88 && c === 99) ||
+    a === 255
+  );
+}
+
 function literalHostAllowlist(expression: ts.Expression): boolean {
   const value = unwrapExpression(expression);
   if (
@@ -3377,15 +3463,7 @@ function literalHostAllowlist(expression: ts.Expression): boolean {
   return value.elements.every((element) => {
     if (!ts.isStringLiteral(element)) return false;
     const host = element.text.trim().toLowerCase().replace(/\.$/u, '');
-    return (
-      host.length > 0 &&
-      !host.includes('*') &&
-      !isIP(host.replace(/^\[|\]$/gu, '')) &&
-      host !== 'localhost' &&
-      !host.endsWith('.localhost') &&
-      !host.endsWith('.local') &&
-      !host.endsWith('.internal')
-    );
+    return isPublicLiteralIpv4(host);
   });
 }
 
@@ -3478,7 +3556,8 @@ function redirectsBlocked(call: ts.CallExpression): boolean {
 
 /** Accepts a literal host allowlist only when its rejection branch exits and
  * Fetch is configured to fail on redirects, which could otherwise leave the
- * checked host. Dynamic policies remain review candidates. */
+ * checked host. Only public literal IPv4 hosts are considered static; DNS
+ * names and dynamic policies remain review candidates. */
 function hasVerifiedFetchHostAllowlist(
   call: ts.CallExpression,
   candidate: ts.Expression
@@ -3716,7 +3795,8 @@ export function analyzeAstSource(
             argument,
             scope,
             sensitive,
-            sensitiveAnalysis.callReturns
+            sensitiveAnalysis.callReturns,
+            projectSource?.text === content ? project?.checker : undefined
           )
         )
       ) {

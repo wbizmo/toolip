@@ -82,6 +82,7 @@ function throwIfSnapshotCancelled(signal?: AbortSignal): void {
 /** Dependency resolvers consume lockfiles and manifests from the same captured input. */
 export function dependencyFileSourceFromSnapshot(snapshot: ProjectSnapshot): {
   files: readonly string[];
+  sourceRevision?: string;
   hasFile: (relativePath: string) => boolean;
   readText: (relativePath: string) => string | undefined;
 } {
@@ -90,6 +91,9 @@ export function dependencyFileSourceFromSnapshot(snapshot: ProjectSnapshot): {
   );
   return Object.freeze({
     files: Object.freeze([...contents.keys()]),
+    ...(snapshot.gitIndexStatus === 'available' && snapshot.gitHeadRevision
+      ? { sourceRevision: snapshot.gitHeadRevision }
+      : {}),
     hasFile: (relativePath: string) => contents.has(relativePath),
     readText: (relativePath: string) => contents.get(relativePath)
   });
@@ -209,6 +213,37 @@ export async function createProjectSnapshot(
     maxFileBytes: options.maxFileBytes ?? defaultTextFileBudget.maxFileBytes,
     maxTotalBytes: options.maxTotalBytes ?? defaultTextFileBudget.maxTotalBytes
   };
+  // A caller-provided discovery list is still untrusted metadata. Detect
+  // duplicate aliases before reuse or hashing so a scan never reports two
+  // independent identities for the same captured project path.
+  if (files.length > budgets.maxFiles)
+    throw new Error('snapshot file count exceeds the configured budget');
+  const discoveredPaths = new Set<string>();
+  for (const file of files) {
+    throwIfSnapshotCancelled(options.signal);
+    // A forged discovery result must not substitute an unrelated absolute
+    // pathname for a previously content-hashed relative entry. Reuse is
+    // safe only when the canonical path actually names the same input.
+    const relativePath = path
+      .relative(rootPath, path.resolve(file.absolutePath))
+      .split(path.sep)
+      .join('/');
+    if (
+      !file.relativePath ||
+      file.relativePath.includes('\\') ||
+      path.posix.isAbsolute(file.relativePath) ||
+      file.relativePath
+        .split('/')
+        .some(
+          (segment) => segment === '.' || segment === '..' || segment === ''
+        ) ||
+      relativePath !== file.relativePath
+    )
+      throw new Error('discovered snapshot path does not match project root');
+    if (discoveredPaths.has(file.relativePath))
+      throw new Error('duplicate snapshot path in pre-discovered file list');
+    discoveredPaths.add(file.relativePath);
+  }
   const previousFiles = new Map(
     options.previous?.root === rootPath
       ? options.previous.files.map((file) => [file.path, file])

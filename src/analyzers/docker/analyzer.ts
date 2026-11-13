@@ -286,7 +286,8 @@ function expandBuildArgs(
   source: string,
   values: ReadonlyMap<string, string | undefined>
 ): { value: string; unresolved: boolean } {
-  let unresolved = false;
+  // Backslash or Docker escape-escaped variables cannot prove a trusted digest.
+  let unresolved = /[\\`]\$/u.test(source);
   const value = source.replace(
     /\$\{([A-Za-z_][\w]*)(?:(:-|-)([^}]*))?\}|\$([A-Za-z_][\w]*)/gu,
     (

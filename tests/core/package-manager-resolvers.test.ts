@@ -515,6 +515,46 @@ foo@^1.0.0:
     );
   });
 
+  it('honors Yarn Berry optional peer metadata without dropping required peer failures', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'package.json'),
+      JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        dependencies: { foo: '^1.0.0' }
+      })
+    );
+    await writeFile(
+      path.join(root, 'yarn.lock'),
+      [
+        '__metadata:',
+        '  version: 8',
+        '  cacheKey: 10c0',
+        '"foo@npm:^1.0.0":',
+        '  version: 1.2.0',
+        '  resolution: "foo@npm:1.2.0"',
+        '  peerDependencies:',
+        '    optionalPeer: "npm:^2.0.0"',
+        '    requiredPeer: "npm:^3.0.0"',
+        '  peerDependenciesMeta:',
+        '    optionalPeer:',
+        '      optional: true'
+      ].join('\n') + '\n'
+    );
+    const graph = await readNpmDependencyGraph(root);
+    expect(graph.complete).toBe(false);
+    expect(graph.unresolvedDependencies).toContainEqual(
+      expect.objectContaining({
+        name: 'requiredPeer',
+        section: 'peerDependency'
+      })
+    );
+    expect(
+      graph.unresolvedDependencies.some((item) => item.name === 'optionalPeer')
+    ).toBe(false);
+  });
+
   it('marks pnpm unsafe tarball URLs incomplete without retaining credentials', async () => {
     const root = await fixture();
     await writeFile(

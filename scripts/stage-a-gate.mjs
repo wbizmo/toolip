@@ -492,9 +492,24 @@ const outboundCredentialTransfer =
   /(?:\b(?:curl|wget|nc|ncat|socat)\b|\b(?:fetch|axios\.(?:post|put)|https?\.request)\s*\(|Invoke-WebRequest|upload(?:File|String))/iu;
 const startupPersistence =
   /(?:\bcrontab\s+-|\b(?:systemctl|launchctl)\s+(?:enable|load|bootstrap)|\.config[\\/]autostart|(?:\.bashrc|\.zshrc|\.profile|Startup[\\/])|(?:CurrentVersion[\\/]Run|HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run))/iu;
-const archiveExtraction = /\b(?:unzip|tar|7z|busybox\s+unzip)\b/iu;
+// Creation and archive listing do not constitute unpack-and-execute.
+const archiveExtraction =
+  /\b(?:tar\s+(?:--extract\b|--get\b|-?[a-z]*x[a-z]*\b)|(?:busybox\s+)?unzip\s+(?!-[lt]\b)|7z\s+x\b)/giu;
 const archiveExecution =
   /\b(?:node(?:\.exe)?|bash|sh|zsh|pwsh|powershell|python(?:3)?|deno|bun|ruby|perl|php|cmd(?:\.exe)?)\b\s+(?:\/(?:c|k)\s+)?[^\s;&|]+/iu;
+
+function hasArchiveExtractionAndExecution(source) {
+  archiveExtraction.lastIndex = 0;
+  for (const match of source.matchAll(archiveExtraction)) {
+    const after = source
+      .slice((match.index ?? 0) + match[0].length)
+      .slice(0, 1024);
+    const separator = after.search(/(?:&&|;|\|\|)/u);
+    if (separator >= 0 && archiveExecution.test(after.slice(separator + 1)))
+      return true;
+  }
+  return false;
+}
 
 function hasCredentialTransfer(source) {
   const probes = [...source.matchAll(new RegExp(credentialStoreProbe, 'giu'))];
@@ -3464,12 +3479,7 @@ function scanText(name, text, incompleteReasons = []) {
     dangerous.some((pattern) => pattern.test(scanContent))
   )
     findings.push(`${name}#payload-persistence`);
-  if (
-    executableText &&
-    archiveExtraction.test(behaviorContent) &&
-    archiveExecution.test(behaviorContent) &&
-    /(?:&&|;|\|\|)/u.test(behaviorContent)
-  )
+  if (executableText && hasArchiveExtractionAndExecution(behaviorContent))
     findings.push(`${name}#archive-execution`);
   return [...new Set(findings)];
 }

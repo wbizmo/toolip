@@ -99,7 +99,9 @@ const dynamicExecution =
   /(?:\beval\s*\(|\bnew\s+Function\s*\(|\bchild_process\.(?:exec|execSync)\s*\()/u;
 const automaticScript =
   /\b(?:curl|wget)\b[^\n;&]{0,180}(?:\||;|&&)\s*(?:sh|bash)/iu;
-const archiveExtraction = /\b(?:unzip|tar|7z|busybox\s+unzip)\b/iu;
+// Creation and archive listing do not constitute unpack-and-execute.
+const archiveExtraction =
+  /\b(?:tar\s+(?:--extract\b|--get\b|-?[a-z]*x[a-z]*\b)|(?:busybox\s+)?unzip\s+(?!-[lt]\b)|7z\s+x\b)/giu;
 const archiveExecutionTarget =
   /(?:\b(?:node(?:\.exe)?|bash|sh|zsh|pwsh|powershell|python(?:3)?|deno|bun|ruby|perl|php|cmd(?:\.exe)?)\b\s+(?:\/(?:c|k)\s+)?[^\s;&|]+|(?:^|[;&|]\s*)\.{1,2}\/[^\s;&|]+)/imu;
 const credentialStoreAccess =
@@ -114,11 +116,19 @@ const executableTextSignature =
   /(?:^|\n)\s*(?:import\s|export\s|(?:const|let|var)\s+\w|(?:async\s+)?function\s+\w|(?:curl|wget|eval|exec|source|\.\s+)[^\n]*)/u;
 
 function hasArchiveExecution(source: string): boolean {
-  return (
-    archiveExtraction.test(source) &&
-    archiveExecutionTarget.test(source) &&
-    /(?:&&|;|\|\|)/u.test(source)
-  );
+  archiveExtraction.lastIndex = 0;
+  for (const match of source.matchAll(archiveExtraction)) {
+    const after = source
+      .slice((match.index ?? 0) + match[0].length)
+      .slice(0, 1024);
+    const separator = after.search(/(?:&&|;|\|\|)/u);
+    if (
+      separator >= 0 &&
+      archiveExecutionTarget.test(after.slice(separator + 1))
+    )
+      return true;
+  }
+  return false;
 }
 
 /** Returns behavior labels without retaining or reporting matching source text. */

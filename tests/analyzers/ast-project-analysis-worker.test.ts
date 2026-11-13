@@ -290,7 +290,7 @@ describe('killable AST project analysis', () => {
     expect(changedProject.dependencyDigests.get('src/entry.ts')).not.toBe(
       project.dependencyDigests.get('src/entry.ts')
     );
-  });
+  }, 20_000); // Coverage instruments 513 compiler inputs; this is a correctness, not wall-clock performance gate.
 
   it('digests deep import graphs with linear visits and no recursive stack', () => {
     const vertexCount = 20_000;

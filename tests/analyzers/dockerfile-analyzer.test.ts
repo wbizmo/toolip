@@ -54,6 +54,32 @@ describe('DockerfileAnalyzer', () => {
     }
   });
 
+  it('does not trust a backslash-escaped FROM argument as a digest-pinned image', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-escaped-')
+    );
+    try {
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        [
+          'ARG IMAGE=node:20@sha256:' + 'a'.repeat(64),
+          'FROM \\$IMAGE',
+          'USER 1000',
+          'HEALTHCHECK CMD true'
+        ].join('\n')
+      );
+      const result = await new DockerfileAnalyzer().analyze({ root });
+      expect(result.coverage.state).toBe('partial');
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([
+          expect.stringContaining('unresolved build argument')
+        ])
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('marks unresolved FROM platform expressions as incomplete even when user and health are explicit', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-docker-platform-')

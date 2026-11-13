@@ -28,6 +28,7 @@ type LockedInstance = {
   dependencies?: RecordValue;
   optionalDependencies?: RecordValue;
   peerDependencies?: RecordValue;
+  peerDependenciesMeta?: RecordValue;
 };
 
 type WorkspaceManifestBudget = { count: number; bytes: number };
@@ -1112,7 +1113,9 @@ export async function readYarnDependencyGraph(
         optional: entry.optional === true,
         resolutionContext,
         dependencies: record(entry.dependencies),
-        optionalDependencies: record(entry.optionalDependencies)
+        optionalDependencies: record(entry.optionalDependencies),
+        peerDependencies: record(entry.peerDependencies),
+        peerDependenciesMeta: record(entry.peerDependenciesMeta)
       };
       instancesByLocator.set(identityKey, item);
     }

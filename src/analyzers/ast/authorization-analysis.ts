@@ -294,45 +294,91 @@ function propertyKey(property: ts.PropertyAssignment): string | undefined {
   return undefined;
 }
 
-/** Recognizes direct owner/tenant predicates inside an ORM query object. */
-function hasOwnershipPredicate(
+/**
+ * Ownership must restrict the root resource lookup, not an unrelated include,
+ * ordering clause or nested relation projection. In a disjunction EVERY
+ * branch needs a scoped predicate; one guarded branch does not protect the
+ * unguarded alternatives. This is a bounded syntactic proof, not runtime auth.
+ */
+function ownershipInsideWhere(
   node: ts.Node,
-  identityParameters: ReadonlySet<string> = new Set()
+  identities: ReadonlySet<string>,
+  depth = 0
 ): boolean {
-  if (!ts.isObjectLiteralExpression(node)) return false;
+  if (depth > 32 || !ts.isObjectLiteralExpression(node)) return false;
   for (const property of node.properties) {
     if (ts.isShorthandPropertyAssignment(property)) {
       if (
         /^(?:userId|ownerId|tenantId|accountId|organizationId|workspaceId)$/iu.test(
           property.name.text
         ) &&
-        authIdentity(property.name, identityParameters)
+        authIdentity(property.name, identities)
       )
         return true;
       continue;
     }
     if (!ts.isPropertyAssignment(property)) continue;
     const key = propertyKey(property);
+    if (!key) continue;
     if (
-      key &&
       /^(?:userId|ownerId|tenantId|accountId|organizationId|workspaceId)$/iu.test(
         key
       ) &&
-      authIdentity(property.initializer, identityParameters)
+      authIdentity(property.initializer, identities)
     )
       return true;
-    if (ts.isObjectLiteralExpression(property.initializer)) {
-      if (hasOwnershipPredicate(property.initializer, identityParameters))
-        return true;
+    if (/^(?:AND|and)$/u.test(key)) {
+      const value = property.initializer;
+      const clauses = ts.isArrayLiteralExpression(value)
+        ? value.elements
+        : [value];
       if (
-        key &&
-        /^(?:tenant|account|organization|workspace|owner|user)$/iu.test(key) &&
-        containsAuthenticatedIdentity(property.initializer, identityParameters)
+        clauses.some((part) =>
+          ownershipInsideWhere(part, identities, depth + 1)
+        )
       )
         return true;
     }
+    if (/^(?:OR|or)$/u.test(key)) {
+      const value = property.initializer;
+      if (
+        ts.isArrayLiteralExpression(value) &&
+        value.elements.length > 0 &&
+        value.elements.every((part) =>
+          ownershipInsideWhere(part, identities, depth + 1)
+        )
+      )
+        return true;
+    }
+    // Related ownership and explicit share grants can constrain the base
+    // record, but a side-loaded include/select relation cannot.
+    if (
+      /^(?:tenant|account|organization|workspace|owner|user|sharedWith|collaborators|members|accessGrants)$/iu.test(
+        key
+      ) &&
+      ts.isObjectLiteralExpression(property.initializer) &&
+      containsAuthenticatedIdentity(property.initializer, identities)
+    )
+      return true;
   }
   return false;
+}
+
+function hasOwnershipPredicate(
+  node: ts.Node,
+  identityParameters: ReadonlySet<string> = new Set()
+): boolean {
+  if (!ts.isObjectLiteralExpression(node)) return false;
+  for (const property of node.properties) {
+    if (
+      ts.isPropertyAssignment(property) &&
+      propertyKey(property) === 'where' &&
+      ownershipInsideWhere(property.initializer, identityParameters)
+    )
+      return true;
+  }
+  // Some supported query APIs take the filter object directly.
+  return ownershipInsideWhere(node, identityParameters);
 }
 
 function hasRoleOrOwnershipGuard(

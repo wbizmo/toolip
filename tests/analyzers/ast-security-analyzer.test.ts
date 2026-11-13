@@ -309,7 +309,7 @@ async function handler(req: RequestLike, db: Database) {
     ]);
   });
 
-  it('accepts a fail-closed literal fetch host allowlist and rejects dynamic policies or redirects', () => {
+  it('requires public IP pinning in a fetch allowlist and rejects DNS, private hosts or redirects', () => {
     const findings = analyzeAstSource(
       'routes.ts',
       `async function handler(req: RequestLike) {
@@ -331,7 +331,51 @@ async function handler(req: RequestLike, db: Database) {
     );
     expect(
       findings.filter((finding) => finding.ruleId === 'TLP-AST-006')
-    ).toHaveLength(4);
+    ).toHaveLength(5);
+  });
+
+  it('does not assume DNS host allowlisting prevents server-side rebinding', () => {
+    const findings = analyzeAstSource(
+      'src/routes/image.ts',
+      `async function handler(req: RequestLike) {
+  const url = new URL(req.query.image);
+  if (!['service.example'].includes(url.hostname)) throw new Error('blocked');
+  await fetch(url, { redirect: 'error' });
+}`
+    );
+    expect(findings.some((finding) => finding.ruleId === 'TLP-AST-006')).toBe(
+      true
+    );
+  });
+
+  it('does not treat documentation and special-purpose IPv4 literals as public URL allowlists', () => {
+    for (const address of ['198.51.100.3', '203.0.113.4', '192.88.99.1']) {
+      const findings = analyzeAstSource(
+        'src/service.ts',
+        'async function request(req: RequestLike) { const url = new URL(req.query.url); ' +
+          "if (!['" +
+          address +
+          "'].includes(url.hostname)) throw Error('blocked'); " +
+          "return fetch(url, { redirect: 'error' }); }"
+      );
+      expect(findings.some((finding) => finding.ruleId === 'TLP-AST-006')).toBe(
+        true
+      );
+    }
+  });
+
+  it('accepts a literal public IPv4 allowlist with redirects blocked', () => {
+    const findings = analyzeAstSource(
+      'src/routes/image.ts',
+      `async function handler(req: RequestLike) {
+  const url = new URL(req.query.image);
+  if (!['8.8.8.8'].includes(url.hostname)) throw new Error('blocked');
+  await fetch(url, { redirect: 'error' });
+}`
+    );
+    expect(findings.some((finding) => finding.ruleId === 'TLP-AST-006')).toBe(
+      false
+    );
   });
 
   it('distinguishes tainted shell commands from safe argument-array execution', () => {

@@ -13,6 +13,7 @@ import { readNpmDependencyGraph } from '../../src/core/dependencies/inventory.js
 import { AnalysisResultCache } from '../../src/application/task-scheduler.js';
 import { runSecurityDoctor } from '../../src/core/security-doctor.js';
 import { createScannerContext } from '../../src/core/scanner-context.js';
+import { walkProjectFiles } from '../../src/core/file-walker.js';
 
 const roots: string[] = [];
 async function project(): Promise<string> {
@@ -32,6 +33,49 @@ afterEach(async () => {
 });
 
 describe('immutable project snapshots', () => {
+  it('rejects duplicate pre-discovered paths instead of duplicating immutable snapshot identities', async () => {
+    const root = await project();
+    const files = await walkProjectFiles(root);
+    expect(files).toHaveLength(1);
+    const input = files[0];
+    if (!input) throw new Error('missing source fixture');
+    await expect(
+      createProjectSnapshot(root, { discoveredFiles: [input, input] })
+    ).rejects.toThrow(/duplicate.*snapshot/i);
+  });
+
+  it('enforces snapshot file count on pre-discovered entries even if discovery was performed elsewhere', async () => {
+    const root = await project();
+    const files = await walkProjectFiles(root);
+    await expect(
+      createProjectSnapshot(root, { discoveredFiles: files, maxFiles: 0 })
+    ).rejects.toThrow(/snapshot.*budget/i);
+  });
+
+  it('rejects forged discovery path/identity before reusing a snapshot', async () => {
+    const root = await project();
+    const files = await walkProjectFiles(root);
+    const first = files[0];
+    if (!first) throw new Error('missing fixture file');
+    const previous = await createProjectSnapshot(root, {
+      discoveredFiles: files
+    });
+    await expect(
+      createProjectSnapshot(root, {
+        discoveredFiles: [
+          { ...first, absolutePath: path.join(root, '..', 'fake.ts') }
+        ],
+        previous
+      })
+    ).rejects.toThrow(/discovered.*path/i);
+    await expect(
+      createProjectSnapshot(root, {
+        discoveredFiles: [{ ...first, relativePath: '../fake.ts' }],
+        previous
+      })
+    ).rejects.toThrow(/discovered.*path/i);
+  });
+
   it('captures stable content hashes and verifies current input', async () => {
     const root = await project();
     const snapshot = await createProjectSnapshot(root, {
