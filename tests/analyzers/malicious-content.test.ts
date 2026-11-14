@@ -67,6 +67,44 @@ describe('non-executing malicious content chain analysis', () => {
     ).toEqual(['package.json', 'runner.sh', 'payload.orc']);
   });
 
+  it('traces an exact local target passed through a shell -c variable alias', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({ scripts: { prepare: 'sh ./runner.sh' } })
+      },
+      {
+        path: 'runner.sh',
+        content: 'target=./payload.orc; sh -c "$target"'
+      },
+      {
+        path: 'payload.orc',
+        content: 'const decoded = atob(encoded); eval(decoded);'
+      }
+    ]);
+    expect(
+      result.findings.find(
+        (finding) => finding.location.file === 'package.json'
+      )?.metadata?.trace
+    ).toEqual(['package.json', 'runner.sh', 'payload.orc']);
+  });
+
+  it('reports a dynamic shell -c target as unknown instead of clean', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({ scripts: { prepare: 'sh ./runner.sh' } })
+      },
+      {
+        path: 'runner.sh',
+        content: 'target=$GENERATED_TARGET; sh -c "$target"'
+      }
+    ]);
+    expect(
+      result.findings.some((finding) => finding.ruleId === 'TLP-MAL-002')
+    ).toBe(true);
+  });
+
   it('does not interpolate a single-quoted shell alias', () => {
     const result = analyzeMaliciousContent([
       {

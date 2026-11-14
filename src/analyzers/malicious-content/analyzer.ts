@@ -34,7 +34,11 @@ const MAX_CACHED_CONTENT_ANALYSES = 1_024;
 const MAX_CACHED_REFERENCES_PER_CONTENT = 256;
 const contentAnalysisCache = new Map<
   string,
-  Readonly<{ references?: readonly string[]; signals: readonly string[] }>
+  Readonly<{
+    references?: readonly string[];
+    signals: readonly string[];
+    unresolvedShellCommand: boolean;
+  }>
 >();
 const binaryExtensions = new Set([
   '7z',
@@ -154,7 +158,10 @@ function behaviorSignals(source: string): string[] {
  * Each bounded file is walked twice: O(B) time and O(A + R) space for
  * B source units, A assignments and R references.
  */
-function staticShellTargets(source: string): string[] {
+function staticShellTargets(source: string): {
+  targets: string[];
+  unresolvedShellCommand: boolean;
+} {
   const assignments = new Map<
     string,
     { ambiguous?: boolean; value?: string; position?: number }
@@ -205,6 +212,7 @@ function staticShellTargets(source: string): string[] {
     return resolveTarget(aliasName, assignment.position, visited, depth + 1);
   };
   const targets = new Set<string>();
+  let unresolvedShellCommand = false;
   const executionPattern =
     /\b(?:node(?:\.exe)?|bash|sh|zsh|python(?:3)?|ruby|perl|php|bun)(?:\.exe)?\s+(?:"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))"|\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*))(?=\s|[;&|]|$)/gmu;
   for (const match of source.matchAll(executionPattern)) {
@@ -213,13 +221,25 @@ function staticShellTargets(source: string): string[] {
     const target = resolveTarget(name, match.index ?? 0, new Set(), 0);
     if (target) targets.add(target);
   }
-  return [...targets].sort();
+  // Resolve only an exact variable alias supplied to a shell -c wrapper.
+  // Command strings, interpolation and shell evaluation remain out of scope.
+  const shellCommandPattern =
+    /\b(?:bash|sh|zsh)(?:\.exe)?\s+-c\s+(?:"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))"|\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*))(?=\s|[;&|]|$)/gmu;
+  for (const match of source.matchAll(shellCommandPattern)) {
+    const name = match[1] ?? match[2] ?? match[3] ?? match[4];
+    if (!name) continue;
+    const target = resolveTarget(name, match.index ?? 0, new Set(), 0);
+    if (target) targets.add(target);
+    else unresolvedShellCommand = true;
+  }
+  return { targets: [...targets].sort(), unresolvedShellCommand };
 }
 
 /** Reuses source-derived signals and path-neutral references by exact content hash. */
 function contentAnalysis(source: string): Readonly<{
   references?: readonly string[];
   signals: readonly string[];
+  unresolvedShellCommand: boolean;
 }> {
   const digest = createHash('sha256').update(source).digest('hex');
   const cached = contentAnalysisCache.get(digest);
@@ -252,12 +272,14 @@ function contentAnalysis(source: string): Readonly<{
     }
     if (references.size > MAX_CACHED_REFERENCES_PER_CONTENT) break;
   }
-  for (const target of staticShellTargets(source)) references.add(target);
+  const shellAnalysis = staticShellTargets(source);
+  for (const target of shellAnalysis.targets) references.add(target);
   const result = Object.freeze({
     ...(references.size <= MAX_CACHED_REFERENCES_PER_CONTENT
       ? { references: Object.freeze([...references].sort()) }
       : {}),
-    signals: Object.freeze(behaviorSignals(source))
+    signals: Object.freeze(behaviorSignals(source)),
+    unresolvedShellCommand: shellAnalysis.unresolvedShellCommand
   });
   contentAnalysisCache.set(digest, result);
   if (contentAnalysisCache.size > MAX_CACHED_CONTENT_ANALYSES) {
@@ -469,7 +491,7 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
       for (const match of source.matchAll(pattern))
         addReference(references, match[2] ?? '');
     }
-    for (const target of staticShellTargets(source))
+    for (const target of staticShellTargets(source).targets)
       addReference(references, target);
   };
   for (const file of files) {
@@ -865,10 +887,9 @@ export function analyzeMaliciousContent(
     const queue = [...entry.references].map(
       (reference) => [entry.referenceBase, reference] as const
     );
-    let dynamicUnknown = entry.unknown;
-    const signals = new Set(
-      contentAnalysis(content.get(entry.file) ?? '').signals
-    );
+    const entryAnalysis = contentAnalysis(content.get(entry.file) ?? '');
+    let dynamicUnknown = entry.unknown || entryAnalysis.unresolvedShellCommand;
+    const signals = new Set(entryAnalysis.signals);
     const enqueue = (from: string, reference: string) => {
       if (queue.length >= MAX_REFERENCE_WORK) {
         workExhausted = true;
@@ -904,10 +925,11 @@ export function analyzeMaliciousContent(
       }
       trace.push(target);
       const targetText = content.get(target) ?? '';
-      for (const signal of contentAnalysis(targetText).signals)
-        signals.add(signal);
+      const targetAnalysis = contentAnalysis(targetText);
+      dynamicUnknown ||= targetAnalysis.unresolvedShellCommand;
+      for (const signal of targetAnalysis.signals) signals.add(signal);
       if (signals.size > 0 || automaticScript.test(targetText)) payload = true;
-      const nestedReferences = contentAnalysis(targetText).references;
+      const nestedReferences = targetAnalysis.references;
       if (nestedReferences) {
         for (const nested of nestedReferences)
           if (!enqueue(target, nested)) break;
@@ -944,7 +966,7 @@ export function analyzeMaliciousContent(
             if (nested && !enqueue(target, nested)) break;
           }
         }
-        for (const nested of staticShellTargets(targetText))
+        for (const nested of staticShellTargets(targetText).targets)
           if (!enqueue(target, nested)) break;
       }
     }

@@ -2901,6 +2901,7 @@ function staticShellTargets(source) {
     return resolveTarget(aliasName, assignment.position, visited, depth + 1);
   };
   const targets = new Set();
+  let unresolvedShellCommand = false;
   const executionPattern =
     /\b(?:node(?:\.exe)?|bash|sh|zsh|python(?:3)?|ruby|perl|php|bun)(?:\.exe)?\s+(?:"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))"|\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*))(?=\s|[;&|]|$)/gmu;
   for (const match of source.matchAll(executionPattern)) {
@@ -2909,7 +2910,18 @@ function staticShellTargets(source) {
     const target = resolveTarget(name, match.index ?? 0, new Set(), 0);
     if (target) targets.add(target);
   }
-  return [...targets].sort();
+  // Resolve only an exact variable alias supplied to a shell -c wrapper.
+  // Command strings, interpolation and shell evaluation remain out of scope.
+  const shellCommandPattern =
+    /\b(?:bash|sh|zsh)(?:\.exe)?\s+-c\s+(?:"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))"|\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*))(?=\s|[;&|]|$)/gmu;
+  for (const match of source.matchAll(shellCommandPattern)) {
+    const name = match[1] ?? match[2] ?? match[3] ?? match[4];
+    if (!name) continue;
+    const target = resolveTarget(name, match.index ?? 0, new Set(), 0);
+    if (target) targets.add(target);
+    else unresolvedShellCommand = true;
+  }
+  return { targets: [...targets].sort(), unresolvedShellCommand };
 }
 
 function localReferences(source, sourcePath, packagesByName, texts) {
@@ -2930,10 +2942,16 @@ function localReferences(source, sourcePath, packagesByName, texts) {
       if (value && !value.startsWith('-') && !value.includes(':'))
         refs.set(`${value}\0source`, { value, rootRelative: false });
     }
-  for (const target of staticShellTargets(source))
+  const shellAnalysis = staticShellTargets(source);
+  for (const target of shellAnalysis.targets)
     refs.set(target + '\\0static-shell', {
       value: target,
       rootRelative: false
+    });
+  if (shellAnalysis.unresolvedShellCommand)
+    refs.set('unresolved-shell-command', {
+      value: 'unresolved-shell-command',
+      rootRelative: true
     });
   if (sourcePath === 'package.json' || sourcePath.endsWith('/package.json')) {
     try {

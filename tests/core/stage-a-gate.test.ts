@@ -1151,6 +1151,43 @@ describe('trusted Stage A Git-object scanner', () => {
     );
   });
 
+  it('blocks a shell -c wrapper with an exact local target alias before install', async () => {
+    const fixture = await repo({
+      'package.json': JSON.stringify({
+        scripts: { prepare: 'sh ./runner.sh' }
+      }),
+      'runner.sh': 'target=./payload.orc; sh -c "$target"',
+      'payload.orc': 'const decoded = atob(encoded); eval(decoded);'
+    });
+    const result = scanGitTree(fixture.root, fixture.sha, {
+      changedPaths: ['package.json']
+    });
+    expect(result.status).toBe('blocked');
+    expect(result.findings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(
+          'execution-chain:package.json -> runner.sh -> payload.orc'
+        )
+      ])
+    );
+  });
+
+  it('leaves Stage A incomplete for a dynamic shell -c target', async () => {
+    const fixture = await repo({
+      'package.json': JSON.stringify({
+        scripts: { prepare: 'sh ./runner.sh' }
+      }),
+      'runner.sh': 'target=$GENERATED_TARGET; sh -c "$target"'
+    });
+    const result = scanGitTree(fixture.root, fixture.sha, {
+      changedPaths: ['package.json']
+    });
+    expect(result.status).toBe('incomplete');
+    expect(result.incompleteReasons).toContain(
+      'execution-reference-coverage-incomplete'
+    );
+  });
+
   it('does not fabricate an execution chain through single-quoted shell aliases', async () => {
     const fixture = await repo({
       'package.json': JSON.stringify({

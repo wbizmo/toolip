@@ -644,6 +644,19 @@ These source-derived bounds are not measured wall-time or process-RSS
 benchmarks; broader Docker grammar, platform and whole-process memory
 acceptance remain open (#40/#63/#86).
 
+## Static shell `-c` target aliases added on 2026-11-14
+
+For a bounded script with `B` source bytes, `A` literal assignments and `R`
+references, the malicious-content analyzer and protected Stage A scanner now
+also recognize an exact earlier local path alias supplied to `sh -c`,
+`bash -c` or `zsh -c`. The extra regex pass is `O(B)` time and the target set
+uses `O(R)` additional space; alias resolution remains depth-capped at 16 and
+rejects reassigned, single-quoted, interpolated or otherwise ambiguous values.
+Positive repository and Stage A regressions verify the full entrypoint-to-file
+trace without executing any content. This adds one static wrapper form; it does
+not complete shell semantics or resolve constructed commands. Issue #95 and
+the broader #40 corpus remain partial.
+
 ## Signed scan subject digests added on 2026-11-12
 
 For `F` captured files, `B` captured bytes, `P` total path bytes, `V` resolved
