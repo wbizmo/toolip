@@ -3094,6 +3094,11 @@ describe('non-npm lockfile inventory', () => {
     const unclosed = await readOtherEcosystemInventoryDetailed(root);
     expect(unclosed.warnings).toContain('go-work-use-block-unclosed');
     expect(unclosed.complete).toBe(false);
+
+    await writeFile(path.join(root, 'go.work'), 'go 1.24.0\n'.repeat(100_001));
+    const overBudget = await readOtherEcosystemInventoryDetailed(root);
+    expect(overBudget.warnings).toContain('go-work-directive-budget-exceeded');
+    expect(overBudget.complete).toBe(false);
   });
 
   it('marks modules replaced by go.work as unknown, including module-specific overrides', async () => {

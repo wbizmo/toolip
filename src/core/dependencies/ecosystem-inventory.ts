@@ -2896,52 +2896,64 @@ function parseGoWorkspace(text: string, warnings: string[]): string[] {
   const output = new Set<string>();
   let inUse = false;
   let lineCount = 0;
-  for (const line of text.split(/\r?\n/u)) {
-    lineCount += 1;
-    if (lineCount > 100_000) {
-      warnings.push('go-work-directive-budget-exceeded');
-      break;
-    }
+  const parseLine = (line: string): void => {
     const clean = line.replace(/\/\/.*$/u, '').trim();
-    if (!clean) continue;
+    if (!clean) return;
     if (inUse) {
       if (clean === ')') {
         inUse = false;
-        continue;
+        return;
       }
       const member = parseGoWorkspaceUsePath(clean);
       if (member) output.add(member);
       else warnings.push('go-work-use-directive-invalid');
-      continue;
+      return;
     }
     if (/^use\s*\(/u.test(clean)) {
       if (/^use\s*\(\s*$/u.test(clean)) inUse = true;
       else warnings.push('go-work-use-directive-invalid');
-      continue;
+      return;
     }
     const use = clean.match(/^use\s+(.+)$/u);
     if (use?.[1]) {
       const member = parseGoWorkspaceUsePath(use[1]);
       if (member) output.add(member);
       else warnings.push('go-work-use-directive-invalid');
-      continue;
+      return;
     }
     if (/^use(?:\s|$)/u.test(clean)) {
       warnings.push('go-work-use-directive-invalid');
-      continue;
+      return;
     }
     if (/^go\s+/u.test(clean)) {
       if (!/^go\s+\d+\.\d+(?:\.\d+)?$/u.test(clean))
         warnings.push('go-work-version-directive-invalid');
-      continue;
+      return;
     }
     if (/^toolchain\s+/u.test(clean)) {
       if (!/^toolchain\s+go\d+\.\d+(?:\.\d+)?(?:[a-z0-9.-]+)?$/iu.test(clean))
         warnings.push('go-work-toolchain-directive-invalid');
-      continue;
+      return;
     }
-    if (/^replace(?:\s|$)/u.test(clean)) continue;
+    if (/^replace(?:\s|$)/u.test(clean)) return;
     warnings.push('go-work-directive-unresolved');
+  };
+  let lineStart = 0;
+  while (lineStart <= text.length) {
+    lineCount += 1;
+    if (lineCount > 100_000) {
+      warnings.push('go-work-directive-budget-exceeded');
+      break;
+    }
+    const newline = text.indexOf('\n', lineStart);
+    const lineEnd = newline < 0 ? text.length : newline;
+    const line =
+      text[lineEnd - 1] === '\r'
+        ? text.slice(lineStart, lineEnd - 1)
+        : text.slice(lineStart, lineEnd);
+    parseLine(line);
+    if (newline < 0) break;
+    lineStart = newline + 1;
   }
   if (inUse) warnings.push('go-work-use-block-unclosed');
   return [...output];
