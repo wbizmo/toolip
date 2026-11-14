@@ -393,7 +393,7 @@ describe('analysis DAG scheduler', () => {
     expect(cache.metrics.retainedBytes).toBeLessThanOrEqual(1024 * 1024);
   });
 
-  it('keeps huge output out of the bounded cache while hashing its identity', () => {
+  it('skips serialization for huge output before allocating a cache copy', () => {
     const cache = new AnalysisResultCache(2, 256, 128);
     const digest = cache.setWithDigest(
       'scope',
@@ -401,9 +401,38 @@ describe('analysis DAG scheduler', () => {
       '1',
       Buffer.alloc(1024 * 1024, 7)
     );
-    expect(digest).toMatch(/^[a-f0-9]{64}$/u);
+    expect(digest).toBeUndefined();
     expect(cache.size).toBe(0);
     expect(cache.retainedByteSize).toBe(0);
+  });
+
+  it('bounds preflight work for oversized nested output', () => {
+    const cache = new AnalysisResultCache(2, 256, 128);
+    const output = { values: Array.from({ length: 100_000 }, (_, i) => i) };
+
+    expect(cache.setWithDigest('scope', 'large-tree', '1', output)).toBe(
+      undefined
+    );
+    expect(cache.size).toBe(0);
+    expect(cache.retainedByteSize).toBe(0);
+  });
+
+  it('does not invoke accessors while estimating cache output size', () => {
+    const cache = new AnalysisResultCache(2, 256, 128);
+    let invoked = false;
+    const output = Object.defineProperty({}, 'value', {
+      enumerable: true,
+      get() {
+        invoked = true;
+        return 'sensitive';
+      }
+    });
+
+    expect(cache.setWithDigest('scope', 'accessor', '1', output)).toBe(
+      undefined
+    );
+    expect(invoked).toBe(false);
+    expect(cache.size).toBe(0);
   });
 
   it('bounds result-cache entries and evicts the oldest key', () => {

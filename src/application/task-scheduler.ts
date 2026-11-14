@@ -15,6 +15,107 @@ const maximumCacheKeyBytes = 1_024;
 const maximumTaskVersionBytes = 1_024;
 const maximumTaskInputFingerprintBytes = 4_096;
 
+/**
+ * Estimate a conservative upper bound before V8 serialization allocates a
+ * second copy of an output. Values that cannot be safely estimated are left
+ * uncached; callers still receive their original result.
+ */
+function estimateCacheValueBytes(value: unknown, limit: number): number | undefined {
+  const pending: unknown[] = [value];
+  const visited = new Set<object>();
+  let bytes = 16;
+  const add = (amount: number): boolean => {
+    bytes += amount;
+    return bytes <= limit;
+  };
+
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === null || current === undefined) {
+      if (!add(16)) return undefined;
+      continue;
+    }
+    switch (typeof current) {
+      case 'boolean':
+      case 'number':
+      case 'bigint':
+        if (!add(16)) return undefined;
+        continue;
+      case 'string':
+        if (!add(Buffer.byteLength(current, 'utf8') * 2 + 8))
+          return undefined;
+        continue;
+      case 'object':
+        break;
+      default:
+        return undefined;
+    }
+
+    const object = current as object;
+    if (visited.has(object)) continue;
+    visited.add(object);
+    if (Buffer.isBuffer(object)) {
+      if (!add(object.byteLength * 2 + 32)) return undefined;
+      continue;
+    }
+    if (ArrayBuffer.isView(object)) {
+      if (!add(object.byteLength * 2 + 32)) return undefined;
+      continue;
+    }
+    if (object instanceof ArrayBuffer) {
+      if (!add(object.byteLength * 2 + 32)) return undefined;
+      continue;
+    }
+    if (object instanceof Map) {
+      if (!add(32)) return undefined;
+      for (const [key, item] of object) {
+        if (!add(32)) return undefined;
+        pending.push(key, item);
+      }
+      continue;
+    }
+    if (object instanceof Set) {
+      if (!add(32)) return undefined;
+      for (const item of object) {
+        if (!add(32)) return undefined;
+        pending.push(item);
+      }
+      continue;
+    }
+    if (Array.isArray(object)) {
+      if (object.length > Math.floor(limit / 32) || !add(object.length * 32))
+        return undefined;
+      for (let index = 0; index < object.length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(object, index);
+        if (!descriptor) continue;
+        if (!('value' in descriptor)) return undefined;
+        pending.push(descriptor.value);
+      }
+      // Named array properties are uncommon in cache values. Reject them
+      // rather than materializing an unbounded descriptor list to measure.
+      if (Object.keys(object).some((key) => !/^(?:0|[1-9]\d*)$/u.test(key)))
+        return undefined;
+      continue;
+    }
+    if (Object.getPrototypeOf(object) !== Object.prototype &&
+        Object.getPrototypeOf(object) !== null) {
+      // Dates, errors, class instances and host objects have serialization
+      // rules that this small estimator cannot bound reliably.
+      return undefined;
+    }
+    if (!add(32)) return undefined;
+    const keys = Object.keys(object);
+    for (const key of keys) {
+      if (!add(Buffer.byteLength(key, 'utf8') * 2 + 16)) return undefined;
+      const descriptor = Object.getOwnPropertyDescriptor(object, key);
+      if (!descriptor) continue;
+      if (!('value' in descriptor)) return undefined;
+      pending.push(descriptor.value);
+    }
+  }
+  return bytes;
+}
+
 export type AnalysisTask<T> = Readonly<{
   id: string;
   dependsOn?: readonly string[];
@@ -148,6 +249,12 @@ export class AnalysisResultCache {
       return undefined;
     }
     let encoded: Buffer;
+    // Serialization itself materializes the complete output. Preflight against
+    // a hard 2x-entry transient allocation ceiling before making that copy.
+    if (estimateCacheValueBytes(value, this.maxEntryBytes * 2) === undefined) {
+      forgetPrevious();
+      return undefined;
+    }
     try {
       encoded = serialize(value);
     } catch {
