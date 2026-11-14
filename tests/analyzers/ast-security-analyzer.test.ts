@@ -408,6 +408,22 @@ async function handler(req: RequestLike, db: Database) {
     );
   });
 
+  it('tracks local URL aliases passed to an unknown helper after the host guard', () => {
+    const findings = analyzeAstSource(
+      'src/routes/image.ts',
+      `async function handler(req: RequestLike) {
+  const url = new URL(req.query.image);
+  if (!['8.8.8.8'].includes(url.hostname)) throw new Error('blocked');
+  const alias = url;
+  rewriteUrl(alias);
+  await fetch(url, { redirect: 'error' });
+}`
+    );
+    expect(findings.some((finding) => finding.ruleId === 'TLP-AST-006')).toBe(
+      true
+    );
+  });
+
   it('distinguishes tainted shell commands from safe argument-array execution', () => {
     const findings = analyzeAstSource(
       'commands.ts',

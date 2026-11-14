@@ -3522,6 +3522,28 @@ function mutatedBetween(
 ): boolean {
   const root = rootIdentifier(expression);
   if (!root) return false;
+  const aliases = new Set([root.text]);
+  const collectAliases = (node: ts.Node): void => {
+    if (node !== ownerBody && ts.isFunctionLike(node)) return;
+    if (node.getStart() < end && ts.isVariableDeclaration(node)) {
+      const source = node.initializer && rootIdentifier(node.initializer);
+      if (ts.isIdentifier(node.name) && source && aliases.has(source.text))
+        aliases.add(node.name.text);
+    }
+    if (node.getStart() < end && ts.isBinaryExpression(node)) {
+      const source = rootIdentifier(node.right);
+      if (
+        node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+        ts.isIdentifier(node.left) &&
+        source &&
+        aliases.has(source.text)
+      )
+        aliases.add(node.left.text);
+    }
+    ts.forEachChild(node, collectAliases);
+  };
+  collectAliases(ownerBody);
   let mutated = false;
   const visit = (node: ts.Node): void => {
     if (mutated || (node !== ownerBody && ts.isFunctionLike(node))) return;
@@ -3530,16 +3552,16 @@ function mutatedBetween(
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
         node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
-        rootIdentifier(node.left)?.text === root.text
+        aliases.has(rootIdentifier(node.left)?.text ?? '')
       ) {
         mutated = true;
         return;
       }
       if (
         ts.isCallExpression(node) &&
-        (rootIdentifier(node.expression)?.text === root.text ||
-          node.arguments.some(
-            (argument) => rootIdentifier(argument)?.text === root.text
+        (aliases.has(rootIdentifier(node.expression)?.text ?? '') ||
+          node.arguments.some((argument) =>
+            aliases.has(rootIdentifier(argument)?.text ?? '')
           ))
       ) {
         // Unknown callees can mutate URL/path objects by reference. Do not
