@@ -786,3 +786,19 @@ over the cap; existing
 fixtures cover direct tenant and shared-grant filters. The focused authorization suite passed 17 tests and TypeScript
 typecheck passed. This syntactic heuristic still cannot prove framework,
 database or application-policy semantics; #61 remains incomplete.
+
+## Imported outbound request sink indexing — 2026-11-14
+
+The SSRF pass now identifies named imports from `node:http`, `node:https` and
+`undici`, namespace imports from those modules, and default/named request
+exports from `axios` and `got`, including local import aliases. For a source
+file with `T` top-level statements, `I` imported bindings and `C` outbound
+request calls, standalone analysis previously rescanned the full statement
+list at each recognized call (`O(C·T)`). It now builds one import map in
+`O(T + I)` expected time and uses expected `O(1)` lookups per call, for
+`O(T + I + C)` expected total time and `O(I)` additional map space. Project
+analysis already had a per-source import map and now shares the same builder.
+These map bounds are expected-time. Imported-client regressions cover named,
+namespace and default aliases; 44 AST security tests, 14 AST worker tests and
+typecheck passed. Dynamic clients and project wrappers remain unresolved
+review candidates (#60).

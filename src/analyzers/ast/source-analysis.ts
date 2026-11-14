@@ -221,6 +221,55 @@ function cacheProjectModuleExport(
   cache.set(exportName, result ?? null);
 }
 
+function indexImportBindings(
+  sourceFile: ts.SourceFile
+): Map<string, ImportBinding> {
+  const imports = new Map<string, ImportBinding>();
+  for (const statement of sourceFile.statements) {
+    if (
+      ts.isImportEqualsDeclaration(statement) &&
+      !statement.isTypeOnly &&
+      ts.isExternalModuleReference(statement.moduleReference) &&
+      statement.moduleReference.expression &&
+      ts.isStringLiteral(statement.moduleReference.expression)
+    ) {
+      imports.set(statement.name.text, {
+        moduleSpecifier: statement.moduleReference.expression.text,
+        namespace: true
+      });
+    }
+    if (
+      !ts.isImportDeclaration(statement) ||
+      !ts.isStringLiteral(statement.moduleSpecifier) ||
+      !statement.importClause ||
+      statement.importClause.isTypeOnly
+    )
+      continue;
+    if (statement.importClause.name)
+      imports.set(statement.importClause.name.text, {
+        moduleSpecifier: statement.moduleSpecifier.text,
+        importedName: 'default',
+        namespace: false
+      });
+    const bindings = statement.importClause.namedBindings;
+    if (bindings && ts.isNamespaceImport(bindings)) {
+      imports.set(bindings.name.text, {
+        moduleSpecifier: statement.moduleSpecifier.text,
+        namespace: true
+      });
+    } else if (bindings && ts.isNamedImports(bindings)) {
+      for (const element of bindings.elements)
+        if (!element.isTypeOnly)
+          imports.set(element.name.text, {
+            moduleSpecifier: statement.moduleSpecifier.text,
+            importedName: element.propertyName?.text ?? element.name.text,
+            namespace: false
+          });
+    }
+  }
+  return imports;
+}
+
 function indexProjectModuleSources(
   parsedFiles: readonly ts.SourceFile[]
 ): Pick<
@@ -252,7 +301,7 @@ function indexProjectModuleSources(
   >();
 
   for (const sourceFile of parsedFiles) {
-    const imports = new Map<string, ImportBinding>();
+    const imports = indexImportBindings(sourceFile);
     const exports = new Map<string, ExportBinding[]>();
     const exportStars: string[] = [];
     const locals = new Map<string, LocalBindingReference>();
@@ -261,49 +310,6 @@ function indexProjectModuleSources(
       !declaresTopLevelName(sourceFile, 'module') &&
       !declaresTopLevelName(sourceFile, 'exports');
     for (const statement of sourceFile.statements) {
-      if (
-        ts.isImportEqualsDeclaration(statement) &&
-        !statement.isTypeOnly &&
-        ts.isExternalModuleReference(statement.moduleReference) &&
-        statement.moduleReference.expression &&
-        ts.isStringLiteral(statement.moduleReference.expression)
-      ) {
-        imports.set(statement.name.text, {
-          moduleSpecifier: statement.moduleReference.expression.text,
-          namespace: true
-        });
-      }
-
-      if (
-        ts.isImportDeclaration(statement) &&
-        ts.isStringLiteral(statement.moduleSpecifier) &&
-        statement.importClause &&
-        !statement.importClause.isTypeOnly
-      ) {
-        if (statement.importClause.name)
-          imports.set(statement.importClause.name.text, {
-            moduleSpecifier: statement.moduleSpecifier.text,
-            importedName: 'default',
-            namespace: false
-          });
-        const bindings = statement.importClause.namedBindings;
-        if (bindings && ts.isNamespaceImport(bindings)) {
-          imports.set(bindings.name.text, {
-            moduleSpecifier: statement.moduleSpecifier.text,
-            namespace: true
-          });
-        } else if (bindings && ts.isNamedImports(bindings)) {
-          for (const element of bindings.elements) {
-            if (!element.isTypeOnly)
-              imports.set(element.name.text, {
-                moduleSpecifier: statement.moduleSpecifier.text,
-                importedName: element.propertyName?.text ?? element.name.text,
-                namespace: false
-              });
-          }
-        }
-      }
-
       if (ts.isExportDeclaration(statement)) {
         if (statement.isTypeOnly) continue;
         const moduleSpecifier =
@@ -510,58 +516,23 @@ function indexProjectModuleWrites(
   }
 }
 
+const standaloneImportIndexes = new WeakMap<
+  ts.SourceFile,
+  Map<string, ImportBinding>
+>();
+
 function findImportBinding(
   sourceFile: ts.SourceFile,
   localName: string,
   modules?: ProjectModuleResolver
 ): ImportBinding | undefined {
-  const indexed = modules?.importsBySource.get(sourceFile);
-  if (modules) return indexed?.get(localName);
-  for (const statement of sourceFile.statements) {
-    if (
-      ts.isImportEqualsDeclaration(statement) &&
-      !statement.isTypeOnly &&
-      statement.name.text === localName &&
-      ts.isExternalModuleReference(statement.moduleReference) &&
-      statement.moduleReference.expression &&
-      ts.isStringLiteral(statement.moduleReference.expression)
-    )
-      return {
-        moduleSpecifier: statement.moduleReference.expression.text,
-        namespace: true
-      };
-    if (
-      !ts.isImportDeclaration(statement) ||
-      !ts.isStringLiteral(statement.moduleSpecifier) ||
-      !statement.importClause ||
-      statement.importClause.isTypeOnly
-    )
-      continue;
-    if (statement.importClause.name?.text === localName)
-      return {
-        moduleSpecifier: statement.moduleSpecifier.text,
-        importedName: 'default',
-        namespace: false
-      };
-    const bindings = statement.importClause.namedBindings;
-    if (bindings && ts.isNamespaceImport(bindings)) {
-      if (bindings.name.text === localName)
-        return {
-          moduleSpecifier: statement.moduleSpecifier.text,
-          namespace: true
-        };
-    } else if (bindings && ts.isNamedImports(bindings)) {
-      for (const element of bindings.elements) {
-        if (!element.isTypeOnly && element.name.text === localName)
-          return {
-            moduleSpecifier: statement.moduleSpecifier.text,
-            importedName: element.propertyName?.text ?? element.name.text,
-            namespace: false
-          };
-      }
-    }
+  if (modules) return modules.importsBySource.get(sourceFile)?.get(localName);
+  let indexed = standaloneImportIndexes.get(sourceFile);
+  if (!indexed) {
+    indexed = indexImportBindings(sourceFile);
+    standaloneImportIndexes.set(sourceFile, indexed);
   }
-  return undefined;
+  return indexed.get(localName);
 }
 
 function resolveChildProcessImport(
@@ -3631,6 +3602,77 @@ function hasVerifiedFetchHostAllowlist(
   return verified;
 }
 
+const outboundRequestModules = new Set([
+  'axios',
+  'got',
+  'http',
+  'https',
+  'node:http',
+  'node:https',
+  'undici'
+]);
+const outboundRequestMethods = new Set([
+  'delete',
+  'fetch',
+  'get',
+  'patch',
+  'post',
+  'put',
+  'request'
+]);
+
+function isOutboundRequestCall(call: ts.CallExpression, scope: Scope): boolean {
+  const target = call.expression;
+  const targetName = ts.isIdentifier(target)
+    ? target.text.toLowerCase()
+    : ts.isPropertyAccessExpression(target)
+      ? target.name.text.toLowerCase()
+      : '';
+  const receiver = ts.isPropertyAccessExpression(target)
+    ? propertyPath(target.expression)?.at(-1)?.toLowerCase()
+    : undefined;
+  if (
+    outboundRequestMethods.has(targetName) &&
+    (targetName === 'fetch' ||
+      ['axios', 'http', 'https', 'got', 'request', 'client'].includes(
+        receiver ?? ''
+      ))
+  )
+    return true;
+
+  const importedIdentifier = ts.isIdentifier(target)
+    ? target
+    : ts.isPropertyAccessExpression(target)
+      ? rootIdentifier(target.expression)
+      : undefined;
+  if (
+    !importedIdentifier ||
+    bindingOwner(scope, importedIdentifier.text)?.kind !== 'source'
+  )
+    return false;
+  const imported = findImportBinding(
+    call.getSourceFile(),
+    importedIdentifier.text,
+    scope.projectModules
+  );
+  if (!imported || !outboundRequestModules.has(imported.moduleSpecifier))
+    return false;
+  if (ts.isIdentifier(target)) {
+    return (
+      outboundRequestMethods.has(imported.importedName ?? '') ||
+      (imported.importedName === 'default' &&
+        ['axios', 'got'].includes(imported.moduleSpecifier))
+    );
+  }
+  if (!ts.isPropertyAccessExpression(target)) return false;
+  return (
+    (imported.namespace && outboundRequestMethods.has(targetName)) ||
+    (imported.importedName === 'default' &&
+      ['axios', 'got'].includes(imported.moduleSpecifier) &&
+      outboundRequestMethods.has(targetName))
+  );
+}
+
 function sourceSinkRule(
   node: ts.Node,
   scope: Scope,
@@ -3701,17 +3743,8 @@ function sourceSinkRule(
     ) {
       return astSecurityRules.sqlInjection;
     }
-    const receiver = ts.isPropertyAccessExpression(target)
-      ? propertyPath(target.expression)?.at(-1)
-      : undefined;
     if (
-      ['fetch', 'request', 'get', 'post', 'put', 'patch', 'delete'].includes(
-        method
-      ) &&
-      (method === 'fetch' ||
-        ['axios', 'http', 'https', 'got', 'request', 'client'].includes(
-          receiver ?? ''
-        )) &&
+      isOutboundRequestCall(node, scope) &&
       !hasVerifiedFetchHostAllowlist(node, first)
     ) {
       return astSecurityRules.serverSideRequestForgery;

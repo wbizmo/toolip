@@ -281,6 +281,28 @@ async function handler(req: RequestLike, db: Database) {
     );
   });
 
+  it('recognizes request functions imported from known HTTP clients', () => {
+    const findings = analyzeAstSource(
+      'routes.ts',
+      `import { request as sendRequest } from 'undici';
+import { get as fetchOverHttp } from 'node:https';
+import * as httpClient from 'node:http';
+import axios from 'axios';
+async function handler(req: RequestLike) {
+  await sendRequest(req.query.destination);
+  await fetchOverHttp(req.query.backup);
+  await httpClient.request(req.query.namespaceUrl);
+  await axios(req.query.axiosUrl);
+}
+async function shadowed(req: RequestLike, sendRequest: (url: string) => void) {
+  await sendRequest(req.query.localCallback);
+}`
+    );
+    expect(
+      findings.filter((finding) => finding.ruleId === 'TLP-AST-006')
+    ).toHaveLength(4);
+  });
+
   it('preserves taint through computed request fields and Promise callbacks', () => {
     const findings = analyzeAstSource(
       'routes.ts',
