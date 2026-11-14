@@ -237,6 +237,116 @@ describe('DockerfileAnalyzer', () => {
     }
   });
 
+  it('keeps unsupported ARG modifiers unresolved instead of trusting an image value', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-arg-unsupported-')
+    );
+    try {
+      const digest = 'a'.repeat(64);
+      for (const expression of [
+        '$' + '{IMAGE/pattern/replacement}',
+        '$' + '{IMAGE:?synthetic-build-error}'
+      ]) {
+        await writeFile(
+          path.join(root, 'Dockerfile'),
+          [
+            `ARG IMAGE=node:22@sha256:${digest}`,
+            `FROM ${expression}`,
+            'USER 1000',
+            'HEALTHCHECK CMD true'
+          ].join('\n')
+        );
+        const result = await new DockerfileAnalyzer().analyze({ root });
+        expect(result.coverage.state).toBe('partial');
+        expect(result.warnings).toContain(
+          'Dockerfile:2: base image uses an unresolved build argument; digest pinning could not be verified'
+        );
+        expect(
+          result.findings.find((finding) => finding.ruleId === 'TLP-DOCKER-003')
+        ).toMatchObject({ confidence: 'low', location: { line: 2 } });
+        expect(JSON.stringify(result)).not.toContain('synthetic-build-error');
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('applies escape parity consistently when expanding FROM build arguments', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-escape-parity-')
+    );
+    try {
+      for (const [directive, fromLine, expectExpanded] of [
+        ['', 'FROM \\$IMAGE', false],
+        ['', 'FROM \\\\$IMAGE', true],
+        ['# escape=`\n', 'FROM `$IMAGE', false],
+        ['# escape=`\n', 'FROM ``$IMAGE', true]
+      ] as const) {
+        await writeFile(
+          path.join(root, 'Dockerfile'),
+          `${directive}ARG IMAGE=node:22\n${fromLine}\nUSER 1000\nHEALTHCHECK CMD true\n`
+        );
+        const result = await new DockerfileAnalyzer().analyze({ root });
+        expect(result.coverage.state).toBe('partial');
+        expect(
+          result.findings.some((finding) => finding.ruleId === 'TLP-DOCKER-003')
+        ).toBe(expectExpanded);
+        expect(result.warnings).toEqual(
+          expect.arrayContaining([
+            expect.stringContaining('unresolved build argument')
+          ])
+        );
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps malformed parser directives incomplete instead of guessing escape rules', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-directive-')
+    );
+    try {
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        '# escape=/\nFROM scratch\nUSER 1000\nHEALTHCHECK CMD true\n'
+      );
+      const result = await new DockerfileAnalyzer().analyze({ root });
+      expect(result.coverage.state).toBe('partial');
+      expect(result.warnings).toContain(
+        'Dockerfile:1: invalid Dockerfile escape directive; default escape semantics were used'
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves cancellation as incomplete Dockerfile coverage', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-cancel-'));
+    try {
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        'FROM scratch\nUSER 1000\nHEALTHCHECK CMD true\n'
+      );
+      const controller = new AbortController();
+      controller.abort();
+      const result = await new DockerfileAnalyzer().analyze({
+        root,
+        signal: controller.signal
+      });
+      expect(result.coverage).toMatchObject({
+        state: 'failed',
+        eligible: 1,
+        scanned: 0,
+        skipped: 1,
+        failed: 0
+      });
+      expect(result.warnings).toEqual(['Dockerfile: skipped (cancelled)']);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('marks unresolved FROM platform expressions as incomplete even when user and health are explicit', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-docker-platform-')
