@@ -822,6 +822,7 @@ async function readYarnWorkspaces(
   root: string,
   manifest: RecordValue,
   warnings: string[],
+  workspaceManifestBudget: WorkspaceManifestBudget,
   fileSource?: DependencyFileSource
 ): Promise<LockedInstance[]> {
   const rawWorkspaces = Array.isArray(manifest.workspaces)
@@ -859,10 +860,6 @@ async function readYarnWorkspaces(
     );
   const result: LockedInstance[] = [];
   const seenNames = new Set<string>();
-  const workspaceManifestBudget: WorkspaceManifestBudget = {
-    count: 0,
-    bytes: 0
-  };
   for (const relative of matched.slice(0, 10_000).sort()) {
     if (
       workspaceManifestBudget.count >= maximumWorkspaceManifests ||
@@ -1055,10 +1052,15 @@ export async function readYarnDependencyGraph(
     )
   );
   if (!manifest) throw new Error('root package manifest is malformed');
+  const workspaceManifestBudget: WorkspaceManifestBudget = {
+    count: 0,
+    bytes: 0
+  };
   const workspaces = await readYarnWorkspaces(
     root,
     manifest,
     warnings,
+    workspaceManifestBudget,
     fileSource
   );
   const workspacesByName = new Map<string, LockedInstance>();
@@ -1074,6 +1076,7 @@ export async function readYarnDependencyGraph(
   }
   const entryByDescriptor = new Map<string, LockedInstance>();
   const instancesByLocator = new Map<string, LockedInstance>();
+  const localFileManifestCache = new Map<string, RecordValue | null>();
   for (const [groupedDescriptor, raw] of Object.entries(lock)) {
     if (groupedDescriptor === '__metadata') continue;
     const entry = record(raw);
@@ -1119,6 +1122,59 @@ export async function readYarnDependencyGraph(
       );
       continue;
     }
+    const fileSelectors = validDescriptors.map(({ info }) =>
+      info.selector.startsWith('file:')
+        ? normalizeWorkspacePath(info.selector.slice('file:'.length))
+        : undefined
+    );
+    const hasFileSelector = validDescriptors.some(({ info }) =>
+      info.selector.startsWith('file:')
+    );
+    let localFilePath: string | undefined;
+    let localFileManifest: RecordValue | undefined;
+    if (hasFileSelector) {
+      const paths = [...new Set(fileSelectors)];
+      if (
+        paths.length !== 1 ||
+        paths[0] === undefined ||
+        fileSelectors.some((filePath) => filePath === undefined)
+      ) {
+        warnings.push(
+          `Yarn file dependency path is unsafe or ambiguous: ${groupedDescriptor.slice(0, 200)}`
+        );
+        continue;
+      }
+      localFilePath = paths[0];
+      if (localFileManifestCache.has(localFilePath)) {
+        localFileManifest =
+          localFileManifestCache.get(localFilePath) ?? undefined;
+      } else {
+        try {
+          const captured = await readWorkspaceManifest(
+            root,
+            localFilePath,
+            fileSource,
+            workspaceManifestBudget
+          );
+          localFileManifestCache.set(localFilePath, captured ?? null);
+          localFileManifest = captured;
+        } catch {
+          localFileManifestCache.set(localFilePath, null);
+        }
+      }
+      if (
+        !localFileManifest ||
+        typeof localFileManifest.name !== 'string' ||
+        typeof localFileManifest.version !== 'string' ||
+        !semver.valid(localFileManifest.version) ||
+        localFileManifest.version !== entry.version
+      ) {
+        warnings.push(
+          `Yarn file dependency manifest identity is unavailable or mismatched: ${groupedDescriptor.slice(0, 200)}`
+        );
+        continue;
+      }
+    }
     // Berry serializes workspaces in yarn.lock with a synthetic
     // `0.0.0-use.local` version. The authoritative version and manifest data
     // come from the bounded workspace files already read above. Do not expose
@@ -1141,7 +1197,11 @@ export async function readYarnDependencyGraph(
         continue;
       }
     }
-    const fallbackName = validDescriptors[0]?.info.name;
+    const localPackageName =
+      typeof localFileManifest?.name === 'string'
+        ? localFileManifest.name
+        : undefined;
+    const fallbackName = localPackageName ?? validDescriptors[0]?.info.name;
     if (!fallbackName) continue;
     const resolution =
       typeof entry.resolution === 'string'
@@ -1166,9 +1226,12 @@ export async function readYarnDependencyGraph(
       );
       continue;
     }
-    const name = classic
-      ? uniqueAliasTargets[0]
-      : (yarnDescriptorName(resolution)?.name ?? uniqueAliasTargets[0]);
+    const name =
+      localPackageName ??
+      (classic
+        ? uniqueAliasTargets[0]
+        : (yarnDescriptorName(resolution)?.name ?? uniqueAliasTargets[0]));
+    if (!name) continue;
     // Berry's `resolution` commonly points every peer-qualified virtual
     // locator at the same downloaded archive. That archive identity is not an
     // installed-instance identity: the virtual descriptor's hash records the
@@ -1194,15 +1257,17 @@ export async function readYarnDependencyGraph(
         `Yarn package has an ambiguous PnP resolution context: ${groupedDescriptor.slice(0, 200)}`
       );
     }
-    const resolutionContext = resolutionReference
-      ? virtualContexts.length === 1
-        ? `virtual:${virtualContexts[0]}#${resolutionReference}`
-        : resolutionReference
-      : undefined;
+    const resolutionContext = localFilePath
+      ? `file:${localFilePath}`
+      : resolutionReference
+        ? virtualContexts.length === 1
+          ? `virtual:${virtualContexts[0]}#${resolutionReference}`
+          : resolutionReference
+        : undefined;
     const requestedNames = [
       ...new Set(validDescriptors.map(({ info }) => info.name))
     ].sort();
-    const identityKey = `${name}\0${requestedNames.join(',')}\0${entry.version}\0${String(entry.integrity ?? '')}\0${resolution}\0${safeResolved(entry.resolved) ?? ''}\0${virtualContexts.join(',')}`;
+    const identityKey = `${name}\0${requestedNames.join(',')}\0${entry.version}\0${String(entry.integrity ?? '')}\0${resolution}\0${safeResolved(entry.resolved) ?? ''}\0${virtualContexts.join(',')}\0${localFilePath ?? ''}`;
     let item = instancesByLocator.get(identityKey);
     if (!item) {
       const virtualName = createHash('sha256')
@@ -1213,7 +1278,8 @@ export async function readYarnDependencyGraph(
         locator: `${resolution}#${createHash('sha256').update(identityKey).digest('hex').slice(0, 16)}`,
         name,
         version: entry.version,
-        installName: requestedNames.length === 1 ? requestedNames[0] : name,
+        installName:
+          requestedNames.length === 1 ? (requestedNames[0] ?? name) : name,
         installPath: `yarn:pnp/${virtualName}`,
         integrity:
           typeof entry.integrity === 'string'
@@ -1228,13 +1294,21 @@ export async function readYarnDependencyGraph(
         dev: entry.dev === true,
         optional: entry.optional === true,
         resolutionContext,
-        dependencies: record(entry.dependencies),
-        optionalDependencies: record(entry.optionalDependencies),
-        peerDependencies: record(entry.peerDependencies),
-        peerDependenciesMeta: record(entry.peerDependenciesMeta)
+        dependencies:
+          record(localFileManifest?.dependencies) ?? record(entry.dependencies),
+        optionalDependencies:
+          record(localFileManifest?.optionalDependencies) ??
+          record(entry.optionalDependencies),
+        peerDependencies:
+          record(localFileManifest?.peerDependencies) ??
+          record(entry.peerDependencies),
+        peerDependenciesMeta:
+          record(localFileManifest?.peerDependenciesMeta) ??
+          record(entry.peerDependenciesMeta)
       };
       instancesByLocator.set(identityKey, item);
     }
+    if (!item) continue;
     for (const { descriptor } of validDescriptors) {
       const existing = entryByDescriptor.get(descriptor);
       if (existing && existing !== item) {

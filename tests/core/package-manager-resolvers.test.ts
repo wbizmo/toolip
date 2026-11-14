@@ -21,9 +21,11 @@ async function fixture(): Promise<string> {
 async function generatedManagerFixture(manager: string): Promise<string> {
   const root = await fixture();
   const fixtureRoot = path.resolve('tests/fixtures/package-managers');
-  const projectRoot = manager.startsWith('yarn-berry-')
-    ? path.join(fixtureRoot, manager, 'project')
-    : path.join(fixtureRoot, 'project');
+  const projectRoot =
+    manager.startsWith('yarn-berry-') ||
+    manager === 'yarn-classic-file-alias-v1'
+      ? path.join(fixtureRoot, manager, 'project')
+      : path.join(fixtureRoot, 'project');
   await cp(projectRoot, root, { recursive: true });
   const lockfile = manager.startsWith('npm-')
     ? 'package-lock.json'
@@ -812,6 +814,82 @@ child@^2.0.0:
         requirement: 'npm:react@19.0.0'
       })
     );
+  });
+
+  it('resolves manager-generated Yarn Classic file aliases to manifest identities', async () => {
+    const root = await generatedManagerFixture('yarn-classic-file-alias-v1');
+    const graph = await readNpmDependencyGraph(root);
+    const foo18 = graph.packages.find(
+      (item) => item.name === 'foo' && item.version === '18.2.0'
+    );
+    const foo19 = graph.packages.find(
+      (item) => item.name === 'foo' && item.version === '19.0.0'
+    );
+
+    expect(graph).toMatchObject({ manager: 'yarn', complete: true });
+    expect(foo18).toMatchObject({
+      direct: true,
+      installName: 'foo18',
+      resolved: undefined,
+      registry: undefined
+    });
+    expect(foo19).toMatchObject({
+      direct: true,
+      installName: 'foo19',
+      resolved: undefined,
+      registry: undefined
+    });
+    expect(graph.edges).toContainEqual(
+      expect.objectContaining({
+        from: 'root',
+        to: foo18?.id,
+        name: 'foo',
+        alias: 'foo18',
+        requirement: 'file:vendor/foo18'
+      })
+    );
+  });
+
+  it('keeps unsafe or mismatched Yarn Classic file aliases incomplete', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'package.json'),
+      JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        dependencies: { outside: 'file:../outside' }
+      })
+    );
+    await writeFile(
+      path.join(root, 'yarn.lock'),
+      '# yarn lockfile v1\n\n"outside@file:../outside":\n  version "1.0.0"\n'
+    );
+    const outside = await readNpmDependencyGraph(root);
+    expect(outside.complete).toBe(false);
+    expect(outside.packages).toEqual([]);
+    expect(outside.warnings.join('\n')).toContain('unsafe or ambiguous');
+
+    await mkdir(path.join(root, 'vendor', 'pkg'), { recursive: true });
+    await writeFile(
+      path.join(root, 'package.json'),
+      JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        dependencies: { local: 'file:vendor/pkg' }
+      })
+    );
+    await writeFile(
+      path.join(root, 'vendor', 'pkg', 'package.json'),
+      JSON.stringify({ name: 'local', version: '2.0.0' })
+    );
+    await writeFile(
+      path.join(root, 'yarn.lock'),
+      '# yarn lockfile v1\n\n"local@file:vendor/pkg":\n  version "1.0.0"\n'
+    );
+    const mismatched = await readNpmDependencyGraph(root);
+    expect(mismatched.complete).toBe(false);
+    expect(mismatched.packages).toEqual([]);
+    expect(mismatched.warnings.join('\n')).toContain('mismatched');
   });
 
   it.each([

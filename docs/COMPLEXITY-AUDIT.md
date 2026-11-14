@@ -828,3 +828,16 @@ expected `O(C × (A + H))` for AST ancestor depth `A` and alias chain cap
 `H ≤ 16`, with at most two operands per call. The analyzer remains a candidate
 heuristic; it does not establish canonical containment or prove freedom from
 symlink and provider races (#60).
+
+## Yarn Classic local alias identity — 2026-11-14
+
+Yarn Classic `file:` descriptors can use an alias that differs from the local
+package manifest name. The resolver now loads each unique local manifest once,
+validates exact name/version identity and uses that manifest to construct the
+package instance and dependency edges. Relative paths are normalized beneath
+the project root; symlinked directory segments, out-of-root paths, absent
+manifests and lock/manifest version mismatches remain unresolved. The resolver
+shares the existing workspace-manifest budget: at most 10,000 manifests, 1 MiB
+per manifest and 32 MiB aggregate. For `L` distinct local file targets and
+captured manifest bytes `B`, indexing is expected `O(L + B)` time and `O(L + B)`
+additional space within those limits (#64).

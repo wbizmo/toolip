@@ -284,15 +284,14 @@ function indexImportBindings(
           continue;
         const moduleSpecifier = declaration.initializer.arguments[0].text;
         if (ts.isIdentifier(declaration.name)) {
+          const callableDefault =
+            moduleSpecifier === 'axios' || moduleSpecifier === 'got';
           imports.set(declaration.name.text, {
             moduleSpecifier,
-            ...(moduleSpecifier === 'axios' || moduleSpecifier === 'got'
+            ...(callableDefault
               ? { importedName: 'default' }
               : { namespace: true }),
-            namespace:
-              moduleSpecifier === 'axios' || moduleSpecifier === 'got'
-                ? false
-                : true
+            namespace: !callableDefault
           });
           continue;
         }
