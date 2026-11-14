@@ -91,10 +91,15 @@ function estimateCacheValueBytes(value: unknown, limit: number): number | undefi
         if (!('value' in descriptor)) return undefined;
         pending.push(descriptor.value);
       }
-      // Named array properties are uncommon in cache values. Reject them
-      // rather than materializing an unbounded descriptor list to measure.
-      if (Object.keys(object).some((key) => !/^(?:0|[1-9]\d*)$/u.test(key)))
-        return undefined;
+      // Reject named array properties without materializing a key array.
+      for (const key in object) {
+        if (!Object.hasOwn(object, key)) continue;
+        if (
+          !/^(?:0|[1-9]\d*)$/u.test(key) ||
+          Number(key) >= object.length
+        )
+          return undefined;
+      }
       continue;
     }
     if (Object.getPrototypeOf(object) !== Object.prototype &&
@@ -104,8 +109,8 @@ function estimateCacheValueBytes(value: unknown, limit: number): number | undefi
       return undefined;
     }
     if (!add(32)) return undefined;
-    const keys = Object.keys(object);
-    for (const key of keys) {
+    for (const key in object) {
+      if (!Object.hasOwn(object, key)) continue;
       if (!add(Buffer.byteLength(key, 'utf8') * 2 + 16)) return undefined;
       const descriptor = Object.getOwnPropertyDescriptor(object, key);
       if (!descriptor) continue;

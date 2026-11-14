@@ -406,11 +406,51 @@ describe('analysis DAG scheduler', () => {
     expect(cache.retainedByteSize).toBe(0);
   });
 
+  it('reruns dependents when an oversized dependency has no stable digest', async () => {
+    const cache = new AnalysisResultCache(8, 4096, 256);
+    let dependencyRuns = 0;
+    let dependentRuns = 0;
+    const tasks = [
+      {
+        id: 'large-source',
+        version: '1',
+        inputFingerprint: 'stable',
+        run: async () => Buffer.alloc(512, ++dependencyRuns)
+      },
+      {
+        id: 'consumer',
+        version: '1',
+        inputFingerprint: 'stable',
+        dependsOn: ['large-source'],
+        run: async () => ++dependentRuns
+      }
+    ];
+
+    await runIncrementalTaskDag('scope', tasks, { cache });
+    await runIncrementalTaskDag('scope', tasks, { cache });
+
+    expect(dependencyRuns).toBe(2);
+    expect(dependentRuns).toBe(2);
+  });
+
   it('bounds preflight work for oversized nested output', () => {
     const cache = new AnalysisResultCache(2, 256, 128);
     const output = { values: Array.from({ length: 100_000 }, (_, i) => i) };
 
     expect(cache.setWithDigest('scope', 'large-tree', '1', output)).toBe(
+      undefined
+    );
+    expect(cache.size).toBe(0);
+    expect(cache.retainedByteSize).toBe(0);
+  });
+
+  it('stops plain-object key enumeration when the estimate exceeds budget', () => {
+    const cache = new AnalysisResultCache(2, 256, 128);
+    const output: Record<string, number> = {};
+    for (let index = 0; index < 100_000; index += 1)
+      output[`key-${index}`] = index;
+
+    expect(cache.setWithDigest('scope', 'large-record', '1', output)).toBe(
       undefined
     );
     expect(cache.size).toBe(0);
