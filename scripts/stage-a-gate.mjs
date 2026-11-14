@@ -2902,6 +2902,11 @@ function staticShellTargets(source) {
   };
   const targets = new Set();
   let unresolvedShellCommand = false;
+  // `eval` executes command text and a variable passed to `exec` selects a
+  // runtime target. Neither is resolved by this static path-only model.
+  const dynamicExecutionPattern =
+    /\beval\s+(?:"[^"\n]*"|'[^'\n]*'|[^\s;&|]+)|\bexec\s+(?:"\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)"|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*)/gmu;
+  if (dynamicExecutionPattern.test(source)) unresolvedShellCommand = true;
   const executionPattern =
     /\b(?:node(?:\.exe)?|bash|sh|zsh|python(?:3)?|ruby|perl|php|bun)(?:\.exe)?\s+(?:"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))"|\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*))(?=\s|[;&|]|$)/gmu;
   for (const match of source.matchAll(executionPattern)) {

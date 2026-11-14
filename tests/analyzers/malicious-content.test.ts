@@ -105,6 +105,19 @@ describe('non-executing malicious content chain analysis', () => {
     ).toBe(true);
   });
 
+  it('reports shell eval command text as unresolved execution', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({ scripts: { prepare: 'sh ./runner.sh' } })
+      },
+      { path: 'runner.sh', content: 'eval "$COMMAND"' }
+    ]);
+    expect(
+      result.findings.some((finding) => finding.ruleId === 'TLP-MAL-002')
+    ).toBe(true);
+  });
+
   it('does not interpolate a single-quoted shell alias', () => {
     const result = analyzeMaliciousContent([
       {

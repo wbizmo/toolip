@@ -29,7 +29,8 @@ PowerShell and Windows `cmd /c` or `/k`, with captured `.py`, `.rb`, `.pl`,
 `.php`, `.ps1`, `.cmd` and `.bat` targets resolved without execution.
 For recognized shell scripts, an exact prior literal path variable passed to
 `sh -c`, `bash -c` or `zsh -c` is also traced. Reassigned, interpolated,
-constructed command strings and other dynamic wrapper forms remain unresolved.
+constructed command strings, shell `eval` text, variable-selected `exec`
+targets and other dynamic wrapper forms remain unresolved.
 
 Unresolved references and malformed `package.json`, `.vscode/tasks.json`, or
 workflow documents remain unknown/incomplete. GitHub Actions workflow files

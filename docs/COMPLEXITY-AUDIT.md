@@ -652,6 +652,8 @@ also recognize an exact earlier local path alias supplied to `sh -c`,
 `bash -c` or `zsh -c`. The extra regex pass is `O(B)` time and the target set
 uses `O(R)` additional space; alias resolution remains depth-capped at 16 and
 rejects reassigned, single-quoted, interpolated or otherwise ambiguous values.
+Dynamic shell `-c` variables, shell `eval` text and variable-selected `exec`
+targets mark the trace unknown instead of clean.
 Positive repository and Stage A regressions verify the full entrypoint-to-file
 trace without executing any content. This adds one static wrapper form; it does
 not complete shell semantics or resolve constructed commands. Issue #95 and

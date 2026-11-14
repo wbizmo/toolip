@@ -1188,6 +1188,22 @@ describe('trusted Stage A Git-object scanner', () => {
     );
   });
 
+  it('leaves Stage A incomplete for shell eval command text', async () => {
+    const fixture = await repo({
+      'package.json': JSON.stringify({
+        scripts: { prepare: 'sh ./runner.sh' }
+      }),
+      'runner.sh': 'eval "$COMMAND"'
+    });
+    const result = scanGitTree(fixture.root, fixture.sha, {
+      changedPaths: ['package.json']
+    });
+    expect(result.status).toBe('incomplete');
+    expect(result.incompleteReasons).toContain(
+      'execution-reference-coverage-incomplete'
+    );
+  });
+
   it('does not fabricate an execution chain through single-quoted shell aliases', async () => {
     const fixture = await repo({
       'package.json': JSON.stringify({
