@@ -43,6 +43,42 @@ describe('AST concurrency candidates', () => {
     );
   });
 
+  it('checks destination paths for filesystem moves and copies', () => {
+    for (const operation of [
+      'rename(source, destination)',
+      'copyFile(source, destination)'
+    ]) {
+      const findings = analyzeAstSource(
+        'src/storage.ts',
+        `import { access, copyFile, rename } from 'node:fs/promises';
+         async function move(source: string, destination: string) {
+           await access(destination);
+           await ${operation};
+         }`
+      );
+      expect(findings.map((finding) => finding.ruleId)).toContain(
+        'TLP-RACE-001'
+      );
+    }
+  });
+
+  it('flags checked paths reopened through file handles and streams', () => {
+    for (const operation of ["open(path, 'r')", 'createWriteStream(path)']) {
+      const findings = analyzeAstSource(
+        'src/storage.ts',
+        `import { access, open } from 'node:fs/promises';
+         import { createWriteStream } from 'node:fs';
+         async function load(path: string) {
+           await access(path);
+           await ${operation};
+         }`
+      );
+      expect(findings.map((finding) => finding.ruleId)).toContain(
+        'TLP-RACE-001'
+      );
+    }
+  });
+
   it('flags database read-check-write candidates without atomic predicates', () => {
     const findings = analyzeAstSource(
       'src/purchase.ts',

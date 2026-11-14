@@ -11,6 +11,13 @@ const fileCheckMethods = new Set([
   'lstatSync'
 ]);
 const fileUseMethods = new Set([
+  'open',
+  'openSync',
+  'createReadStream',
+  'createWriteStream',
+  'openAsBlob',
+  'opendir',
+  'opendirSync',
   'readFile',
   'readFileSync',
   'writeFile',
@@ -19,8 +26,42 @@ const fileUseMethods = new Set([
   'appendFileSync',
   'unlink',
   'unlinkSync',
+  'mkdir',
+  'mkdirSync',
+  'rm',
+  'rmSync',
+  'rmdir',
+  'rmdirSync',
+  'truncate',
+  'truncateSync',
+  'chmod',
+  'chmodSync',
+  'chown',
+  'chownSync',
+  'utimes',
+  'utimesSync',
   'rename',
-  'renameSync'
+  'renameSync',
+  'copyFile',
+  'copyFileSync',
+  'cp',
+  'cpSync',
+  'link',
+  'linkSync',
+  'symlink',
+  'symlinkSync'
+]);
+const fileUseDestinationMethods = new Set([
+  'rename',
+  'renameSync',
+  'copyFile',
+  'copyFileSync',
+  'cp',
+  'cpSync',
+  'link',
+  'linkSync',
+  'symlink',
+  'symlinkSync'
 ]);
 const objectReadMethods = new Set([
   'findUnique',
@@ -667,6 +708,11 @@ function findFilesystemCheckUse(
   }
   for (const call of calls) {
     const name = methodName(call) ?? '';
+    if (!fileCheckMethods.has(name) && !fileUseMethods.has(name)) continue;
+    const pathArguments =
+      fileUseMethods.has(name) && fileUseDestinationMethods.has(name)
+        ? [call.arguments[0], call.arguments[1]]
+        : [callArgument(call)];
     const visibleNodes = new Set<ts.Node>();
     for (
       let current: ts.Node | undefined = call;
@@ -675,15 +721,22 @@ function findFilesystemCheckUse(
     ) {
       visibleNodes.add(current);
     }
-    const path = visiblePathKey(
-      callArgument(call),
-      call.getStart(sourceFile),
-      visibleNodes,
-      aliases
-    );
-    if (!path) continue;
-    if (fileCheckMethods.has(name)) checkedPaths.add(path);
-    else if (fileUseMethods.has(name) && checkedPaths.has(path)) {
+    const paths = pathArguments
+      .map((argument) =>
+        visiblePathKey(
+          argument,
+          call.getStart(sourceFile),
+          visibleNodes,
+          aliases
+        )
+      )
+      .filter((path): path is string => Boolean(path));
+    if (fileCheckMethods.has(name)) {
+      for (const path of paths) checkedPaths.add(path);
+    } else if (
+      fileUseMethods.has(name) &&
+      paths.some((path) => checkedPaths.has(path))
+    ) {
       findings.push(
         createFinding(sourceFile, call, 'filesystem-check-then-use')
       );

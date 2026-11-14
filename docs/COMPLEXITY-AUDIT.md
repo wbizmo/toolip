@@ -803,3 +803,15 @@ These map bounds are expected-time. Imported-client regressions cover named,
 namespace and default aliases; 44 AST security tests, 14 AST worker tests and
 typecheck passed. Dynamic clients and project wrappers remain unresolved
 review candidates (#60).
+
+## Filesystem check/use operand coverage — 2026-11-14
+
+The same-function race heuristic covers recognized open, stream, directory,
+metadata and mutation methods. Rename, copy, hard-link and symlink operations
+check both path operands against earlier checks. Calls to unrelated methods are
+skipped before building their ancestor set. With `D` declarations and `C`
+recognized filesystem calls, alias indexing remains `O(D)`; resolution is
+expected `O(C × (A + H))` for AST ancestor depth `A` and alias chain cap
+`H ≤ 16`, with at most two operands per call. The analyzer remains a candidate
+heuristic; it does not establish canonical containment or prove freedom from
+symlink and provider races (#60).
