@@ -159,6 +159,18 @@ describe('route authorization candidates', () => {
     expect(
       decoratedRole.some((finding) => finding.ruleId === 'TLP-AUTH-001')
     ).toBe(true);
+    let deepTenantPredicate = '{ id: req.user.tenantId }';
+    for (let depth = 0; depth < 40; depth += 1)
+      deepTenantPredicate = `{ is: ${deepTenantPredicate} }`;
+    const tooDeep = analyzeAstSource(
+      'src/routes/deep-tenant.ts',
+      `router.get('/documents/:id', async (req, res) => {
+  return db.document.findFirst({ where: { id: req.params.id, tenant: ${deepTenantPredicate} } });
+});`
+    );
+    expect(tooDeep.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      true
+    );
   });
 
   it('requires ownership constraints in every OR branch, but accepts AND and shared-grant exceptions', () => {

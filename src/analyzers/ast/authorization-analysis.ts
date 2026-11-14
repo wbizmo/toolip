@@ -330,9 +330,10 @@ function authIdentity(
 
 function relationIdentityInside(
   node: ts.Node,
-  identityParameters: ReadonlySet<string> = new Set()
+  identityParameters: ReadonlySet<string> = new Set(),
+  depth = 0
 ): boolean {
-  if (!ts.isObjectLiteralExpression(node)) return false;
+  if (depth > 32 || !ts.isObjectLiteralExpression(node)) return false;
   for (const property of node.properties) {
     if (!ts.isPropertyAssignment(property)) continue;
     const key = propertyKey(property);
@@ -341,13 +342,25 @@ function relationIdentityInside(
       return true;
     if (
       key === 'is' &&
-      relationIdentityInside(property.initializer, identityParameters)
+      relationIdentityInside(
+        property.initializer,
+        identityParameters,
+        depth + 1
+      )
     )
       return true;
     if (
       key === 'some' &&
-      (ownershipInsideWhere(property.initializer, identityParameters) ||
-        relationIdentityInside(property.initializer, identityParameters))
+      (ownershipInsideWhere(
+        property.initializer,
+        identityParameters,
+        depth + 1
+      ) ||
+        relationIdentityInside(
+          property.initializer,
+          identityParameters,
+          depth + 1
+        ))
     )
       return true;
     if (/^(?:AND|and)$/u.test(key)) {
@@ -355,7 +368,9 @@ function relationIdentityInside(
         ? property.initializer.elements
         : [property.initializer];
       if (
-        clauses.some((part) => relationIdentityInside(part, identityParameters))
+        clauses.some((part) =>
+          relationIdentityInside(part, identityParameters, depth + 1)
+        )
       )
         return true;
     }
@@ -366,7 +381,7 @@ function relationIdentityInside(
       if (
         clauses.length > 0 &&
         clauses.every((part) =>
-          relationIdentityInside(part, identityParameters)
+          relationIdentityInside(part, identityParameters, depth + 1)
         )
       )
         return true;
@@ -445,7 +460,7 @@ function ownershipInsideWhere(
       ) &&
       ts.isObjectLiteralExpression(property.initializer) &&
       (ownershipInsideWhere(property.initializer, identities, depth + 1) ||
-        relationIdentityInside(property.initializer, identities))
+        relationIdentityInside(property.initializer, identities, depth + 1))
     )
       return true;
   }
