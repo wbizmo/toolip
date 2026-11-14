@@ -86,11 +86,17 @@ export function dependencyFileSourceFromSnapshot(snapshot: ProjectSnapshot): {
   hasFile: (relativePath: string) => boolean;
   readText: (relativePath: string) => string | undefined;
 } {
-  const contents = new Map(
-    snapshot.files.map((file) => [file.path, file.content] as const)
-  );
+  // Build the index directly. `map(([path, content]))` allocated one tuple per
+  // file, then spreading `contents.keys()` allocated another full path array;
+  // both transients overlapped with the retained snapshot on large projects.
+  const files: string[] = [];
+  const contents = new Map<string, string | undefined>();
+  for (const file of snapshot.files) {
+    files.push(file.path);
+    contents.set(file.path, file.content);
+  }
   return Object.freeze({
-    files: Object.freeze([...contents.keys()]),
+    files: Object.freeze(files),
     ...(snapshot.gitIndexStatus === 'available' && snapshot.gitHeadRevision
       ? { sourceRevision: snapshot.gitHeadRevision }
       : {}),
