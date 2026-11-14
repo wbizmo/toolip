@@ -116,6 +116,51 @@ describe('route authorization candidates', () => {
     );
   });
 
+  it('does not treat selected relation fields or negative identity predicates as ownership', () => {
+    for (const [name, where] of [
+      [
+        'selected relation field',
+        '{ id: req.params.id, tenant: { select: { id: req.user.tenantId } } }'
+      ],
+      [
+        'negative tenant predicate',
+        '{ id: req.params.id, tenantId: { not: req.user.tenantId } }'
+      ],
+      [
+        'request-selected identity field',
+        '{ id: req.params.id, ownerId: req.user[req.params.field] }'
+      ],
+      [
+        'role claim used as owner identity',
+        '{ id: req.params.id, ownerId: req.user.role }'
+      ]
+    ]) {
+      const findings = analyzeAstSource(
+        `src/routes/${name.replaceAll(' ', '-')}.ts`,
+        `router.get('/documents/:id', async (req, res) => {
+  const document = await db.document.findFirst({ where: ${where} });
+  return res.json(document);
+});`
+      );
+      expect(
+        findings.some((finding) => finding.ruleId === 'TLP-AUTH-001'),
+        name
+      ).toBe(true);
+    }
+    const decoratedRole = analyzeAstSource(
+      'src/routes/nest-role-owner.ts',
+      `class DocumentsController {
+  @Get(':id')
+  async load(@Param('id') id: string, @CurrentUser() user: User) {
+    return db.document.findFirst({ where: { id, ownerId: user.role } });
+  }
+}`
+    );
+    expect(
+      decoratedRole.some((finding) => finding.ruleId === 'TLP-AUTH-001')
+    ).toBe(true);
+  });
+
   it('requires ownership constraints in every OR branch, but accepts AND and shared-grant exceptions', () => {
     const unsafe = analyzeAstSource(
       'src/routes/documents.ts',

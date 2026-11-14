@@ -34,6 +34,9 @@ const booleanGuards = new Set([
 const normalizedBooleanGuards = new Set(
   [...booleanGuards].map((name) => name.replace(/[_-]/gu, '').toLowerCase())
 );
+const authenticatedRequestRoots = new Set(['req', 'request', 'ctx', 'context']);
+const authenticatedClaimNames =
+  /^(?:id|sub|subject|(?:user|tenant|account|organization|workspace|owner|principal)(?:id|key))$/iu;
 
 function callName(call: ts.CallExpression): string | undefined {
   const target = call.expression;
@@ -262,30 +265,114 @@ function authIdentity(
   expression: ts.Expression,
   identityParameters: ReadonlySet<string> = new Set()
 ): boolean {
-  let base: ts.Expression = expression;
-  while (ts.isPropertyAccessExpression(base)) base = base.expression;
-  if (ts.isIdentifier(base) && identityParameters.has(base.text)) return true;
-  const text = expression.getText();
-  return /(?:req|request|ctx|context)\s*\.\s*(?:user|auth|principal)|\bcurrentUser\b|\bcurrentTenant\b/iu.test(
-    text
+  let value = expression;
+  while (
+    ts.isParenthesizedExpression(value) ||
+    ts.isAsExpression(value) ||
+    ts.isTypeAssertionExpression(value) ||
+    ts.isNonNullExpression(value) ||
+    ts.isSatisfiesExpression(value)
+  )
+    value = value.expression;
+  if (
+    !ts.isIdentifier(value) &&
+    !ts.isPropertyAccessExpression(value) &&
+    !ts.isElementAccessExpression(value)
+  )
+    return false;
+  if (
+    ts.isIdentifier(value) &&
+    /^(?:currentUser|currentTenant)$/iu.test(value.text)
+  )
+    return true;
+  let base: ts.Expression = value;
+  const properties: string[] = [];
+  while (
+    ts.isPropertyAccessExpression(base) ||
+    ts.isElementAccessExpression(base)
+  ) {
+    if (
+      ts.isElementAccessExpression(base) &&
+      (!base.argumentExpression ||
+        (!ts.isStringLiteral(base.argumentExpression) &&
+          !ts.isNumericLiteral(base.argumentExpression)))
+    )
+      return false;
+    properties.unshift(
+      ts.isPropertyAccessExpression(base)
+        ? base.name.text
+        : (base.argumentExpression as ts.StringLiteral | ts.NumericLiteral).text
+    );
+    base = base.expression;
+  }
+  if (!ts.isIdentifier(base)) return false;
+  if (identityParameters.has(base.text))
+    return (
+      properties.length === 0 ||
+      authenticatedClaimNames.test(properties.at(-1) ?? '')
+    );
+  const root = base.text.toLowerCase();
+  if (!authenticatedRequestRoots.has(root)) return false;
+  const prefixLength =
+    (root === 'ctx' || root === 'context') &&
+    properties[0]?.toLowerCase() === 'request'
+      ? 1
+      : 0;
+  if (properties.length <= prefixLength) return false;
+  const identityObject = ['user', 'auth', 'principal'].includes(
+    properties[prefixLength]?.toLowerCase() ?? ''
   );
+  if (!identityObject) return false;
+  if (properties.length === prefixLength + 1) return true;
+  const claim = properties.at(-1) ?? '';
+  return authenticatedClaimNames.test(claim);
 }
 
-function containsAuthenticatedIdentity(
+function relationIdentityInside(
   node: ts.Node,
   identityParameters: ReadonlySet<string> = new Set()
 ): boolean {
-  let found = false;
-  const walk = (child: ts.Node): void => {
-    if (found) return;
-    if (ts.isExpression(child) && authIdentity(child, identityParameters)) {
-      found = true;
-      return;
+  if (!ts.isObjectLiteralExpression(node)) return false;
+  for (const property of node.properties) {
+    if (!ts.isPropertyAssignment(property)) continue;
+    const key = propertyKey(property);
+    if (!key) continue;
+    if (key === 'id' && authIdentity(property.initializer, identityParameters))
+      return true;
+    if (
+      key === 'is' &&
+      relationIdentityInside(property.initializer, identityParameters)
+    )
+      return true;
+    if (
+      key === 'some' &&
+      (ownershipInsideWhere(property.initializer, identityParameters) ||
+        relationIdentityInside(property.initializer, identityParameters))
+    )
+      return true;
+    if (/^(?:AND|and)$/u.test(key)) {
+      const clauses = ts.isArrayLiteralExpression(property.initializer)
+        ? property.initializer.elements
+        : [property.initializer];
+      if (
+        clauses.some((part) => relationIdentityInside(part, identityParameters))
+      )
+        return true;
     }
-    ts.forEachChild(child, walk);
-  };
-  walk(node);
-  return found;
+    if (/^(?:OR|or)$/u.test(key)) {
+      const clauses = ts.isArrayLiteralExpression(property.initializer)
+        ? property.initializer.elements
+        : [];
+      if (
+        clauses.length > 0 &&
+        clauses.every((part) =>
+          relationIdentityInside(part, identityParameters)
+        )
+      )
+        return true;
+    }
+  }
+  return false;
 }
 
 function propertyKey(property: ts.PropertyAssignment): string | undefined {
@@ -357,7 +444,8 @@ function ownershipInsideWhere(
         key
       ) &&
       ts.isObjectLiteralExpression(property.initializer) &&
-      containsAuthenticatedIdentity(property.initializer, identities)
+      (ownershipInsideWhere(property.initializer, identities, depth + 1) ||
+        relationIdentityInside(property.initializer, identities))
     )
       return true;
   }

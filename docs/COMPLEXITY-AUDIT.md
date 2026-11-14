@@ -767,3 +767,21 @@ bounded discovery loop validates each candidate with expected `O(1)` membership
 work, for `O(Vᵧ + D)` expected time and `O(Vᵧ)` additional space. The outer
 visited-entry cap remains 100,000. The indexed key adds work proportional to
 the compared name/version bytes, and hash-table bounds remain expected-time.
+
+## Authorization query ownership proof tightened — 2026-11-14
+
+The AST authorization heuristic previously accepted any nested occurrence of
+`req.user` under selected relation names, including projected `select` data,
+and treated object expressions or request-selected identity properties as
+direct identity values. The predicate now recognizes only direct identifier,
+property or literal-key element identity expressions with recognized identity
+claim names, plus bounded positive ownership filters. Relation IDs are
+accepted only through direct predicates or positive `is`/`some` relation
+constraints; OR branches still all need a scoped predicate. For `N` AST nodes
+in the query expression, the added structural checks take `O(N)` time and
+`O(min(N, 32))` recursive stack space due to the existing depth-32 query
+limit. Adversarial cases cover projected relation selection, a negative tenant
+predicate, request-selected identity properties and role claims; existing
+fixtures cover direct tenant and shared-grant filters. The focused authorization suite passed 17 tests and TypeScript
+typecheck passed. This syntactic heuristic still cannot prove framework,
+database or application-policy semantics; #61 remains incomplete.
