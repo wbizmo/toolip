@@ -790,19 +790,22 @@ database or application-policy semantics; #61 remains incomplete.
 
 ## Imported outbound request sink indexing — 2026-11-14
 
-The SSRF pass now identifies named imports from `node:http`, `node:https` and
+The SSRF pass identifies named imports from `node:http`, `node:https` and
 `undici`, namespace imports from those modules, and default/named request
-exports from `axios` and `got`, including local import aliases. For a source
-file with `T` top-level statements, `I` imported bindings and `C` outbound
-request calls, standalone analysis previously rescanned the full statement
-list at each recognized call (`O(C·T)`). It now builds one import map in
-`O(T + I)` expected time and uses expected `O(1)` lookups per call, for
-`O(T + I + C)` expected total time and `O(I)` additional map space. Project
-analysis already had a per-source import map and now shares the same builder.
-These map bounds are expected-time. Imported-client regressions cover named,
-namespace and default aliases; 44 AST security tests, 14 AST worker tests and
-typecheck passed. Dynamic clients and project wrappers remain unresolved
-review candidates (#60).
+exports from `axios` and `got`, including local import aliases. It also indexes
+top-level `const` bindings from a static literal `require()`, including
+namespace, destructured named and axios/got default forms, unless `require` is
+shadowed at module scope. For a source file with `T` top-level statements, `I`
+imported bindings, `R` statically required bindings and `C` outbound calls,
+standalone analysis previously rescanned the full statement list at each
+recognized call (`O(C·T)`). It now builds one import map in `O(T + I + R)`
+expected time and uses expected `O(1)` lookups per call, for
+`O(T + I + R + C)` expected total time and `O(I + R)` additional map space.
+Project analysis already had a per-source import map and now shares the same
+builder. These map bounds are expected-time. Regressions cover ESM and
+CommonJS named, namespace and default aliases with local shadowing; the focused
+security suite, AST worker suite and typecheck pass. Dynamic modules and
+project wrappers remain unresolved candidates (#60).
 
 ## Filesystem check/use operand coverage — 2026-11-14
 

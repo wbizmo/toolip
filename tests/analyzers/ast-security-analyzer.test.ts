@@ -303,6 +303,26 @@ async function shadowed(req: RequestLike, sendRequest: (url: string) => void) {
     ).toHaveLength(4);
   });
 
+  it('recognizes statically required HTTP clients and preserves local shadowing', () => {
+    const findings = analyzeAstSource(
+      'routes.ts',
+      `const { request: sendRequest } = require('node:http');
+const https = require('node:https');
+const axios = require('axios');
+async function handler(req: RequestLike) {
+  await sendRequest(req.query.httpUrl);
+  await https.get(req.query.httpsUrl);
+  await axios(req.query.axiosUrl);
+}
+async function shadowed(req: RequestLike, sendRequest: (url: string) => void) {
+  await sendRequest(req.query.localCallback);
+}`
+    );
+    expect(
+      findings.filter((finding) => finding.ruleId === 'TLP-AST-006')
+    ).toHaveLength(3);
+  });
+
   it('preserves taint through computed request fields and Promise callbacks', () => {
     const findings = analyzeAstSource(
       'routes.ts',

@@ -267,6 +267,58 @@ function indexImportBindings(
           });
     }
   }
+  if (!declaresTopLevelName(sourceFile, 'require')) {
+    for (const statement of sourceFile.statements) {
+      if (!ts.isVariableStatement(statement)) continue;
+      for (const declaration of statement.declarationList.declarations) {
+        if (
+          !ts.isVariableDeclarationList(declaration.parent) ||
+          (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+          !declaration.initializer ||
+          !ts.isCallExpression(declaration.initializer) ||
+          !ts.isIdentifier(declaration.initializer.expression) ||
+          declaration.initializer.expression.text !== 'require' ||
+          declaration.initializer.arguments.length !== 1 ||
+          !ts.isStringLiteral(declaration.initializer.arguments[0])
+        )
+          continue;
+        const moduleSpecifier = declaration.initializer.arguments[0].text;
+        if (ts.isIdentifier(declaration.name)) {
+          imports.set(declaration.name.text, {
+            moduleSpecifier,
+            ...(moduleSpecifier === 'axios' || moduleSpecifier === 'got'
+              ? { importedName: 'default' }
+              : { namespace: true }),
+            namespace:
+              moduleSpecifier === 'axios' || moduleSpecifier === 'got'
+                ? false
+                : true
+          });
+          continue;
+        }
+        if (!ts.isObjectBindingPattern(declaration.name)) continue;
+        for (const element of declaration.name.elements) {
+          if (
+            element.dotDotDotToken ||
+            element.initializer ||
+            !ts.isIdentifier(element.name)
+          )
+            continue;
+          const importedName =
+            element.propertyName &&
+            (ts.isIdentifier(element.propertyName) ||
+              ts.isStringLiteral(element.propertyName))
+              ? element.propertyName.text
+              : element.name.text;
+          imports.set(element.name.text, {
+            moduleSpecifier,
+            importedName,
+            namespace: false
+          });
+        }
+      }
+    }
+  }
   return imports;
 }
 
