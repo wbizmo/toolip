@@ -36,4 +36,9 @@ without claiming the actual build used that value.
 
 The bounded parser joins line continuations and recognizes supported Docker
 heredocs, JSON-form `ADD`, and `FROM --platform` forms. It is not a complete
-Dockerfile frontend, image metadata resolver, or Docker build validator.
+Dockerfile frontend, image metadata resolver, or Docker build validator. Global
+`ARG` expansion handles the `-`, `:-`, `+`, and `:+` fallback modifiers and
+respects the active Docker escape directive; escaped variable references stay
+unresolved and keep coverage partial. Other shell-style parameter modifiers
+remain unsupported and are reported as unknown. Modifier behavior follows the
+[Dockerfile environment replacement reference](https://docs.docker.com/reference/dockerfile/#environment-replacement).

@@ -303,7 +303,7 @@ function expandBuildArgs(
 ): { value: string; unresolved: boolean } {
   let unresolved = false;
   const pattern =
-    /\$\{([A-Za-z_][\w]*)(?:(:-|-)([^}]*))?\}|\$([A-Za-z_][\w]*)/gu;
+    /\$\{([A-Za-z_][\w]*)(?:(:-|:\+|-|\+)([^}]*))?\}|\$([A-Za-z_][\w]*)/gu;
   let cursor = 0;
   const expandedParts: string[] = [];
   for (const match of source.matchAll(pattern)) {
@@ -333,9 +333,20 @@ function expandBuildArgs(
       expandedParts.push(`__TOOLIP_BUILTIN_${name}__`);
     } else {
       const resolved = values.get(name);
-      if (resolved !== undefined && !(operator === ':-' && resolved === ''))
-        expandedParts.push(resolved);
-      else if (operator) expandedParts.push(fallback ?? '');
+      if (operator === ':-')
+        expandedParts.push(
+          resolved !== undefined && resolved !== ''
+            ? resolved
+            : (fallback ?? '')
+        );
+      else if (operator === '-') expandedParts.push(resolved ?? fallback ?? '');
+      else if (operator === ':+')
+        expandedParts.push(
+          resolved !== undefined && resolved !== '' ? (fallback ?? '') : ''
+        );
+      else if (operator === '+')
+        expandedParts.push(resolved !== undefined ? (fallback ?? '') : '');
+      else if (resolved !== undefined) expandedParts.push(resolved);
       else {
         unresolved = true;
         expandedParts.push(`__TOOLIP_UNKNOWN_${name}__`);

@@ -214,6 +214,29 @@ describe('DockerfileAnalyzer', () => {
     }
   });
 
+  it('applies Docker ARG set and non-empty fallback modifiers', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-arg-mod-')
+    );
+    try {
+      for (const [modifier, expectedFinding] of [
+        ['+', true],
+        [':+', false]
+      ] as const) {
+        await writeFile(
+          path.join(root, 'Dockerfile'),
+          `ARG SOURCE=\nARG SELECTED=\${SOURCE${modifier}node:22}\nFROM $SELECTED\nUSER 1000\nHEALTHCHECK CMD true\n`
+        );
+        const result = await new DockerfileAnalyzer().analyze({ root });
+        expect(
+          result.findings.some((finding) => finding.ruleId === 'TLP-DOCKER-003')
+        ).toBe(expectedFinding);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('marks unresolved FROM platform expressions as incomplete even when user and health are explicit', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-docker-platform-')
