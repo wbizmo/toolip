@@ -3545,13 +3545,25 @@ function mutatedBetween(
 function redirectsBlocked(call: ts.CallExpression): boolean {
   const options = call.arguments[1];
   if (!options || !ts.isObjectLiteralExpression(options)) return false;
-  return options.properties.some(
-    (property) =>
-      ts.isPropertyAssignment(property) &&
-      propertyName(property.name) === 'redirect' &&
-      ts.isStringLiteral(property.initializer) &&
-      property.initializer.text === 'error'
-  );
+  let redirectCount = 0;
+  for (const property of options.properties) {
+    // A later spread or computed property may override redirect at runtime.
+    if (
+      ts.isSpreadAssignment(property) ||
+      ts.isComputedPropertyName(property.name)
+    )
+      return false;
+    if (propertyName(property.name) !== 'redirect') continue;
+    redirectCount += 1;
+    if (
+      redirectCount !== 1 ||
+      !ts.isPropertyAssignment(property) ||
+      !ts.isStringLiteral(property.initializer) ||
+      property.initializer.text !== 'error'
+    )
+      return false;
+  }
+  return redirectCount === 1;
 }
 
 /** Accepts a literal host allowlist only when its rejection branch exits and

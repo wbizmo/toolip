@@ -378,6 +378,21 @@ async function handler(req: RequestLike, db: Database) {
     );
   });
 
+  it('does not trust redirect errors that can be overridden by spreads or duplicate keys', () => {
+    const findings = analyzeAstSource(
+      'src/routes/image.ts',
+      `async function handler(req: RequestLike, options: object) {
+  const url = new URL(req.query.image);
+  if (!['8.8.8.8'].includes(url.hostname)) throw new Error('blocked');
+  await fetch(url, { redirect: 'error', ...options });
+  await fetch(url, { redirect: 'error', redirect: 'follow' });
+}`
+    );
+    expect(
+      findings.filter((finding) => finding.ruleId === 'TLP-AST-006')
+    ).toHaveLength(2);
+  });
+
   it('distinguishes tainted shell commands from safe argument-array execution', () => {
     const findings = analyzeAstSource(
       'commands.ts',
