@@ -27,6 +27,10 @@ Replacements without independently verifiable external identities, checksum
 mismatches, unresolved graph edges, unavailable tooling, and budget failures
 remain unknown and keep the analysis incomplete. `--offline` cannot be
 combined with Go tool execution.
+Checksum records from the isolated tool must use canonical 32-byte Go `h1`
+base64 encoding before they can contribute to authenticated provenance; a
+decodable but non-canonical encoding is rejected and leaves the version
+unknown.
 
 Vendored modules use the exact versions recorded in `vendor/modules.txt`, but
 are reconciled against all captured workspace `go.mod` requirements. A selected

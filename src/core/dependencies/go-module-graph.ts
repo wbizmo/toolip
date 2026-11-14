@@ -54,7 +54,9 @@ function parseGoSums(text: string): Map<string, string> {
     const [module, version, sum, extra] = line.trim().split(/\s+/u);
     if (!module || !version || !sum || extra !== undefined) continue;
     const encoded = /^h1:([A-Za-z0-9+/]+={0,2})$/u.exec(sum)?.[1];
-    if (!encoded || Buffer.from(encoded, 'base64').length !== 32) continue;
+    if (!encoded) continue;
+    const digest = Buffer.from(encoded, 'base64');
+    if (digest.length !== 32 || digest.toString('base64') !== encoded) continue;
     const key = `${module}@${version}`;
     const existing = sums.get(key);
     if (existing && existing !== sum) {

@@ -2691,7 +2691,8 @@ describe('non-npm lockfile inventory', () => {
           JSON.stringify({ Path: 'example.test/app', Main: true }),
           JSON.stringify({
             Path: 'example.test/lib',
-            Version: 'v1.3.0'
+            Version: 'v1.3.0',
+            Retracted: ['v1.3.0: known defect']
           }),
           JSON.stringify({
             Path: 'example.test/original',
@@ -2755,6 +2756,9 @@ describe('non-npm lockfile inventory', () => {
     expect(resolved.warnings).not.toContain(
       'go-module-graph-not-resolved:go.mod'
     );
+    expect(resolved.warnings).toContain(
+      'go-module-retracted:example.test/lib@v1.3.0'
+    );
 
     metadata['go.sum'] =
       `example.test/lib v1.3.0/go.mod h1:${Buffer.alloc(32, 9).toString('base64')}\n`;
@@ -2770,6 +2774,50 @@ describe('non-npm lockfile inventory', () => {
     expect(mismatched.warnings).toContain(
       'go-checksum-source-mismatch:example.test/lib@v1.3.0'
     );
+  });
+
+  it('rejects non-canonical Go checksum database hashes from the isolated tool', async () => {
+    const root = await fixture();
+    const metadata = {
+      'go.mod': [
+        'module example.test/app',
+        'go 1.24.0',
+        'require example.test/lib v1.2.3'
+      ].join('\n')
+    };
+    const fileSource = {
+      files: Object.keys(metadata),
+      hasFile: (relativePath: string) => relativePath in metadata,
+      readText: (relativePath: string) =>
+        metadata[relativePath as keyof typeof metadata]
+    };
+    const nonCanonicalHash = `h1:${'A'.repeat(43)}`;
+    const graph = await readOtherEcosystemInventoryDetailed(root, fileSource, {
+      allowGoToolExecution: true,
+      goCommandRunner: async (input) => {
+        if (input.args[0] === 'version')
+          return 'go version go1.24.1 linux/amd64';
+        if (input.args[0] === 'list') {
+          await writeFile(
+            path.join(input.cwd, 'go.sum'),
+            `example.test/lib v1.2.3/go.mod ${nonCanonicalHash}`
+          );
+          return [
+            JSON.stringify({ Path: 'example.test/app', Main: true }),
+            JSON.stringify({ Path: 'example.test/lib', Version: 'v1.2.3' })
+          ].join('\n');
+        }
+        return 'example.test/app example.test/lib@v1.2.3';
+      }
+    });
+
+    expect(
+      graph.packages.find((item) => item.name === 'example.test/lib')
+    ).toMatchObject({ resolutionConfidence: 'unknown' });
+    expect(graph.warnings).toContain(
+      'go-checksum-database-unverified:example.test/lib@v1.2.3'
+    );
+    expect(graph.complete).toBe(false);
   });
 
   it('does not run the Go tool in offline mode even when tool execution was requested', async () => {
