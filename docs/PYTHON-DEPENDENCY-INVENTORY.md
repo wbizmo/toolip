@@ -13,9 +13,13 @@ Pipenv root `[packages]` and `[dev-packages]` entries are matched to exact
 public PyPI only when the named Pipenv index resolves to the public PyPI HTTPS
 endpoint with `verify_ssl = true`; credential-bearing or custom source URLs are hashed in internal
 identity keys and remain unknown. Valid Pipenv hashes are retained as declared,
-not verified bytes. Pipenv's lock format does not carry a complete dependency
-edge graph, so Toolip reports that graph as incomplete while retaining exact
-locked identities and root edges.
+not verified bytes. Extras and marker contexts are retained in distinct lock
+identities. Pipenv's lock format does not carry a complete dependency edge
+graph, so Toolip reports that graph as incomplete while retaining exact
+locked identities and root edges. Any declared PyPI artifact hash without the
+artifact bytes also keeps inventory coverage incomplete with
+`python-artifact-integrity-unverified`; a lock hash is never presented as a
+verified wheel or source archive.
 Pipfile lock source metadata is indexed once per inventory, while preserving
 duplicate source names as ambiguous. Source records are capped at 128, lock
 package records at 10,000, and Pipfile root dependency tables at 10,000

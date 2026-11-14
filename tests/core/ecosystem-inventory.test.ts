@@ -122,6 +122,7 @@ describe('non-npm lockfile inventory', () => {
     expect(graph.warnings).toContain(
       'pipfile-lock-transitive-edges-unresolved'
     );
+    expect(graph.warnings).toContain('python-artifact-integrity-unverified');
     expect(graph.complete).toBe(false);
   });
 
@@ -168,6 +169,84 @@ describe('non-npm lockfile inventory', () => {
     expect(matching.warnings).not.toContain(
       'pipfile-lock-python-target-mismatch'
     );
+  });
+
+  it('preserves Pipenv package extras in distinct lock identity context', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'Pipfile'),
+      [
+        '[[source]]',
+        'name = "pypi"',
+        'url = "https://pypi.org/simple"',
+        'verify_ssl = true',
+        '',
+        '[packages]',
+        'httpx = { version = "==0.27.0", extras = ["socks"] }'
+      ].join('\n')
+    );
+    await writeFile(
+      path.join(root, 'Pipfile.lock'),
+      JSON.stringify({
+        _meta: {
+          sources: [
+            { name: 'pypi', url: 'https://pypi.org/simple', verify_ssl: true }
+          ]
+        },
+        default: {
+          httpx: {
+            version: '==0.27.0',
+            index: 'pypi',
+            extras: ['socks'],
+            hashes: [`sha256:${'a'.repeat(64)}`]
+          }
+        },
+        develop: {}
+      })
+    );
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+
+    expect(graph.packages).toContainEqual(
+      expect.objectContaining({
+        name: 'httpx',
+        resolutionContext: expect.stringContaining('"extras":["socks"]'),
+        installPath: expect.stringContaining(':extras-')
+      })
+    );
+    expect(graph.edges).toContainEqual(
+      expect.objectContaining({
+        from: 'root',
+        name: 'httpx',
+        extras: ['socks']
+      })
+    );
+
+    await writeFile(
+      path.join(root, 'Pipfile.lock'),
+      JSON.stringify({
+        _meta: {
+          sources: [
+            { name: 'pypi', url: 'https://pypi.org/simple', verify_ssl: true }
+          ]
+        },
+        default: {
+          httpx: {
+            version: '==0.27.0',
+            index: 'pypi',
+            extras: ['socks/escape'],
+            hashes: [`sha256:${'a'.repeat(64)}`]
+          }
+        },
+        develop: {}
+      })
+    );
+    const malformed = await readOtherEcosystemInventoryDetailed(root);
+    expect(malformed.warnings).toContain('pipfile-lock-extra-context-invalid');
+    expect(
+      malformed.packages.find((item) => item.name === 'httpx')
+    ).toMatchObject({ resolutionConfidence: 'unknown' });
+    expect(malformed.complete).toBe(false);
   });
 
   it('withholds Pipenv entries from private indexes and invalid declared hashes', async () => {
@@ -1809,7 +1888,8 @@ describe('non-npm lockfile inventory', () => {
         extras: ['fast']
       })
     );
-    expect(graph.complete).toBe(true);
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain('python-artifact-integrity-unverified');
 
     const py312Graph = await readOtherEcosystemInventoryDetailed(
       root,

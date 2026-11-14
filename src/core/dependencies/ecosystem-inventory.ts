@@ -488,6 +488,28 @@ async function fromJsonLock(
         }
         const registry = pipfileLockRegistry(sources, pkg, warnings);
         const hashes = pipfileLockHashes(pkg, warnings);
+        const rawExtras = pkg.extras;
+        const extrasValid =
+          rawExtras === undefined ||
+          (Array.isArray(rawExtras) &&
+            rawExtras.length <= 64 &&
+            rawExtras.every(
+              (extra) =>
+                typeof extra === 'string' &&
+                /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$/u.test(
+                  extra
+                )
+            ));
+        if (!extrasValid) warnings.push('pipfile-lock-extra-context-invalid');
+        const extras = extrasValid
+          ? [
+              ...new Set(
+                (Array.isArray(rawExtras) ? rawExtras : []).map((extra) =>
+                  canonicalPythonName(extra as string)
+                )
+              )
+            ].sort()
+          : [];
         const marker =
           typeof pkg.markers === 'string' ? pkg.markers : undefined;
         const markerValid =
@@ -497,12 +519,14 @@ async function fromJsonLock(
         const resolutionConfidence =
           registry.confidence === 'unknown' ||
           !hashes.valid ||
+          !extrasValid ||
           !markerValid ||
           !pythonTargetCompatible
             ? 'unknown'
             : 'lockfile';
         const contextFields = {
           ...(markerValid && marker ? { markers: [marker] } : {}),
+          ...(extras.length > 0 ? { extras } : {}),
           ...(hashes.values.length > 0 ? { hashes: hashes.values } : {})
         };
         output.push({
@@ -517,7 +541,7 @@ async function fromJsonLock(
           ...(Object.keys(contextFields).length > 0
             ? { resolutionContext: JSON.stringify(contextFields) }
             : {}),
-          installPath: `Pipfile.lock:${section}:${canonicalPythonName(name)}@${version.replace(/^==?/u, '')}${marker ? `:marker-${createHash('sha256').update(marker).digest('hex').slice(0, 16)}` : ''}`
+          installPath: `Pipfile.lock:${section}:${canonicalPythonName(name)}@${version.replace(/^==?/u, '')}${marker ? `:marker-${createHash('sha256').update(marker).digest('hex').slice(0, 16)}` : ''}${extras.length > 0 ? `:extras-${createHash('sha256').update(JSON.stringify(extras)).digest('hex').slice(0, 16)}` : ''}`
         });
       }
       if (packageBudgetExceeded) break;
@@ -6573,6 +6597,14 @@ export async function readOtherEcosystemInventoryDetailed(
         (!cargoIds.has(edge.to) || reachableCargoIds.has(edge.to))
     );
   }
+  if (
+    packages.some(
+      (item) =>
+        item.ecosystem === 'PyPI' &&
+        item.artifactIntegrityStatus === 'declared-not-verified'
+    )
+  )
+    warnings.push('python-artifact-integrity-unverified');
   return {
     packages: resolvedPackages,
     edges: finalEdges,

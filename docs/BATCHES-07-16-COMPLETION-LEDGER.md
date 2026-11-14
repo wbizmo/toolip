@@ -1188,7 +1188,7 @@ Do not replace any `Refs #N` with `Closes #N` solely because code is implemented
 | 13 / #65      | CODE IMPLEMENTED — verification pending   | Canonical signed report/SBOM evidence, trust stores, verification and bounded artifact attestations are implemented.                                                                                                                     | OIDC/publisher interoperability and independent trust review.                                 |
 | 13 / #66      | CODE IMPLEMENTED — verification pending   | Signed declarative packs and opt-in no-import signed WASM plugins with bounded resources and fail-closed results are implemented.                                                                                                        | Adversarial OS/runtime matrix and independent sandbox review.                                 |
 | 13 / #77      | CODE IMPLEMENTED — verification pending   | Pinned npm artifact digest, origin/issuer/source attestation, private-scope privacy and pre-install trust checks are implemented.                                                                                                        | Private registry, issuer rotation and real publisher provenance.                              |
-| 14 / #79      | CODE INCOMPLETE — implementation required | Complete Pipenv transitive graph semantics, Python target/marker variants and independently verified wheel/source archive integrity.                                                                                                     | PyPI/provider and supported OS fixtures.                                                      |
+| 14 / #79      | CODE IMPLEMENTED — verification pending   | Exact Python lock identities, marker/extra-specific target variants, PEP 440 root edges and OSV/PURL integration are implemented; Pipenv transitive edges and artifact bytes remain explicitly incomplete/unverified.                    | PyPI/provider, supported OS matrix and independent artifact-provenance review.                |
 | 14 / #80      | CODE IMPLEMENTED — verification pending   | Bounded Go module/workspace inventory, opt-in isolated MVS with official proxy/sumdb, replacement/retraction warnings, canonical checksum validation, and explicit unknown status for offline/vendor bytes that cannot be authenticated. | Native Go multi-OS and offline sumdb fixtures; independent checksum/vendor provenance review. |
 | 15 / #81      | CODE INCOMPLETE — implementation required | Resolve active Cargo feature unification and target cfg edges exactly; verify registry/artifact checksums and compare against authoritative Cargo metadata.                                                                              | Cargo native generated fixtures, scale and OS.                                                |
 | 15 / #82      | CODE INCOMPLETE — implementation required | Bind Maven/Gradle exported graphs to the exact scanned revision and close remaining conflict/parent/BOM provenance and multi-module source-identity gaps.                                                                                | Authoritative Maven/Gradle golden exports and OS.                                             |
@@ -1528,3 +1528,27 @@ Stage A digest `64bd5a4dde4e2387e8e572da8ca60683732a1e3a46eaa5b0f578b2a9e5d08556
 passes with all three workflow pins. Native Go Windows/macOS CI, independent
 checksum/vendor provenance review and the remaining external issue acceptance
 are still pending; #80 remains open.
+
+## 2026-11-14 local implementation checkpoint — Python inventory #79
+
+Pipenv lock extras now remain in normalized package context and identity paths,
+so lock variants with different extras do not collapse. Malformed extra
+contexts are withheld as unknown. Any PyPI package whose hash is only declared
+in a lock now adds `python-artifact-integrity-unverified` and keeps inventory
+coverage incomplete until artifact bytes are independently checked. Pipenv
+lockfiles still expose exact package identities and root edges while reporting
+their missing transitive graph as incomplete; no missing edges are treated as
+clean. Existing Python marker/target evaluation, PEP 440 matching, OSV and
+CycloneDX/SPDX paths remain in use.
+
+Focused Python inventory/target, OSV and SBOM suites pass 137 tests; typecheck
+passes. Full Linux Node 24.22.1 `npm run release:check` passed: 1,305 unit
+tests and 1,303 coverage tests passed, 3 skipped in each; coverage was 85.22%
+statements, 80.06% branches, 92.74% functions and 87.83% lines. Build and the
+748.3 kB, 522-file packed `toolip@2.2.1` artifact verified, npm audit found
+zero vulnerabilities, and signature audit verified 299 registry signatures
+and 102 attestations. Stage A digest
+`bd493474b763316c61c26362d8756b3fdec688bf604c130276f6e3cdabdbb785` passes
+with all three workflow pins. Supported OS/Node matrix and independent
+PyPI/artifact provenance review remain external acceptance gates; #79 stays
+open.
