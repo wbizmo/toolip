@@ -1184,7 +1184,7 @@ Do not replace any `Refs #N` with `Closes #N` solely because code is implemented
 | 11 / #91      | CODE INCOMPLETE — implementation required | Model schema-derived sensitive fields, recognized application redactors, external serializer contracts and additional dynamic/outbound sinks.                                                     | Redaction-safe adversarial corpus and false-positive calibration.               |
 | 11 / #95      | CODE INCOMPLETE — implementation required | Extend execution-chain analysis beyond literal shell assignments to bounded indirect/runtime wrappers, archive extraction-and-execute and overlooked executable formats; retain explicit unknown. | Adversarial chains, accuracy metrics and CI.                                    |
 | 12 / #62      | CODE IMPLEMENTED — verification pending   | Supported Terraform, Kubernetes and GitHub Actions static checks with bounded parse/coverage and explicit unknowns are implemented.                                                               | Native IaC conformance, malformed/large-file and OS matrix.                     |
-| 12 / #63      | CODE INCOMPLETE — implementation required | Complete Dockerfile ARG substitution/escaped-character semantics and more final-stage inheritance, remote image uncertainty and unsupported instruction cases.                                    | Docker grammar fixtures, redaction and cross-platform CI.                       |
+| 12 / #63      | CODE IMPLEMENTED — verification pending   | Stage-aware Dockerfile parser handles bounded continuations, ARG escapes/substitutions, inheritance and unknown external image metadata.                                                          | Docker grammar fixtures, redaction and cross-platform CI.                       |
 | 13 / #65      | CODE IMPLEMENTED — verification pending   | Canonical signed report/SBOM evidence, trust stores, verification and bounded artifact attestations are implemented.                                                                              | OIDC/publisher interoperability and independent trust review.                   |
 | 13 / #66      | CODE IMPLEMENTED — verification pending   | Signed declarative packs and opt-in no-import signed WASM plugins with bounded resources and fail-closed results are implemented.                                                                 | Adversarial OS/runtime matrix and independent sandbox review.                   |
 | 13 / #77      | CODE IMPLEMENTED — verification pending   | Pinned npm artifact digest, origin/issuer/source attestation, private-scope privacy and pre-install trust checks are implemented.                                                                 | Private registry, issuer rotation and real publisher provenance.                |
@@ -1465,4 +1465,45 @@ Full Linux Node 24.22.1 `npm run release:check` passed after this change: 1,301 
 
 ## 2026-11-14 local continuation — Go workspace parser failures for #80
 
-The offline `go.work` reader now reports malformed `use` members, unclosed `use` blocks, invalid `go`/`toolchain` directives, unknown directives and a 100,000-line budget as explicit incomplete coverage. It scans lines incrementally without materializing a full line array. Valid members still resolve and remain subject to the existing project-boundary check; no Go command or build executes in this path. Added malformed member/directive, unclosed-block and line-budget regressions. The focused ecosystem inventory suite passes 80 tests; typecheck, Prettier and `git diff --check` pass on Linux Node 24.22.1. `docs/COMPLEXITY-AUDIT.md` records the linear `O(L)` parse and 100,000-line cap. The protected Stage A source digest is `65eda637b7266acae848cdb0f61d7fa47d503a225cf3a6a58bfff66e15323854` across all three workflow pins. Full Linux Node 24.22.1 `npm run release:check` passed after the incremental parser change: 1,302 unit tests passed / 3 skipped; coverage passed 1,300 / 3 skipped (85.22% statements, 80.06% branches, 92.74% functions, 87.83% lines); changelog, lint, formatting, workflow/lockfile checks, zero-vulnerability npm audit, typecheck, compiler quality, build and packed `toolip@2.2.1` verification (747.9 kB, 522 files). Signature audit verified 299 signatures and 102 attestations. #80 remains partial for vendored-byte provenance, offline sumdb proof and full replacement/exclude/retract semantics.
+The offline `go.work` reader now reports malformed `use` members, unclosed
+`use` blocks, invalid `go`/`toolchain` directives, unknown directives and a
+100,000-line budget as explicit incomplete coverage. It scans incrementally
+without materializing a full line array. Valid members still resolve subject
+to the existing project-boundary check; this path does not execute Go. Added
+malformed member/directive, unclosed-block and line-budget regressions. The
+focused ecosystem inventory suite passes 80 tests; typecheck, Prettier and
+`git diff --check` pass on Linux Node 24.22.1. `docs/COMPLEXITY-AUDIT.md`
+records the `O(L)` parse and line cap. Stage A digest
+`65eda637b7266acae848cdb0f61d7fa47d503a225cf3a6a58bfff66e15323854` is pinned
+at all three workflow references. Full release verification passed after this
+parser change: 1,302 unit tests and 1,300 coverage tests passed, 3 skipped in
+each; coverage was 85.22% statements, 80.06% branches, 92.74% functions and
+87.83% lines. The 747.9 kB, 522-file packed package verified, npm audit found
+zero vulnerabilities, and signature audit verified 299 signatures and 102
+attestations. #80 remains partial for vendored-byte provenance, offline sumdb
+proof and full replacement/exclude/retract semantics.
+
+## 2026-11-14 local completion work — Dockerfile #63
+
+Closed the remaining identified parser gaps for #63: malformed global/stage
+`ARG` syntax now marks expansion semantics unknown, and `HEALTHCHECK` options
+accept Docker's `--option=value` form with validated durations and retries.
+Differential validation against local Docker 29.9.2 `docker build --check`
+caught the earlier acceptance of separated option values: Docker accepted
+`--retries=3` and rejected `--retries 3`; Toolip now matches. This parsed only
+synthetic input and did not build a project. The focused Docker analyzer/CLI
+suites pass 42 tests, including redaction, cancellation, malformed input,
+continuations, ARG expansion and stage inheritance; typecheck passes on Linux
+Node 24.22.1. `docs/DOCKER-SCANNING.md` records the option grammar; complexity
+remains `O(B + X)` under the existing input and expansion budgets.
+
+Full `npm run release:check` passed on Linux Node 22.23.5 and Node 24.22.1.
+Each run passed changelog, lint, formatting, seven-workflow policy, lockfile,
+full npm audit, typecheck, compiler quality, all 1,303 unit tests (3 skipped),
+all 1,301 coverage tests (3 skipped; 85.22% statements, 80.06% branches,
+92.74% functions, 87.83% lines), build, and packed `toolip@2.2.1` verification
+(747.9 kB, 522 files). Registry signature audit verified 299 signatures and
+102 attestations; Stage A digest and workflow checks pass. Docker's parser
+differential also passed. Gitleaks and CodeQL executables are unavailable in
+this runtime; hosted checks, supported OS matrix and independent review remain
+required before #63 acceptance. The issue remains open.

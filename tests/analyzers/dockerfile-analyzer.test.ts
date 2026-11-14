@@ -665,6 +665,34 @@ describe('DockerfileAnalyzer', () => {
     }
   });
 
+  it('marks malformed ARG declarations incomplete instead of ignoring them', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-arg-malformed-')
+    );
+    try {
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        [
+          'ARG IMAGE node:20@sha256:' + 'a'.repeat(64),
+          'FROM $IMAGE',
+          'USER 1000',
+          'HEALTHCHECK CMD true'
+        ].join('\n')
+      );
+      const result = await new DockerfileAnalyzer().analyze({ root });
+
+      expect(result.coverage.state).toBe('partial');
+      expect(result.warnings).toContain(
+        'Dockerfile:1: malformed Dockerfile ARG instruction; expansion semantics are unknown'
+      );
+      expect(
+        result.findings.some((finding) => finding.ruleId === 'TLP-DOCKER-003')
+      ).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('uses the last USER and HEALTHCHECK instructions in the final stage', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-docker-final-instructions-')
@@ -706,7 +734,8 @@ describe('DockerfileAnalyzer', () => {
       for (const healthcheck of [
         'HEALTHCHECK --retries=soon CMD true',
         'HEALTHCHECK --timeout=-1s CMD true',
-        'HEALTHCHECK --interval= CMD true'
+        'HEALTHCHECK --interval= CMD true',
+        'HEALTHCHECK --retries 3 CMD true'
       ]) {
         await writeFile(
           path.join(root, 'Dockerfile'),
@@ -727,7 +756,7 @@ describe('DockerfileAnalyzer', () => {
         [
           'FROM scratch',
           'USER 1000',
-          'HEALTHCHECK --start-period=0s --interval=1m30s --retries 3 CMD true'
+          'HEALTHCHECK --start-period=0s --interval=1m30s --retries=3 CMD true'
         ].join('\n')
       );
       const valid = await new DockerfileAnalyzer().analyze({ root });

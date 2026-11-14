@@ -31,6 +31,8 @@ and partial coverage. A username such as `app` does not prove its UID, so the
 analyzer also reports that identity as unknown. `ONBUILD` effects, unresolved
 build arguments, invalid stage references, unsupported instructions, and
 incomplete continuations/heredocs keep coverage partial.
+`HEALTHCHECK` options must use Docker's `--option=value` form; duration values
+and positive retry counts are validated before an active check is trusted.
 
 The bounded `COPY --from` model distinguishes earlier named/numeric stages
 from external image sources. External images without a 64-digit SHA-256 digest

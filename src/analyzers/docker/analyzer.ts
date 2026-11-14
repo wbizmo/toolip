@@ -568,6 +568,13 @@ function parseInstructions(source: string): {
       warnings.push(
         `${startLine}: unsupported Dockerfile instruction; semantics are unknown`
       );
+    if (
+      command === 'ARG' &&
+      !/^\s*ARG\s+[A-Za-z_][A-Za-z0-9_]*(?:=.*)?\s*$/u.test(bufferedText)
+    )
+      warnings.push(
+        `${startLine}: malformed Dockerfile ARG instruction; expansion semantics are unknown`
+      );
     if (command === 'ADD') {
       const argument = bufferedText
         .replace(/^\s*ADD\s+/iu, '')
@@ -909,9 +916,6 @@ function buildDockerStageGraph(
           if (option.includes('=')) {
             optionValue = option.split('=').slice(1).join('=');
             cursor += 1;
-          } else if (healthTokens[cursor + 1]) {
-            optionValue = healthTokens[cursor + 1];
-            cursor += 2;
           } else {
             healthSyntaxValid = false;
             break;
