@@ -393,6 +393,21 @@ async function handler(req: RequestLike, db: Database) {
     ).toHaveLength(2);
   });
 
+  it('does not preserve an SSRF URL guard across an unknown mutating helper call', () => {
+    const findings = analyzeAstSource(
+      'src/routes/image.ts',
+      `async function handler(req: RequestLike) {
+  const url = new URL(req.query.image);
+  if (!['8.8.8.8'].includes(url.hostname)) throw new Error('blocked');
+  rewriteUrl(url);
+  await fetch(url, { redirect: 'error' });
+}`
+    );
+    expect(findings.some((finding) => finding.ruleId === 'TLP-AST-006')).toBe(
+      true
+    );
+  });
+
   it('distinguishes tainted shell commands from safe argument-array execution', () => {
     const findings = analyzeAstSource(
       'commands.ts',

@@ -3535,6 +3535,18 @@ function mutatedBetween(
         mutated = true;
         return;
       }
+      if (
+        ts.isCallExpression(node) &&
+        (rootIdentifier(node.expression)?.text === root.text ||
+          node.arguments.some(
+            (argument) => rootIdentifier(argument)?.text === root.text
+          ))
+      ) {
+        // Unknown callees can mutate URL/path objects by reference. Do not
+        // preserve a prior guard across a call that receives or invokes on it.
+        mutated = true;
+        return;
+      }
     }
     ts.forEachChild(node, visit);
   };
