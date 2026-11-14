@@ -622,6 +622,28 @@ callbacks, a shadowed `p-limit` factory, dynamic/over-cap/mutated pools and a
 statically bounded pool. These focused cases establish behavior, not a whole
 repository performance or memory bound.
 
+## Dockerfile parsing and ARG substitution reviewed on 2026-11-14
+
+For `B` bytes across eligible Dockerfiles, bounded input reads are limited by
+the shared 20,000-file, 2 MiB-per-file and 64 MiB-total budgets. The parser
+splits physical lines, records logical instruction fragments, and joins a
+continued instruction once at flush; this avoids repeatedly copying the
+growing prefix across `D` physical continuation lines. Parsing is `O(B)`;
+supported global ARG expansion uses `O(B + X)` time and space, where rendered
+expansion bytes `X` are capped at 8 MiB per Dockerfile. ARG lookup uses
+expected `O(1)` map operations; unsupported modifiers, escaped references and
+budget exhaustion stay unresolved and produce incomplete coverage. Only the standard
+`docker/dockerfile:1` frontend family is recognized; custom/invalid frontend
+selection is reported incomplete without fetching or executing it. The previous
+continuation assembly repeatedly concatenated the prefix, with worst-case
+`O(B²)` copied string bytes for one heavily continued instruction; it is now
+linearized. A 2,000-line continued instruction regression checks the bounded
+parser result and byte accounting, and an adversarial 1 MiB ARG reused across
+FROM instructions checks the cumulative expansion cap and unknown result.
+These source-derived bounds are not measured wall-time or process-RSS
+benchmarks; broader Docker grammar, platform and whole-process memory
+acceptance remain open (#40/#63/#86).
+
 ## Signed scan subject digests added on 2026-11-12
 
 For `F` captured files, `B` captured bytes, `P` total path bytes, `V` resolved

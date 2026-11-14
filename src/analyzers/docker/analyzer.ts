@@ -260,6 +260,8 @@ function finding(
 }
 
 type DockerInstruction = { line: number; text: string };
+type DockerExpansionBudget = { remainingBytes: number; exceeded: boolean };
+const MAX_DOCKER_EXPANSION_BYTES = 8 * 1024 * 1024;
 
 const builtinBuildArgs = new Set([
   'BUILDPLATFORM',
@@ -272,9 +274,17 @@ const builtinBuildArgs = new Set([
   'TARGETVARIANT'
 ]);
 
+type ResolvedFromImage = {
+  line: string;
+  image: string;
+  alias?: string;
+  unresolved: boolean;
+};
+
 function globalDockerArgs(
   instructions: readonly DockerInstruction[],
-  escapeChar: string
+  escapeChar: string,
+  budget: DockerExpansionBudget
 ): Map<string, string | undefined> {
   const values = new Map<string, string | undefined>();
   for (const instruction of instructions) {
@@ -287,7 +297,7 @@ function globalDockerArgs(
     const expanded =
       value === undefined
         ? undefined
-        : expandBuildArgs(value, values, escapeChar);
+        : expandBuildArgs(value, values, escapeChar, budget);
     values.set(
       declaration[1],
       expanded === undefined || expanded.unresolved ? undefined : expanded.value
@@ -299,18 +309,32 @@ function globalDockerArgs(
 function expandBuildArgs(
   source: string,
   values: ReadonlyMap<string, string | undefined>,
-  escapeChar: string
+  escapeChar: string,
+  budget: DockerExpansionBudget
 ): { value: string; unresolved: boolean } {
+  if (budget.exceeded) return { value: '', unresolved: true };
   let unresolved = false;
   const pattern =
     /\$\{([A-Za-z_][\w]*)(?:(:-|:\+|-|\+)([^}]*))?\}|\$([A-Za-z_][\w]*)/gu;
   let cursor = 0;
   const expandedParts: string[] = [];
+  const append = (part: string): boolean => {
+    const bytes = Buffer.byteLength(part);
+    if (bytes > budget.remainingBytes) {
+      budget.exceeded = true;
+      expandedParts.length = 0;
+      return false;
+    }
+    budget.remainingBytes -= bytes;
+    expandedParts.push(part);
+    return true;
+  };
   for (const match of source.matchAll(pattern)) {
     const token = match[0];
     const index = match.index;
     if (index === undefined) continue;
-    expandedParts.push(source.slice(cursor, index));
+    if (!append(source.slice(cursor, index)))
+      return { value: '', unresolved: true };
     let escapedCount = 0;
     for (
       let escapeIndex = index - 1;
@@ -321,7 +345,8 @@ function expandBuildArgs(
     if (escapedCount % 2 === 1) {
       unresolved = true;
       const escapedName = match[1] ?? match[4] ?? '';
-      expandedParts.push(`__TOOLIP_ESCAPED_${escapedName}__`);
+      if (!append(`__TOOLIP_ESCAPED_${escapedName}__`))
+        return { value: '', unresolved: true };
       cursor = index + token.length;
       continue;
     }
@@ -330,31 +355,32 @@ function expandBuildArgs(
     const fallback = match[3];
     if (builtinBuildArgs.has(name)) {
       unresolved = true;
-      expandedParts.push(`__TOOLIP_BUILTIN_${name}__`);
+      if (!append(`__TOOLIP_BUILTIN_${name}__`))
+        return { value: '', unresolved: true };
     } else {
       const resolved = values.get(name);
+      let replacement: string;
       if (operator === ':-')
-        expandedParts.push(
+        replacement =
           resolved !== undefined && resolved !== ''
             ? resolved
-            : (fallback ?? '')
-        );
-      else if (operator === '-') expandedParts.push(resolved ?? fallback ?? '');
+            : (fallback ?? '');
+      else if (operator === '-') replacement = resolved ?? fallback ?? '';
       else if (operator === ':+')
-        expandedParts.push(
-          resolved !== undefined && resolved !== '' ? (fallback ?? '') : ''
-        );
+        replacement =
+          resolved !== undefined && resolved !== '' ? (fallback ?? '') : '';
       else if (operator === '+')
-        expandedParts.push(resolved !== undefined ? (fallback ?? '') : '');
-      else if (resolved !== undefined) expandedParts.push(resolved);
+        replacement = resolved !== undefined ? (fallback ?? '') : '';
+      else if (resolved !== undefined) replacement = resolved;
       else {
         unresolved = true;
-        expandedParts.push(`__TOOLIP_UNKNOWN_${name}__`);
+        replacement = `__TOOLIP_UNKNOWN_${name}__`;
       }
+      if (!append(replacement)) return { value: '', unresolved: true };
     }
     cursor = index + token.length;
   }
-  expandedParts.push(source.slice(cursor));
+  if (!append(source.slice(cursor))) return { value: '', unresolved: true };
   const value = expandedParts.join('');
   if (value.includes('$')) unresolved = true;
   return { value, unresolved };
@@ -363,15 +389,9 @@ function expandBuildArgs(
 function resolveFromImage(
   instruction: DockerInstruction,
   buildArgs: ReadonlyMap<string, string | undefined>,
-  escapeChar: string
-):
-  | {
-      line: string;
-      image: string;
-      alias?: string;
-      unresolved: boolean;
-    }
-  | undefined {
+  escapeChar: string,
+  budget: DockerExpansionBudget
+): ResolvedFromImage | undefined {
   const match = instruction.text.match(/^FROM\s+(.+)$/iu);
   if (!match?.[1]) return undefined;
   const tokens = match[1].trim().split(/\s+/u);
@@ -386,7 +406,7 @@ function resolveFromImage(
       const rawPlatform = option.slice('--platform='.length);
       platformUnknown ||=
         rawPlatform.includes('$') ||
-        expandBuildArgs(rawPlatform, buildArgs, escapeChar).unresolved;
+        expandBuildArgs(rawPlatform, buildArgs, escapeChar, budget).unresolved;
       imageIndex += 1;
     } else if (option === '--platform') {
       if (
@@ -399,7 +419,7 @@ function resolveFromImage(
       const rawPlatform = tokens[imageIndex + 1] ?? '';
       platformUnknown ||=
         rawPlatform.includes('$') ||
-        expandBuildArgs(rawPlatform, buildArgs, escapeChar).unresolved;
+        expandBuildArgs(rawPlatform, buildArgs, escapeChar, budget).unresolved;
       imageIndex += 2;
     } else return undefined;
   }
@@ -416,7 +436,12 @@ function resolveFromImage(
   )
     return undefined;
   const imageExpression = tokens[imageIndex] ?? '';
-  const expanded = expandBuildArgs(imageExpression, buildArgs, escapeChar);
+  const expanded = expandBuildArgs(
+    imageExpression,
+    buildArgs,
+    escapeChar,
+    budget
+  );
   tokens[imageIndex] = expanded.value;
   return {
     line: `FROM ${tokens.join(' ')}`,
@@ -434,15 +459,27 @@ function parseInstructions(source: string): {
 } {
   const physical = source.split(/\r?\n/u);
   const warnings: string[] = [];
-  // Only leading directives can alter parser escaping. Blank lines, ordinary
-  // comments and instructions terminate the directive prefix.
+  // Only leading parser directives affect the frontend or escape rules. Blank
+  // lines, ordinary comments and instructions terminate the directive prefix.
   let escapeDirective: string | undefined;
+  let syntaxDirective: string | undefined;
   let directivePrefixLength = 0;
   for (const line of physical) {
     const directive = line.match(/^\s*#\s*(syntax|escape|check)=/iu);
     if (!directive) break;
     directivePrefixLength++;
-    if (directive[1]?.toLowerCase() !== 'escape') continue;
+    const directiveName = directive[1]?.toLowerCase();
+    if (directiveName === 'syntax') {
+      if (syntaxDirective !== undefined) {
+        warnings.push(
+          `${directivePrefixLength}: duplicate Dockerfile syntax directive; frontend semantics are unknown`
+        );
+        continue;
+      }
+      syntaxDirective = line;
+      continue;
+    }
+    if (directiveName !== 'escape') continue;
     if (escapeDirective !== undefined) {
       warnings.push(
         `${directivePrefixLength}: duplicate Dockerfile escape directive; syntax semantics are unknown`
@@ -455,6 +492,17 @@ function parseInstructions(source: string): {
   if (escapeDirective && !escapeLine)
     warnings.push(
       `${physical.indexOf(escapeDirective) + 1}: invalid Dockerfile escape directive; default escape semantics were used`
+    );
+  const syntaxLine = syntaxDirective?.match(/^\s*#\s*syntax=([^\s]+)\s*$/iu);
+  if (
+    syntaxDirective &&
+    (!syntaxLine?.[1] ||
+      !/^docker\/dockerfile:1(?:\.\d+)?(?:@sha256:[a-f\d]{64})?$/iu.test(
+        syntaxLine[1]
+      ))
+  )
+    warnings.push(
+      `${physical.indexOf(syntaxDirective) + 1}: custom or invalid Dockerfile frontend; instruction semantics are unknown`
     );
   const escapeChar = escapeLine?.[1] ?? '\\';
   const instructions: DockerInstruction[] = [];
@@ -478,24 +526,28 @@ function parseInstructions(source: string): {
     'VOLUME',
     'WORKDIR'
   ]);
-  let buffer = '';
+  let bufferParts: string[] = [];
   let startLine = 1;
   let continuing = false;
 
   const flush = (index: number): number => {
-    if (!/^\s*[A-Za-z]+(?:\s+|$)/u.test(buffer)) {
-      buffer = '';
+    const bufferedText = bufferParts.join(' ');
+    if (!/^\s*[A-Za-z]+(?:\s+|$)/u.test(bufferedText)) {
+      bufferParts = [];
       continuing = false;
       return index;
     }
-    const instruction: DockerInstruction = { line: startLine, text: buffer };
-    const command = buffer.match(/^\s*([A-Za-z]+)/u)?.[1]?.toUpperCase();
+    const instruction: DockerInstruction = {
+      line: startLine,
+      text: bufferedText
+    };
+    const command = bufferedText.match(/^\s*([A-Za-z]+)/u)?.[1]?.toUpperCase();
     if (command && !supportedCommands.has(command))
       warnings.push(
         `${startLine}: unsupported Dockerfile instruction; semantics are unknown`
       );
     if (command === 'ADD') {
-      const argument = buffer
+      const argument = bufferedText
         .replace(/^\s*ADD\s+/iu, '')
         .replace(/^(?:--[^\s]+\s+)+/u, '')
         .trim();
@@ -518,7 +570,7 @@ function parseInstructions(source: string): {
     }
     const heredocs = ['RUN', 'COPY', 'ADD'].includes(command ?? '')
       ? [
-          ...buffer.matchAll(
+          ...bufferedText.matchAll(
             /<<(-?)\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_]+))/gu
           )
         ].map((match) => ({
@@ -527,7 +579,7 @@ function parseInstructions(source: string): {
         }))
       : [];
     const heredocOperators = ['RUN', 'COPY', 'ADD'].includes(command ?? '')
-      ? (buffer.match(/<</gu) ?? []).length
+      ? (bufferedText.match(/<</gu) ?? []).length
       : 0;
     if (heredocOperators > heredocs.length)
       warnings.push(
@@ -555,7 +607,7 @@ function parseInstructions(source: string): {
     if (command === 'RUN' && body.length > 0)
       instruction.text = `${instruction.text}\n${body.join('\n')}`;
     instructions.push(instruction);
-    buffer = '';
+    bufferParts = [];
     continuing = false;
     return consumed;
   };
@@ -572,7 +624,7 @@ function parseInstructions(source: string): {
         );
       continue;
     }
-    if (!buffer) startLine = lineNumber;
+    if (bufferParts.length === 0) startLine = lineNumber;
 
     let trailingEscapes = 0;
     for (
@@ -584,12 +636,12 @@ function parseInstructions(source: string): {
     }
     const continued = trailingEscapes % 2 === 1;
     const fragment = continued ? line.slice(0, -1).trim() : line.trim();
-    buffer = buffer ? `${buffer} ${fragment}` : fragment;
+    bufferParts.push(fragment);
     continuing = continued;
     if (continued) continue;
     index = flush(index);
   }
-  if (buffer) {
+  if (bufferParts.length > 0) {
     if (continuing)
       warnings.push(
         `${startLine}: unterminated Dockerfile line continuation; instruction semantics are unknown`
@@ -623,6 +675,10 @@ type DockerStageGraph = {
   stages: DockerStage[];
   states: DockerStageState[];
   baseKindByFrom: Map<DockerInstruction, DockerStage['baseKind']>;
+  resolvedFromByInstruction: Map<
+    DockerInstruction,
+    ResolvedFromImage | undefined
+  >;
   remoteCopyLines: number[];
   warnings: string[];
 };
@@ -630,12 +686,17 @@ type DockerStageGraph = {
 function buildDockerStageGraph(
   instructions: readonly DockerInstruction[],
   buildArgs: ReadonlyMap<string, string | undefined>,
-  escapeChar: string
+  escapeChar: string,
+  budget: DockerExpansionBudget
 ): DockerStageGraph {
   const stages: DockerStage[] = [];
   const aliases = new Map<string, number>();
   const ambiguousAliases = new Set<string>();
   const baseKindByFrom = new Map<DockerInstruction, DockerStage['baseKind']>();
+  const resolvedFromByInstruction = new Map<
+    DockerInstruction,
+    ResolvedFromImage | undefined
+  >();
   const warnings: string[] = [];
   let current: DockerStage | undefined;
 
@@ -648,7 +709,8 @@ function buildDockerStageGraph(
         );
       continue;
     }
-    const parsed = resolveFromImage(instruction, buildArgs, escapeChar);
+    const parsed = resolveFromImage(instruction, buildArgs, escapeChar, budget);
+    resolvedFromByInstruction.set(instruction, parsed);
     if (!parsed) {
       warnings.push(
         `${instruction.line}: FROM instruction could not be parsed; stage metadata is unknown`
@@ -920,7 +982,14 @@ function buildDockerStageGraph(
     }
   }
 
-  return { stages, states, baseKindByFrom, remoteCopyLines, warnings };
+  return {
+    stages,
+    states,
+    baseKindByFrom,
+    resolvedFromByInstruction,
+    remoteCopyLines,
+    warnings
+  };
 }
 
 export class DockerfileAnalyzer implements Analyzer {
@@ -994,11 +1063,20 @@ export class DockerfileAnalyzer implements Analyzer {
       const lineRules = [...rules.slice(1, 5), ...rules.slice(6)];
       const fileFindings: Finding[] = [];
       const allLines = instructions.map((item) => item.text);
-      const buildArgs = globalDockerArgs(instructions, parsed.escapeChar);
+      const expansionBudget: DockerExpansionBudget = {
+        remainingBytes: MAX_DOCKER_EXPANSION_BYTES,
+        exceeded: false
+      };
+      const buildArgs = globalDockerArgs(
+        instructions,
+        parsed.escapeChar,
+        expansionBudget
+      );
       const stageGraph = buildDockerStageGraph(
         instructions,
         buildArgs,
-        parsed.escapeChar
+        parsed.escapeChar,
+        expansionBudget
       );
       if (stageGraph.warnings.length > 0) stageMetadataIncomplete = true;
       warnings.push(
@@ -1006,6 +1084,12 @@ export class DockerfileAnalyzer implements Analyzer {
           (warning) => `${file.relativePath}:${warning}`
         )
       );
+      if (expansionBudget.exceeded) {
+        stageMetadataIncomplete = true;
+        warnings.push(
+          `${file.relativePath}: Dockerfile ARG expansion budget exceeded; image metadata is unknown`
+        );
+      }
       if (!stageGraph.stages.length) {
         stageMetadataIncomplete = true;
         warnings.push(
@@ -1080,11 +1164,8 @@ export class DockerfileAnalyzer implements Analyzer {
         fileFindings.push(finding(remoteCopyRule, file.relativePath, line));
       }
       for (const instruction of instructions) {
-        const resolvedFrom = resolveFromImage(
-          instruction,
-          buildArgs,
-          parsed.escapeChar
-        );
+        const resolvedFrom =
+          stageGraph.resolvedFromByInstruction.get(instruction);
         const baseKind = stageGraph.baseKindByFrom.get(instruction);
         for (const rule of lineRules) {
           if (

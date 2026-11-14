@@ -321,6 +321,33 @@ describe('DockerfileAnalyzer', () => {
     }
   });
 
+  it('marks custom Dockerfile frontends incomplete without executing them', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-frontend-')
+    );
+    try {
+      const instructions = 'FROM scratch\nUSER 1000\nHEALTHCHECK CMD true\n';
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        `# syntax=docker/dockerfile:1\n${instructions}`
+      );
+      const officialFrontend = await new DockerfileAnalyzer().analyze({ root });
+      expect(officialFrontend.coverage.state).toBe('complete');
+
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        `# syntax=example.invalid/custom-frontend:latest\n${instructions}`
+      );
+      const customFrontend = await new DockerfileAnalyzer().analyze({ root });
+      expect(customFrontend.coverage.state).toBe('partial');
+      expect(customFrontend.warnings).toContain(
+        'Dockerfile:1: custom or invalid Dockerfile frontend; instruction semantics are unknown'
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('preserves cancellation as incomplete Dockerfile coverage', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-cancel-'));
     try {
@@ -481,6 +508,52 @@ describe('DockerfileAnalyzer', () => {
         'synthetic-secret-value'
       );
       expect(rootFinding?.location?.line).toBe(7);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('handles a long continued instruction within the bounded Dockerfile budget', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-long-continuation-')
+    );
+    try {
+      const source = [
+        'FROM scratch',
+        'RUN ' + Array.from({ length: 2_000 }, () => 'echo x \\').join('\n'),
+        '  true',
+        'USER 1000',
+        'HEALTHCHECK CMD true'
+      ].join('\n');
+      await writeFile(path.join(root, 'Dockerfile'), source);
+      const result = await new DockerfileAnalyzer().analyze({ root });
+      expect(result.coverage.state).toBe('complete');
+      expect(result.metadata?.bytesAnalyzed).toBe(Buffer.byteLength(source));
+      expect(result.findings).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds cumulative ARG expansion and leaves later image metadata unknown', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-arg-budget-')
+    );
+    try {
+      const image = `example.invalid/${'a'.repeat(1024 * 1024)}`;
+      const source = [
+        `ARG IMAGE=${image}`,
+        ...Array.from({ length: 10 }, () => 'FROM $IMAGE'),
+        'USER 1000',
+        'HEALTHCHECK CMD true'
+      ].join('\n');
+      await writeFile(path.join(root, 'Dockerfile'), source);
+      const result = await new DockerfileAnalyzer().analyze({ root });
+      expect(result.coverage.state).toBe('partial');
+      expect(result.warnings).toContain(
+        'Dockerfile: Dockerfile ARG expansion budget exceeded; image metadata is unknown'
+      );
+      expect(JSON.stringify(result)).not.toContain('example.invalid');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

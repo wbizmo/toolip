@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Command } from 'commander';
@@ -16,6 +16,63 @@ afterEach(async () => {
 });
 
 describe('docker-scan command', () => {
+  it('redacts secret-like Docker values from the JSON CLI report', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-command-redaction-')
+    );
+    roots.push(root);
+    await writeFile(
+      path.join(root, 'Dockerfile'),
+      [
+        'FROM scratch',
+        'ENV API_KEY=synthetic-docker-secret-value',
+        'USER 1000',
+        'HEALTHCHECK CMD true'
+      ].join('\n')
+    );
+    const priorExitCode = process.exitCode;
+    const output: string[] = [];
+    const log = vi.spyOn(console, 'log').mockImplementation((value) => {
+      output.push(String(value));
+    });
+    const program = new Command();
+    registerDockerScanCommand(program);
+
+    try {
+      await program.parseAsync([
+        'node',
+        'toolip',
+        'docker-scan',
+        '--path',
+        root,
+        '--json'
+      ]);
+      const serialized = output.join('\n');
+      expect(serialized).not.toContain('synthetic-docker-secret-value');
+      const report = JSON.parse(serialized) as {
+        findings: Array<{
+          ruleId: string;
+          evidence?: Array<{ summary: string }>;
+        }>;
+      };
+      expect(report.findings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            ruleId: 'TLP-DOCKER-002',
+            evidence: [
+              expect.objectContaining({
+                summary: expect.stringContaining('redacted')
+              })
+            ]
+          })
+        ])
+      );
+    } finally {
+      log.mockRestore();
+      process.exitCode = priorExitCode;
+    }
+  });
+
   it('reports failed coverage in JSON and sets the incomplete exit code', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-docker-command-')
