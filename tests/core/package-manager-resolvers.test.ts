@@ -742,6 +742,78 @@ child@^2.0.0:
     );
   });
 
+  it('resolves Yarn Berry npm aliases to exact targets without inferring registry origin', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'package.json'),
+      JSON.stringify({
+        name: 'root',
+        version: '1.0.0',
+        dependencies: {
+          react18: 'npm:react@18.2.0',
+          react19: 'npm:react@19.0.0'
+        }
+      })
+    );
+    await writeFile(
+      path.join(root, 'yarn.lock'),
+      `__metadata:
+  version: 8
+  cacheKey: 10c0
+"react18@npm:react@18.2.0":
+  version: 18.2.0
+  resolution: "react@npm:18.2.0"
+  languageName: node
+  linkType: hard
+"react19@npm:react@19.0.0":
+  version: 19.0.0
+  resolution: "react@npm:19.0.0"
+  languageName: node
+  linkType: hard
+`
+    );
+
+    const graph = await readNpmDependencyGraph(root);
+    const react18 = graph.packages.find(
+      (item) => item.name === 'react' && item.version === '18.2.0'
+    );
+    const react19 = graph.packages.find(
+      (item) => item.name === 'react' && item.version === '19.0.0'
+    );
+
+    expect(graph).toMatchObject({ manager: 'yarn', complete: true });
+    expect(react18).toMatchObject({
+      direct: true,
+      installName: 'react18',
+      registry: undefined,
+      resolved: undefined
+    });
+    expect(react19).toMatchObject({
+      direct: true,
+      installName: 'react19',
+      registry: undefined,
+      resolved: undefined
+    });
+    expect(graph.edges).toContainEqual(
+      expect.objectContaining({
+        from: 'root',
+        to: react18?.id,
+        name: 'react',
+        alias: 'react18',
+        requirement: 'npm:react@18.2.0'
+      })
+    );
+    expect(graph.edges).toContainEqual(
+      expect.objectContaining({
+        from: 'root',
+        to: react19?.id,
+        name: 'react',
+        alias: 'react19',
+        requirement: 'npm:react@19.0.0'
+      })
+    );
+  });
+
   it.each([
     ['plain HTTP', 'http://registry.npmjs.org/foo/-/foo-1.2.0.tgz'],
     ['credential query', 'https://registry.npmjs.org/foo.tgz?token=secret'],
