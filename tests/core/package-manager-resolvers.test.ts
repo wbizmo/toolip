@@ -1,4 +1,12 @@
-import { copyFile, cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import {
+  copyFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  rm,
+  symlink,
+  writeFile
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -54,7 +62,8 @@ describe('pnpm and Yarn exact dependency graphs', () => {
     ['yarn-classic-v1', '18.2.0'],
     ['yarn-berry-v2', undefined],
     ['yarn-berry-v3', undefined],
-    ['yarn-berry-v4', undefined]
+    ['yarn-berry-v4', undefined],
+    ['yarn-berry-v4-registry', '18.2.0']
   ] as const)(
     'matches manager-generated %s workspace and exact lock identities',
     async (manager, reactVersion) => {
@@ -74,22 +83,26 @@ describe('pnpm and Yarn exact dependency graphs', () => {
         graph.packages.some((item) => item.version === '0.0.0-use.local')
       ).toBe(false);
       expect(graph.packages).toHaveLength(
-        manager.startsWith('yarn-berry-')
-          ? 3
-          : manager.startsWith('pnpm-')
-            ? 11
-            : 13
+        manager === 'yarn-berry-v4-registry'
+          ? 9
+          : manager.startsWith('yarn-berry-')
+            ? 3
+            : manager.startsWith('pnpm-')
+              ? 11
+              : 13
       );
       expect(graph.edges).toHaveLength(
         manager === 'npm-v2' || manager === 'npm-v3'
           ? 19
-          : manager === 'pnpm-v9'
-            ? 18
-            : manager === 'pnpm-v8'
-              ? 17
-              : manager === 'yarn-classic-v1'
-                ? 16
-                : 3
+          : manager === 'yarn-berry-v4-registry'
+            ? 14
+            : manager === 'pnpm-v9'
+              ? 18
+              : manager === 'pnpm-v8'
+                ? 17
+                : manager === 'yarn-classic-v1'
+                  ? 16
+                  : 3
       );
       expect(
         graph.edges.every(
@@ -181,6 +194,17 @@ describe('pnpm and Yarn exact dependency graphs', () => {
             )
         ).toBe(true);
       }
+      if (manager === 'yarn-berry-v4-registry') {
+        const registryPackages = graph.packages.filter(
+          (item) => !item.workspace
+        );
+        expect(registryPackages).toHaveLength(6);
+        expect(
+          registryPackages.every(
+            (item) => item.resolutionConfidence === 'unknown'
+          )
+        ).toBe(true);
+      }
 
       const cyclonedx = await generateSbom(root, 'cyclonedx');
       const cyclonedxPurls = (
@@ -262,7 +286,61 @@ describe('pnpm and Yarn exact dependency graphs', () => {
     }
   );
 
-  it('keeps npm alias identity, custom registry origin and integrity unverified', async () => {
+  it('maps a pnpm alias import to its exact virtual-store package for reachability', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'package.json'),
+      JSON.stringify({
+        name: 'fixture',
+        version: '1.0.0',
+        dependencies: { alias: 'npm:foo@1.2.0' }
+      })
+    );
+    await writeFile(
+      path.join(root, 'pnpm-lock.yaml'),
+      `lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      alias:\n        specifier: npm:foo@1.2.0\n        version: foo@1.2.0\npackages:\n  foo@1.2.0:\n    resolution:\n      integrity: ${strongIntegrity}\n      tarball: https://registry.npmjs.org/foo/-/foo-1.2.0.tgz\nsnapshots:\n  foo@1.2.0: {}\n`
+    );
+    const installedPackage = path.join(
+      root,
+      'node_modules/.pnpm/foo@1.2.0/node_modules/foo'
+    );
+    await mkdir(installedPackage, { recursive: true });
+    await writeFile(
+      path.join(installedPackage, 'package.json'),
+      JSON.stringify({ name: 'foo', version: '1.2.0', main: 'index.js' })
+    );
+    await writeFile(
+      path.join(installedPackage, 'index.js'),
+      'module.exports = 1;'
+    );
+    await mkdir(path.join(root, 'node_modules'), { recursive: true });
+    await symlink(
+      installedPackage,
+      path.join(root, 'node_modules/alias'),
+      'dir'
+    );
+    await writeFile(
+      path.join(root, 'entry.ts'),
+      "import foo from 'alias'; export default foo;"
+    );
+
+    const result = await new ReachabilityAnalyzer().analyze({ root });
+    const packages = result.metadata?.packages as Array<{
+      packageName: string;
+      packageVersion: string;
+      state: string;
+    }>;
+    expect(result.coverage?.state).toBe('complete');
+    expect(packages).toContainEqual(
+      expect.objectContaining({
+        packageName: 'foo',
+        packageVersion: '1.2.0',
+        state: 'reachable'
+      })
+    );
+  });
+
+  it('keeps npm alias identity but marks custom registry provenance unknown', async () => {
     const root = await fixture();
     await writeFile(
       path.join(root, 'package-lock.json'),
@@ -285,14 +363,17 @@ describe('pnpm and Yarn exact dependency graphs', () => {
 
     const graph = await readNpmDependencyGraph(root);
     const target = graph.packages.find((item) => item.name === '@scope/real');
-    expect(graph).toMatchObject({ manager: 'npm', complete: true });
+    expect(graph).toMatchObject({
+      manager: 'npm',
+      complete: true
+    });
     expect(target).toMatchObject({
       id: expect.stringContaining('node_modules/alias'),
       version: '1.4.2',
       registry: 'https://packages.example.test',
       integrity: strongIntegrity,
       artifactIntegrityStatus: 'declared-not-verified',
-      resolutionConfidence: 'lockfile'
+      resolutionConfidence: 'unknown'
     });
     expect(target?.artifactIntegrityStatus).not.toBe('verified');
     expect(graph.edges).toContainEqual(
@@ -304,6 +385,56 @@ describe('pnpm and Yarn exact dependency graphs', () => {
         requirement: 'npm:@scope/real@^1.0.0'
       })
     );
+  });
+
+  it('does not trust a custom pnpm tarball origin as a public npm package', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'pnpm-lock.yaml'),
+      `lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      foo:\n        specifier: ^1.0.0\n        version: 1.2.0\npackages:\n  foo@1.2.0:\n    resolution:\n      integrity: ${strongIntegrity}\n      tarball: https://packages.example.test/foo-1.2.0.tgz\nsnapshots:\n  foo@1.2.0: {}\n`
+    );
+
+    const graph = await readNpmDependencyGraph(root);
+    expect(graph).toMatchObject({
+      manager: 'pnpm',
+      complete: true
+    });
+    expect(graph.packages[0]).toMatchObject({
+      name: 'foo',
+      version: '1.2.0',
+      registry: 'https://packages.example.test',
+      resolutionConfidence: 'unknown'
+    });
+  });
+
+  it('trusts only exact HTTPS public registry hosts for lock resolution', async () => {
+    for (const [host, trusted] of [
+      ['registry.npmjs.org', true],
+      ['registry.npmjs.org.attacker.test', false],
+      ['packages.example.test', false]
+    ] as const) {
+      const root = await fixture();
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': { dependencies: { foo: '1.2.0' } },
+            'node_modules/foo': {
+              version: '1.2.0',
+              resolved: `https://${host}/foo/-/foo-1.2.0.tgz`
+            }
+          }
+        })
+      );
+
+      const graph = await readNpmDependencyGraph(root);
+      expect(graph.packages[0]).toMatchObject({
+        resolutionConfidence: trusted ? 'lockfile' : 'unknown',
+        registry: `https://${host}`
+      });
+      expect(graph.complete).toBe(true);
+    }
   });
 
   it('derives npm root and nested scoped install names from lock paths', async () => {
@@ -783,18 +914,23 @@ child@^2.0.0:
       (item) => item.name === 'react' && item.version === '19.0.0'
     );
 
-    expect(graph).toMatchObject({ manager: 'yarn', complete: true });
+    expect(graph).toMatchObject({
+      manager: 'yarn',
+      complete: true
+    });
     expect(react18).toMatchObject({
       direct: true,
       installName: 'react18',
       registry: undefined,
-      resolved: undefined
+      resolved: undefined,
+      resolutionConfidence: 'unknown'
     });
     expect(react19).toMatchObject({
       direct: true,
       installName: 'react19',
       registry: undefined,
-      resolved: undefined
+      resolved: undefined,
+      resolutionConfidence: 'unknown'
     });
     expect(graph.edges).toContainEqual(
       expect.objectContaining({

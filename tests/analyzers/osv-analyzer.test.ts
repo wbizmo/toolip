@@ -594,11 +594,61 @@ describe('OsvVulnerabilityAnalyzer', () => {
 
       expect(queryCount).toBe(0);
       expect(result.coverage?.state).not.toBe('complete');
-      expect(result.warnings).toContain('osv-public-query-withheld:1');
+      expect(result.warnings).toContain(
+        'dependency-graph:dependency-resolution-provenance-unknown:npm'
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it.each(['pnpm', 'yarn'] as const)(
+    'withholds public advisory requests when a %s lock omits registry provenance',
+    async (manager) => {
+      const root = await mkdtemp(
+        path.join(os.tmpdir(), `toolip-osv-${manager}-origin-`)
+      );
+      let queryCount = 0;
+      try {
+        await writeFile(
+          path.join(root, 'package.json'),
+          JSON.stringify({
+            name: 'fixture',
+            version: '1.0.0',
+            dependencies: { privateLib: '^2.0.0' }
+          })
+        );
+        const lockfile =
+          manager === 'pnpm'
+            ? `lockfileVersion: '9.0'\nimporters:\n  .:\n    dependencies:\n      privateLib:\n        specifier: ^2.0.0\n        version: 2.0.1\npackages:\n  privateLib@2.0.1:\n    resolution:\n      integrity: sha512-${Buffer.alloc(64, 0x5a).toString('base64')}\nsnapshots:\n  privateLib@2.0.1: {}\n`
+            : `__metadata:\n  version: 8\n\n"privateLib@npm:^2.0.0":\n  version: 2.0.1\n  resolution: "privateLib@npm:2.0.1"\n`;
+        await writeFile(
+          path.join(root, manager === 'pnpm' ? 'pnpm-lock.yaml' : 'yarn.lock'),
+          lockfile
+        );
+        const client = new OsvClient({
+          fetchImplementation: async () => {
+            queryCount++;
+            return new Response(JSON.stringify({ results: [] }), {
+              status: 200
+            });
+          }
+        });
+
+        const result = await new OsvVulnerabilityAnalyzer(client).analyze({
+          root
+        });
+
+        expect(queryCount).toBe(0);
+        expect(result.coverage?.state).not.toBe('complete');
+        expect(result.warnings).toContain(
+          'dependency-graph:dependency-resolution-provenance-unknown:npm'
+        );
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
 
   it('withholds public PyPI advisory requests for hashed requirements inherited from a custom index', async () => {
     const root = await mkdtemp(
@@ -1344,7 +1394,7 @@ describe('OsvVulnerabilityAnalyzer', () => {
     }
   });
 
-  it('withholds scoped and custom-registry npm identifiers from OSV without explicit consent', async () => {
+  it('withholds unknown scoped and custom-registry npm origins from OSV', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-osv-private-'));
     let requests = 0;
     try {
@@ -1385,9 +1435,11 @@ describe('OsvVulnerabilityAnalyzer', () => {
 
       expect(requests).toBe(0);
       expect(result.coverage?.state).toBe('failed');
-      expect(result.warnings).toContain('osv-public-query-withheld:2');
+      expect(result.warnings).toContain(
+        'dependency-graph:dependency-resolution-provenance-unknown:npm'
+      );
       expect(result.metadata?.advisoryData).toMatchObject({
-        privacyRestrictedRecords: 2
+        privacyRestrictedRecords: 0
       });
     } finally {
       await rm(root, { recursive: true, force: true });

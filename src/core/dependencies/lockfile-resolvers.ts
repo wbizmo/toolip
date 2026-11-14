@@ -25,6 +25,7 @@ type LockedInstance = {
   dev?: boolean;
   optional?: boolean;
   workspace?: string;
+  resolutionConfidence?: DependencyIdentity['resolutionConfidence'];
   resolutionContext?: string;
   dependencies?: RecordValue;
   optionalDependencies?: RecordValue;
@@ -62,6 +63,25 @@ function safeResolved(value: unknown): string | undefined {
     return `${url.protocol}//${url.host}${url.pathname}`;
   } catch {
     return undefined;
+  }
+}
+
+export function isTrustedPublicNpmRegistry(value: string | undefined): boolean {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === 'https:' &&
+      ['registry.npmjs.org', 'registry.yarnpkg.com'].includes(
+        url.hostname.toLowerCase()
+      ) &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -128,6 +148,13 @@ function packageIdentity(
     direct,
     installName: item.installName ?? item.name,
     development: development || item.dev === true,
+    resolutionConfidence:
+      item.resolutionConfidence ??
+      (item.workspace || item.resolutionContext?.startsWith('file:')
+        ? 'workspace'
+        : isTrustedPublicNpmRegistry(item.resolved)
+          ? 'lockfile'
+          : 'unknown'),
     optional: item.optional ? true : undefined,
     integrity: item.integrity,
     ...(item.artifactIntegrityStatus === undefined
@@ -488,6 +515,11 @@ export async function readPnpmDependencyGraph(
         ? {}
         : { artifactIntegrityStatus: integrity.status }),
       resolved: safeResolved(resolution?.tarball),
+      resolutionConfidence: isTrustedPublicNpmRegistry(
+        safeResolved(resolution?.tarball)
+      )
+        ? 'lockfile'
+        : 'unknown',
       dev: entry.dev === true,
       optional: entry.optional === true,
       dependencies: record(snapshot.dependencies) ?? record(entry.dependencies),
@@ -1264,6 +1296,9 @@ export async function readYarnDependencyGraph(
           ? `virtual:${virtualContexts[0]}#${resolutionReference}`
           : resolutionReference
         : undefined;
+    const trustedRegistryOrigin = isTrustedPublicNpmRegistry(
+      safeResolved(entry.resolved)
+    );
     const requestedNames = [
       ...new Set(validDescriptors.map(({ info }) => info.name))
     ].sort();
@@ -1287,10 +1322,20 @@ export async function readYarnDependencyGraph(
             : typeof entry.checksum === 'string'
               ? entry.checksum.slice(0, 1_024)
               : undefined,
-        ...(entry.integrity === undefined
+        ...(entry.integrity === undefined && typeof entry.checksum !== 'string'
           ? {}
-          : { artifactIntegrityStatus: integrity.status }),
+          : {
+              artifactIntegrityStatus:
+                entry.integrity === undefined
+                  ? 'declared-not-verified'
+                  : integrity.status
+            }),
         resolved: safeResolved(entry.resolved),
+        resolutionConfidence: localFilePath
+          ? 'workspace'
+          : trustedRegistryOrigin
+            ? 'lockfile'
+            : 'unknown',
         dev: entry.dev === true,
         optional: entry.optional === true,
         resolutionContext,

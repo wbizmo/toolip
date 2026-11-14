@@ -18,6 +18,16 @@ provenance metadata only: a digest recorded in a lockfile is always
 `declared-not-verified` until an independent artifact check succeeds. A
 manifest range alone never creates a resolved installed identity.
 
+For npm, pnpm and Yarn registry packages, `lockfile` resolution confidence
+requires an exact HTTPS origin on `registry.npmjs.org` or
+`registry.yarnpkg.com`. Custom, missing, malformed or lookalike origins retain
+the exact package identity and sanitized origin when available, but receive
+`unknown` resolution confidence. This leaves graph topology available for
+reachability while public OSV and metadata lookups are withheld for those
+identities. Workspace and local file identities retain their local resolution
+context and are not treated as public registry packages. A lockfile version
+or checksum alone does not establish its source.
+
 ## CycloneDX
 
 ```bash

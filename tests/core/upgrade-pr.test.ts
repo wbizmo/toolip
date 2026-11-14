@@ -1147,7 +1147,7 @@ function createRuntime(options: {
           const lock = JSON.parse(
             await readFile(path.join(cwd, 'package-lock.json'), 'utf8')
           ) as {
-            packages: Record<string, { version?: string }>;
+            packages: Record<string, { version?: string; resolved?: string }>;
           };
           const entry = lock.packages['node_modules/example-package'];
           if (!entry) throw new Error('fixture lock entry is missing');
@@ -1166,13 +1166,16 @@ function createRuntime(options: {
           const lock = JSON.parse(
             await readFile(path.join(cwd, 'package-lock.json'), 'utf8')
           ) as {
-            packages: Record<string, { version?: string }>;
+            packages: Record<string, { version?: string; resolved?: string }>;
           };
           for (const [name, version] of Object.entries(
             manifest.dependencies ?? {}
           )) {
             const entry = lock.packages[`node_modules/${name}`];
-            if (entry) entry.version = version;
+            if (entry) {
+              entry.version = version;
+              entry.resolved = `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`;
+            }
           }
           await writeFile(
             path.join(cwd, 'package-lock.json'),
@@ -1264,7 +1267,9 @@ async function createRepositoryFixture(): Promise<{
             dependencies: { 'example-package': '1.0.0' }
           },
           'node_modules/example-package': {
-            version: '1.0.0'
+            version: '1.0.0',
+            resolved:
+              'https://registry.npmjs.org/example-package/-/example-package-1.0.0.tgz'
           }
         }
       },

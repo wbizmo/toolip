@@ -108,7 +108,7 @@ describe('project package-health command integration', () => {
     expect(result).toMatchObject({
       package: 'public-pkg',
       version: '1.2.3',
-      resolutionConfidence: 'lockfile',
+      resolutionConfidence: 'unknown',
       registryOrigin: 'https://packages.example.test',
       resolvedArtifact:
         'https://packages.example.test/npm/public-pkg/-/public-pkg-1.2.3.tgz',

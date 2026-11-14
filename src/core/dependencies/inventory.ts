@@ -4,6 +4,7 @@ import { lstat } from 'node:fs/promises';
 import semver from 'semver';
 import { ToolipError } from '../../errors/toolip-error.js';
 import {
+  isTrustedPublicNpmRegistry,
   npmIntegrityStatus,
   readBoundedDependencyText,
   readPnpmDependencyGraph,
@@ -444,6 +445,11 @@ export async function readNpmDependencyGraph(
     const integrity = npmIntegrityStatus(entry.integrity);
     if (resolution.unsafe && !entry.link)
       warnings.push('npm-lockfile-source-url-unsafe');
+    const isWorkspace =
+      entry.link === true || !installPath.startsWith('node_modules/');
+    const trustedRegistryOrigin = isTrustedPublicNpmRegistry(
+      resolution.resolved
+    );
     if (integrity.malformed) warnings.push('npm-lockfile-integrity-malformed');
 
     identitiesByPath.set(installPath, {
@@ -458,7 +464,11 @@ export async function readNpmDependencyGraph(
       cpu: Array.isArray(entry.cpu) ? entry.cpu.map(String) : undefined,
       libc: Array.isArray(entry.libc) ? entry.libc.map(String) : undefined,
       source: 'package-lock',
-      resolutionConfidence: 'lockfile',
+      resolutionConfidence: isWorkspace
+        ? 'workspace'
+        : trustedRegistryOrigin
+          ? 'lockfile'
+          : 'unknown',
       installPath,
       installName: npmInstallName(installPath, name),
       ...(entry.integrity === undefined
