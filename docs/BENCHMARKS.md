@@ -1,5 +1,31 @@
 # Scale benchmark methodology
 
+## PR #104 local baseline (2026-11-14)
+
+This run measured the clean PR #104 head `776cd08b8e067b9122af4320c7e155966a508dbf`
+on Linux x64 with Node 24.22.1, an AMD EPYC 9V74 host and four available
+logical CPUs. It used deterministic synthetic fixtures and made zero provider
+requests. The complete 42-record JSONL output is preserved at
+[`docs/benchmarks/toolip-v3.2.1-pr104-baseline-2026-11-14-linux-node24.jsonl`](benchmarks/toolip-v3.2.1-pr104-baseline-2026-11-14-linux-node24.jsonl).
+
+| Fixture                       |                     Size |    Cold |   Warm | Result                          |
+| ----------------------------- | -----------------------: | ------: | -----: | ------------------------------- |
+| Source walk and bounded reads |         1k files / 54 KB |  236 ms | 149 ms | 1,000 files read                |
+| Source walk and bounded reads |       10k files / 540 KB |  1.61 s | 1.48 s | 10,000 files read               |
+| Source walk and bounded reads |       50k files / 2.7 MB |  6.68 s | 6.37 s | 50,000 files read               |
+| Offline scorecard             |          1k source files |  1.24 s | 640 ms | 1,003/1,003 scanned; complete   |
+| Offline scorecard             |         10k source files |  5.40 s | 1.36 s | 10,003/10,003 scanned; complete |
+| Offline scorecard             |         50k source files | 19.48 s | 4.42 s | 50,003/50,003 scanned; complete |
+| Concurrent pair of scorecards |    50k source files each | 10.28 s |      — | Both complete                   |
+| Wide npm graph                |  50k direct dependencies |  793 ms | 540 ms | 50,000 direct                   |
+| Converging npm graph          | 50k nodes / 99,997 edges |  1.03 s | 839 ms | 49,998 transitive; depth 50,000 |
+
+The scorecard cold pass peaked at about 902 MiB RSS; the warm 50k pass peaked
+at about 1,031 MiB. These are sampled process peaks, not isolated operation
+allocations. The run records baseline behavior only; it does not qualify Node
+22, macOS, Windows, production repositories, or the later 100k/250k and larger
+stress campaigns.
+
 `npm run benchmark:scale -- 1000 10000 50000` creates deterministic temporary
 source trees and npm lockfiles. It records cold and warm source discovery plus
 bounded reads, an end-to-end offline scorecard over a complete generated Git
