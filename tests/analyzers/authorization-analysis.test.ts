@@ -455,6 +455,38 @@ describe('route authorization candidates', () => {
     ).toBe('low');
   });
 
+  it('does not let a conditional explicit guard hide a later object lookup', () => {
+    const findings = analyzeAstSource(
+      'src/routes/conditional-guard.ts',
+      `router.get('/records/:id', async (req, res) => {
+  if (req.query.extraCheck) {
+    await assertOwner(req.user, req.params.id);
+  }
+  return records.findById(req.params.id);
+});`
+    );
+    expect(findings.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      true
+    );
+  });
+
+  it('does not trust an ownership assertion whose failure is caught', () => {
+    const findings = analyzeAstSource(
+      'src/routes/caught-guard.ts',
+      `router.get('/records/:id', async (req, res) => {
+  try {
+    await assertOwner(req.user, req.params.id);
+  } catch {
+    logger.warn('ownership assertion failed');
+  }
+  return records.findById(req.params.id);
+});`
+    );
+    expect(findings.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      true
+    );
+  });
+
   it('verifies cross-file middleware bodies before trusting a route guard', () => {
     const root = '/toolip-auth-middleware';
     const route = `import { authorizeRecord } from './policy.js';
@@ -485,6 +517,12 @@ router.get('/records/:id', authorizeRecord, handler);`;
   next();
 }`)
     );
+    const conditionalGuardProject = createAstProjectAnalysis(
+      inputs(`export function authorizeRecord(req: RequestLike, next: () => void) {
+  if (req.query.extraCheck) assertOwner(req.user, req.params.id);
+  next();
+}`)
+    );
 
     expect(
       analyzeAstSource('routes.ts', route, project).some(
@@ -493,6 +531,11 @@ router.get('/records/:id', authorizeRecord, handler);`;
     ).toBe(false);
     expect(
       analyzeAstSource('routes.ts', route, authenticationOnlyProject).some(
+        (finding) => finding.ruleId === 'TLP-AUTH-001'
+      )
+    ).toBe(true);
+    expect(
+      analyzeAstSource('routes.ts', route, conditionalGuardProject).some(
         (finding) => finding.ruleId === 'TLP-AUTH-001'
       )
     ).toBe(true);

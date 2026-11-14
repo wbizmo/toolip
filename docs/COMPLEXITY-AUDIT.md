@@ -788,6 +788,16 @@ fixtures cover direct tenant and shared-grant filters. The focused authorization
 typecheck passed. This syntactic heuristic still cannot prove framework,
 database or application-policy semantics; #61 remains incomplete.
 
+Explicit authorization calls now suppress candidates only when the call is
+unconditionally executed before the object lookup. Calls inside optional
+branches, short-circuit right operands, loops, switch cases, try/catch blocks
+and catch clauses stay unproven, since a caught assertion failure may continue
+to the lookup. The check walks the call's AST ancestor chain (`A` nodes), so its
+additional time is `O(A)` and temporary space is `O(1)` per candidate call.
+Boolean guards retain the separate fail-closed branch check. This is still
+syntactic evidence and does not establish helper behavior or database policy
+semantics (#61).
+
 ## Imported outbound request sink indexing — 2026-11-14
 
 The SSRF pass identifies named imports from `node:http`, `node:https` and

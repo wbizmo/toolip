@@ -63,6 +63,43 @@ function visitCurrentFunction(
   ts.forEachChild(node, walk);
 }
 
+function isUnconditionallyExecuted(
+  node: ts.Node,
+  handler: ts.FunctionLikeDeclaration
+): boolean {
+  let current = node;
+  while (current !== handler) {
+    if (ts.isCallExpression(current) && current.questionDotToken) return false;
+    const parent = current.parent;
+    if (!parent) return false;
+    if (ts.isIfStatement(parent) && current !== parent.expression) return false;
+    if (ts.isConditionalExpression(parent) && current !== parent.condition)
+      return false;
+    if (
+      ts.isBinaryExpression(parent) &&
+      current === parent.right &&
+      (parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+        parent.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+        parent.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
+    )
+      return false;
+    if (
+      ts.isForStatement(parent) ||
+      ts.isForInStatement(parent) ||
+      ts.isForOfStatement(parent) ||
+      ts.isWhileStatement(parent) ||
+      ts.isDoStatement(parent) ||
+      ts.isTryStatement(parent) ||
+      ts.isCaseClause(parent) ||
+      ts.isDefaultClause(parent) ||
+      ts.isCatchClause(parent)
+    )
+      return false;
+    current = parent;
+  }
+  return true;
+}
+
 function requestObjectId(expression: ts.Expression): boolean {
   if (ts.isParenthesizedExpression(expression))
     return requestObjectId(expression.expression);
@@ -527,6 +564,7 @@ function hasRoleOrOwnershipGuard(
     if (ts.isCallExpression(node)) {
       if (
         node.getEnd() <= beforePosition &&
+        isUnconditionallyExecuted(node, handler) &&
         isResourceAuthorizationCall(node, requestParameters, identityParameters)
       ) {
         guarded = true;
@@ -589,7 +627,10 @@ function isVerifiedResourceMiddleware(
   visitCurrentFunction(helper, (node) => {
     if (verified) return;
     if (ts.isCallExpression(node)) {
-      if (isResourceAuthorizationCall(node, requests, identities)) {
+      if (
+        isResourceAuthorizationCall(node, requests, identities) &&
+        isUnconditionallyExecuted(node, helper)
+      ) {
         verified = true;
         return;
       }
