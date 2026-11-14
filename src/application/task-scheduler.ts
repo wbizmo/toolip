@@ -20,7 +20,10 @@ const maximumTaskInputFingerprintBytes = 4_096;
  * second copy of an output. Values that cannot be safely estimated are left
  * uncached; callers still receive their original result.
  */
-function estimateCacheValueBytes(value: unknown, limit: number): number | undefined {
+function estimateCacheValueBytes(
+  value: unknown,
+  limit: number
+): number | undefined {
   const pending: unknown[] = [value];
   const visited = new Set<object>();
   let bytes = 16;
@@ -42,8 +45,7 @@ function estimateCacheValueBytes(value: unknown, limit: number): number | undefi
         if (!add(16)) return undefined;
         continue;
       case 'string':
-        if (!add(Buffer.byteLength(current, 'utf8') * 2 + 8))
-          return undefined;
+        if (!add(Buffer.byteLength(current, 'utf8') * 2 + 8)) return undefined;
         continue;
       case 'object':
         break;
@@ -94,16 +96,15 @@ function estimateCacheValueBytes(value: unknown, limit: number): number | undefi
       // Reject named array properties without materializing a key array.
       for (const key in object) {
         if (!Object.hasOwn(object, key)) continue;
-        if (
-          !/^(?:0|[1-9]\d*)$/u.test(key) ||
-          Number(key) >= object.length
-        )
+        if (!/^(?:0|[1-9]\d*)$/u.test(key) || Number(key) >= object.length)
           return undefined;
       }
       continue;
     }
-    if (Object.getPrototypeOf(object) !== Object.prototype &&
-        Object.getPrototypeOf(object) !== null) {
+    if (
+      Object.getPrototypeOf(object) !== Object.prototype &&
+      Object.getPrototypeOf(object) !== null
+    ) {
       // Dates, errors, class instances and host objects have serialization
       // rules that this small estimator cannot bound reliably.
       return undefined;

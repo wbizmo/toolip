@@ -742,3 +742,28 @@ space for store bytes `S` and keys `K`; selection by exact key ID is expected
 and immediate revocation are checked before report or SBOM signature
 verification. Direct one-off key arguments remain available for explicit
 migration, but do not provide rotation or revocation policy.
+
+## Reachability request-name alias indexing — 2026-11-14
+
+`ReachabilityAnalyzer` maps requested package names (including lockfile aliases)
+to installed identities. Previously every alias edge scanned the accumulated
+identity array with `.some()`. With `Eₐ` alias edges and up to `V` installed
+instances for one request name, that join could take `O(Eₐ·V)` time. It now
+maintains a `Set` of identity IDs per request name while retaining the ordered
+arrays used by resolution. Index construction and alias joins take expected
+`O(V + Eₐ)` time and `O(V + Eₐ)` additional space; these are expected hash-table
+bounds, not deterministic worst-case guarantees. The existing exact Yarn PnP
+alias integration fixture and the reachability suite verify alias-to-installed
+identity behavior. The focused reachability suite passed 9 tests and
+`npm run typecheck` passed on Linux Node 24. This local optimization does not
+complete the repository-wide #40 audit or its scale/operation-count acceptance.
+
+Yarn `node_modules` discovery also compared every candidate package manifest
+against the full locked-instance array for its install name. With `D` visited
+package directories and `Vᵧ` expected Yarn instances concentrated under one
+name, manifest validation could take `O(D·Vᵧ)` time. A per-install-name set of
+exact `name\0version` keys is now built in `O(Vᵧ)` expected time/space, and the
+bounded discovery loop validates each candidate with expected `O(1)` membership
+work, for `O(Vᵧ + D)` expected time and `O(Vᵧ)` additional space. The outer
+visited-entry cap remains 100,000. The indexed key adds work proportional to
+the compared name/version bytes, and hash-table bounds remain expected-time.

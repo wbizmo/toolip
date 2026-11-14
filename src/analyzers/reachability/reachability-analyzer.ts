@@ -348,6 +348,13 @@ async function discoverYarnNodeModules(
   const unresolvedNames = new Set<string>();
   const warnings = new Set<string>();
   const expectedNames = new Set(expectedInstances.keys());
+  const expectedNameVersions = new Map<string, Set<string>>();
+  for (const [installName, instances] of expectedInstances) {
+    const nameVersions = new Set<string>();
+    for (const instance of instances)
+      nameVersions.add(`${instance.name}\0${instance.version}`);
+    expectedNameVersions.set(installName, nameVersions);
+  }
   const pending = [path.join(root, 'node_modules')];
   const visited = new Set<string>();
   let entriesRead = 0;
@@ -423,11 +430,9 @@ async function discoverYarnNodeModules(
               typeof value.name === 'string' &&
               'version' in value &&
               typeof value.version === 'string' &&
-              (expectedInstances.get(packageName) ?? []).some(
-                (expected) =>
-                  expected.name === value.name &&
-                  expected.version === value.version
-              )
+              expectedNameVersions
+                .get(packageName)
+                ?.has(`${value.name}\0${value.version}`)
             ) {
               packages.push({
                 name: value.name,
@@ -529,6 +534,7 @@ export class ReachabilityAnalyzer implements Analyzer {
     const unresolved = new Set<string>();
     const dependenciesByName = new Map<string, typeof dependencies>();
     const dependenciesByRequestName = new Map<string, typeof dependencies>();
+    const dependencyIdsByRequestName = new Map<string, Set<string>>();
     const yarnWorkspaceIds = new Map<string, string>();
     const yarnEdgesByOwnerAndName = new Map<string, Set<string>>();
     const resolverHost = createRootBoundResolverHost(scannerContext.root);
@@ -545,6 +551,10 @@ export class ReachabilityAnalyzer implements Analyzer {
       sameName.push(dependency);
       dependenciesByName.set(dependency.name, sameName);
       dependenciesByRequestName.set(dependency.name, sameName);
+      const sameNameIds =
+        dependencyIdsByRequestName.get(dependency.name) ?? new Set<string>();
+      sameNameIds.add(dependency.id);
+      dependencyIdsByRequestName.set(dependency.name, sameNameIds);
       if (dependency.manager === 'yarn' && dependency.workspace)
         yarnWorkspaceIds.set(dependency.workspace, dependency.id);
     }
@@ -554,9 +564,14 @@ export class ReachabilityAnalyzer implements Analyzer {
       const target = dependencyById.get(edge.to);
       if (!target) continue;
       const sameName = dependenciesByRequestName.get(edge.alias) ?? [];
-      if (!sameName.some((item) => item.id === target.id))
+      const sameNameIds =
+        dependencyIdsByRequestName.get(edge.alias) ?? new Set<string>();
+      if (!sameNameIds.has(target.id)) {
         sameName.push(target);
+        sameNameIds.add(target.id);
+      }
       dependenciesByRequestName.set(edge.alias, sameName);
+      dependencyIdsByRequestName.set(edge.alias, sameNameIds);
     }
     if (!dependencyGraph.complete)
       for (const dependency of dependencies) unresolved.add(dependency.id);
