@@ -20,7 +20,9 @@ installation without same-layer cleanup. Findings redact matched instruction
 text. Empty secret-named `ARG`s and BuildKit secret mounts are not treated as
 literal embedded secrets.
 
-Named and numeric `FROM` references build an indexed stage graph. A stage that
+Named and numeric `FROM` references build an indexed stage graph. Stage names
+accept letters or underscores at the start, followed by letters, digits,
+underscores, periods or hyphens. A stage that
 uses an earlier stage inherits its known `USER` and `HEALTHCHECK` state, and
 later instructions override that state. `scratch` starts as UID 0 with no
 health check. An external image's user and health-check metadata cannot be

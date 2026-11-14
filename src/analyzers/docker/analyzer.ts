@@ -431,7 +431,7 @@ function resolveFromImage(
   if (
     !imageToken ||
     (aliasKeyword !== undefined && !hasAlias) ||
-    (hasAlias && (!alias || !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(alias))) ||
+    (hasAlias && (!alias || !/^[A-Za-z_][A-Za-z0-9_.-]*$/u.test(alias))) ||
     tokens.length - imageIndex > (hasAlias ? 3 : 1)
   )
     return undefined;

@@ -755,6 +755,37 @@ describe('DockerfileAnalyzer', () => {
     }
   });
 
+  it('resolves hyphenated Docker stage names for FROM and COPY --from', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-hyphen-stage-')
+    );
+    try {
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        [
+          'FROM scratch AS build-stage.v1',
+          'USER 1000',
+          'HEALTHCHECK CMD node healthcheck.js',
+          'FROM build-stage.v1 AS runtime-stage',
+          'COPY --from=build-stage.v1 /app /app'
+        ].join('\n')
+      );
+
+      const result = await new DockerfileAnalyzer().analyze({ root });
+
+      expect(result.coverage.state).toBe('complete');
+      expect(
+        result.findings.filter((finding) =>
+          ['TLP-DOCKER-001', 'TLP-DOCKER-006', 'TLP-DOCKER-008'].includes(
+            finding.ruleId
+          )
+        )
+      ).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('handles numeric stage references and final USER/HEALTHCHECK overrides', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-index-'));
     try {
