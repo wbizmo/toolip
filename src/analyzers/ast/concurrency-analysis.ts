@@ -107,6 +107,56 @@ function pathKey(expression: ts.Expression | undefined): string | undefined {
     .replace(/^\((.*)\)$/u, '$1');
 }
 
+function declarationScope(
+  declaration: ts.VariableDeclaration
+): ts.Node | undefined {
+  let current: ts.Node | undefined = declaration.parent.parent;
+  while (
+    current &&
+    !ts.isBlock(current) &&
+    !ts.isSourceFile(current) &&
+    !ts.isForStatement(current) &&
+    !ts.isForInStatement(current) &&
+    !ts.isForOfStatement(current)
+  ) {
+    current = current.parent;
+  }
+  return current;
+}
+
+function visiblePathKey(
+  expression: ts.Expression | undefined,
+  usePosition: number,
+  visibleNodes: ReadonlySet<ts.Node>,
+  aliases: ReadonlyMap<string, ts.VariableDeclaration | null>,
+  depth = 0,
+  seen = new Set<string>()
+): string | undefined {
+  const direct = pathKey(expression);
+  if (!expression || !ts.isIdentifier(expression) || depth >= 16) return direct;
+  if (seen.has(expression.text)) return direct;
+  const alias = aliases.get(expression.text);
+  if (
+    !alias?.initializer ||
+    ts.isFunctionLike(alias.initializer) ||
+    alias.getStart() >= usePosition ||
+    !ts.isVariableDeclarationList(alias.parent) ||
+    (alias.parent.flags & ts.NodeFlags.Const) === 0 ||
+    !visibleNodes.has(declarationScope(alias) as ts.Node)
+  )
+    return direct;
+  const nextSeen = new Set(seen);
+  nextSeen.add(expression.text);
+  return visiblePathKey(
+    alias.initializer,
+    usePosition,
+    visibleNodes,
+    aliases,
+    depth + 1,
+    nextSeen
+  );
+}
+
 function mentionsIdentifier(node: ts.Node, name: string): boolean {
   let found = false;
   const walk = (child: ts.Node): void => {
@@ -605,12 +655,32 @@ function emptyFacts(): FunctionFacts {
 function findFilesystemCheckUse(
   sourceFile: ts.SourceFile,
   calls: readonly ts.CallExpression[],
+  declarations: readonly ts.VariableDeclaration[],
   findings: Finding[]
 ): void {
   const checkedPaths = new Set<string>();
+  const aliases = new Map<string, ts.VariableDeclaration | null>();
+  for (const declaration of declarations) {
+    if (!ts.isIdentifier(declaration.name)) continue;
+    const aliasName = declaration.name.text;
+    aliases.set(aliasName, aliases.has(aliasName) ? null : declaration);
+  }
   for (const call of calls) {
     const name = methodName(call) ?? '';
-    const path = pathKey(callArgument(call));
+    const visibleNodes = new Set<ts.Node>();
+    for (
+      let current: ts.Node | undefined = call;
+      current;
+      current = current.parent
+    ) {
+      visibleNodes.add(current);
+    }
+    const path = visiblePathKey(
+      callArgument(call),
+      call.getStart(sourceFile),
+      visibleNodes,
+      aliases
+    );
     if (!path) continue;
     if (fileCheckMethods.has(name)) checkedPaths.add(path);
     else if (fileUseMethods.has(name) && checkedPaths.has(path)) {
@@ -739,10 +809,20 @@ export function analyzeConcurrencySource(
     if (startsFunction) functionStack.pop();
   };
   visit(sourceFile);
-  findFilesystemCheckUse(sourceFile, topLevelFacts.calls, findings);
+  findFilesystemCheckUse(
+    sourceFile,
+    topLevelFacts.calls,
+    topLevelFacts.declarations,
+    findings
+  );
   findReadCheckWrite(sourceFile, topLevelFacts, findings);
   for (const facts of factsByFunction.values()) {
-    findFilesystemCheckUse(sourceFile, facts.calls, findings);
+    findFilesystemCheckUse(
+      sourceFile,
+      facts.calls,
+      facts.declarations,
+      findings
+    );
     findReadCheckWrite(sourceFile, facts, findings);
   }
   return [

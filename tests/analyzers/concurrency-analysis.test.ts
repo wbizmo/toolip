@@ -14,6 +14,35 @@ describe('AST concurrency candidates', () => {
     expect(findings.map((finding) => finding.ruleId)).toContain('TLP-RACE-001');
   });
 
+  it('follows immutable local path aliases in filesystem check-then-use flows', () => {
+    const findings = analyzeAstSource(
+      'src/storage.ts',
+      `import { access, readFile } from 'node:fs/promises';
+       async function load(path: string) {
+         await access(path);
+         const reopenedPath = path;
+         return readFile(reopenedPath);
+       }`
+    );
+    expect(findings.map((finding) => finding.ruleId)).toContain('TLP-RACE-001');
+  });
+
+  it('does not resolve a path alias before its declaration', () => {
+    const findings = analyzeAstSource(
+      'src/storage.ts',
+      `import { access, readFile } from 'node:fs/promises';
+       async function load(path: string) {
+         const content = await readFile(reopenedPath);
+         const reopenedPath = path;
+         await access(path);
+         return content;
+       }`
+    );
+    expect(findings.map((finding) => finding.ruleId)).not.toContain(
+      'TLP-RACE-001'
+    );
+  });
+
   it('flags database read-check-write candidates without atomic predicates', () => {
     const findings = analyzeAstSource(
       'src/purchase.ts',
