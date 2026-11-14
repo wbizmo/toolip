@@ -1,11 +1,16 @@
+import { realpath } from 'node:fs/promises';
 import {
   coverageOf,
   type AnalysisCoverage,
   type AnalysisState
 } from '../contracts/analysis.js';
-import type { Analyzer } from '../contracts/analyzer.js';
+import type { Analyzer, AnalyzerCache } from '../contracts/analyzer.js';
 import type { Finding } from '../contracts/finding.js';
 import { OsvVulnerabilityAnalyzer } from '../analyzers/vulnerability/osv-analyzer.js';
+import {
+  analyzePackageHealth,
+  type PackageHealthAnalysis
+} from '../core/package-health-analysis.js';
 import {
   calculateDependencyHealthFromPackages,
   calculateFindingHealth,
@@ -22,23 +27,82 @@ import {
 } from '../core/dependency-scan.js';
 import { runSecurityDoctor } from '../core/security-doctor.js';
 import { runGitAudit } from '../core/git-audit.js';
-import { createScannerContext } from '../core/scanner-context.js';
+import {
+  analyzeLicenses,
+  type LicenseAnalysisResult
+} from '../core/license-analysis.js';
+import type { ScannerContext } from '../core/scanner-context.js';
 import {
   createScanBudget,
   type ScanBudgetOptions
 } from '../core/scan-budget.js';
 import { AnalyzerRunner } from './analyzer-runner.js';
+import {
+  dependencyFileSourceFromSnapshot,
+  createProjectSnapshot,
+  isScannerContextFromSnapshot,
+  scannerContextFromSnapshot,
+  type ProjectSnapshot
+} from './project-snapshot.js';
+import type { AnalysisResultCache } from './task-scheduler.js';
+import type { AnalysisTask } from './task-scheduler.js';
+import { runTaskDag } from './task-scheduler.js';
+import type { VerifiedRulePack } from '../core/rule-packs.js';
+import type { WasmAnalyzerPlugin } from '../core/analyzer-plugin.js';
+import type { GoCommandRunner } from '../core/dependencies/go-module-graph.js';
+import type { PythonTargetProfile } from '../core/dependencies/python-target.js';
+import type { GoTargetProfile } from '../core/dependencies/go-target.js';
+import type { ReportEvidenceSubject } from '../core/report-signature.js';
+import type {
+  NpmProvenancePolicy,
+  NpmProvenanceVerification
+} from '../providers/npm/provenance.js';
 
 export type SecurityScorecardServices = {
   dependencyScan?: typeof scanDependencies;
   doctor?: typeof runSecurityDoctor;
   gitAudit?: typeof runGitAudit;
   vulnerabilityAnalyzer?: Analyzer;
+  packageHealth?: typeof analyzePackageHealth;
+  licenseAnalysis?: typeof analyzeLicenses;
 };
 
 export type SecurityScorecardOptions = {
   /** Shared deadline and request limits for the whole scorecard (issue #48). */
   budget?: ScanBudgetOptions;
+  /** Local snapshot cache shared with advisory providers. */
+  cache?: AnalyzerCache;
+  /** Prohibit all registry/advisory network requests. */
+  offline?: boolean;
+  /** Explicitly run the Go tool on captured metadata to resolve MVS. */
+  allowGoToolExecution?: boolean;
+  /** Resolve Python markers/extras for exactly one declared target profile. */
+  pythonTarget?: PythonTargetProfile;
+  /** Select platform-specific files in vendored Go module source. */
+  goTarget?: GoTargetProfile;
+  /** Resolve Cargo cfg dependencies for one explicit Rust target triple. */
+  cargoTarget?: string;
+  /** Injectable Go process boundary for verified host integrations/tests. */
+  goCommandRunner?: GoCommandRunner;
+  /** Maximum age allowed for cached OSV records. */
+  maxAdvisoryAgeMs?: number;
+  /** Explicit consent to send scoped npm package names to public providers. */
+  allowPublicScope?: boolean;
+  /** Opt-in operator-owned trust rules for exact npm provenance verification. */
+  npmProvenancePolicy?: NpmProvenancePolicy;
+  /** Opt in to npm publisher, maintenance and lifecycle-history review signals. */
+  includePackageHealth?: boolean;
+  /** Add deps.dev license findings to the immutable scan result. */
+  includeLicenseAnalysis?: boolean;
+  rulePacks?: readonly VerifiedRulePack[];
+  analyzerPlugins?: readonly WasmAnalyzerPlugin[];
+  enableExecutablePlugins?: boolean;
+  previousSnapshot?: ProjectSnapshot;
+  /** Reuse a caller's bounded immutable capture rather than taking a second snapshot. */
+  projectSnapshot?: ProjectSnapshot;
+  analysisCache?: AnalysisResultCache;
+  /** Reuse discovery already performed by the enclosing command. */
+  scannerContext?: ScannerContext;
 };
 
 export type SecurityScorecardResult = {
@@ -49,8 +113,35 @@ export type SecurityScorecardResult = {
   score: ToolipScore;
   dependencyHealth?: DependencyHealthBreakdown;
   dependencySummary?: DependencyScanResult['summary'];
+  npmProvenance?: NpmProvenanceVerification[];
+  packageHealth?: PackageHealthAnalysis;
+  licenseAnalysis?: LicenseAnalysisResult;
   findings: Finding[];
   warnings: string[];
+  snapshotId: string;
+  evidenceSubject: ReportEvidenceSubject;
+  cacheMetrics: {
+    hits: number;
+    misses: number;
+    astProjectHits: number;
+    astProjectMisses: number;
+    resultCache: {
+      hits: number;
+      misses: number;
+      evictions: number;
+      entries: number;
+      retainedSerializedBytes: number;
+      retainedKeyBytes: number;
+      retainedBytes: number;
+    };
+  };
+  analyzerPlugins: Array<{
+    id: string;
+    sha256: string;
+    keyId: string;
+    coverage: AnalysisCoverage;
+    findings: number;
+  }>;
 };
 
 export async function buildSecurityScorecard(
@@ -63,10 +154,57 @@ export async function buildSecurityScorecard(
   const gitAudit = services.gitAudit ?? runGitAudit;
   const vulnerabilityAnalyzer =
     services.vulnerabilityAnalyzer ?? new OsvVulnerabilityAnalyzer();
-  const context = await createScannerContext(root);
+  const packageHealthAnalyzer = services.packageHealth ?? analyzePackageHealth;
+  const licenseAnalyzer = services.licenseAnalysis ?? analyzeLicenses;
+  const scanRoot = options.scannerContext?.root ?? root;
   const runner = new AnalyzerRunner({ concurrency: 1, timeoutMs: 60_000 });
   const { budget, dispose } = createScanBudget(options.budget);
+  let context: Awaited<ReturnType<typeof scannerContextFromSnapshot>>;
+  let projectSnapshot: ProjectSnapshot;
+  try {
+    const [canonicalRoot, requestedRoot] = await Promise.all([
+      realpath(scanRoot),
+      realpath(root)
+    ]);
+    if (canonicalRoot !== requestedRoot) {
+      throw new Error('scanner context root does not match the scorecard root');
+    }
+    projectSnapshot =
+      options.projectSnapshot ??
+      (await createProjectSnapshot(scanRoot, {
+        signal: budget.signal,
+        discoveredFiles: options.scannerContext?.files,
+        previous: options.previousSnapshot
+      }));
+    if (projectSnapshot.root !== canonicalRoot) {
+      throw new Error('project snapshot root does not match the scan root');
+    }
+    // Capture first, then build the shared context from those captured bytes.
+    // This avoids profiling live files before the snapshot and then rereading
+    // them, while ensuring every downstream analyzer sees one immutable input.
+    context =
+      options.scannerContext &&
+      isScannerContextFromSnapshot(options.scannerContext, projectSnapshot)
+        ? options.scannerContext
+        : await scannerContextFromSnapshot(projectSnapshot);
+  } catch (error) {
+    dispose();
+    throw error;
+  }
 
+  type ScorecardTaskValue =
+    | { kind: 'dependencies'; value: DependencyScanResult }
+    | {
+        kind: 'doctor';
+        value: Awaited<ReturnType<typeof runSecurityDoctor>>;
+      }
+    | { kind: 'git'; value: Awaited<ReturnType<typeof runGitAudit>> }
+    | {
+        kind: 'vulnerability';
+        value: Awaited<ReturnType<AnalyzerRunner['run']>>;
+      }
+    | { kind: 'packageHealth'; value: PackageHealthAnalysis }
+    | { kind: 'licenses'; value: LicenseAnalysisResult };
   let dependencyOutcome: PromiseSettledResult<DependencyScanResult>;
   let doctorOutcome: PromiseSettledResult<
     Awaited<ReturnType<typeof runSecurityDoctor>>
@@ -75,20 +213,182 @@ export async function buildSecurityScorecard(
   let vulnerabilityOutcome: PromiseSettledResult<
     Awaited<ReturnType<AnalyzerRunner['run']>>
   >;
+  let packageHealthOutcome:
+    PromiseSettledResult<PackageHealthAnalysis> | undefined;
+  let licenseOutcome: PromiseSettledResult<LicenseAnalysisResult> | undefined;
 
   try {
-    // One budget bounds every provider-facing step: registry lookups honor its
-    // signal and request limits, and the OSV analyzer is cancelled with it.
-    [dependencyOutcome, doctorOutcome, gitOutcome, vulnerabilityOutcome] =
-      await Promise.allSettled([
-        dependencyScan(context.root, { budget }),
-        doctor(context, { signal: budget.signal }),
-        gitAudit(context),
-        runner.run([vulnerabilityAnalyzer], {
-          root: context.root,
-          signal: budget.signal
+    const fileSource = dependencyFileSourceFromSnapshot(projectSnapshot);
+    // A single DAG owns the scan's task lifecycle and cancellation. Tasks are
+    // independent today, while the graph contract lets future dependency
+    // stages add explicit edges without forking separate orchestration paths.
+    let dependencyFacts: DependencyScanResult | undefined;
+    const tasks: AnalysisTask<ScorecardTaskValue>[] = [
+      {
+        id: 'dependency-health',
+        run: async () => {
+          const value = await dependencyScan(context.root, {
+            budget,
+            offline: options.offline,
+            allowPublicScope: options.allowPublicScope,
+            npmProvenancePolicy: options.npmProvenancePolicy,
+            fileSource,
+            inventoryCache: options.analysisCache,
+            inventoryCacheKey: projectSnapshot.lockGraphDigest
+          });
+          dependencyFacts = value;
+          return { kind: 'dependencies', value };
+        }
+      },
+      {
+        id: 'security-doctor',
+        run: async (signal) => ({
+          kind: 'doctor',
+          value: await doctor(context, {
+            signal,
+            snapshot: projectSnapshot,
+            analysisCache: options.analysisCache,
+            rulePacks: options.rulePacks,
+            analyzerPlugins: options.analyzerPlugins,
+            enableExecutablePlugins: options.enableExecutablePlugins
+          })
         })
-      ]);
+      },
+      {
+        id: 'git-audit',
+        run: async () => ({ kind: 'git', value: await gitAudit(context) })
+      },
+      {
+        id: 'vulnerability-intelligence',
+        run: async (signal) => ({
+          kind: 'vulnerability',
+          value: await runner.run([vulnerabilityAnalyzer], {
+            root: context.root,
+            signal,
+            cache: options.cache,
+            options: {
+              offline: options.offline ?? false,
+              allowGoToolExecution: options.allowGoToolExecution === true,
+              pythonTarget: options.pythonTarget,
+              goTarget: options.goTarget,
+              cargoTarget: options.cargoTarget,
+              goCommandRunner: options.goCommandRunner,
+              maxAdvisoryAgeMs: options.maxAdvisoryAgeMs,
+              allowPublicScope: options.allowPublicScope === true,
+              scannerContext: context,
+              snapshot: projectSnapshot,
+              dependencyFileSource: fileSource
+            }
+          })
+        })
+      }
+    ];
+    if (options.includePackageHealth) {
+      tasks.push({
+        id: 'package-health-anomalies',
+        dependsOn: ['dependency-health'],
+        run: async (signal) => ({
+          kind: 'packageHealth',
+          value: await packageHealthAnalyzer(
+            dependencyFacts?.identities ?? [],
+            {
+              signal,
+              offline: options.offline,
+              allowPublicScope: options.allowPublicScope,
+              concurrency: Math.max(
+                1,
+                Math.floor(budget.maxConcurrentRequests / 2)
+              ),
+              requestTimeoutMs: budget.requestTimeoutMs
+            }
+          )
+        })
+      });
+    }
+    if (options.includeLicenseAnalysis) {
+      tasks.push({
+        id: 'license-analysis',
+        dependsOn: ['dependency-health'],
+        run: async (signal) => ({
+          kind: 'licenses',
+          value: await licenseAnalyzer(context.root, undefined, signal, {
+            offline: options.offline,
+            allowPublicScope: options.allowPublicScope,
+            concurrency: Math.max(
+              1,
+              Math.floor(budget.maxConcurrentRequests / 2)
+            ),
+            fileSource,
+            ...(dependencyFacts?.identities
+              ? { inventory: dependencyFacts.identities }
+              : {}),
+            ...(dependencyFacts
+              ? {
+                  inventoryComplete: !dependencyFacts.failures.some(
+                    (failure) => failure.kind === 'unresolved'
+                  ),
+                  inventoryWarnings: dependencyFacts.failures
+                    .filter((failure) => failure.kind === 'unresolved')
+                    .map((failure) => failure.message)
+                }
+              : {})
+          })
+        })
+      });
+    }
+    const outcomes = await runTaskDag<ScorecardTaskValue>(tasks, {
+      concurrency: 4,
+      signal: budget.signal
+    });
+    const settle = <T extends ScorecardTaskValue['kind']>(kind: T) => {
+      const outcome = outcomes.find(
+        (item) => item.state === 'complete' && item.value.kind === kind
+      );
+      if (outcome?.state === 'complete') {
+        return {
+          status: 'fulfilled' as const,
+          value: outcome.value.value as Extract<
+            ScorecardTaskValue,
+            { kind: T }
+          >['value']
+        };
+      }
+      const failed = outcomes.find(
+        (item) =>
+          item.id ===
+          (
+            {
+              dependencies: 'dependency-health',
+              doctor: 'security-doctor',
+              git: 'git-audit',
+              vulnerability: 'vulnerability-intelligence',
+              packageHealth: 'package-health-anomalies',
+              licenses: 'license-analysis'
+            } satisfies Record<ScorecardTaskValue['kind'], string>
+          )[kind]
+      );
+      return {
+        status: 'rejected' as const,
+        reason:
+          failed?.state === 'failed'
+            ? new Error(failed.error)
+            : new Error(
+                failed?.state === 'cancelled' || failed?.state === 'blocked'
+                  ? failed.reason
+                  : 'analysis task did not return a result'
+              )
+      };
+    };
+    dependencyOutcome = settle('dependencies');
+    doctorOutcome = settle('doctor');
+    gitOutcome = settle('git');
+    vulnerabilityOutcome = settle('vulnerability');
+    packageHealthOutcome = options.includePackageHealth
+      ? settle('packageHealth')
+      : undefined;
+    licenseOutcome = options.includeLicenseAnalysis
+      ? settle('licenses')
+      : undefined;
   } finally {
     dispose();
   }
@@ -100,9 +400,25 @@ export async function buildSecurityScorecard(
 
   let dependencyHealth: DependencyHealthBreakdown | undefined;
   let dependencySummary: DependencyScanResult['summary'] | undefined;
+  let npmProvenance: NpmProvenanceVerification[] | undefined;
+  const packageHealthResult =
+    packageHealthOutcome?.status === 'fulfilled'
+      ? packageHealthOutcome.value
+      : undefined;
+  const licenseAnalysisResult =
+    licenseOutcome?.status === 'fulfilled' ? licenseOutcome.value : undefined;
   let dependencyDimension: ScoreDimension;
   const findings: Finding[] = [];
   const warnings: string[] = [];
+
+  if (packageHealthResult) {
+    findings.push(...packageHealthResult.findings);
+    warnings.push(...packageHealthResult.warnings);
+  }
+  if (licenseAnalysisResult) {
+    findings.push(...licenseAnalysisResult.findings);
+    warnings.push(...licenseAnalysisResult.warnings);
+  }
 
   if (dependencyOutcome.status === 'rejected') {
     dependencyDimension = failedDimension(
@@ -111,6 +427,7 @@ export async function buildSecurityScorecard(
     );
   } else {
     dependencySummary = dependencyOutcome.value.summary;
+    npmProvenance = dependencyOutcome.value.npmProvenance;
     findings.push(...dependencyOutcome.value.findings);
     const dependencyCoverage = dependencyOutcome.value.coverage;
 
@@ -128,7 +445,11 @@ export async function buildSecurityScorecard(
       const timedOut = failures.some((failure) => failure.kind === 'timed_out');
       const sample = failures
         .slice(0, 3)
-        .map((failure) => `${failure.name}@${failure.version}`)
+        .map((failure) =>
+          failure.version
+            ? `${failure.name}@${failure.version}`
+            : `${failure.name}@${failure.requirement ?? 'unknown'} (unresolved)`
+        )
         .join(', ');
       const osvNote =
         vulnerabilityExecution && vulnerabilityExecution.status !== 'ok'
@@ -145,7 +466,7 @@ export async function buildSecurityScorecard(
           .slice(0, 10)
           .map(
             (failure) =>
-              `${failure.name}@${failure.version}: ${failure.kind} - ${failure.message}`
+              `${failure.name}@${failure.version ?? failure.requirement ?? 'unknown'}: ${failure.kind} - ${failure.message}`
           )
       );
     } else if (!vulnerabilityExecution) {
@@ -158,6 +479,33 @@ export async function buildSecurityScorecard(
         vulnerabilityExecution.status,
         vulnerabilityExecution.error ??
           'Vulnerability analysis did not complete successfully.'
+      );
+    } else if (
+      vulnerabilityExecution.coverage?.state !== undefined &&
+      vulnerabilityExecution.coverage.state !== 'complete'
+    ) {
+      dependencyDimension = unmeasuredDimension(
+        vulnerabilityExecution.coverage.state === 'failed'
+          ? 'failed'
+          : 'unavailable',
+        vulnerabilityExecution.coverage.reason ??
+          'Offline advisory records are missing or stale.'
+      );
+    } else if (
+      dependencyOutcome.value.npmProvenance?.some(
+        (verification) => verification.status !== 'verified'
+      )
+    ) {
+      const unverified = dependencyOutcome.value.npmProvenance.filter(
+        (verification) => verification.status !== 'verified'
+      );
+      const sample = unverified
+        .slice(0, 3)
+        .map((verification) => `${verification.name}@${verification.version}`)
+        .join(', ');
+      dependencyDimension = unmeasuredDimension(
+        'unavailable',
+        `npm publisher provenance is not verified for ${unverified.length} package(s)${sample ? ` (for example ${sample})` : ''}.`
       );
     } else {
       dependencyHealth = calculateDependencyHealthFromPackages(
@@ -189,7 +537,11 @@ export async function buildSecurityScorecard(
     findings.push(...doctorResult.findings);
     warnings.push(...(doctorResult.warnings ?? []));
 
-    if (doctorResult.summary.filesSkipped > 0) {
+    if (
+      doctorResult.summary.filesSkipped > 0 ||
+      (doctorResult.coverage !== undefined &&
+        doctorResult.coverage.state !== 'complete')
+    ) {
       const reason =
         `${doctorResult.summary.filesSkipped} eligible file(s) were not scanned; ` +
         'security hygiene cannot be scored completely.';
@@ -249,16 +601,61 @@ export async function buildSecurityScorecard(
     ['git safety', gitDimension]
   ] as const;
   const unmeasured = dimensions.filter(([, d]) => d.status !== 'measured');
+  const analysisReasons = unmeasured.map(
+    ([name, d]) => `${name}: ${d.status}${d.reason ? ` - ${d.reason}` : ''}`
+  );
+  if (packageHealthOutcome?.status === 'rejected') {
+    analysisReasons.push(
+      `package health: failed - ${
+        packageHealthOutcome.reason instanceof Error
+          ? packageHealthOutcome.reason.message
+          : String(packageHealthOutcome.reason)
+      }`
+    );
+  } else if (
+    packageHealthResult?.coverage.state !== undefined &&
+    packageHealthResult.coverage.state !== 'complete'
+  ) {
+    analysisReasons.push(
+      `package health: ${packageHealthResult.coverage.state}${
+        packageHealthResult.coverage.reason
+          ? ` - ${packageHealthResult.coverage.reason}`
+          : ''
+      }`
+    );
+  }
+  if (licenseOutcome?.status === 'rejected') {
+    analysisReasons.push(
+      `license analysis: failed - ${
+        licenseOutcome.reason instanceof Error
+          ? licenseOutcome.reason.message
+          : String(licenseOutcome.reason)
+      }`
+    );
+  } else if (
+    licenseAnalysisResult?.coverage.state !== undefined &&
+    licenseAnalysisResult.coverage.state !== 'complete'
+  ) {
+    analysisReasons.push(
+      `license analysis: ${licenseAnalysisResult.coverage.state}${
+        licenseAnalysisResult.coverage.reason
+          ? ` - ${licenseAnalysisResult.coverage.reason}`
+          : ''
+      }`
+    );
+  }
+  const baseAnalysisState =
+    unmeasured.length === 0
+      ? 'complete'
+      : unmeasured.length === dimensions.length
+        ? 'failed'
+        : 'partial';
   const analysis: SecurityScorecardResult['analysis'] = {
     state:
-      unmeasured.length === 0
-        ? 'complete'
-        : unmeasured.length === dimensions.length
-          ? 'failed'
-          : 'partial',
-    reasons: unmeasured.map(
-      ([name, d]) => `${name}: ${d.status}${d.reason ? ` - ${d.reason}` : ''}`
-    )
+      baseAnalysisState === 'complete' && analysisReasons.length > 0
+        ? 'partial'
+        : baseAnalysisState,
+    reasons: analysisReasons
   };
 
   // Only scanners that enumerate inputs contribute numerical coverage.
@@ -284,6 +681,7 @@ export async function buildSecurityScorecard(
         })
     );
   }
+  if (licenseAnalysisResult) sources.push(licenseAnalysisResult.coverage);
 
   const totals = sources.reduce(
     (sum, part) => ({
@@ -303,14 +701,104 @@ export async function buildSecurityScorecard(
       : { reason: analysis.reasons.join('; ') })
   };
 
+  const capturedSnapshot = projectSnapshot;
   return {
     analysis,
     coverage,
     score,
     dependencyHealth,
     dependencySummary,
+    ...(npmProvenance ? { npmProvenance } : {}),
+    ...(packageHealthResult ? { packageHealth: packageHealthResult } : {}),
+    ...(licenseAnalysisResult
+      ? { licenseAnalysis: licenseAnalysisResult }
+      : {}),
     findings,
-    warnings
+    warnings,
+    snapshotId: capturedSnapshot.id,
+    analyzerPlugins:
+      doctorOutcome.status === 'fulfilled'
+        ? doctorOutcome.value.analyzerPlugins
+        : [],
+    evidenceSubject: {
+      ...(capturedSnapshot.gitHeadRevision
+        ? { gitRevision: capturedSnapshot.gitHeadRevision }
+        : {}),
+      ...(capturedSnapshot.gitIndexDigest
+        ? { gitIndexDigest: capturedSnapshot.gitIndexDigest }
+        : {}),
+      sourceTreeDigest: capturedSnapshot.sourceTreeDigest,
+      ...(capturedSnapshot.lockGraphDigest
+        ? { lockGraphDigest: capturedSnapshot.lockGraphDigest }
+        : {}),
+      ...(dependencyOutcome.status === 'fulfilled' &&
+      dependencyOutcome.value.dependencyGraphDigest
+        ? {
+            dependencyGraphDigest: dependencyOutcome.value.dependencyGraphDigest
+          }
+        : {}),
+      ...(capturedSnapshot.configDigest
+        ? { configDigest: capturedSnapshot.configDigest }
+        : {}),
+      ...(options.rulePacks?.length
+        ? {
+            rulePacks: options.rulePacks.map(({ id, sha256, trust, keyId }) =>
+              Object.freeze({
+                id,
+                sha256,
+                trust,
+                ...(keyId === undefined ? {} : { keyId })
+              })
+            )
+          }
+        : {})
+    },
+    cacheMetrics: {
+      hits:
+        (doctorOutcome.status === 'fulfilled'
+          ? (doctorOutcome.value.cacheMetrics?.hits ?? 0)
+          : 0) +
+        (dependencyOutcome.status === 'fulfilled' &&
+        dependencyOutcome.value.inventoryCacheHit === true
+          ? 1
+          : 0),
+      misses:
+        (doctorOutcome.status === 'fulfilled'
+          ? (doctorOutcome.value.cacheMetrics?.misses ?? 0)
+          : 0) +
+        (dependencyOutcome.status === 'fulfilled' &&
+        dependencyOutcome.value.inventoryCacheHit === false
+          ? 1
+          : 0),
+      astProjectHits:
+        doctorOutcome.status === 'fulfilled'
+          ? (doctorOutcome.value.cacheMetrics?.astProjectHits ?? 0)
+          : 0,
+      astProjectMisses:
+        doctorOutcome.status === 'fulfilled'
+          ? (doctorOutcome.value.cacheMetrics?.astProjectMisses ?? 0)
+          : 0,
+      resultCache:
+        doctorOutcome.status === 'fulfilled'
+          ? (doctorOutcome.value.cacheMetrics?.resultCache ?? {
+              hits: 0,
+              misses: 0,
+              evictions: 0,
+              entries: 0,
+              retainedSerializedBytes: 0,
+              retainedKeyBytes: 0,
+              retainedBytes: 0
+            })
+          : {
+              hits: 0,
+              misses: 0,
+              evictions: 0,
+              entries: 0,
+              retainedSerializedBytes: 0,
+              retainedKeyBytes: 0,
+              retainedBytes: 0
+            }
+    }
   };
 }
 

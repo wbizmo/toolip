@@ -1,0 +1,118 @@
+name: Stage A Trusted Pre-execution Gate
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  scan:
+    name: Scan exact PR Git blobs before Stage B
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout protected base revision containing the trusted scanner
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - name: Set up supported trusted scanner runtime
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24.22.1'
+          check-latest: false
+      - name: Enforce supported, patched scanner runtime
+        run: node scripts/verify-node.mjs
+      - name: Verify protected scanner source digest before dependency setup
+        env:
+          TOOLIP_STAGE_A_SHA256: eacc8610ab763dfe13c09965d5b2763089489d319e12446bb826ce1fd68b7595
+        run: node scripts/verify-stage-a-scanner.mjs
+      - name: Install protected scanner dependencies without scripts
+        env:
+          npm_config_registry: https://registry.npmjs.org/
+          npm_config_userconfig: /dev/null
+          npm_config_globalconfig: /dev/null
+          npm_config_cache: ${{ runner.temp }}/toolip-stage-a-scanner-cache
+          npm_config_ignore_scripts: 'true'
+          CI: 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/dev/null
+          npm audit signatures --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/dev/null
+      - name: Build protected scanner sources
+        run: npm run build
+      - name: Verify trusted scanner digest and fetch/scan exact PR Git objects
+        id: gate
+        env:
+          TOOLIP_STAGE_A_SHA256: eacc8610ab763dfe13c09965d5b2763089489d319e12446bb826ce1fd68b7595
+          TOOLIP_STAGE_A_PUBLIC_SCOPES: '@babel,@bcoe,@biomejs,@esbuild,@gar,@hono,@isaacs,@jridgewell,@modelcontextprotocol,@nodelib,@npmcli,@oxc-project,@rolldown,@sigstore,@tufjs,@types,@vitest'
+          TOOLIP_STAGE_A_CARGO_SHA256_POLICY: ${{ vars.TOOLIP_STAGE_A_CARGO_SHA256_POLICY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          STAGE_A_REPOSITORY: ${{ github.repository }}
+          STAGE_A_PR_NUMBER: ${{ github.event.pull_request.number }}
+          STAGE_A_PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          STAGE_A_PR_AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          STAGE_A_PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          STAGE_A_PR_HEAD_IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+          STAGE_A_BASE_REPOSITORY: ${{ github.repository }}
+          STAGE_A_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          STAGE_A_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          STAGE_A_MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: node scripts/stage-a-gate.mjs
+      - name: Verify exact scanned npm archives against operator issuer/source policy
+        if: steps.gate.outputs.status == 'approved' && steps.gate.outputs.dependency_audit_required == 'true'
+        env:
+          TOOLIP_STAGE_A_DEPENDENCY_DIRECTORY: ${{ runner.temp }}/toolip-stage-a-dependency-audit
+          TOOLIP_STAGE_A_PUBLIC_SCOPES: '@babel,@bcoe,@biomejs,@esbuild,@gar,@hono,@isaacs,@jridgewell,@modelcontextprotocol,@nodelib,@npmcli,@oxc-project,@rolldown,@sigstore,@tufjs,@types,@vitest'
+          TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY: ${{ vars.TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY }}
+        run: node scripts/stage-a-npm-provenance.mjs
+      - name: Upload redacted Stage A diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: stage-a-diagnostics-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/stage-a-results.sarif
+            ${{ runner.temp }}/stage-a-npm-provenance.json
+          if-no-files-found: warn
+          retention-days: 1
+      - name: Install the scanned lock graph without scripts and verify registry signatures
+        if: steps.gate.outputs.status == 'approved' && steps.gate.outputs.dependency_audit_required == 'true'
+        working-directory: ${{ runner.temp }}/toolip-stage-a-dependency-audit
+        env:
+          npm_config_registry: https://registry.npmjs.org/
+          npm_config_userconfig: /dev/null
+          npm_config_globalconfig: /dev/null
+          npm_config_cache: ${{ runner.temp }}/toolip-stage-a-npm-cache
+          npm_config_ignore_scripts: 'true'
+          CI: 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig=/dev/null
+          if npm audit signatures --ignore-scripts >"$RUNNER_TEMP/toolip-stage-a-signature-audit.log" 2>&1; then
+            echo 'TOOLIP_STAGE_A_SIGNATURE_AUDIT=verified' >> "$GITHUB_ENV"
+            echo 'Scripts-disabled install and registry signature audit passed.'
+          else
+            echo 'Registry signature/provenance verification failed; Stage B is blocked.'
+            exit 1
+          fi
+      - name: Mark registry signature audit not applicable to an empty dependency graph
+        if: steps.gate.outputs.status == 'approved' && steps.gate.outputs.dependency_audit_required != 'true'
+        run: echo 'TOOLIP_STAGE_A_SIGNATURE_AUDIT=not-applicable' >> "$GITHUB_ENV"
+      - name: Write immutable Stage A run metadata
+        env:
+          TOOLIP_STAGE_A_SHA256: eacc8610ab763dfe13c09965d5b2763089489d319e12446bb826ce1fd68b7595
+        run: node scripts/write-stage-a-artifact.mjs
+      - name: Publish Stage A approval metadata for gated CI
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: stage-a-${{ github.run_id }}
+          path: ${{ runner.temp }}/stage-a-approval.json
+          if-no-files-found: error
+          retention-days: 1

@@ -4,8 +4,11 @@ import type { AnalysisCoverage } from '../contracts/analysis.js';
 import type { Finding } from '../contracts/finding.js';
 import { ToolipError } from '../errors/toolip-error.js';
 import { runGitAudit } from './git-audit.js';
-import { listStagedEntries, readBlobs } from './git/staged-index.js';
-import { loadToolipIgnore } from './load-toolip-ignore.js';
+import {
+  listIndexEntries,
+  listStagedEntries,
+  readBlobs
+} from './git/staged-index.js';
 import type { ProjectFile } from './file-walker.js';
 import { profileProject } from './profile-project.js';
 import {
@@ -13,6 +16,7 @@ import {
   type ScannerContext
 } from './scanner-context.js';
 import { runSecurityDoctor, shouldScanSecrets } from './security-doctor.js';
+import { shouldInspectMaliciousContent } from '../analyzers/malicious-content/analyzer.js';
 import {
   defaultTextFileBudget,
   type TextFileReadResult
@@ -57,8 +61,11 @@ export type PreCommitResult = {
  * read the index rejects (the hook fails closed). `full` is an explicit,
  * worktree-wide manual check.
  *
- * Complexity: O(S + B) for S staged paths and B staged blob bytes (bounded by
- * the text-file budget); the worktree is not walked in staged mode.
+ * Staged mode reads its selected content from index blobs and, for malicious
+ * execution-chain analysis, uses a bounded read of the complete stage-0 index
+ * so unchanged reachable targets are not mistaken for missing files. Its
+ * complexity is O(I + B) for I indexed paths and B retained blob bytes (both
+ * bounded); the worktree is not walked.
  */
 export async function runPreCommit(
   root: string,
@@ -72,27 +79,47 @@ export async function runPreCommit(
 
   const absoluteRoot = path.resolve(root);
   const snapshot = await listStagedEntries(absoluteRoot, options.signal);
-  const toolipIgnore = await loadToolipIgnore(absoluteRoot);
-  const entries = snapshot.entries.filter(
-    (entry) => !toolipIgnore.ignores(path.join(absoluteRoot, entry.path))
+  // Staged content is already an explicit user selection. Repository ignore
+  // files must not hide a tracked or staged security-relevant file.
+  const entries = snapshot.entries;
+  const index = await listIndexEntries(absoluteRoot, options.signal);
+  const indexEntryByPath = new Map(
+    index.entries.map((entry) => [entry.path, entry])
   );
+  const stagedPaths = new Set(entries.map((entry) => entry.path));
+  const maliciousContentFiles: ProjectFile[] = index.entries
+    .filter((entry) =>
+      shouldInspectMaliciousContent(
+        entry.path,
+        path.extname(entry.path).replace('.', '').toLowerCase()
+      )
+    )
+    .map((entry) => ({
+      absolutePath: path.join(absoluteRoot, entry.path),
+      relativePath: entry.path,
+      extension: path.extname(entry.path).replace('.', '').toLowerCase()
+    }));
   const blobs = await readBlobs(
     absoluteRoot,
-    // Only blobs the secret scan will open: assets and build output must not
-    // consume the byte/file budget and starve eligible files into warnings.
-    entries
-      .filter((entry) =>
-        shouldScanSecrets(
-          entry.path,
-          path.extname(entry.path).replace('.', '').toLowerCase()
-        )
-      )
+    // Read the staged inputs and the bounded indexed content needed to trace
+    // unchanged targets from staged execution entrypoints. Known binary assets
+    // and source maps remain excluded from the content budget.
+    index.entries
+      .filter((entry) => {
+        const extension = path
+          .extname(entry.path)
+          .replace('.', '')
+          .toLowerCase();
+        return (
+          (stagedPaths.has(entry.path) &&
+            shouldScanSecrets(entry.path, extension)) ||
+          shouldInspectMaliciousContent(entry.path, extension)
+        );
+      })
       .map((entry) => entry.oid),
     defaultTextFileBudget,
     options.signal
   );
-  const oidByPath = new Map(entries.map((entry) => [entry.path, entry.oid]));
-
   const files: ProjectFile[] = entries
     .map((entry) => ({
       absolutePath: path.join(absoluteRoot, entry.path),
@@ -115,14 +142,13 @@ export async function runPreCommit(
     }
   };
 
-  const stagedPaths = new Set(files.map((file) => file.relativePath));
   const warnings = snapshot.skipped.map(
     (skip) => `${skip.path}: not content-scanned (${skip.reason})`
   );
 
   const provider = async (file: ProjectFile): Promise<TextFileReadResult> => {
-    const oid = oidByPath.get(file.relativePath);
-    const read = oid ? blobs.get(oid) : undefined;
+    const indexEntry = indexEntryByPath.get(file.relativePath);
+    const read = indexEntry ? blobs.get(indexEntry.oid) : undefined;
     if (!read) {
       throw new ToolipError(
         `Staged content for ${file.relativePath} was not available; refusing to treat the commit as clean.`,
@@ -139,7 +165,7 @@ export async function runPreCommit(
 
   const analysis = await analyze(
     context,
-    { stagedPaths, provider },
+    { stagedPaths, provider, maliciousContentFiles },
     options.signal
   );
   return summarize(analysis, files.length, 'staged', warnings, options);
@@ -153,6 +179,7 @@ async function analyze(
     | {
         stagedPaths: ReadonlySet<string>;
         provider: (file: ProjectFile) => Promise<TextFileReadResult>;
+        maliciousContentFiles: readonly ProjectFile[];
       }
     | undefined,
   signal?: AbortSignal
@@ -160,7 +187,8 @@ async function analyze(
   const [doctor, gitAudit] = await Promise.all([
     runSecurityDoctor(context, {
       signal,
-      contentProvider: staged?.provider
+      contentProvider: staged?.provider,
+      ...(staged ? { maliciousContentFiles: staged.maliciousContentFiles } : {})
     }),
     runGitAudit(context)
   ]);
@@ -217,7 +245,18 @@ function findingAppliesToStagedScope(
   staged: ReadonlySet<string>
 ): boolean {
   if (finding.location?.file) {
-    return staged.has(normalizePath(finding.location.file));
+    if (staged.has(normalizePath(finding.location.file))) return true;
+  }
+  if (finding.category === 'malicious-content') {
+    const trace = finding.metadata?.trace;
+    if (
+      Array.isArray(trace) &&
+      trace.some(
+        (file): file is string =>
+          typeof file === 'string' && staged.has(normalizePath(file))
+      )
+    )
+      return true;
   }
 
   return finding.category === 'git-security' && staged.has('.gitignore');

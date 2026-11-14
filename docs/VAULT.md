@@ -10,6 +10,12 @@ A version-1 vault stores AES-256-GCM ciphertext plus a random salt, IV, and auth
 
 Existing valid version-1 vaults remain readable after upgrades. Unsupported future/unknown versions fail closed with `VAULT_UNSUPPORTED_VERSION`; malformed JSON, invalid schema, invalid base64, and invalid decrypted payloads are reported as controlled Toolip errors rather than being treated as an empty vault.
 
+Vault reads and writes are capped at 64 MiB, plaintext payloads at 47 MiB, and
+the number of records at 100,000. Limits are checked before key derivation,
+decryption, or atomic replacement where the corresponding size is available;
+oversized vault updates fail with `VAULT_SIZE_LIMIT` and preserve the prior
+encrypted file.
+
 ## Persistence guarantees
 
 Mutations use an atomic directory lease from `proper-lockfile` with a 30-second stale threshold and 10-second heartbeat. The owner token is stored next to the lock and checked before each atomic replacement; release is skipped if that token or lease changes. Stale recovery uses lease timestamps, not process IDs, so PID reuse does not strand a vault. Lock acquisition times out after five seconds with `VAULT_LOCK_TIMEOUT`; permission and compromised-lease errors fail closed.

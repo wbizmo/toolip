@@ -15,18 +15,24 @@ const expectedCommands = [
   'doctor',
   'git-audit',
   'git-history',
+  'github-app',
   'history',
   'hook',
   'inspect',
   'install-scripts',
+  'intelligence',
   'learn',
   'licenses',
   'mcp',
   'monorepo',
+  'npm-attestation',
   'package-health',
+  'policy',
+  'pr-scan',
   'pre-commit',
   'profile',
   'publish',
+  'report',
   'reachability',
   'sbom',
   'scan',
@@ -35,6 +41,7 @@ const expectedCommands = [
   'tree',
   'upgrade-pr',
   'vault',
+  'vex',
   'vulnerabilities',
   'watch'
 ].sort();
@@ -50,13 +57,118 @@ describe('Toolip CLI composition', () => {
 
   it.each([
     ['vault', ['init', 'set', 'get', 'list', 'delete', 'export']],
-    ['hook', ['install']]
+    ['hook', ['install']],
+    ['intelligence', ['snapshot']],
+    ['sbom', ['verify']],
+    ['npm-attestation', ['create', 'verify']],
+    ['vex', ['export', 'sign', 'validate']]
   ] as const)('builds expected %s subcommands', (name, expected) => {
-    const command = createProgram().commands.find((item) => item.name() === name);
+    const command = createProgram().commands.find(
+      (item) => item.name() === name
+    );
 
     expect(command).toBeDefined();
-    expect(command?.commands.map((item) => item.name()).sort())
-      .toEqual([...expected].sort());
+    expect(command?.commands.map((item) => item.name()).sort()).toEqual(
+      [...expected].sort()
+    );
+  });
+
+  it('exposes the opt-in GitHub App webhook service entrypoint', () => {
+    const command = createProgram().commands.find(
+      (item) => item.name() === 'github-app'
+    );
+    expect(command?.commands.map((item) => item.name())).toEqual(['serve']);
+  });
+
+  it('exposes local advisory snapshot refresh and verify operations', () => {
+    const command = createProgram().commands.find(
+      (item) => item.name() === 'intelligence'
+    );
+    const snapshot = command?.commands.find(
+      (item) => item.name() === 'snapshot'
+    );
+
+    expect(snapshot?.commands.map((item) => item.name()).sort()).toEqual([
+      'refresh',
+      'verify'
+    ]);
+    expect(
+      snapshot?.commands
+        .find((item) => item.name() === 'verify')
+        ?.options.map((option) => option.long)
+    ).toEqual(expect.arrayContaining(['--public-key', '--public-key-id']));
+  });
+
+  it('exposes explicit signer-ID pins on every advisory snapshot consumer', () => {
+    for (const name of ['scan', 'vulnerabilities']) {
+      const command = createProgram().commands.find(
+        (item) => item.name() === name
+      );
+      expect(command?.options.map((option) => option.long)).toContain(
+        '--snapshot-public-key-id'
+      );
+    }
+    const vex = createProgram().commands.find((item) => item.name() === 'vex');
+    expect(
+      vex?.commands
+        .find((item) => item.name() === 'export')
+        ?.options.map((option) => option.long)
+    ).toContain('--snapshot-public-key-id');
+  });
+
+  it('exposes report verification as a nested evidence command', () => {
+    const command = createProgram().commands.find(
+      (item) => item.name() === 'report'
+    );
+    expect(command?.commands.map((item) => item.name())).toEqual(['verify']);
+    expect(
+      command?.commands
+        .find((item) => item.name() === 'verify')
+        ?.options.map((option) => option.long)
+    ).toContain('--project-root');
+  });
+
+  it('requires project-root context when resolving SBOM trust stores', () => {
+    const command = createProgram().commands.find(
+      (item) => item.name() === 'sbom'
+    );
+    expect(
+      command?.commands
+        .find((item) => item.name() === 'verify')
+        ?.options.map((option) => option.long)
+    ).toContain('--project-root');
+  });
+
+  it('exposes signed declarative rule-pack loading through doctor and scan', () => {
+    for (const name of ['doctor', 'scan']) {
+      const command = createProgram().commands.find(
+        (item) => item.name() === name
+      );
+      const options = command?.options.map((option) => option.long);
+      expect(options).toEqual(
+        expect.arrayContaining([
+          '--rule-pack',
+          '--rule-pack-public-key',
+          '--rule-pack-key-id',
+          '--allow-unsigned-rule-pack'
+        ])
+      );
+    }
+  });
+
+  it('exposes operator plugin trust stores through doctor and scan', () => {
+    for (const name of ['doctor', 'scan']) {
+      const command = createProgram().commands.find(
+        (item) => item.name() === name
+      );
+      expect(command?.options.map((option) => option.long)).toEqual(
+        expect.arrayContaining([
+          '--analyzer-plugin-trust-store',
+          '--analyzer-plugin-key-id',
+          '--enable-executable-plugins'
+        ])
+      );
+    }
   });
 
   it('ships parser and MCP dependencies required by executable commands', async () => {

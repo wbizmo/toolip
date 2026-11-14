@@ -109,8 +109,15 @@ Vault persistence is a special security-sensitive store: updates are serialized,
 - Every release is verified from the exact packed npm artifact.
 - `package.json` is the only package-version source of truth.
 
-## Proposed v3.2.1 evolution (not yet shipped)
+## v3.2.1 implementation status
 
-The above describes current v2.2.x behavior. Planned work under [the v3.2.1 roadmap](V3.2.1-IMPLEMENTATION.md) adds immutable ProjectSnapshot execution, incremental scheduler, versioned policy, precise multi-language dependency graphs, signed reports, constrained plugins and advanced static analysis. These are not current product guarantees.
+The published npm package remains v2.2.1. The repository branch behind Draft PR
+#104 contains the combined v3.2.1 implementation, including immutable project
+snapshots, incremental watch caching, versioned policies, multi-language
+dependency graphs, signed reports, constrained plugins and advanced static
+analysis. The PR is not merged or released, and implementation presence is not
+release acceptance. See the [current implementation ledger](BATCHES-07-16-COMPLETION-LEDGER.md),
+the [snapshot guide](PROJECT-SNAPSHOTS.md), and the [v3.2.1 roadmap](V3.2.1-IMPLEMENTATION.md)
+for code completion and external acceptance status.
 
 Every architecture PR must justify data structures, worst-case time/peak-space Big-O, bounded concurrency and memory, cache invalidation, trust boundaries, cancellation, deterministic results and cross-platform regression evidence. See [engineering standards](ENGINEERING.md). The release remains manual-only after all batches integrate.

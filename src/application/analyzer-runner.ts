@@ -5,7 +5,7 @@ import type {
   AnalyzerContext,
   AnalyzerResult
 } from '../contracts/analyzer.js';
-import { mapConcurrent } from './concurrency.js';
+import { mapConcurrent, MAX_CONCURRENT_OPERATIONS } from './concurrency.js';
 import { sanitizeOutput } from '../core/safe-output.js';
 
 export type AnalyzerRunnerOptions = {
@@ -68,13 +68,42 @@ export class AnalyzerRunner {
   private peakActive = 0;
 
   constructor(options: AnalyzerRunnerOptions = {}) {
-    this.concurrency = Math.max(1, options.concurrency ?? 4);
-    this.timeoutMs = Math.max(1, options.timeoutMs ?? 30_000);
-    this.graceMs = Math.max(0, options.graceMs ?? 100);
-    this.workerMaxOldGenerationMb = Math.max(
-      16,
-      options.workerMaxOldGenerationMb ?? 512
-    );
+    this.concurrency = options.concurrency ?? 4;
+    if (
+      !Number.isSafeInteger(this.concurrency) ||
+      this.concurrency < 1 ||
+      this.concurrency > MAX_CONCURRENT_OPERATIONS
+    )
+      throw new RangeError(
+        `analyzer concurrency must be an integer from 1 to ${MAX_CONCURRENT_OPERATIONS}`
+      );
+    this.timeoutMs = options.timeoutMs ?? 30_000;
+    if (
+      !Number.isSafeInteger(this.timeoutMs) ||
+      this.timeoutMs < 1 ||
+      this.timeoutMs > 600_000
+    )
+      throw new RangeError(
+        'analyzer timeout must be an integer from 1 to 600000'
+      );
+    this.graceMs = options.graceMs ?? 100;
+    if (
+      !Number.isSafeInteger(this.graceMs) ||
+      this.graceMs < 0 ||
+      this.graceMs > 10_000
+    )
+      throw new RangeError(
+        'analyzer grace period must be an integer from 0 to 10000'
+      );
+    this.workerMaxOldGenerationMb = options.workerMaxOldGenerationMb ?? 512;
+    if (
+      !Number.isSafeInteger(this.workerMaxOldGenerationMb) ||
+      this.workerMaxOldGenerationMb < 16 ||
+      this.workerMaxOldGenerationMb > 1_024
+    )
+      throw new RangeError(
+        'analyzer worker heap must be an integer from 16 to 1024 MiB'
+      );
   }
 
   get stats(): AnalyzerRunnerStats {

@@ -1,19 +1,30 @@
+import { createHash } from 'node:crypto';
 import { mapConcurrent } from '../application/concurrency.js';
 import { coverageOf, type AnalysisCoverage } from '../contracts/analysis.js';
 import type { Finding } from '../contracts/finding.js';
 import { analyzePackage } from './analyze-package.js';
+import { digestDependencyGraph } from './dependencies/graph-digest.js';
 import {
-  readNpmDependencyInventory,
+  readNpmDependencyGraph,
+  type DependencyFileSource,
   type DependencyIdentity
 } from './dependencies/inventory.js';
 import type { DependencyInfo, PackageHealth } from './dependency-types.js';
 import { readDependencies } from './read-dependencies.js';
 import { ProviderError, type ScanBudget } from './scan-budget.js';
+import {
+  npmProvenanceIdentityDigest,
+  verifyNpmProvenance,
+  type NpmProvenanceOptions,
+  type NpmProvenancePolicy,
+  type NpmProvenanceVerification
+} from '../providers/npm/provenance.js';
 
 export type DependencyLookupFailure = {
   name: string;
-  version: string;
-  kind: 'timed_out' | 'cancelled' | 'unavailable' | 'failed';
+  version?: string;
+  requirement?: string;
+  kind: 'timed_out' | 'cancelled' | 'unavailable' | 'failed' | 'unresolved';
   message: string;
 };
 
@@ -22,9 +33,41 @@ export type DependencyScanOptions = {
   budget?: ScanBudget;
   /** Concurrency when no budget is supplied. Default 8. */
   concurrency?: number;
+  /** Disable registry lookups; unavailable package-health facts stay unknown. */
+  offline?: boolean;
+  /** Explicitly permit public-registry metadata requests for scoped packages. */
+  allowPublicScope?: boolean;
+  /** Immutable captured lockfile and manifest contents from the shared scan snapshot. */
+  fileSource?: DependencyFileSource;
+  /** Reuse parsed graph facts only; provider health remains time-sensitive. */
+  inventoryCache?: {
+    get<T>(
+      snapshotId: string,
+      taskId: string,
+      taskVersion: string
+    ): T | undefined;
+    set<T>(
+      snapshotId: string,
+      taskId: string,
+      taskVersion: string,
+      value: T
+    ): void;
+  };
+  /** Digest of manifests, lockfiles and package-manager settings in the snapshot. */
+  inventoryCacheKey?: string;
+  /** Operator-owned exact npm issuer, certificate identity and repository trust rules. */
+  npmProvenancePolicy?: NpmProvenancePolicy;
+  /** Injectable verifier for deterministic provider tests. */
+  npmProvenanceVerifier?: typeof verifyNpmProvenance;
 };
 
 export type DependencyScanResult = {
+  /** Exact lockfile instances, including path and registry, reused by downstream analyzers. */
+  identities?: DependencyIdentity[];
+  /** Opt-in exact npm provenance results. Non-verified results remain unknown/untrusted. */
+  npmProvenance?: NpmProvenanceVerification[];
+  /** Digest of the exact resolved package/edge graph, absent when no lock graph resolves. */
+  dependencyGraphDigest?: string;
   packages: PackageHealth[];
   findings: Finding[];
   /** Packages whose registry lookup did not complete. Never counted as healthy. */
@@ -39,66 +82,120 @@ export type DependencyScanResult = {
     lowRisk: number;
     averageRiskScore: number;
   };
+  inventoryCacheHit?: boolean;
 };
 
 type DependencyScanInputs = {
   dependencies: DependencyInfo[];
+  identities: DependencyIdentity[];
+  dependencyGraphDigest?: string;
   totalDependencies: number;
+  unresolvedDependencies: DependencyInfo[];
+  graphWarnings: string[];
 };
 
 function dependencyKey(
-  dependency: Pick<DependencyIdentity, 'name' | 'version'>
+  dependency: Pick<DependencyIdentity, 'name' | 'version' | 'registry'>
 ): string {
-  return `${dependency.name}@${dependency.version}`;
+  return `${dependency.registry ?? 'unknown'}:${dependency.name}@${dependency.version}`;
 }
 
 function dependencyInfo(dependency: DependencyIdentity): DependencyInfo {
   return {
     name: dependency.name,
     version: dependency.version,
+    ...(dependency.registry ? { registry: dependency.registry } : {}),
     type: dependency.development ? 'devDependency' : 'dependency'
   };
 }
 
 async function readDependencyScanInputs(
-  root: string
-): Promise<DependencyScanInputs> {
-  try {
-    const inventory = await readNpmDependencyInventory(root);
-    const uniqueDependencies = new Map<string, DependencyInfo>();
-
-    for (const dependency of inventory) {
-      const key = dependencyKey(dependency);
-      if (!uniqueDependencies.has(key)) {
-        uniqueDependencies.set(key, dependencyInfo(dependency));
-      }
-    }
-
-    return {
-      dependencies: [...uniqueDependencies.values()],
-      totalDependencies: inventory.length
-    };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw error;
-    }
-
-    // Preserve Toolip's previous manifest-only behavior for projects that do
-    // not have an npm package-lock. npm projects with a package-lock always use
-    // the canonical exact resolved inventory above.
-    const dependencies = await readDependencies(root);
-    return {
-      dependencies,
-      totalDependencies: dependencies.length
-    };
+  root: string,
+  fileSource?: DependencyFileSource,
+  options: Pick<
+    DependencyScanOptions,
+    'inventoryCache' | 'inventoryCacheKey'
+  > = {}
+): Promise<DependencyScanInputs & { cacheHit: boolean }> {
+  const cacheKey =
+    options.inventoryCache && options.inventoryCacheKey
+      ? createHash('sha256')
+          .update(root)
+          .update('\0')
+          .update(options.inventoryCacheKey)
+          .digest('hex')
+      : undefined;
+  if (cacheKey) {
+    const cached = options.inventoryCache?.get<DependencyScanInputs>(
+      'dependency-inventory',
+      cacheKey,
+      'dependency-inventory-v1'
+    );
+    if (cached) return { ...cached, cacheHit: true };
   }
+  const read = async (): Promise<DependencyScanInputs> => {
+    try {
+      const graph = await readNpmDependencyGraph(root, fileSource);
+      const uniqueDependencies = new Map<string, DependencyInfo>();
+
+      for (const dependency of graph.packages) {
+        const key = dependencyKey(dependency);
+        if (!uniqueDependencies.has(key)) {
+          uniqueDependencies.set(key, dependencyInfo(dependency));
+        }
+      }
+
+      return {
+        dependencies: [...uniqueDependencies.values()],
+        identities: graph.packages,
+        dependencyGraphDigest: digestDependencyGraph(graph),
+        totalDependencies:
+          graph.packages.length + graph.unresolvedDependencies.length,
+        unresolvedDependencies: graph.unresolvedDependencies.map((edge) => ({
+          name: edge.name,
+          version: edge.requirement,
+          type: edge.section
+        })),
+        graphWarnings: graph.warnings
+      };
+    } catch (error) {
+      const declarations = await readDependencies(root, fileSource);
+      const code =
+        error && typeof error === 'object' && 'code' in error
+          ? String(error.code)
+          : 'DEPENDENCY_GRAPH_UNAVAILABLE';
+      return {
+        dependencies: [],
+        identities: [],
+        totalDependencies: declarations.length,
+        unresolvedDependencies: declarations,
+        graphWarnings:
+          code === 'ENOENT'
+            ? []
+            : [`Dependency graph could not be resolved (${code}).`]
+      };
+    }
+  };
+  const inputs = await read();
+  if (cacheKey)
+    options.inventoryCache?.set(
+      'dependency-inventory',
+      cacheKey,
+      'dependency-inventory-v1',
+      inputs
+    );
+  return { ...inputs, cacheHit: false };
 }
 
 export async function scanDependencies(
   root: string,
   options: DependencyScanOptions = {}
 ): Promise<DependencyScanResult> {
-  const inputs = await readDependencyScanInputs(root);
+  const inputs = await readDependencyScanInputs(
+    root,
+    options.fileSource,
+    options
+  );
   const budget = options.budget;
 
   // Dependency-health facts and score penalties are package/version facts, so
@@ -117,6 +214,48 @@ export async function scanDependencies(
       | { ok: true; health: PackageHealth }
       | { ok: false; failure: DependencyLookupFailure }
     > => {
+      if (options.offline) {
+        return {
+          ok: false,
+          failure: {
+            name: dependency.name,
+            version: dependency.version,
+            kind: 'unavailable',
+            message:
+              'Registry metadata lookups are disabled in offline mode; package health remains unmeasured.'
+          }
+        };
+      }
+      if (
+        dependency.registry === undefined ||
+        !isPublicNpmRegistry(dependency.registry)
+      ) {
+        return {
+          ok: false,
+          failure: {
+            name: dependency.name,
+            version: dependency.version,
+            kind: 'unavailable',
+            message:
+              'Public npm metadata was not queried because the resolved registry origin is missing or is not the public npm registry.'
+          }
+        };
+      }
+      if (
+        dependency.name.startsWith('@') &&
+        options.allowPublicScope !== true
+      ) {
+        return {
+          ok: false,
+          failure: {
+            name: dependency.name,
+            version: dependency.version,
+            kind: 'unavailable',
+            message:
+              'Scoped package metadata was not sent to a public provider; explicit public-scope consent is required.'
+          }
+        };
+      }
       try {
         return { ok: true, health: await analyzePackage(dependency, budget) };
       } catch (error) {
@@ -137,13 +276,90 @@ export async function scanDependencies(
   const packages = outcomes.flatMap((outcome) =>
     outcome.ok ? [outcome.health] : []
   );
-  const failures = outcomes.flatMap((outcome) =>
-    outcome.ok ? [] : [outcome.failure]
-  );
+  let npmProvenance: NpmProvenanceVerification[] | undefined;
+  if (options.npmProvenancePolicy) {
+    const candidates = new Map<string, DependencyIdentity>();
+    for (const identity of inputs.identities) {
+      if (identity.ecosystem !== 'npm') continue;
+      candidates.set(npmProvenanceIdentityDigest(identity), identity);
+    }
+    const verifier = options.npmProvenanceVerifier ?? verifyNpmProvenance;
+    npmProvenance = await mapConcurrent(
+      [...candidates.values()],
+      budget?.maxConcurrentRequests ?? options.concurrency ?? 8,
+      async (identity) => {
+        const verifierOptions: NpmProvenanceOptions = {
+          policy: options.npmProvenancePolicy,
+          allowPublicScope: options.allowPublicScope,
+          ...(budget
+            ? {
+                signal: budget.signal,
+                requestTimeoutMs: budget.requestTimeoutMs
+              }
+            : {})
+        };
+        return verifier(identity, verifierOptions);
+      }
+    );
+  }
+  const failures: DependencyLookupFailure[] = [
+    ...inputs.unresolvedDependencies.map((dependency) => ({
+      name: dependency.name,
+      requirement: dependency.version,
+      kind: 'unresolved' as const,
+      message:
+        'Dependency requirement is not an exact installed package identity.'
+    })),
+    ...inputs.graphWarnings
+      .filter(
+        (warning) =>
+          !inputs.unresolvedDependencies.some((dependency) =>
+            warning.includes(dependency.name)
+          )
+      )
+      .map((message) => ({
+        name: 'dependency graph',
+        kind: 'unresolved' as const,
+        message
+      })),
+    ...outcomes.flatMap((outcome) => (outcome.ok ? [] : [outcome.failure]))
+  ];
   const findings = packages.flatMap(packageToFindings);
+  if (npmProvenance) {
+    findings.push(
+      ...npmProvenance
+        .filter((verification) => verification.status !== 'verified')
+        .map((verification) => ({
+          id: `TOOLIP-NPM-PROVENANCE-${verification.name}-${verification.version}`
+            .toUpperCase()
+            .replaceAll(/[^A-Z0-9]/gu, '-'),
+          ruleId: 'TOOLIP-NPM-PROVENANCE-UNVERIFIED',
+          title: `npm provenance not verified: ${verification.name}`,
+          category: 'supply-chain',
+          severity: 'info' as const,
+          confidence: 'high' as const,
+          message: `Publisher provenance for ${verification.name}@${verification.version} is ${verification.status} (${verification.reason}); no publisher trust is asserted.`,
+          source: 'npm-provenance',
+          metadata: {
+            package: verification.name,
+            version: verification.version,
+            status: verification.status,
+            reason: verification.reason
+          }
+        }))
+    );
+  }
   const cancelled = failures.some((failure) => failure.kind === 'cancelled');
   const coverage = coverageOf({
-    eligible: inputs.dependencies.length,
+    eligible:
+      inputs.dependencies.length +
+      inputs.unresolvedDependencies.length +
+      inputs.graphWarnings.filter(
+        (warning) =>
+          !inputs.unresolvedDependencies.some((dependency) =>
+            warning.includes(dependency.name)
+          )
+      ).length,
     scanned: packages.length,
     skipped: failures.filter(
       (f) => f.kind === 'timed_out' || f.kind === 'cancelled'
@@ -155,6 +371,11 @@ export async function scanDependencies(
   });
 
   return {
+    identities: inputs.identities,
+    ...(npmProvenance ? { npmProvenance } : {}),
+    ...(inputs.dependencyGraphDigest
+      ? { dependencyGraphDigest: inputs.dependencyGraphDigest }
+      : {}),
     packages,
     findings,
     failures,
@@ -176,8 +397,22 @@ export async function scanDependencies(
               packages.reduce((total, pkg) => total + pkg.riskScore, 0) /
                 packages.length
             )
-    }
+    },
+    ...(options.inventoryCache && options.inventoryCacheKey
+      ? { inventoryCacheHit: inputs.cacheHit }
+      : {})
   };
+}
+
+function isPublicNpmRegistry(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === 'https:' && url.origin === 'https://registry.npmjs.org'
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function packageToFindings(pkg: PackageHealth): Finding[] {

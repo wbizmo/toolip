@@ -9,6 +9,8 @@ declare module 'pacote' {
 
   /** Subset of pacote/npm-registry-fetch options Toolip relies on. */
   export type ManifestOptions = {
+    /** Always pin public metadata lookups to the public npm registry. */
+    registry?: string;
     signal?: AbortSignal;
     /** Per-request timeout in ms. */
     timeout?: number;

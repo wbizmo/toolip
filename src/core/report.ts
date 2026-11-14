@@ -1,6 +1,8 @@
 import type { AnalysisCoverage, AnalysisState } from '../contracts/analysis.js';
 import type { Finding, FindingSeverity } from '../contracts/finding.js';
 import { redactSensitiveText, sanitizeOutput } from './safe-output.js';
+import type { ReportEvidenceSignature } from './report-signature.js';
+import type { NpmProvenanceVerification } from '../providers/npm/provenance.js';
 
 export type SerializedFinding = {
   id: string;
@@ -41,6 +43,18 @@ export type ToolipReport = {
     /** Canonical totals for enumerated dependency and file inputs. */
     coverage?: AnalysisCoverage;
   };
+  /** Signed analyzer extensions and their truthful coverage state. */
+  analyzerPlugins?: Array<{
+    id: string;
+    sha256: string;
+    keyId: string;
+    state: AnalysisState;
+    findings: number;
+  }>;
+  /** Exact npm provenance results when verification was explicitly configured. */
+  npmProvenance?: NpmProvenanceVerification[];
+  /** Present only when this exact report has a verifiable signed attestation. */
+  evidenceSignature?: ReportEvidenceSignature;
 };
 
 /** Serializes a finding through the legacy, secret-safe report contract. */
@@ -69,6 +83,14 @@ export function createReport(input: {
   root: string;
   findings: Finding[];
   analysis?: ToolipReport['analysis'];
+  analyzerPlugins?: Array<{
+    id: string;
+    sha256: string;
+    keyId: string;
+    state: AnalysisState;
+    findings: number;
+  }>;
+  npmProvenance?: NpmProvenanceVerification[];
 }): ToolipReport {
   return sanitizeOutput({
     tool: 'toolip',
@@ -78,7 +100,11 @@ export function createReport(input: {
     root: input.root,
     summary: summarizeFindings(input.findings),
     findings: input.findings.map(serializeFinding),
-    ...(input.analysis ? { analysis: input.analysis } : {})
+    ...(input.analysis ? { analysis: input.analysis } : {}),
+    ...(input.analyzerPlugins
+      ? { analyzerPlugins: input.analyzerPlugins }
+      : {}),
+    ...(input.npmProvenance ? { npmProvenance: input.npmProvenance } : {})
   });
 }
 

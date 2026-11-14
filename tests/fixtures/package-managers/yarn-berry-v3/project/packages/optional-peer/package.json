@@ -1,0 +1,13 @@
+{
+  "name": "@toolip-fixture/optional-peer",
+  "version": "1.0.0",
+  "private": true,
+  "peerDependencies": {
+    "@toolip-fixture/not-installed": "^1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@toolip-fixture/not-installed": {
+      "optional": true
+    }
+  }
+}

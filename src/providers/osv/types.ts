@@ -1,5 +1,8 @@
 export type OsvQuery = {
-  package: { ecosystem: 'npm'; name: string };
+  package: {
+    ecosystem: 'npm' | 'PyPI' | 'Go' | 'crates.io' | 'Maven' | 'Packagist';
+    name: string;
+  };
   version: string;
 };
 
@@ -12,9 +15,17 @@ export type OsvVulnerability = {
   severity?: Array<{ type?: string; score?: string }>;
   references?: Array<{ type?: string; url?: string }>;
   affected?: Array<{
+    package?: {
+      ecosystem?: string;
+      name?: string;
+    };
     ranges?: Array<{
       type?: string;
-      events?: Array<{ introduced?: string; fixed?: string; last_affected?: string }>;
+      events?: Array<{
+        introduced?: string;
+        fixed?: string;
+        last_affected?: string;
+      }>;
     }>;
   }>;
   database_specific?: Record<string, unknown>;

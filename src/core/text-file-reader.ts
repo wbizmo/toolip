@@ -29,9 +29,14 @@ export type TextFileReadResult =
       snapshot?: FileSnapshot;
     }
   | {
-      status:
-        'oversized' | 'binary' | 'budget-exceeded' | 'cancelled' | 'changed';
+      status: 'oversized' | 'budget-exceeded' | 'cancelled' | 'changed';
       bytes: number;
+    }
+  | {
+      status: 'binary';
+      bytes: number;
+      sha256?: string;
+      snapshot?: FileSnapshot;
     }
   | { status: 'failed'; bytes: 0; error: string };
 
@@ -41,8 +46,18 @@ export const defaultTextFileBudget: TextFileBudget = {
   maxTotalBytes: 64 * 1024 * 1024
 };
 
+export const MAX_TEXT_FILE_READ_CONCURRENCY = 32;
+const defaultTextFileReadConcurrency = 8;
+
+type ReadSlotWaiter = {
+  signal?: AbortSignal;
+  resolve: (acquired: boolean) => void;
+  abort?: () => void;
+};
+
 export type TextFileReaderOptions = {
   root?: string;
+  maxConcurrentReads?: number;
   openFile?: (filePath: string, flags: number) => Promise<FileHandle>;
   realpathFile?: (filePath: string) => Promise<string>;
   lstatFile?: (
@@ -92,8 +107,12 @@ function isWithin(root: string, candidate: string): boolean {
 export class TextFileReader {
   private filesRead = 0;
   private filesInFlight = 0;
+  private activeReads = 0;
+  private peakConcurrentReads = 0;
+  private readonly queuedReads: ReadSlotWaiter[] = [];
   private bytesRead = 0;
   private readonly budget: TextFileBudget;
+  private readonly maxConcurrentReads: number;
   private readonly root?: string;
   private readonly openFile: NonNullable<TextFileReaderOptions['openFile']>;
   private readonly realpathFile: NonNullable<
@@ -114,6 +133,16 @@ export class TextFileReader {
       }
     }
     this.budget = { ...budget };
+    this.maxConcurrentReads =
+      options.maxConcurrentReads ?? defaultTextFileReadConcurrency;
+    if (
+      !Number.isSafeInteger(this.maxConcurrentReads) ||
+      this.maxConcurrentReads < 1 ||
+      this.maxConcurrentReads > MAX_TEXT_FILE_READ_CONCURRENCY
+    )
+      throw new RangeError(
+        `Text file read concurrency must be between 1 and ${MAX_TEXT_FILE_READ_CONCURRENCY}.`
+      );
     this.root =
       options.root === undefined ? undefined : path.resolve(options.root);
     this.openFile = options.openFile ?? open;
@@ -124,6 +153,59 @@ export class TextFileReader {
   /** Returns completed file and byte totals for this reader instance. */
   get usage(): { filesRead: number; bytesRead: number } {
     return { filesRead: this.filesRead, bytesRead: this.bytesRead };
+  }
+
+  get activeReadCount(): number {
+    return this.activeReads;
+  }
+
+  get queuedReadCount(): number {
+    return this.queuedReads.length;
+  }
+
+  get peakConcurrentReadCount(): number {
+    return this.peakConcurrentReads;
+  }
+
+  private acquireReadSlot(signal?: AbortSignal): Promise<boolean> {
+    if (signal?.aborted) return Promise.resolve(false);
+    if (this.activeReads < this.maxConcurrentReads) {
+      this.activeReads += 1;
+      this.peakConcurrentReads = Math.max(
+        this.peakConcurrentReads,
+        this.activeReads
+      );
+      return Promise.resolve(true);
+    }
+    return new Promise<boolean>((resolve) => {
+      const waiter: ReadSlotWaiter = { signal, resolve };
+      waiter.abort = () => {
+        const index = this.queuedReads.indexOf(waiter);
+        if (index < 0) return;
+        this.queuedReads.splice(index, 1);
+        signal?.removeEventListener('abort', waiter.abort as () => void);
+        resolve(false);
+      };
+      this.queuedReads.push(waiter);
+      signal?.addEventListener('abort', waiter.abort, { once: true });
+      if (signal?.aborted) waiter.abort();
+    });
+  }
+
+  private releaseReadSlot(): void {
+    while (this.queuedReads.length > 0) {
+      const waiter = this.queuedReads.shift();
+      if (!waiter) continue;
+      waiter.signal?.removeEventListener('abort', waiter.abort as () => void);
+      if (waiter.signal?.aborted) {
+        waiter.resolve(false);
+        continue;
+      }
+      // Transfer the existing permit directly to the next queued reader.
+      waiter.resolve(true);
+      return;
+    }
+    this.activeReads = Math.max(0, this.activeReads - 1);
   }
 
   /** Reads exactly one bounded file snapshot, honoring cancellation and root. */
@@ -140,7 +222,11 @@ export class TextFileReader {
     this.filesInFlight += 1;
     let handle: FileHandle | undefined;
     let reservedBytes = 0;
+    let hasReadSlot = false;
     try {
+      hasReadSlot = await this.acquireReadSlot(signal);
+      if (!hasReadSlot) return { status: 'cancelled', bytes: 0 };
+      if (signal?.aborted) return { status: 'cancelled', bytes: 0 };
       const absolutePath = path.resolve(filePath);
       const trustedRoot =
         this.root === undefined
@@ -226,7 +312,14 @@ export class TextFileReader {
           return { status: 'changed', bytes: offset };
       }
       if (buffer.subarray(0, Math.min(buffer.length, 8 * 1024)).includes(0)) {
-        return { status: 'binary', bytes: offset };
+        this.filesRead += 1;
+        reservedBytes = 0;
+        return {
+          status: 'binary',
+          bytes: offset,
+          sha256: createHash('sha256').update(buffer).digest('hex'),
+          snapshot: before
+        };
       }
 
       this.filesRead += 1;
@@ -255,7 +348,13 @@ export class TextFileReader {
     } finally {
       this.filesInFlight -= 1;
       if (reservedBytes > 0) this.bytesRead -= reservedBytes;
-      await handle?.close();
+      // Keep the I/O permit until the OS handle is actually closed, including
+      // slow and rejected close operations. A queued read must never overlap it.
+      try {
+        await handle?.close();
+      } finally {
+        if (hasReadSlot) this.releaseReadSlot();
+      }
     }
   }
 }

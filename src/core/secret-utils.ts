@@ -90,16 +90,24 @@ export function findSecretMatches(
     pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`
   );
   const matches: SecretMatch[] = [];
+  const lineStarts = findLineStarts(content);
+  let currentLine = 0;
 
   for (const match of content.matchAll(regex)) {
     const value = match[0];
     const index = match.index ?? 0;
-    const { line, column } = lineAndColumn(content, index);
+    while (
+      currentLine + 1 < lineStarts.length &&
+      (lineStarts[currentLine + 1] ?? Number.POSITIVE_INFINITY) <= index
+    ) {
+      currentLine += 1;
+    }
+    const lineStart = lineStarts[currentLine] ?? 0;
     matches.push({
       value,
       index,
-      line,
-      column,
+      line: currentLine + 1,
+      column: index - lineStart + 1,
       fingerprint: secretFingerprint(value)
     });
   }
@@ -112,10 +120,35 @@ export function lineAndColumn(
   content: string,
   index: number
 ): { line: number; column: number } {
-  const before = content.slice(0, index);
-  const lastNewline = before.lastIndexOf('\n');
-  return {
-    line: before.split('\n').length,
-    column: index - lastNewline
+  return createLineLocator(content)(index);
+}
+
+/** Precomputes source line offsets once for repeated configuration matches. */
+export function createLineLocator(
+  content: string
+): (index: number) => { line: number; column: number } {
+  const lineStarts = findLineStarts(content);
+  return (index) => {
+    let low = 0;
+    let high = lineStarts.length;
+    while (low < high) {
+      const middle = low + ((high - low) >> 1);
+      if ((lineStarts[middle] ?? Number.POSITIVE_INFINITY) <= index)
+        low = middle + 1;
+      else high = middle;
+    }
+    const lineIndex = Math.max(0, low - 1);
+    return {
+      line: lineIndex + 1,
+      column: index - (lineStarts[lineIndex] ?? 0) + 1
+    };
   };
+}
+
+function findLineStarts(content: string): number[] {
+  const starts = [0];
+  for (let index = 0; index < content.length; index += 1) {
+    if (content.charCodeAt(index) === 10) starts.push(index + 1);
+  }
+  return starts;
 }

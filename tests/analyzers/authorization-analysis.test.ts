@@ -1,0 +1,443 @@
+import { describe, expect, it } from 'vitest';
+import path from 'node:path';
+import {
+  analyzeAstSource,
+  createAstProjectAnalysis
+} from '../../src/analyzers/ast/source-analysis.js';
+
+describe('route authorization candidates', () => {
+  it('flags an Express object lookup by a request-controlled ID without a visible policy check', () => {
+    const findings = analyzeAstSource(
+      'src/routes/users.ts',
+      [
+        "router.get('/users/:id', async (req, res) => {",
+        '  const user = await prisma.user.findUnique({ where: { id: req.params.id } });',
+        '  return res.json(user);',
+        '});'
+      ].join('\n')
+    );
+    const candidate = findings.find(
+      (finding) => finding.ruleId === 'TLP-AUTH-001'
+    );
+    expect(candidate).toMatchObject({
+      category: 'authorization',
+      severity: 'medium',
+      confidence: 'low',
+      location: { file: 'src/routes/users.ts', line: 2 }
+    });
+    expect(candidate?.evidence?.[0]?.summary).not.toContain('req.params');
+    expect(candidate?.metadata?.limitation).toContain('Cross-file middleware');
+  });
+
+  it('follows bounded local aliases and destructuring from request identifiers', () => {
+    const directAlias = analyzeAstSource(
+      'src/routes/alias.ts',
+      [
+        "router.get('/users/:id', async (req, res) => {",
+        '  const params = req.params;',
+        '  const requestedId = params.id;',
+        '  const alias = requestedId;',
+        '  return users.findById(alias);',
+        '});'
+      ].join('\n')
+    );
+    const destructured = analyzeAstSource(
+      'src/routes/destructure.ts',
+      [
+        "router.get('/users/:id', async (req, res) => {",
+        '  const { id: requestedId } = req.params;',
+        '  return users.findById(requestedId);',
+        '});'
+      ].join('\n')
+    );
+    const constant = analyzeAstSource(
+      'src/routes/constant.ts',
+      [
+        "router.get('/users/:id', async (req, res) => {",
+        "  const requestedId = 'fixed-record';",
+        '  return users.findById(requestedId);',
+        '});'
+      ].join('\n')
+    );
+
+    expect(
+      directAlias.some((finding) => finding.ruleId === 'TLP-AUTH-001')
+    ).toBe(true);
+    expect(
+      destructured.some((finding) => finding.ruleId === 'TLP-AUTH-001')
+    ).toBe(true);
+    expect(constant.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      false
+    );
+  });
+
+  it('accepts a nested tenant predicate but keeps role-only access candidates', () => {
+    const tenantGuard = analyzeAstSource(
+      'src/routes/invoices.ts',
+      [
+        "router.get('/invoices/:id', async (req, res) => {",
+        '  const invoice = await prisma.invoice.findFirst({',
+        '    where: { id: req.params.id, tenant: { id: req.user.tenantId } }',
+        '  });',
+        '  return res.json(invoice);',
+        '});'
+      ].join('\n')
+    );
+    const roleGuard = analyzeAstSource(
+      'src/routes/admin.ts',
+      [
+        "router.get('/admin/:id', requireRole('admin'), async (req, res) => {",
+        '  const record = await repository.findById(req.params.id);',
+        '  return res.json(record);',
+        '});'
+      ].join('\n')
+    );
+    expect(
+      tenantGuard.some((finding) => finding.ruleId === 'TLP-AUTH-001')
+    ).toBe(false);
+    expect(roleGuard.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      true
+    );
+  });
+
+  it('does not accept an included relation filter as ownership on the loaded resource', () => {
+    const findings = analyzeAstSource(
+      'src/routes/documents.ts',
+      `router.get('/documents/:id', async (req, res) => {
+  const document = await db.document.findFirst({
+    where: { id: req.params.id },
+    include: { auditEvents: { where: { tenantId: req.user.tenantId } } }
+  });
+  return res.json(document);
+});`
+    );
+    expect(findings.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      true
+    );
+  });
+
+  it('requires ownership constraints in every OR branch, but accepts AND and shared-grant exceptions', () => {
+    const unsafe = analyzeAstSource(
+      'src/routes/documents.ts',
+      `router.get('/documents/:id', async (req, res) => {
+  return db.document.findFirst({
+    where: { OR: [{ id: req.params.id, tenantId: req.user.tenantId }, { id: req.params.id }] }
+  });
+});`
+    );
+    expect(unsafe.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      true
+    );
+    const shared = analyzeAstSource(
+      'src/routes/documents.ts',
+      `router.get('/documents/:id', async (req, res) => {
+  return db.document.findFirst({
+    where: { id: req.params.id,
+      OR: [
+        { tenantId: req.user.tenantId },
+        { sharedWith: { some: { userId: req.user.id } } }
+      ]
+    }
+  });
+});`
+    );
+    expect(shared.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      false
+    );
+  });
+
+  it('recognizes unique authenticated tenant aliases and rejects ambiguous ones', () => {
+    const scoped = analyzeAstSource(
+      'src/routes/invoices.ts',
+      [
+        "router.get('/tenants/:tenantId/invoices/:id', async (req, res) => {",
+        '  const tenantId = req.user.tenantId;',
+        '  const invoiceId = req.params.id;',
+        '  return prisma.invoice.findFirst({ where: { id: invoiceId, tenantId } });',
+        '});'
+      ].join('\n')
+    );
+    const shadowed = analyzeAstSource(
+      'src/routes/ambiguous.ts',
+      [
+        "router.get('/tenants/:tenantId/invoices/:id', async (req, res) => {",
+        '  const tenantId = req.user.tenantId;',
+        '  {',
+        '    const tenantId = req.query.tenantId;',
+        '    return prisma.invoice.findFirst({ where: { id: req.params.id, tenantId } });',
+        '  }',
+        '});'
+      ].join('\n')
+    );
+    const reassigned = analyzeAstSource(
+      'src/routes/reassigned.ts',
+      [
+        "router.get('/tenants/:tenantId/invoices/:id', async (req, res) => {",
+        '  let tenantId = req.user.tenantId;',
+        '  tenantId = req.query.tenantId;',
+        '  return prisma.invoice.findFirst({ where: { id: req.params.id, tenantId } });',
+        '});'
+      ].join('\n')
+    );
+
+    expect(scoped.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      false
+    );
+    expect(shadowed.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      true
+    );
+    expect(
+      reassigned.some((finding) => finding.ruleId === 'TLP-AUTH-001')
+    ).toBe(true);
+  });
+
+  it('does not treat ordinary non-route helpers as endpoint authorization findings', () => {
+    const findings = analyzeAstSource(
+      'src/services/users.ts',
+      'export async function loadUser(id: string) { return prisma.user.findUnique({ where: { id } }); }'
+    );
+    expect(findings.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      false
+    );
+  });
+
+  it('recognizes Nest route parameters and tenant scopes without treating role decorators as ownership', () => {
+    const findings = analyzeAstSource(
+      'src/users.controller.ts',
+      `class UsersController {
+  @Get(':id')
+  async load(@Param('id') id: string) {
+    return this.users.findById(id);
+  }
+
+  @Get(':id')
+  async scoped(@Param('id') id: string, @CurrentUser() user: User) {
+    return this.users.findFirst({ where: { id, tenantId: user.tenantId } });
+  }
+
+  @Roles('admin')
+  @Get(':id')
+  async adminOnly(@Param('id') id: string) {
+    return this.users.findById(id);
+  }
+}`
+    );
+    expect(
+      findings
+        .filter((finding) => finding.ruleId === 'TLP-AUTH-001')
+        .map((finding) => finding.location?.line)
+    ).toEqual([4, 15]);
+  });
+
+  it('does not let an authorization check after the lookup hide the lookup', () => {
+    const findings = analyzeAstSource(
+      'src/routes/late-check.ts',
+      [
+        "router.get('/records/:id', async (req, res) => {",
+        '  const record = await records.findById(req.params.id);',
+        '  if (req.user.isAdmin) return res.status(403).end();',
+        '  return res.json(record);',
+        '});'
+      ].join('\n')
+    );
+
+    expect(findings.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      true
+    );
+  });
+
+  it('does not let an allow branch before the lookup count as a denial guard', () => {
+    const findings = analyzeAstSource(
+      'src/routes/incorrect-guard.ts',
+      [
+        "router.get('/records/:id', async (req, res) => {",
+        '  if (req.user.isAdmin) return res.status(403).end();',
+        '  const record = await records.findById(req.params.id);',
+        '  return res.json(record);',
+        '});'
+      ].join('\n')
+    );
+
+    expect(findings.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      true
+    );
+  });
+
+  it('does not treat a fail-closed role check as resource ownership', () => {
+    const findings = analyzeAstSource(
+      'src/routes/early-denial.ts',
+      [
+        "router.get('/records/:id', async (req, res) => {",
+        '  if (!req.user.isAdmin) return res.status(403).end();',
+        '  const record = await records.findById(req.params.id);',
+        '  return res.json(record);',
+        '});'
+      ].join('\n')
+    );
+
+    expect(findings.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      true
+    );
+  });
+
+  it('does not treat an unused authorization boolean as a guard', () => {
+    const findings = analyzeAstSource(
+      'src/routes/ignored-guard.ts',
+      [
+        "router.get('/records/:id', async (req, res) => {",
+        '  canAccess(req.user, req.params.id);',
+        '  const record = await records.findById(req.params.id);',
+        '  return res.json(record);',
+        '});'
+      ].join('\n')
+    );
+    expect(findings.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      true
+    );
+  });
+
+  it('accepts boolean ownership checks only when the denied branch exits', () => {
+    const denied = analyzeAstSource(
+      'src/routes/owner-check.ts',
+      [
+        "router.get('/records/:id', async (req, res) => {",
+        '  if (!owns(req.user, req.params.id)) return res.status(403).end();',
+        '  const record = await records.findById(req.params.id);',
+        '  return res.json(record);',
+        '});'
+      ].join('\n')
+    );
+    const ignored = analyzeAstSource(
+      'src/routes/allow-only.ts',
+      [
+        "router.get('/records/:id', async (req, res) => {",
+        '  if (canAccess(req.user, req.params.id)) { logAccess(); }',
+        '  const record = await records.findById(req.params.id);',
+        '  return res.json(record);',
+        '});'
+      ].join('\n')
+    );
+    expect(denied.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      false
+    );
+    expect(ignored.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      true
+    );
+  });
+
+  it('recognizes resource-specific indirect ownership helpers but not authentication-only guards', () => {
+    const guarded = analyzeAstSource(
+      'src/routes/shared.ts',
+      [
+        "router.get('/workspaces/:workspaceId/documents/:id', async (req, res) => {",
+        '  if (!(await canReadWorkspaceDocument(req.user, req.params.workspaceId, req.params.id))) {',
+        '    throw new Error("forbidden");',
+        '  }',
+        '  return documents.findById(req.params.id);',
+        '});'
+      ].join('\n')
+    );
+    const authenticationOnly = analyzeAstSource(
+      'src/routes/authentication-only.ts',
+      [
+        "router.get('/documents/:id', async (req, res) => {",
+        '  if (!(await isAuthenticated(req.user))) throw new Error("unauthorized");',
+        '  return documents.findById(req.params.id);',
+        '});'
+      ].join('\n')
+    );
+
+    expect(guarded.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      false
+    );
+    expect(
+      authenticationOnly.some((finding) => finding.ruleId === 'TLP-AUTH-001')
+    ).toBe(true);
+  });
+
+  it('requires resource arguments for named guards and leaves opaque middleware uncertain', () => {
+    const resourceGuard = analyzeAstSource(
+      'src/routes/guarded.ts',
+      [
+        "router.get('/records/:id', async (req, res) => {",
+        '  await assertOwner(req.user, req.params.id);',
+        '  return records.findById(req.params.id);',
+        '});'
+      ].join('\n')
+    );
+    const identityOnly = analyzeAstSource(
+      'src/routes/identity-only.ts',
+      [
+        "router.get('/records/:id', requireRole('admin'), async (req, res) => {",
+        '  assertOwner(req.user);',
+        '  return records.findById(req.params.id);',
+        '});'
+      ].join('\n')
+    );
+    const opaqueMiddleware = analyzeAstSource(
+      'src/routes/middleware.ts',
+      [
+        "router.get('/records/:id', authorizeRecord, async (req, res) => {",
+        '  return records.findById(req.params.id);',
+        '});'
+      ].join('\n')
+    );
+
+    expect(
+      resourceGuard.some((finding) => finding.ruleId === 'TLP-AUTH-001')
+    ).toBe(false);
+    expect(
+      identityOnly.some((finding) => finding.ruleId === 'TLP-AUTH-001')
+    ).toBe(true);
+    expect(
+      opaqueMiddleware.some((finding) => finding.ruleId === 'TLP-AUTH-001')
+    ).toBe(true);
+    expect(
+      opaqueMiddleware.find((finding) => finding.ruleId === 'TLP-AUTH-001')
+        ?.confidence
+    ).toBe('low');
+  });
+
+  it('verifies cross-file middleware bodies before trusting a route guard', () => {
+    const root = '/toolip-auth-middleware';
+    const route = `import { authorizeRecord } from './policy.js';
+async function handler(req: RequestLike, res: ResponseLike) {
+  return records.findById(req.params.id);
+}
+router.get('/records/:id', authorizeRecord, handler);`;
+    const policy = `export function authorizeRecord(req: RequestLike, next: () => void) {
+  assertOwner(req.user, req.params.id);
+  next();
+}`;
+    const inputs = (body: string) => [
+      {
+        filePath: 'routes.ts',
+        absolutePath: path.join(root, 'routes.ts'),
+        content: route
+      },
+      {
+        filePath: 'policy.ts',
+        absolutePath: path.join(root, 'policy.ts'),
+        content: body
+      }
+    ];
+    const project = createAstProjectAnalysis(inputs(policy));
+    const authenticationOnlyProject = createAstProjectAnalysis(
+      inputs(`export function authorizeRecord(req: RequestLike, next: () => void) {
+  if (!isAuthenticated(req.user)) throw new Error('unauthorized');
+  next();
+}`)
+    );
+
+    expect(
+      analyzeAstSource('routes.ts', route, project).some(
+        (finding) => finding.ruleId === 'TLP-AUTH-001'
+      )
+    ).toBe(false);
+    expect(
+      analyzeAstSource('routes.ts', route, authenticationOnlyProject).some(
+        (finding) => finding.ruleId === 'TLP-AUTH-001'
+      )
+    ).toBe(true);
+  });
+});

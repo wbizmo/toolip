@@ -36,9 +36,9 @@ export async function createWorkspaceBoundary(
     });
   }
 
-  const allowedRoots = await canonicalizeAllowedRoots(roots);
+  const allowedRoots = Object.freeze(await canonicalizeAllowedRoots(roots));
 
-  return {
+  return Object.freeze({
     allowedRoots,
     async resolve(requestedRoot: string): Promise<string> {
       let candidate: string;
@@ -52,7 +52,9 @@ export async function createWorkspaceBoundary(
         );
       }
 
-      if (!allowedRoots.some((allowedRoot) => isWithin(allowedRoot, candidate))) {
+      if (
+        !allowedRoots.some((allowedRoot) => isWithin(allowedRoot, candidate))
+      ) {
         throw new ToolipError(
           'The requested path is outside the approved MCP workspace.',
           { code: 'MCP_WORKSPACE_DENIED' }
@@ -61,5 +63,5 @@ export async function createWorkspaceBoundary(
 
       return candidate;
     }
-  };
+  });
 }
