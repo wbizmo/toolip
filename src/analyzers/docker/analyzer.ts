@@ -86,6 +86,28 @@ function isRemoteAddInstruction(line: string): boolean {
   return /^(?:"|')?https?:\/\//iu.test(argument);
 }
 
+function validDockerHealthcheckOptionValue(
+  option: string,
+  value: string
+): boolean {
+  if (option === '--retries') return /^[1-9]\d*$/u.test(value);
+  const allowZero = option === '--start-period';
+  const durationPart = /(?:\d+(?:\.\d*)?|\.\d+)(?:ns|us|µs|μs|ms|s|m|h)/uy;
+  let cursor = 0;
+  let total = 0;
+  while (cursor < value.length) {
+    durationPart.lastIndex = cursor;
+    const match = durationPart.exec(value);
+    if (!match) return false;
+    const numeric = Number.parseFloat(match[0]);
+    if (!Number.isFinite(numeric)) return false;
+    total += numeric;
+    if (!Number.isFinite(total)) return false;
+    cursor = durationPart.lastIndex;
+  }
+  return cursor > 0 && (allowZero ? total >= 0 : total > 0);
+}
+
 function declaresLiteralSecret(line: string): boolean {
   const match = line.trim().match(/^(ARG|ENV)\s+(.+)$/iu);
   if (!match?.[1] || !match[2]) return false;
@@ -883,12 +905,21 @@ function buildDockerStageGraph(
             healthSyntaxValid = false;
             break;
           }
+          let optionValue: string | undefined;
           if (option.includes('=')) {
-            if (!option.split('=').slice(1).join('='))
-              healthSyntaxValid = false;
+            optionValue = option.split('=').slice(1).join('=');
             cursor += 1;
-          } else if (healthTokens[cursor + 1]) cursor += 2;
-          else {
+          } else if (healthTokens[cursor + 1]) {
+            optionValue = healthTokens[cursor + 1];
+            cursor += 2;
+          } else {
+            healthSyntaxValid = false;
+            break;
+          }
+          if (
+            optionValue === undefined ||
+            !validDockerHealthcheckOptionValue(optionName ?? '', optionValue)
+          ) {
             healthSyntaxValid = false;
             break;
           }

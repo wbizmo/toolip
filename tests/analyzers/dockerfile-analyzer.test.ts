@@ -698,6 +698,48 @@ describe('DockerfileAnalyzer', () => {
     }
   });
 
+  it('keeps malformed HEALTHCHECK option values from proving an active check', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-docker-healthcheck-options-')
+    );
+    try {
+      for (const healthcheck of [
+        'HEALTHCHECK --retries=soon CMD true',
+        'HEALTHCHECK --timeout=-1s CMD true',
+        'HEALTHCHECK --interval= CMD true'
+      ]) {
+        await writeFile(
+          path.join(root, 'Dockerfile'),
+          `FROM scratch\nUSER 1000\n${healthcheck}\n`
+        );
+        const result = await new DockerfileAnalyzer().analyze({ root });
+        expect(result.coverage.state).toBe('partial');
+        expect(
+          result.findings.some((finding) => finding.ruleId === 'TLP-DOCKER-006')
+        ).toBe(true);
+        expect(result.warnings).toContain(
+          'Dockerfile:3: HEALTHCHECK syntax is unsupported; active state is unknown'
+        );
+      }
+
+      await writeFile(
+        path.join(root, 'Dockerfile'),
+        [
+          'FROM scratch',
+          'USER 1000',
+          'HEALTHCHECK --start-period=0s --interval=1m30s --retries 3 CMD true'
+        ].join('\n')
+      );
+      const valid = await new DockerfileAnalyzer().analyze({ root });
+      expect(valid.coverage.state).toBe('complete');
+      expect(
+        valid.findings.some((finding) => finding.ruleId === 'TLP-DOCKER-006')
+      ).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('marks an unresolved final USER as incomplete instead of claiming non-root safety', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-docker-unresolved-user-')
