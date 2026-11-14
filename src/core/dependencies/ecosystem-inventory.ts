@@ -2892,28 +2892,75 @@ function markGoReplacedPackages(
   }
 }
 
-function parseGoWorkspace(text: string): string[] {
+function parseGoWorkspace(text: string, warnings: string[]): string[] {
   const output = new Set<string>();
   let inUse = false;
+  let lineCount = 0;
   for (const line of text.split(/\r?\n/u)) {
+    lineCount += 1;
+    if (lineCount > 100_000) {
+      warnings.push('go-work-directive-budget-exceeded');
+      break;
+    }
     const clean = line.replace(/\/\/.*$/u, '').trim();
     if (!clean) continue;
-    const use = clean.match(/^use\s+(.+)$/u);
-    if (use?.[1]) {
-      if (use[1] === '(') {
-        inUse = true;
+    if (inUse) {
+      if (clean === ')') {
+        inUse = false;
         continue;
       }
-      output.add(use[1].replace(/^"|"$/gu, ''));
+      const member = parseGoWorkspaceUsePath(clean);
+      if (member) output.add(member);
+      else warnings.push('go-work-use-directive-invalid');
       continue;
     }
-    if (inUse && clean === ')') {
-      inUse = false;
+    if (/^use\s*\(/u.test(clean)) {
+      if (/^use\s*\(\s*$/u.test(clean)) inUse = true;
+      else warnings.push('go-work-use-directive-invalid');
       continue;
     }
-    if (inUse) output.add(clean.replace(/^"|"$/gu, ''));
+    const use = clean.match(/^use\s+(.+)$/u);
+    if (use?.[1]) {
+      const member = parseGoWorkspaceUsePath(use[1]);
+      if (member) output.add(member);
+      else warnings.push('go-work-use-directive-invalid');
+      continue;
+    }
+    if (/^use(?:\s|$)/u.test(clean)) {
+      warnings.push('go-work-use-directive-invalid');
+      continue;
+    }
+    if (/^go\s+/u.test(clean)) {
+      if (!/^go\s+\d+\.\d+(?:\.\d+)?$/u.test(clean))
+        warnings.push('go-work-version-directive-invalid');
+      continue;
+    }
+    if (/^toolchain\s+/u.test(clean)) {
+      if (!/^toolchain\s+go\d+\.\d+(?:\.\d+)?(?:[a-z0-9.-]+)?$/iu.test(clean))
+        warnings.push('go-work-toolchain-directive-invalid');
+      continue;
+    }
+    if (/^replace(?:\s|$)/u.test(clean)) continue;
+    warnings.push('go-work-directive-unresolved');
   }
+  if (inUse) warnings.push('go-work-use-block-unclosed');
   return [...output];
+}
+
+function parseGoWorkspaceUsePath(value: string): string | undefined {
+  let directory = value;
+  if (value.startsWith('"')) {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (typeof parsed !== 'string' || parsed.length === 0) return undefined;
+      directory = parsed;
+    } catch {
+      return undefined;
+    }
+  } else if (!/^[^\s"`]+$/u.test(value)) {
+    return undefined;
+  }
+  return directory.length <= 4_096 ? directory : undefined;
 }
 
 function decodeGoModulePath(value: string): string {
@@ -5294,7 +5341,7 @@ export async function readOtherEcosystemInventoryDetailed(
   }
   const goModulePaths = new Set(['go.mod']);
   if (goWork !== undefined) {
-    for (const directory of parseGoWorkspace(goWork)) {
+    for (const directory of parseGoWorkspace(goWork, warnings)) {
       const normalized = path.posix.normalize(directory.replace(/^"|"$/gu, ''));
       if (
         !directory ||

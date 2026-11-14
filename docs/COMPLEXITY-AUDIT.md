@@ -97,6 +97,10 @@ bytes, `Q` source import/file path bytes and `D` dependency declarations:
   and retains `O(P)` exact module/version checksum entries. Malformed nonblank
   records and invalid hashes now produce explicit incomplete-coverage warnings;
   archive checksums remain distinct from `/go.mod` checksums.
+- Go workspace directive parsing is a single `O(L)` pass over `L` lines with
+  `O(U)` storage for distinct `use` members. It stops after 100,000 lines and
+  reports malformed members, unclosed blocks, invalid version/toolchain
+  directives and unknown directives as incomplete coverage.
 - Cargo workspace glob matching uses dynamic programming over pattern and
   candidate path lengths, with a shared 16,000,000-cell work cap. The matching
   pass is bounded by that cap; per-match live DP space is `O(pattern length +

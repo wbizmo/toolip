@@ -3059,6 +3059,43 @@ describe('non-npm lockfile inventory', () => {
     expect(result.complete).toBe(false);
   });
 
+  it('marks malformed Go workspace members and directives incomplete', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'go.work'),
+      [
+        'go 1.24.0',
+        'use (',
+        '  ./services/api',
+        '  invalid member path',
+        ')',
+        'unknown-directive value'
+      ].join('\n')
+    );
+    await mkdir(path.join(root, 'services/api'), { recursive: true });
+    await writeFile(
+      path.join(root, 'services/api/go.mod'),
+      'module example.test/api\nrequire example.test/lib v1.2.3\n'
+    );
+
+    const parsed = await readOtherEcosystemInventoryDetailed(root);
+
+    expect(parsed.packages).toContainEqual(
+      expect.objectContaining({ name: 'example.test/lib', version: 'v1.2.3' })
+    );
+    expect(parsed.warnings).toContain('go-work-use-directive-invalid');
+    expect(parsed.warnings).toContain('go-work-directive-unresolved');
+    expect(parsed.complete).toBe(false);
+
+    await writeFile(
+      path.join(root, 'go.work'),
+      'go 1.24.0\nuse (\n  ./services/api\n'
+    );
+    const unclosed = await readOtherEcosystemInventoryDetailed(root);
+    expect(unclosed.warnings).toContain('go-work-use-block-unclosed');
+    expect(unclosed.complete).toBe(false);
+  });
+
   it('marks modules replaced by go.work as unknown, including module-specific overrides', async () => {
     const root = await fixture();
     await writeFile(
