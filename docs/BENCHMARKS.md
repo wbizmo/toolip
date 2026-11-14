@@ -516,6 +516,33 @@ is preserved separately in
 the earlier harness-only sample remains intact. These single measurements
 show fixture consistency and timing variability, not a performance comparison.
 
+## AST worker lazy-load measurement (2026-11-14)
+
+`project-analysis-worker-client.ts` now imports the TypeScript analyzer only in
+the worker or inline-analysis path. This avoids loading a second copy of the
+TypeScript compiler in the main thread during ordinary worker-backed scans.
+The single local Linux x64 / Node 24.22.1 run used the same benchmark harness
+and 1k/10k/50k generated repository sizes, with four logical CPUs and zero
+provider requests. The 42-row JSONL, including fixture hashes and cache
+counters, is
+[`toolip-v3.2.1-pr104-ast-worker-lazy-import-2026-11-14-linux-node24.jsonl`](benchmarks/toolip-v3.2.1-pr104-ast-worker-lazy-import-2026-11-14-linux-node24.jsonl),
+SHA-256 `d3870a5ad38fe6df36d41fea4409f237fef5c27d0f3bb8fa005a18b7e13f3074`.
+
+| Source files |      Cold full pass |     Warm full pass | One-file incremental | Concurrent cold pair |
+| -----------: | ------------------: | -----------------: | -------------------: | -------------------: |
+|        1,000 |  1.18 s / 358.7 MiB | 0.60 s / 385.3 MiB |   1.24 s / 456.5 MiB |   1.33 s / 416.9 MiB |
+|       10,000 |  5.18 s / 608.2 MiB | 1.36 s / 653.5 MiB |   1.64 s / 682.6 MiB |   3.18 s / 669.3 MiB |
+|       50,000 | 20.34 s / 859.5 MiB | 4.60 s / 944.8 MiB | 4.96 s / 1,104.7 MiB | 9.60 s / 1,013.0 MiB |
+
+Cells show wall time / sampled process RSS peak. Every scorecard reported
+complete coverage. At 50k, the warm pass reused all 50,003 snapshot files and
+all 3,125 AST chunks; the incremental pass read one changed file and reused
+3,124 chunks. The matching PR baseline raw run recorded 1,038.4 MiB peak RSS
+for the concurrent pair, so this one sample does not demonstrate a material
+concurrent-memory reduction. Peak RSS remains above 1 GiB in the incremental
+case. Results are single samples, not p50/p95 or a whole-process memory bound;
+cross-Node/OS runs and independent review remain outstanding.
+
 ## Frozen Batch 09 resolver scale (2026-11-09)
 
 After adding default ESM import/export resolution and correcting module-local

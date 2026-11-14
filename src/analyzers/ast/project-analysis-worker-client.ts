@@ -1,10 +1,8 @@
 import { isMainThread, Worker } from 'node:worker_threads';
 import type { Finding } from '../../contracts/finding.js';
-import {
-  analyzeAstProjectByComponents,
-  planAstProjectComponents,
-  type AstProjectComponentPlan,
-  type AstProjectInput
+import type {
+  AstProjectComponentPlan,
+  AstProjectInput
 } from './source-analysis.js';
 
 export type AstProjectWorkerResult = Readonly<{
@@ -136,13 +134,17 @@ export function getAstWorkerQueueMetrics(): Readonly<{
 
 function analyzeInline(
   inputs: readonly AstProjectInput[]
-): AstProjectWorkerResult {
-  const analysis = analyzeAstProjectByComponents(inputs);
-  return {
-    findingsByPath: analysis.findingsByPath,
-    componentDigests: analysis.componentDigests,
-    dependencyDigests: analysis.dependencyDigests
-  };
+): Promise<AstProjectWorkerResult> {
+  return import('./source-analysis.js').then(
+    ({ analyzeAstProjectByComponents }) => {
+      const analysis = analyzeAstProjectByComponents(inputs);
+      return {
+        findingsByPath: analysis.findingsByPath,
+        componentDigests: analysis.componentDigests,
+        dependencyDigests: analysis.dependencyDigests
+      };
+    }
+  );
 }
 
 function isCompleteMessage(
@@ -186,6 +188,7 @@ export async function planAstProjectInWorker(
   if (options.signal?.aborted)
     throw abortError('AST project planning was cancelled.');
   if (!isMainThread) {
+    const { planAstProjectComponents } = await import('./source-analysis.js');
     const plan = planAstProjectComponents(inputs);
     if (options.signal?.aborted)
       throw abortError('AST project planning was cancelled.');
@@ -375,7 +378,7 @@ export async function analyzeAstProjectInWorker(
   if (!isMainThread) {
     // AnalyzerRunner already owns this analyzer's killable worker. Avoid
     // creating a nested worker that could outlive the analyzer boundary.
-    const result = analyzeInline(inputs);
+    const result = await analyzeInline(inputs);
     if (options.signal?.aborted)
       throw abortError('AST project analysis was cancelled.');
     return result;
