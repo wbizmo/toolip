@@ -1342,3 +1342,7 @@ integration/negative fixtures; native Node/OS CI, security review and
 package verification remain independent release acceptance gates.
 No issue closure, PR promotion, tag or release is authorized by this
 checkpoint.
+
+## 2026-11-14 local continuation — Docker escape-aware ARG expansion
+
+Issue #63 remains code-incomplete. ARG expansion now follows the active Docker escape character and leaves escaped variable references unresolved, preventing them from being reported as resolved image tags. Regression fixtures cover the default backslash and custom backtick escape modes. Expansion uses O(B) time and O(B) additional space for B input bytes. Focused Docker tests passed (29/29) and TypeScript typecheck passed on Node 24.22.1/Linux. Broader Docker grammar, final-stage, remote-image, cross-platform and security acceptance remains open.

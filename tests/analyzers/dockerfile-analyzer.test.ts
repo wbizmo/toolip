@@ -187,6 +187,33 @@ describe('DockerfileAnalyzer', () => {
     }
   });
 
+  it('does not classify escaped FROM variables as resolved image tags', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-escape-'));
+    try {
+      for (const [directive, escapedFrom] of [
+        ['', 'FROM \\$IMAGE'],
+        ['# escape=`\n', 'FROM `$IMAGE']
+      ]) {
+        await writeFile(
+          path.join(root, 'Dockerfile'),
+          `${directive}ARG IMAGE=node:20\n${escapedFrom}\nUSER 1000\nHEALTHCHECK CMD true\n`
+        );
+        const result = await new DockerfileAnalyzer().analyze({ root });
+        expect(result.coverage.state).toBe('partial');
+        expect(result.warnings).toEqual(
+          expect.arrayContaining([
+            expect.stringContaining('unresolved build argument')
+          ])
+        );
+        expect(
+          result.findings.some((finding) => finding.ruleId === 'TLP-DOCKER-003')
+        ).toBe(false);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('marks unresolved FROM platform expressions as incomplete even when user and health are explicit', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-docker-platform-')

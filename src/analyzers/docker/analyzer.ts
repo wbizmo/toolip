@@ -273,7 +273,8 @@ const builtinBuildArgs = new Set([
 ]);
 
 function globalDockerArgs(
-  instructions: readonly DockerInstruction[]
+  instructions: readonly DockerInstruction[],
+  escapeChar: string
 ): Map<string, string | undefined> {
   const values = new Map<string, string | undefined>();
   for (const instruction of instructions) {
@@ -284,7 +285,9 @@ function globalDockerArgs(
     if (!declaration?.[1]) continue;
     const value = declaration[2];
     const expanded =
-      value === undefined ? undefined : expandBuildArgs(value, values);
+      value === undefined
+        ? undefined
+        : expandBuildArgs(value, values, escapeChar);
     values.set(
       declaration[1],
       expanded === undefined || expanded.unresolved ? undefined : expanded.value
@@ -295,39 +298,61 @@ function globalDockerArgs(
 
 function expandBuildArgs(
   source: string,
-  values: ReadonlyMap<string, string | undefined>
+  values: ReadonlyMap<string, string | undefined>,
+  escapeChar: string
 ): { value: string; unresolved: boolean } {
-  // Backslash or Docker escape-escaped variables cannot prove a trusted digest.
-  let unresolved = /[\\`]\$/u.test(source);
-  const value = source.replace(
-    /\$\{([A-Za-z_][\w]*)(?:(:-|-)([^}]*))?\}|\$([A-Za-z_][\w]*)/gu,
-    (
-      _whole,
-      bracedName: string | undefined,
-      operator: string | undefined,
-      fallback: string | undefined,
-      plainName: string | undefined
-    ) => {
-      const name = bracedName ?? plainName ?? '';
-      if (builtinBuildArgs.has(name)) {
-        unresolved = true;
-        return `__TOOLIP_BUILTIN_${name}__`;
-      }
+  let unresolved = false;
+  const pattern =
+    /\$\{([A-Za-z_][\w]*)(?:(:-|-)([^}]*))?\}|\$([A-Za-z_][\w]*)/gu;
+  let cursor = 0;
+  const expandedParts: string[] = [];
+  for (const match of source.matchAll(pattern)) {
+    const token = match[0];
+    const index = match.index;
+    if (index === undefined) continue;
+    expandedParts.push(source.slice(cursor, index));
+    let escapedCount = 0;
+    for (
+      let escapeIndex = index - 1;
+      escapeIndex >= 0 && source[escapeIndex] === escapeChar;
+      escapeIndex--
+    )
+      escapedCount++;
+    if (escapedCount % 2 === 1) {
+      unresolved = true;
+      const escapedName = match[1] ?? match[4] ?? '';
+      expandedParts.push(`__TOOLIP_ESCAPED_${escapedName}__`);
+      cursor = index + token.length;
+      continue;
+    }
+    const name = match[1] ?? match[4] ?? '';
+    const operator = match[2];
+    const fallback = match[3];
+    if (builtinBuildArgs.has(name)) {
+      unresolved = true;
+      expandedParts.push(`__TOOLIP_BUILTIN_${name}__`);
+    } else {
       const resolved = values.get(name);
       if (resolved !== undefined && !(operator === ':-' && resolved === ''))
-        return resolved;
-      if (operator) return fallback ?? '';
-      unresolved = true;
-      return `__TOOLIP_UNKNOWN_${name}__`;
+        expandedParts.push(resolved);
+      else if (operator) expandedParts.push(fallback ?? '');
+      else {
+        unresolved = true;
+        expandedParts.push(`__TOOLIP_UNKNOWN_${name}__`);
+      }
     }
-  );
+    cursor = index + token.length;
+  }
+  expandedParts.push(source.slice(cursor));
+  const value = expandedParts.join('');
   if (value.includes('$')) unresolved = true;
   return { value, unresolved };
 }
 
 function resolveFromImage(
   instruction: DockerInstruction,
-  buildArgs: ReadonlyMap<string, string | undefined>
+  buildArgs: ReadonlyMap<string, string | undefined>,
+  escapeChar: string
 ):
   | {
       line: string;
@@ -350,7 +375,7 @@ function resolveFromImage(
       const rawPlatform = option.slice('--platform='.length);
       platformUnknown ||=
         rawPlatform.includes('$') ||
-        expandBuildArgs(rawPlatform, buildArgs).unresolved;
+        expandBuildArgs(rawPlatform, buildArgs, escapeChar).unresolved;
       imageIndex += 1;
     } else if (option === '--platform') {
       if (
@@ -363,7 +388,7 @@ function resolveFromImage(
       const rawPlatform = tokens[imageIndex + 1] ?? '';
       platformUnknown ||=
         rawPlatform.includes('$') ||
-        expandBuildArgs(rawPlatform, buildArgs).unresolved;
+        expandBuildArgs(rawPlatform, buildArgs, escapeChar).unresolved;
       imageIndex += 2;
     } else return undefined;
   }
@@ -380,7 +405,7 @@ function resolveFromImage(
   )
     return undefined;
   const imageExpression = tokens[imageIndex] ?? '';
-  const expanded = expandBuildArgs(imageExpression, buildArgs);
+  const expanded = expandBuildArgs(imageExpression, buildArgs, escapeChar);
   tokens[imageIndex] = expanded.value;
   return {
     line: `FROM ${tokens.join(' ')}`,
@@ -394,6 +419,7 @@ function resolveFromImage(
 function parseInstructions(source: string): {
   instructions: DockerInstruction[];
   warnings: string[];
+  escapeChar: string;
 } {
   const physical = source.split(/\r?\n/u);
   const warnings: string[] = [];
@@ -559,7 +585,7 @@ function parseInstructions(source: string): {
       );
     flush(physical.length - 1);
   }
-  return { instructions, warnings };
+  return { instructions, warnings, escapeChar };
 }
 
 type DockerStage = {
@@ -592,7 +618,8 @@ type DockerStageGraph = {
 
 function buildDockerStageGraph(
   instructions: readonly DockerInstruction[],
-  buildArgs: ReadonlyMap<string, string | undefined>
+  buildArgs: ReadonlyMap<string, string | undefined>,
+  escapeChar: string
 ): DockerStageGraph {
   const stages: DockerStage[] = [];
   const aliases = new Map<string, number>();
@@ -610,7 +637,7 @@ function buildDockerStageGraph(
         );
       continue;
     }
-    const parsed = resolveFromImage(instruction, buildArgs);
+    const parsed = resolveFromImage(instruction, buildArgs, escapeChar);
     if (!parsed) {
       warnings.push(
         `${instruction.line}: FROM instruction could not be parsed; stage metadata is unknown`
@@ -956,8 +983,12 @@ export class DockerfileAnalyzer implements Analyzer {
       const lineRules = [...rules.slice(1, 5), ...rules.slice(6)];
       const fileFindings: Finding[] = [];
       const allLines = instructions.map((item) => item.text);
-      const buildArgs = globalDockerArgs(instructions);
-      const stageGraph = buildDockerStageGraph(instructions, buildArgs);
+      const buildArgs = globalDockerArgs(instructions, parsed.escapeChar);
+      const stageGraph = buildDockerStageGraph(
+        instructions,
+        buildArgs,
+        parsed.escapeChar
+      );
       if (stageGraph.warnings.length > 0) stageMetadataIncomplete = true;
       warnings.push(
         ...stageGraph.warnings.map(
@@ -1038,7 +1069,11 @@ export class DockerfileAnalyzer implements Analyzer {
         fileFindings.push(finding(remoteCopyRule, file.relativePath, line));
       }
       for (const instruction of instructions) {
-        const resolvedFrom = resolveFromImage(instruction, buildArgs);
+        const resolvedFrom = resolveFromImage(
+          instruction,
+          buildArgs,
+          parsed.escapeChar
+        );
         const baseKind = stageGraph.baseKindByFrom.get(instruction);
         for (const rule of lineRules) {
           if (
@@ -1051,6 +1086,7 @@ export class DockerfileAnalyzer implements Analyzer {
             resolvedFrom &&
             !resolvedFrom.line.includes('__TOOLIP_UNKNOWN_') &&
             !resolvedFrom.line.includes('__TOOLIP_BUILTIN_') &&
+            !resolvedFrom.line.includes('__TOOLIP_ESCAPED_') &&
             resolvedFrom.image !== '';
           // An overridable but known ARG default is still useful evidence of
           // an unpinned image, but is only low confidence. Unknown variables
