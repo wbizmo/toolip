@@ -269,6 +269,75 @@ export async function handler() {
     expect(JSON.stringify(findings)).not.toContain('email');
   });
 
+  it('tracks sensitive values through a cross-file serializer contract', () => {
+    const root = '/toolip-sensitive-serializer-contract';
+    const serializer = [
+      'export function serializeForLog(value: unknown): string {',
+      '  return JSON.stringify(value);',
+      '}'
+    ].join('\n');
+    const route = [
+      "import { serializeForLog } from './serializer.js';",
+      'const token = process.env.API_TOKEN;',
+      'logger.info(serializeForLog({ credential: token }));'
+    ].join('\n');
+    const project = createAstProjectAnalysis([
+      {
+        filePath: 'serializer.ts',
+        absolutePath: `${root}/serializer.ts`,
+        content: serializer
+      },
+      {
+        filePath: 'route.ts',
+        absolutePath: `${root}/route.ts`,
+        content: route
+      }
+    ]);
+    const findings = analyzeAstSource('route.ts', route, project).filter(
+      (finding) => finding.ruleId === 'TLP-DATA-001'
+    );
+
+    expect(findings.map((finding) => finding.metadata?.sinkClass)).toEqual([
+      'log'
+    ]);
+    expect(JSON.stringify(findings)).not.toContain('API_TOKEN');
+    expect(JSON.stringify(findings)).not.toContain('credential: token');
+  });
+
+  it('trusts cross-file redactors only when their annotated output is static', () => {
+    const root = '/toolip-sensitive-redactor-contract';
+    const redactors = [
+      '/** @toolipRedactsSensitive */',
+      'export function redact(value: unknown): string { return "[redacted]"; }',
+      '/** @toolipRedactsSensitive */',
+      'export function mislabeled(value: unknown): unknown { return value; }'
+    ].join('\n');
+    const route = [
+      "import { redact, mislabeled } from './redactors.js';",
+      'const token = process.env.API_TOKEN;',
+      'logger.info(redact(token));',
+      'logger.info(mislabeled(token));'
+    ].join('\n');
+    const project = createAstProjectAnalysis([
+      {
+        filePath: 'redactors.ts',
+        absolutePath: `${root}/redactors.ts`,
+        content: redactors
+      },
+      {
+        filePath: 'route.ts',
+        absolutePath: `${root}/route.ts`,
+        content: route
+      }
+    ]);
+    const findings = analyzeAstSource('route.ts', route, project).filter(
+      (finding) => finding.ruleId === 'TLP-DATA-001'
+    );
+
+    expect(findings.map((finding) => finding.location?.line)).toEqual([4]);
+    expect(JSON.stringify(findings)).not.toContain('API_TOKEN');
+  });
+
   it('reports sensitive values added to URL query parameters without exposing them', () => {
     const findings = analyzeAstSource(
       'src/outbound.ts',

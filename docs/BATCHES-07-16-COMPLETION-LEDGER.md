@@ -2111,11 +2111,15 @@ includes sensitive values appended/set on unshadowed built-in `FormData`,
 `navigator.sendBeacon`, and `.send()` on a locally created unshadowed
 `WebSocket`. Arbitrary objects with a `.send()` method and shadowed `FormData`
 constructors remain unclassified. Per-scope constructor receiver indexes are
-cached to avoid rescanning declarations per call. The sensitive-flow and AST
-security suites pass 69 tests; typecheck, targeted lint and formatting passed.
-All three Stage A pins use digest
-`50430660df6845cf6a6dc3be024dc3a72f8759fbf123278b13d735d1a8b938bb`. Full
-verification passed: 1,431 unit tests (4 skipped), 1,429 coverage tests (3
+cached to avoid rescanning declarations per call. Cross-file local serializers
+retain sensitive flow through the resolved project graph. Custom redactors are
+trusted only when annotated `@toolipRedactsSensitive` or `@redactsSensitive`
+and their complete function body returns one literal or null; mislabeled
+identity helpers remain findings. The sensitive-flow and AST security suites
+pass 71 tests; typecheck, targeted lint and formatting passed. All three Stage
+A pins use digest
+`32eb8e2942bbdef0d9847a202e39dd15348a36a2939cf9af58485d7123fd3a3f`. Full
+verification passed: 1,433 unit tests (4 skipped), 1,431 coverage tests (3
 skipped), 85.55% statements, 79.62% branches, 93.16% functions and 88.14%
-lines. Serializer behavior outside resolved local helpers, custom redactors
-and broad false-positive calibration remain incomplete for #91.
+lines. Serializer declarations without resolved implementations and broad
+false-positive calibration remain incomplete for #91.

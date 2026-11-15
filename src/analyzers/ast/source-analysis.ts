@@ -2048,7 +2048,7 @@ function collectFlowNames(
       if (
         sensitiveDestructuring &&
         ts.isCallExpression(node) &&
-        isRedactionCall(node)
+        isRedactionCall(node, checker)
       )
         return;
       if (ts.isCallExpression(node)) {
@@ -2520,6 +2520,10 @@ const locallyBoundRedactionNames = new WeakMap<
   ts.SourceFile,
   ReadonlySet<string>
 >();
+const verifiedLocalRedactionNames = new WeakMap<
+  ts.SourceFile,
+  ReadonlySet<string>
+>();
 
 function redactionNamesDefinedInSource(
   source: ts.SourceFile
@@ -2547,16 +2551,107 @@ function redactionNamesDefinedInSource(
   return bound;
 }
 
-function isRedactionCall(expression: ts.Expression): boolean {
+function hasRedactionContract(node: ts.Node): boolean {
+  return ts
+    .getJSDocTags(node)
+    .some((tag) =>
+      ['toolipredactssensitive', 'redactssensitive'].includes(
+        tag.tagName.text.toLowerCase()
+      )
+    );
+}
+
+function hasStaticRedactionResult(
+  declaration: ts.FunctionLikeDeclaration
+): boolean {
+  const body = declaration.body;
+  if (!body) return false;
+  if (!ts.isBlock(body))
+    return (
+      ts.isStringLiteral(body) ||
+      ts.isNoSubstitutionTemplateLiteral(body) ||
+      body.kind === ts.SyntaxKind.NullKeyword
+    );
+  if (body.statements.length !== 1) return false;
+  const statement = body.statements[0];
+  if (!statement || !ts.isReturnStatement(statement) || !statement.expression)
+    return false;
+  const result = unwrapExpression(statement.expression);
+  return (
+    ts.isStringLiteral(result) ||
+    ts.isNoSubstitutionTemplateLiteral(result) ||
+    result.kind === ts.SyntaxKind.NullKeyword
+  );
+}
+
+function verifiedRedactorDeclaration(node: ts.Declaration): boolean {
+  if (!hasRedactionContract(node)) return false;
+  if (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node))
+    return hasStaticRedactionResult(node);
+  if (
+    ts.isVariableDeclaration(node) &&
+    node.initializer &&
+    (ts.isArrowFunction(node.initializer) ||
+      ts.isFunctionExpression(node.initializer))
+  )
+    return hasStaticRedactionResult(node.initializer);
+  return false;
+}
+
+function verifiedRedactionNamesInSource(
+  source: ts.SourceFile
+): ReadonlySet<string> {
+  const cached = verifiedLocalRedactionNames.get(source);
+  if (cached) return cached;
+  const names = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (
+      (ts.isFunctionDeclaration(node) || ts.isVariableDeclaration(node)) &&
+      node.name &&
+      ts.isIdentifier(node.name) &&
+      verifiedRedactorDeclaration(node)
+    )
+      names.add(node.name.text);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  verifiedLocalRedactionNames.set(source, names);
+  return names;
+}
+
+function isVerifiedImportedRedactor(
+  target: ts.Identifier,
+  checker: ts.TypeChecker | undefined
+): boolean {
+  if (!checker) return false;
+  let symbol = checker.getSymbolAtLocation(target);
+  if (!symbol) return false;
+  if (symbol.flags & ts.SymbolFlags.Alias) {
+    try {
+      symbol = checker.getAliasedSymbol(symbol);
+    } catch {
+      return false;
+    }
+  }
+  return symbol.declarations?.some(verifiedRedactorDeclaration) ?? false;
+}
+
+function isRedactionCall(
+  expression: ts.Expression,
+  checker?: ts.TypeChecker
+): boolean {
   if (!ts.isCallExpression(expression)) return false;
   const target = expression.expression;
   // A method on an arbitrary object is never a verified redactor. A local
   // binding can shadow a familiar helper name and may simply return input;
   // keep it as an exposure candidate rather than treating a name as proof.
+  if (!ts.isIdentifier(target)) return false;
+  const source = expression.getSourceFile();
   return (
-    ts.isIdentifier(target) &&
-    redactionHelpers.has(target.text) &&
-    !redactionNamesDefinedInSource(expression.getSourceFile()).has(target.text)
+    (redactionHelpers.has(target.text) &&
+      !redactionNamesDefinedInSource(source).has(target.text)) ||
+    verifiedRedactionNamesInSource(source).has(target.text) ||
+    isVerifiedImportedRedactor(target, checker)
   );
 }
 
@@ -2570,7 +2665,7 @@ function collectSensitiveNames(
     sourceFiles,
     scopes,
     (expression) =>
-      !isRedactionCall(expression) &&
+      !isRedactionCall(expression, checker) &&
       isSensitiveDataSource(expression, checker),
     true,
     checker,
@@ -3413,7 +3508,7 @@ function isSensitiveValue(
   callReturns: WeakMap<ts.CallExpression, FlowBinding>,
   checker?: ts.TypeChecker
 ): boolean {
-  if (isRedactionCall(expression)) return false;
+  if (isRedactionCall(expression, checker)) return false;
   if (
     isMemberAccessRoot(expression) &&
     isSensitiveDataSource(expression, checker)
@@ -3431,7 +3526,7 @@ function isSensitiveValue(
   let found = false;
   const visit = (node: ts.Node): void => {
     if (found || (node !== expression && ts.isFunctionLike(node))) return;
-    if (ts.isExpression(node) && isRedactionCall(node)) return;
+    if (ts.isExpression(node) && isRedactionCall(node, checker)) return;
     if (ts.isCallExpression(node)) {
       const returned = callReturns.get(node);
       if (returned && sensitive.get(returned.scope)?.has(returned.name)) {

@@ -1243,7 +1243,8 @@ Explicit property decorators are checked through their declaration symbols.
 Built-in `FormData` and `WebSocket` receiver names are indexed once per lexical
 scope and cached by constructor kind; subsequent sink checks use set membership
 while walking lexical parents. This avoids scanning the scope's statements
-again for each `append`, `set` or `send` call. Dynamic custom serializer and
-redactor contracts remain outside this bounded model. The combined full gate
-passed with 1,431 unit tests (4 skipped), 1,429 coverage tests (3 skipped),
+again for each `append`, `set` or `send` call. Cross-file local serializer
+returns follow the resolved AST project graph. Custom redactors are trusted
+only when annotated and statically return a literal or null. Full verification
+passed with 1,433 unit tests (4 skipped), 1,431 coverage tests (3 skipped),
 85.55% statements, 79.62% branches, 93.16% functions and 88.14% lines.
