@@ -1596,6 +1596,29 @@ function collectBindings(
           isOutboundClientModule(node.initializer.arguments[0].text)
         )
           bindingScope.outboundClients.add(node.name.text);
+        if (
+          ts.isObjectBindingPattern(node.name) &&
+          node.initializer &&
+          ts.isCallExpression(node.initializer) &&
+          ts.isIdentifier(node.initializer.expression) &&
+          node.initializer.expression.text === 'require' &&
+          lookupBinding(bindingScope, 'require') === undefined &&
+          node.initializer.arguments.length === 1 &&
+          ts.isStringLiteral(node.initializer.arguments[0]) &&
+          isOutboundClientModule(node.initializer.arguments[0].text)
+        ) {
+          for (const element of node.name.elements) {
+            if (
+              ts.isOmittedExpression(element) ||
+              !ts.isIdentifier(element.name)
+            )
+              continue;
+            const imported =
+              propertyName(element.propertyName) ?? element.name.text;
+            if (outboundClientFunctions.has(imported.toLowerCase()))
+              bindingScope.outboundClients.add(element.name.text);
+          }
+        }
         if (node.initializer)
           pending.push({
             name: node.name,
@@ -3949,6 +3972,12 @@ function isOutboundRequestCall(call: ts.CallExpression, scope: Scope): boolean {
     outboundClientRoot &&
     isKnownOutboundClient(scope, outboundClientRoot.text) &&
     (outboundRequestMethods.has(targetName) || dynamicComputedMethod)
+  )
+    return true;
+  if (
+    ts.isIdentifier(target) &&
+    isKnownOutboundClient(scope, target.text) &&
+    outboundRequestMethods.has(targetName)
   )
     return true;
   if (

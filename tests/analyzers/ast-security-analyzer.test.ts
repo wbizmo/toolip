@@ -317,6 +317,7 @@ async function shadowed(req: RequestLike, sendRequest: (url: string) => void) {
 const https = require('node:https');
 const axios = require('axios');
 const client = require('axios');
+const { get: requestByGet } = require('axios');
 let mutableClient = require('axios');
 mutableClient = unrelated;
 async function handler(req: RequestLike) {
@@ -324,6 +325,7 @@ async function handler(req: RequestLike) {
   await https.get(req.query.httpsUrl);
   await axios(req.query.axiosUrl);
   await client.get(req.query.clientUrl);
+  await requestByGet(req.query.cjsNamedClientUrl);
   await mutableClient.get(req.query.mutableClientUrl);
 }
 async function shadowed(req: RequestLike, sendRequest: (url: string) => void) {
@@ -332,7 +334,7 @@ async function shadowed(req: RequestLike, sendRequest: (url: string) => void) {
     );
     expect(
       findings.filter((finding) => finding.ruleId === 'TLP-AST-006')
-    ).toHaveLength(4);
+    ).toHaveLength(5);
   });
 
   it('preserves taint through computed request fields and Promise callbacks', () => {

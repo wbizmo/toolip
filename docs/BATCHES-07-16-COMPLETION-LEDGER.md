@@ -1749,14 +1749,14 @@ remain incomplete; #95 remains code incomplete.
 
 ## 2026-11-15 local continuation — CommonJS HTTP client aliases for #60
 
-Outbound-request taint analysis now recognizes a statically required HTTP
-client namespace stored in a local binding, for example `const client =
-require('axios'); client.get(taintedUrl)`. A later reassignment invalidates
-the static client identity, while direct unmodified aliases remain sinks.
-The AST security analyzer suite passed 47 tests and typecheck passed. Dynamic
-module construction, re-exported/custom wrappers, external API semantics,
-DNS behavior and race-safe filesystem identity remain incomplete; #60 is not
-complete.
+Outbound-request taint analysis now recognizes statically required HTTP
+client namespaces and destructured methods, for example `const client =
+require('axios'); client.get(taintedUrl)` and `const { get } = require('axios')`.
+A later reassignment invalidates the namespace identity, while immutable
+destructured request methods remain sinks. The AST security analyzer suite
+passed 47 tests and typecheck passed. Dynamic module construction,
+re-exported/custom wrappers, external API semantics, DNS behavior and
+race-safe filesystem identity remain incomplete; #60 is not complete.
 
 ## 2026-11-15 local continuation — aliased child-process APIs for #95
 
