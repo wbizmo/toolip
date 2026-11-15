@@ -1248,3 +1248,10 @@ returns follow the resolved AST project graph. Custom redactors are trusted
 only when annotated and statically return a literal or null. Full verification
 passed with 1,433 unit tests (4 skipped), 1,431 coverage tests (3 skipped),
 85.55% statements, 79.62% branches, 93.16% functions and 88.14% lines.
+
+The unbounded fan-out detector now treats `Promise.allSettled`, `Promise.race`
+and `Promise.any` like `Promise.all` when they map side-effecting callbacks;
+static array slicing still bounds the checked input. Focused concurrency tests
+pass 31 cases. Full verification passed with 1,435 unit tests (4 skipped),
+1,433 coverage tests (3 skipped), 85.55% statements, 79.62% branches, 93.16%
+functions and 88.14% lines.

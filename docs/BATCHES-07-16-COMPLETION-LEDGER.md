@@ -2118,8 +2118,22 @@ and their complete function body returns one literal or null; mislabeled
 identity helpers remain findings. The sensitive-flow and AST security suites
 pass 71 tests; typecheck, targeted lint and formatting passed. All three Stage
 A pins use digest
-`32eb8e2942bbdef0d9847a202e39dd15348a36a2939cf9af58485d7123fd3a3f`. Full
+`4d33391efd75aa89f404fb6c761a3e8143d1076aa2e70f572f33d9972e52f708`. Full
 verification passed: 1,433 unit tests (4 skipped), 1,431 coverage tests (3
 skipped), 85.55% statements, 79.62% branches, 93.16% functions and 88.14%
 lines. Serializer declarations without resolved implementations and broad
 false-positive calibration remain incomplete for #91.
+
+## 2026-11-15 local continuation — additional Promise fan-out combinators for #89
+
+Unbounded side-effect fan-out now recognizes `Promise.allSettled`, `Promise.race`
+and `Promise.any` alongside `Promise.all`, since each starts the mapped work
+without limiting concurrency. The existing static `slice` cap still suppresses
+the candidate. The concurrency suite passes 31 tests; typecheck and targeted
+lint passed. All Stage A pins use digest
+`4d33391efd75aa89f404fb6c761a3e8143d1076aa2e70f572f33d9972e52f708`. Full
+verification passed: 1,435 unit tests (4 skipped), 1,433 coverage tests (3
+skipped), 85.55% statements, 79.62% branches, 93.16% functions and 88.14%
+lines. This remains a bounded same-file candidate, not a proof of runtime
+overlap or database isolation; cross-file async races and safe-concurrency
+accuracy remain incomplete for #89.

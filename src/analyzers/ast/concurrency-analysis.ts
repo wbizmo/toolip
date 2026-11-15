@@ -723,7 +723,7 @@ function findUnboundedPromiseAll(
   const target = node.expression;
   if (
     !ts.isPropertyAccessExpression(target) ||
-    target.name.text !== 'all' ||
+    !['all', 'allSettled', 'race', 'any'].includes(target.name.text) ||
     !ts.isIdentifier(target.expression) ||
     target.expression.text !== 'Promise'
   )
@@ -777,7 +777,7 @@ function createFinding(
         ? 'The same path is checked and later used in a separate filesystem operation. A concurrent replacement can invalidate the earlier check; prefer operating on one opened handle with no-follow and atomic flags.'
         : kind === 'non-atomic-read-check-write'
           ? 'A value is read, checked, then mutated without a visible compare-and-swap or version predicate. Concurrent requests may both pass the check; verify transaction isolation and atomic update conditions.'
-          : 'Promise.all maps an unbounded collection to side-effecting asynchronous work. Large inputs can overwhelm downstream services or cause overlapping updates; use a bounded concurrency pool and make writes idempotent or atomic.',
+          : 'A Promise combinator maps an unbounded collection to side-effecting asynchronous work. Large inputs can overwhelm downstream services or cause overlapping updates; use a bounded concurrency pool and make writes idempotent or atomic.',
     source: 'typescript-ast-concurrency-heuristic',
     location,
     evidence: [

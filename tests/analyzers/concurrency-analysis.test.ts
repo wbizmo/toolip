@@ -396,6 +396,34 @@ function mutableAlias() {
     ).toBe('low');
   });
 
+  it('flags side-effect fan-out through allSettled, race and any combinators', () => {
+    for (const combinator of ['allSettled', 'race', 'any']) {
+      const findings = analyzeAstSource(
+        'src/batch-update.ts',
+        `async function updateAll(ids: string[]) {
+  await Promise.${combinator}(ids.map(async (id) => db.item.update({ where: { id }, data: { active: true } })));
+}`
+      );
+
+      expect(
+        findings.filter((finding) => finding.ruleId === 'TLP-RACE-003')
+      ).toHaveLength(1);
+    }
+  });
+
+  it('accepts a statically bounded allSettled side-effect batch', () => {
+    const findings = analyzeAstSource(
+      'src/batch-update.ts',
+      `async function updateAll(ids: string[]) {
+  await Promise.allSettled(ids.slice(0, 4).map(async (id) => db.item.update({ where: { id }, data: { active: true } })));
+}`
+    );
+
+    expect(
+      findings.filter((finding) => finding.ruleId === 'TLP-RACE-003')
+    ).toEqual([]);
+  });
+
   it('follows bounded same-file async wrappers in unbounded Promise.all work', () => {
     const findings = analyzeAstSource(
       'src/batch-update.ts',
