@@ -887,6 +887,34 @@ describe('non-executing malicious content chain analysis', () => {
     expect(result.findings[0]?.metadata?.completeness).toBe('unknown');
   });
 
+  it.each([
+    [
+      'AdmZip',
+      "new AdmZip('bundle.zip').extractAllTo('out'); child_process.spawn('node', ['out/init.js']);"
+    ],
+    [
+      'node tar API',
+      "tar.x({ file: 'bundle.tar', cwd: 'out' }); new Deno.Command('node', { args: ['out/init.js'] });"
+    ]
+  ])(
+    'keeps %s extraction followed by process launch unknown',
+    (_label, code) => {
+      const result = analyzeMaliciousContent([
+        {
+          path: 'package.json',
+          content: JSON.stringify({ scripts: { prepare: 'node bootstrap.js' } })
+        },
+        { path: 'bootstrap.js', content: code }
+      ]);
+
+      expect(result.findings[0]?.ruleId).toBe('TLP-MAL-001');
+      expect(result.findings[0]?.metadata?.behaviorSignals).toContain(
+        'archive-extraction-and-execution'
+      );
+      expect(result.findings[0]?.metadata?.completeness).toBe('unknown');
+    }
+  );
+
   it('reports unresolved dynamic targets rather than a clean result', () => {
     const result = analyzeMaliciousContent([
       {

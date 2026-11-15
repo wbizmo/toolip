@@ -225,9 +225,9 @@ const archiveExtraction =
 const archiveExecutionTarget =
   /(?:\bStart-Process\b(?:\s+-FilePath)?\s+[^\s;&|]+|\b(?:node(?:\.exe)?|bash|sh|zsh|pwsh|powershell|python(?:3)?|java(?:\.exe)?|deno|bun|ruby|perl|php|cmd(?:\.exe)?)\b\s+(?:-jar\s+|\/(?:c|k)\s+)?[^\s;&|]+|(?:^|[;&|]\s*)(?:call\s+)?(?:&\s*)?\.{1,2}[\\/]\S+)/imu;
 const archiveApiExtraction =
-  /\b(?:(?:zipfile\.)?ZipFile|(?:tarfile\.)?TarFile|tarfile\.open)\s*\([\s\S]{0,1024}?\.\s*extract(?:all)?\s*\(/giu;
+  /\b(?:new\s+AdmZip\s*\([^)]{0,1024}\)\s*\.\s*extractAllTo\s*\(|(?:(?:zipfile\.)?ZipFile|(?:tarfile\.)?TarFile|tarfile\.open)\s*\([\s\S]{0,1024}?\.\s*extract(?:all)?\s*\(|(?:tar|tarModule)\s*\.\s*(?:x|extract)\s*\()/giu;
 const archiveApiExecution =
-  /\b(?:subprocess\.(?:run|Popen|call|check_call|check_output)|os\.system|ProcessBuilder|Runtime\.getRuntime\s*\(\)\s*\.\s*exec)\s*\(/u;
+  /\b(?:subprocess\.(?:run|Popen|call|check_call|check_output)|os\.system|ProcessBuilder|Runtime\.getRuntime\s*\(\)\s*\.\s*exec|(?:child_process\.)?(?:exec|execFile|spawn|fork)|(?:new\s+)?Deno\.Command)\s*\(/u;
 const credentialStoreAccess =
   /(?:keytar\.(?:getPassword|findPassword)|(?:security\s+find-(?:generic|internet)-password)|secret-tool\s+lookup|(?:cmdkey|vaultcmd)\s+\/list|(?:readFileSync|readFile|openSync|Get-Content|cat|type)\s*[^\n]{0,240}(?:\.aws[\\/]credentials|\.npmrc|\.docker[\\/]config\.json|\.ssh[\\/](?:id_rsa|id_ed25519)|Login Data|Local State|credential|token)|(?:AWS_SECRET_ACCESS_KEY|GITHUB_TOKEN|NPM_TOKEN|GH_TOKEN|AZURE_CLIENT_SECRET))/iu;
 const outboundTransfer =

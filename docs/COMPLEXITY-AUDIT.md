@@ -1071,6 +1071,17 @@ preserves `O(B)` scan time and constant pattern space. The full verification
 gate passed: 1,410 unit tests (4 skipped), 1,408 coverage tests (3 skipped),
 85.55% statements, 79.62% branches, 93.16% functions and 88.14% lines.
 
+### #95 Node archive-library extraction APIs — 2026-11-15
+
+The bounded archive API patterns now include `AdmZip.extractAllTo()` and the
+Node `tar.x()`/`tar.extract()` methods, paired with common child-process and
+Deno command launch APIs. The analyzer and trusted Stage A fixtures passed 145
+tests together, including a negative archive-creation case. The scans remain
+linear in the bounded source window; they do not unpack or execute archives.
+The full verification gate passed with 1,414 unit tests (4 skipped), 1,412
+coverage tests (3 skipped), 85.55% statements, 79.62% branches, 93.16%
+functions and 88.14% lines.
+
 ### #40 bounded SSRF host-allowlist proof work — 2026-11-15
 
 Per-file AST analysis now shares a 250,000-node budget across URL host-guard

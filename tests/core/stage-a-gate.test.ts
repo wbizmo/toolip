@@ -1161,6 +1161,33 @@ describe('trusted Stage A Git-object scanner', () => {
     expect(result.findings).toContain('bootstrap.py#archive-execution');
   });
 
+  it.each([
+    [
+      'AdmZip API',
+      "new AdmZip('bundle.zip').extractAllTo('out'); child_process.spawn('node', ['out/init.js']);"
+    ],
+    [
+      'node tar API',
+      "tar.x({ file: 'bundle.tar', cwd: 'out' }); new Deno.Command('node', { args: ['out/init.js'] });"
+    ]
+  ])(
+    'blocks %s extraction followed by process launch',
+    async (_label, source) => {
+      const fixture = await repo({
+        'package.json': JSON.stringify({
+          scripts: { prepare: 'node bootstrap.js' }
+        }),
+        'bootstrap.js': source
+      });
+      const result = scanGitTree(fixture.root, fixture.sha, {
+        changedPaths: ['package.json']
+      });
+
+      expect(result.status).toBe('blocked');
+      expect(result.findings).toContain('bootstrap.js#archive-execution');
+    }
+  );
+
   it('blocks a wrapper that executes a uniquely assigned local shell variable', async () => {
     const fixture = await repo({
       'package.json': JSON.stringify({
