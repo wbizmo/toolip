@@ -1753,10 +1753,13 @@ Outbound-request taint analysis now recognizes statically required HTTP
 client namespaces and destructured methods, for example `const client =
 require('axios'); client.get(taintedUrl)` and `const { get } = require('axios')`.
 A unique immutable alias such as `const getUrl = client.get` is also traced;
-reassigned namespace or function aliases lose their static identity. The AST
-security analyzer suite passed 47 tests and typecheck passed. Dynamic module construction,
-re-exported/custom wrappers, external API semantics, DNS behavior and
-race-safe filesystem identity remain incomplete; #60 is not complete.
+reassigned namespace or function aliases lose their static identity. Dynamic
+`require(moduleName)` and `import(moduleName)` expressions used directly as
+known HTTP request receivers remain SSRF candidates, without exposing the
+module expression in finding evidence. A regression covers both forms. The AST
+security analyzer suite passed 48 tests and typecheck passed. Re-exported/custom
+wrappers, external API semantics, DNS behavior and race-safe filesystem
+identity remain incomplete; #60 is not complete.
 
 ## 2026-11-15 local continuation — aliased child-process APIs for #95
 
@@ -1962,10 +1965,11 @@ Cross-file async ownership, distributed lock semantics, framework accuracy
 and external review remain open; #89 remains code incomplete.
 
 The combined #60/#95/#61/#89 changes then passed `npm run verify` on Linux Node
-24.22.1. Unit tests passed **1,403 / 4 skipped** across 128 files; coverage
-passed **1,401 / 3 skipped** across 127 files at 85.55% statements, 79.62%
-branches, 93.16% functions and 88.14% lines. Changelog, lint, formatting,
-workflow policy, lockfile integrity, npm audit (zero vulnerabilities),
-typecheck, compiler quality, build, and built-package verification passed.
-This local gate does not provide hosted CI, supported-platform coverage,
-independent review or external issue acceptance.
+24.22.1. The follow-up dynamic HTTP receiver regression also passed the full
+gate: unit tests passed **1,404 / 4 skipped** across 128 files; coverage passed
+**1,402 / 3 skipped** across 127 files at 85.55% statements, 79.62% branches,
+93.16% functions and 88.14% lines. Changelog, lint, formatting, workflow
+policy, lockfile integrity, npm audit (zero vulnerabilities), typecheck,
+compiler quality, build, and built-package verification passed. This local
+gate does not provide hosted CI, supported-platform coverage, independent
+review or external issue acceptance.

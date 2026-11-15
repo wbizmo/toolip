@@ -342,6 +342,22 @@ async function shadowed(req: RequestLike, sendRequest: (url: string) => void) {
     ).toHaveLength(6);
   });
 
+  it('keeps dynamic require and import HTTP receivers as SSRF candidates', () => {
+    const findings = analyzeAstSource(
+      'routes.ts',
+      `async function handler(req: RequestLike) {
+  await require(req.query.clientModule).get(req.query.destination);
+  await (await import(req.query.apiModule)).request(req.query.backup);
+}`
+    );
+
+    expect(
+      findings.filter((finding) => finding.ruleId === 'TLP-AST-006')
+    ).toHaveLength(2);
+    expect(JSON.stringify(findings)).not.toContain('clientModule');
+    expect(JSON.stringify(findings)).not.toContain('apiModule');
+  });
+
   it('preserves taint through computed request fields and Promise callbacks', () => {
     const findings = analyzeAstSource(
       'routes.ts',

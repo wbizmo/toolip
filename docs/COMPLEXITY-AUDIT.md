@@ -1000,10 +1000,13 @@ package allowlist (`axios`, `node-fetch`, `undici`, `got`, `ky`, and related
 HTTP clients) through imports and literal CommonJS `require()` calls. Named
 imports are restricted to known request functions; arbitrary imported classes
 are not treated as sinks. Identifier resolution respects lexical shadowing.
-Dynamic module names, re-export chains and custom wrappers remain unresolved.
-The sensitive-flow and AST suites pass 60 tests with typecheck and targeted
-lint passing on Linux Node 24.22.1. This is a static API model, not runtime
-client discovery or URL/redirect safety proof (#60).
+Direct `require(moduleName).get(url)` and `import(moduleName).request(url)`
+receivers are retained as SSRF candidates without including the dynamic module
+name in evidence; the analyzer does not resolve or execute those modules.
+Re-export chains and custom wrappers remain unresolved. The sensitive-flow
+and AST suites pass 60 tests with typecheck and targeted lint passing on Linux
+Node 24.22.1. This is a static API model, not runtime client discovery or
+URL/redirect safety proof (#60).
 
 ### #56 snapshot discovery-list preflight — 2026-11-15
 
@@ -1163,9 +1166,11 @@ Redis concurrency analysis indexes immutable local `get`/`exists` results by
 variable, and candidate `set`/delete writes by receiver and static key once per
 function. Each condition's identifiers are visited once; a binary search finds
 the first same-key write in the branch, and one finding per key is emitted.
-With `D` declarations, `C` calls, `Q` conditional-expression identifier
-occurrences and `R` findings, the added pass is `O(D + C + Q log C + R)` time
-and `O(D + C + Q)` bounded-by-source memory. Dynamic keys and unresolved
-receivers remain outside the model. The concurrency suite passed 27 tests,
-including 256 independent same-function keys; full distributed-lock and
-cross-file modeling remain open for #89.
+The receiver index follows unique, visible, immutable `const` aliases up to
+16 links. With `D` declarations, `C` calls, `Q` conditional-expression
+identifier occurrences, `H ≤ 16` alias hops and `R` findings, the added pass
+is `O(D + C × H + Q log C + R)` time and `O(D + C + Q)` bounded-by-source
+memory. Dynamic keys and unresolved/mutable receivers remain outside the
+model. The concurrency suite covers 256 independent same-function keys plus
+immutable and mutable receiver aliases; full distributed-lock and cross-file
+modeling remain open for #89.

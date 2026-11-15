@@ -4017,6 +4017,13 @@ function isOutboundRequestCall(call: ts.CallExpression, scope: Scope): boolean {
       (!ts.isStringLiteral(target.argumentExpression) &&
         !ts.isNoSubstitutionTemplateLiteral(target.argumentExpression)));
   if (
+    (ts.isPropertyAccessExpression(target) ||
+      ts.isElementAccessExpression(target)) &&
+    isDynamicOutboundModuleExpression(target.expression, scope) &&
+    (outboundRequestMethods.has(targetName) || dynamicComputedMethod)
+  )
+    return true;
+  if (
     outboundClientRoot &&
     isKnownOutboundClient(scope, outboundClientRoot.text) &&
     (outboundRequestMethods.has(targetName) || dynamicComputedMethod)
@@ -4070,6 +4077,29 @@ function isOutboundRequestCall(call: ts.CallExpression, scope: Scope): boolean {
       (callableDefaultRequestModules.has(imported.moduleSpecifier) ||
         imported.moduleSpecifier === 'superagent') &&
       (outboundRequestMethods.has(targetName) || dynamicComputedMethod))
+  );
+}
+
+function isDynamicOutboundModuleExpression(
+  expression: ts.Expression,
+  scope: Scope
+): boolean {
+  let current = unwrapExpression(expression);
+  while (ts.isAwaitExpression(current))
+    current = unwrapExpression(current.expression);
+  if (
+    !ts.isCallExpression(current) ||
+    current.arguments.length !== 1 ||
+    !current.arguments[0] ||
+    ts.isStringLiteral(current.arguments[0]) ||
+    ts.isNoSubstitutionTemplateLiteral(current.arguments[0])
+  )
+    return false;
+  return (
+    (ts.isIdentifier(current.expression) &&
+      current.expression.text === 'require' &&
+      bindingOwner(scope, 'require') === undefined) ||
+    current.expression.kind === ts.SyntaxKind.ImportKeyword
   );
 }
 
