@@ -1289,6 +1289,29 @@ skipped), 1,442 coverage tests (3 skipped), 85.55% statements, 79.62% branches,
 `0f29e38a2f0dd33b775c23df763e3c115a62d6b9` took 20.43/130.71/350.63 ms and
 returned a complete three-file trace; raw data is in `docs/benchmarks/`.
 
+The graph now also resolves explicit `npm --workspace`, `pnpm --filter` and
+`yarn workspace` script calls by unique package name or local manifest path.
+Manifest/package-name indexing adds O(P) time and space for P manifests; the
+existing bounded reference traversal covers the additional script edges.
+Three regressions verify a malicious root-to-workspace chain. The focused suite
+passes 71 tests. Full verification passes with 1,448 unit tests (4 skipped),
+1,446 coverage tests (3 skipped), 85.64% statements, 79.65% branches, 93.2%
+functions and 88.3% lines. New scale measurements for the workspace extension
+are pending.
+
+### #40 bounded JSON report size check — 2026-11-15
+
+The report serializer checks JSON-escaped string size in 64 KiB chunks instead
+of looping over each UTF-16 code unit. This keeps worst-case time O(N) while
+limiting additional scratch space to O(C) for fixed chunk size C; string
+escaping and UTF-8 accounting stay delegated to the runtime. A 33 MiB newline
+string that exceeded the five-second coverage-test limit now rejects in a
+single local sample at 211.5 ms without constructing the full escaped output.
+The report-writer suite passes five tests, including a split-surrogate UTF-8
+boundary case. Full verification passes with 1,448 unit tests (4 skipped),
+1,446 coverage tests (3 skipped), 85.64% statements, 79.65% branches, 93.2%
+functions and 88.3% lines.
+
 ### #95 synthetic benign/suspicious corpus — 2026-11-15
 
 The non-executing malicious-content corpus now contains ten labeled fixtures:

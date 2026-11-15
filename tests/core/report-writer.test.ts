@@ -31,6 +31,13 @@ describe('bounded report serialization', () => {
     ).toThrow('JSON output exceeds its configured budget.');
   });
 
+  it('preserves UTF-8 bytes across bounded string chunks', () => {
+    const value = `${'x'.repeat(65_535)}😀`;
+    const serialized = serializeJsonOutputWithinBudget(value, 65_541);
+    expect(Buffer.byteLength(serialized, 'utf8')).toBe(65_541);
+    expect(JSON.parse(serialized)).toBe(value);
+  });
+
   it('rejects cycles and excessive nesting explicitly', () => {
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;

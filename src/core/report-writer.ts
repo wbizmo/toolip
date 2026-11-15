@@ -10,31 +10,23 @@ const maximumReportNodes = 1_000_000;
 const maximumReportFragments = 1_000_000;
 
 function jsonStringBytes(value: string, maximumBytes: number): number {
+  if (value.length + 2 > maximumBytes) return maximumBytes + 1;
   let bytes = 2;
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
+  const chunkUnits = 64 * 1024;
+  for (let offset = 0; offset < value.length; ) {
+    let end = Math.min(offset + chunkUnits, value.length);
     if (
-      code === 0x22 ||
-      code === 0x5c ||
-      code === 0x08 ||
-      code === 0x09 ||
-      code === 0x0a ||
-      code === 0x0c ||
-      code === 0x0d
+      end < value.length &&
+      value.charCodeAt(end - 1) >= 0xd800 &&
+      value.charCodeAt(end - 1) <= 0xdbff &&
+      value.charCodeAt(end) >= 0xdc00 &&
+      value.charCodeAt(end) <= 0xdfff
     )
-      bytes += 2;
-    else if (code < 0x20) bytes += 6;
-    else if (code >= 0xd800 && code <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (next >= 0xdc00 && next <= 0xdfff) {
-        bytes += 4;
-        index += 1;
-      } else bytes += 6;
-    } else if (code >= 0xdc00 && code <= 0xdfff) bytes += 6;
-    else if (code <= 0x7f) bytes += 1;
-    else if (code <= 0x7ff) bytes += 2;
-    else bytes += 3;
+      end -= 1;
+    const encodedChunk = JSON.stringify(value.slice(offset, end));
+    bytes += Buffer.byteLength(encodedChunk, 'utf8') - 2;
     if (bytes > maximumBytes) return bytes;
+    offset = end;
   }
   return bytes;
 }

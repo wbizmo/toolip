@@ -237,6 +237,42 @@ describe('non-executing malicious content chain analysis', () => {
     expect(result.findings).toEqual([]);
   });
 
+  it.each([
+    'npm --workspace packages/web run prepare',
+    'pnpm --filter @scope/web run prepare',
+    'yarn workspace @scope/web prepare'
+  ])('follows explicit workspace script command %s', (command) => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({ scripts: { prepare: command } })
+      },
+      {
+        path: 'packages/web/package.json',
+        content: JSON.stringify({
+          name: '@scope/web',
+          scripts: { prepare: 'node init' }
+        })
+      },
+      {
+        path: 'packages/web/init',
+        content: "const code = atob('ZXZpbA=='); eval(code);"
+      }
+    ]);
+
+    expect(
+      result.findings.some(
+        (finding) =>
+          JSON.stringify(finding.metadata?.trace) ===
+          JSON.stringify([
+            'package.json',
+            'packages/web/package.json#scripts.prepare',
+            'packages/web/init'
+          ])
+      )
+    ).toBe(true);
+  });
+
   it('marks shell-selected nested package scripts as unresolved', () => {
     const result = analyzeMaliciousContent([
       {

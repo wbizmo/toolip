@@ -2195,3 +2195,25 @@ accuracy and independent review remain incomplete. The updated isolated
 1k/10k/50k runs against pushed source `0f29e38` measured 20.43/130.71/350.63
 ms, each with one finding and the complete three-file trace; raw measurements
 are in `docs/benchmarks/toolip-v3.2.1-issue95-nested-scripts-2026-11-15-linux-node24.jsonl`.
+
+The analyzer now also resolves explicit root-to-workspace script calls for npm,
+pnpm and Yarn using unique package names or local manifest paths. Three
+synthetic regressions trace an automatic root script through the selected
+workspace to a disguised local payload. The focused malicious-content suite
+passes 71 tests; typecheck and targeted lint pass. Full verification and new
+scale measurements for this workspace extension are pending. Ambiguous,
+dynamic and unsupported selector forms remain unresolved by design. The
+expanded full verification passes: 1,448 unit tests (4 skipped), 1,446 coverage
+tests (3 skipped), 85.64% statements, 79.65% branches, 93.2% functions and
+88.3% lines; packed-package verification passes. All Stage A pins use digest
+`f6267a1952230bdd73a6b4597a42bc3f2edb5abe23848e9de539fc8c92a5597c`.
+
+## 2026-11-15 local continuation — bounded JSON size preflight for #40
+
+The JSON report writer now measures escaped string size in 64 KiB chunks. The
+33 MiB newline stress case rejects before allocating its escaped report in
+211.5 ms in a local single sample; the previous implementation exceeded the
+5-second coverage-test timeout under the full parallel suite. The report-writer
+suite passes five tests, including UTF-8 accounting across a surrogate-pair
+chunk boundary. Full verification passes with the same 1,448 unit / 4 skipped
+and 1,446 coverage / 3 skipped totals above.

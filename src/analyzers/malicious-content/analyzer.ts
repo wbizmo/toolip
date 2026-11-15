@@ -100,6 +100,8 @@ const shellSourceReference =
   /(?:^|[;&|]\s*)(?:source|\.)\s+["']?((?:\.{1,2}\/)?[^\s"';&|]+)["']?/gmu;
 const packageScriptReference =
   /\b(?:npm|pnpm|yarn)\s+(?:run|run-script)\s+(?:"([^"\n]+)"|'([^'\n]+)'|([^\s;&|]+))/giu;
+const workspaceScriptReference =
+  /\b(?:npm\s+(?:--workspace|-w)\s+([^\s]+)\s+(?:run|run-script)\s+([^\s;&|]+)|npm\s+(?:run|run-script)\s+([^\s;&|]+)\s+--workspace\s+([^\s;&|]+)|pnpm\s+--filter\s+([^\s]+)\s+(?:run\s+)?([^\s;&|]+)|yarn\s+workspace\s+([^\s]+)\s+([^\s;&|]+))/giu;
 const suspiciousPayload =
   /(?:\beval\s*\(\s*(?:atob|Buffer\.from|decodeURIComponent)|new\s+Function\s*\(\s*(?:atob|Buffer\.from)|\b(?:atob|Buffer\.from)\s*\([^;\n]{0,200}[\s\S]{0,240}\b(?:eval|new\s+Function)\s*\(|\b(?:curl|wget)\b[^\n|]{0,240}\|\s*(?:sh|bash)|\b(?:Invoke-Expression|IEX)\s*\(?\s*(?:\(Invoke-WebRequest|\$env:))/iu;
 const dynamicExecution =
@@ -505,6 +507,53 @@ function safeJson(content: string): unknown {
   }
 }
 
+function addPackageScriptReferences(
+  source: string,
+  fromManifest: string,
+  packageNameManifests: ReadonlyMap<string, string | undefined>,
+  manifests: ReadonlySet<string>,
+  references: Set<string>,
+  addReference: (references: Set<string>, reference: string) => void
+): void {
+  workspaceScriptReference.lastIndex = 0;
+  let unqualifiedSource = source;
+  for (const match of source.matchAll(workspaceScriptReference)) {
+    const selector = match[1] ?? match[4] ?? match[5] ?? match[7] ?? '';
+    const scriptName = match[2] ?? match[3] ?? match[6] ?? match[8] ?? '';
+    const namedManifest = packageNameManifests.get(selector);
+    let targetManifest = namedManifest;
+    if (namedManifest === undefined && !packageNameManifests.has(selector)) {
+      const target = path.posix.normalize(
+        path.posix.join(path.posix.dirname(fromManifest), selector)
+      );
+      if (
+        target !== '..' &&
+        !target.startsWith('../') &&
+        !path.posix.isAbsolute(selector)
+      ) {
+        const candidate = path.posix.join(target, 'package.json');
+        if (manifests.has(candidate)) targetManifest = candidate;
+      }
+    }
+    addReference(
+      references,
+      targetManifest && scriptName
+        ? `npm-script:${targetManifest}\0${scriptName}`
+        : `npm-script-unresolved:${selector}:${scriptName}`
+    );
+    const start = match.index ?? 0;
+    unqualifiedSource =
+      unqualifiedSource.slice(0, start) +
+      ' '.repeat(match[0].length) +
+      unqualifiedSource.slice(start + match[0].length);
+  }
+  packageScriptReference.lastIndex = 0;
+  for (const match of unqualifiedSource.matchAll(packageScriptReference)) {
+    const name = match[1] ?? match[2] ?? match[3] ?? '';
+    addReference(references, `npm-script:${fromManifest}\0${name}`);
+  }
+}
+
 function extensionlessTargetIndex(
   files: readonly MaliciousContentFile[]
 ): Map<string, string[]> {
@@ -591,9 +640,13 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
   entries: Entry[];
   truncated: boolean;
   scripts: ReadonlyMap<string, string>;
+  packageNameManifests: ReadonlyMap<string, string | undefined>;
+  manifests: ReadonlySet<string>;
 } {
   const entries: Entry[] = [];
   const scriptContents = new Map<string, string>();
+  const packageNameManifests = new Map<string, string | undefined>();
+  const manifests = new Set<string>();
   let truncated = false;
   const addEntry = (entry: Entry) => {
     if (entries.length >= MAX_ENTRYPOINTS) {
@@ -633,6 +686,20 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
   for (const file of files) {
     if (file.path !== 'package.json' && !file.path.endsWith('/package.json'))
       continue;
+    manifests.add(file.path);
+    const manifest = safeJson(file.content);
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest))
+      continue;
+    const packageName = (manifest as { name?: unknown }).name;
+    if (typeof packageName === 'string' && packageName.length > 0)
+      packageNameManifests.set(
+        packageName,
+        packageNameManifests.has(packageName) ? undefined : file.path
+      );
+  }
+  for (const file of files) {
+    if (file.path !== 'package.json' && !file.path.endsWith('/package.json'))
+      continue;
     const manifest = safeJson(file.content);
     if (manifest && typeof manifest === 'object' && !Array.isArray(manifest)) {
       const scripts = (manifest as { scripts?: unknown }).scripts;
@@ -643,11 +710,14 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
           scriptContents.set(scriptKey, value);
           const refs = new Set<string>();
           addExecutableReferences(value, refs);
-          for (const match of value.matchAll(packageScriptReference))
-            addReference(
-              refs,
-              `npm-script:${match[1] ?? match[2] ?? match[3] ?? ''}`
-            );
+          addPackageScriptReferences(
+            value,
+            file.path,
+            packageNameManifests,
+            manifests,
+            refs,
+            addReference
+          );
           addEntry({
             file: file.path,
             referenceBase: file.path,
@@ -945,7 +1015,13 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
       unknown: hasDynamicExecution(file.content) && refs.size === 0
     });
   }
-  return { entries, truncated, scripts: scriptContents };
+  return {
+    entries,
+    truncated,
+    scripts: scriptContents,
+    packageNameManifests,
+    manifests
+  };
 }
 
 function resolveLocalReference(
@@ -1065,14 +1141,26 @@ export function analyzeMaliciousContent(
       const referenceKey = `${from}\0${reference}`;
       if (!reference || seen.has(referenceKey)) continue;
       seen.add(referenceKey);
+      if (reference.startsWith('npm-script-unresolved:')) {
+        dynamicUnknown = true;
+        continue;
+      }
       if (reference.startsWith('npm-script:')) {
-        const scriptName = reference.slice('npm-script:'.length);
-        const targetText = entryResult.scripts.get(`${from}\0${scriptName}`);
+        const [targetManifest, scriptName] = reference
+          .slice('npm-script:'.length)
+          .split('\0');
+        if (!targetManifest || !scriptName) {
+          dynamicUnknown = true;
+          continue;
+        }
+        const targetText = entryResult.scripts.get(
+          `${targetManifest}\0${scriptName}`
+        );
         if (targetText === undefined) {
           dynamicUnknown = true;
           continue;
         }
-        trace.push(`${from}#scripts.${scriptName}`);
+        trace.push(`${targetManifest}#scripts.${scriptName}`);
         const targetAnalysis = contentAnalysis(targetText);
         dynamicUnknown ||=
           targetAnalysis.unresolvedShellCommand ||
@@ -1080,11 +1168,18 @@ export function analyzeMaliciousContent(
         for (const signal of targetAnalysis.signals) signals.add(signal);
         if (signals.size > 0 || automaticScript.test(targetText)) payload = true;
         for (const nested of targetAnalysis.references ?? [])
-          if (!enqueue(from, nested)) break;
-        for (const match of targetText.matchAll(packageScriptReference)) {
-          const nested = match[1] ?? match[2] ?? match[3];
-          if (nested && !enqueue(from, `npm-script:${nested}`)) break;
-        }
+          if (!enqueue(targetManifest, nested)) break;
+        const nestedScripts = new Set<string>();
+        addPackageScriptReferences(
+          targetText,
+          targetManifest,
+          entryResult.packageNameManifests,
+          entryResult.manifests,
+          nestedScripts,
+          (_references, nested) => nestedScripts.add(nested)
+        );
+        for (const nested of nestedScripts)
+          if (!enqueue(targetManifest, nested)) break;
         continue;
       }
       const target = resolveLocalReference(

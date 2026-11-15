@@ -5,7 +5,9 @@
 `toolip doctor` includes an experimental, non-executing malicious-content pass.
 It recognizes root and workspace npm script entrypoints, follows literal
 nested `npm run`, `pnpm run` and `yarn run` calls within the same manifest,
-and reports a shell-selected script name as unresolved. VS Code tasks whose
+as well as explicit `npm --workspace`, `pnpm --filter` and `yarn workspace`
+script calls by exact package name or local path. Ambiguous selectors and
+shell-selected script names stay unresolved. VS Code tasks whose
 `runOptions.runOn` is `folderOpen`,
 tasks and their named task dependencies, tracked Husky hooks, GitHub Actions
 inline and block-scalar `run` steps with their step/default working
