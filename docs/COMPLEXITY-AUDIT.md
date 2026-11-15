@@ -1084,6 +1084,13 @@ The full verification gate passed with 1,415 unit tests (4 skipped), 1,413
 coverage tests (3 skipped), 85.55% statements, 79.62% branches, 93.16%
 functions and 88.14% lines.
 
+### #37 scoped npm PURL manager matrix — 2026-11-15
+
+The scoped npm PURL conformance fixture now covers npm lockfile v2/v3, pnpm v9,
+Yarn Classic and Yarn Berry, validating canonical PURLs through both SBOM
+formats and `packageurl-js`. The fixture suite passes 27 tests; this adds no
+production-path work or complexity.
+
 ### #40 bounded SSRF host-allowlist proof work — 2026-11-15
 
 Per-file AST analysis now shares a 250,000-node budget across URL host-guard

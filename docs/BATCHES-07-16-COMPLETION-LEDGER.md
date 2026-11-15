@@ -1999,8 +1999,9 @@ existing sensitive-name heuristic. Tests cover three positive tags and an
 unmarked negative field, and assert that field names do not appear in finding
 evidence. The focused sensitive-flow suite passed 17 tests and typecheck passed;
 the latest full verification, including nested membership, dynamic HTTP client
-aliases, 7zr and Node archive-library chains, passed: unit tests passed
-**1,415 / 4 skipped** across 128 files; coverage passed **1,413 / 3 skipped**
+aliases, 7zr, Node archive-library chains and the #37 matrix, passed: unit
+tests passed **1,417 / 4 skipped** across 128 files; coverage passed
+**1,415 / 3 skipped**
 across 127 files at 85.55% statements, 79.62% branches,
 93.16% functions and 88.14% lines. Workflow
 policy, digest, lockfile, npm audit, typecheck, compiler quality, build and
@@ -2016,8 +2017,8 @@ tenant memberships, access grants, groups, teams and shared-resource filters.
 A nested predicate suppresses a candidate only if it reaches an authenticated
 identity; the paired request-controlled `req.query.userId` fixture remains a
 candidate. The focused authorization suite passed 26 tests; typecheck,
-targeted Biome, and the latest full gate passed (1,415 unit tests passed,
-4 skipped; 1,413 coverage tests passed, 3 skipped). Cross-file policy
+targeted Biome, and the latest full gate passed (1,417 unit tests passed,
+4 skipped; 1,415 coverage tests passed, 3 skipped). Cross-file policy
 engines, implicit grants, framework differences and measured corpus accuracy
 remain incomplete; #61 is still code incomplete.
 
@@ -2029,8 +2030,8 @@ destructured known request methods. The existing fixed-point alias pass follows
 up to 16 immutable aliases; mutation disables static client trust. Shadowed
 `require` and static local modules outside the HTTP package allowlist are
 negative controls. Dynamic module expressions stay redacted in findings. The
-AST analyzer suite passed 49 tests and the latest full gate passed with 1,415
-unit tests (4 skipped) and 1,413 coverage tests (3 skipped); all three Stage A
+AST analyzer suite passed 49 tests and the latest full gate passed with 1,417
+unit tests (4 skipped) and 1,415 coverage tests (3 skipped); all three Stage A
 pins use digest `b598ec60659a6876095640f63619c096a78e624dc8379cd0df375f0f41c5a778`.
 Runtime module resolution, wrapper summaries, URL/redirect safety, DNS and
 race-safe filesystem identity remain incomplete; #60 remains code incomplete.
@@ -2072,3 +2073,14 @@ The full gate passed with 1,415 unit tests (4 skipped), 1,413 coverage tests
 lines. The 32-level syntax cap and conservative handling of unsupported
 relations remain in force. All three Stage A pins use digest
 `b598ec60659a6876095640f63619c096a78e624dc8379cd0df375f0f41c5a778`.
+
+## 2026-11-15 local continuation — npm v2/v3 scoped PURL matrix for #37
+
+The CycloneDX/SPDX scoped-package PURL matrix now exercises npm lockfile v2
+and v3 alongside pnpm v9, Yarn Classic and Yarn Berry. Each case resolves the
+same exact `@scope/tool@1.2.0` identity and independently round-trips the
+canonical `pkg:npm/%40scope/tool@1.2.0` value. `tests/core/sbom.test.ts` passed
+27 tests; full verification passed with 1,417 unit tests (4 skipped), 1,415
+coverage tests (3 skipped), 85.55% statements, 79.62% branches, 93.16%
+functions and 88.14% lines. Broader workspace/lockfile behavior and external
+review remain open for #37.

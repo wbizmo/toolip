@@ -166,6 +166,41 @@ describe('SBOM generation', () => {
 
   it.each([
     {
+      manager: 'npm v2',
+      lockName: 'package-lock.json',
+      lock: JSON.stringify({
+        name: 'workspace-root',
+        lockfileVersion: 2,
+        packages: {
+          '': {
+            name: 'workspace-root',
+            version: '1.0.0',
+            dependencies: { '@scope/tool': '^1.0.0' }
+          },
+          'node_modules/@scope/tool': { version: '1.2.0' }
+        },
+        dependencies: {
+          '@scope/tool': { version: '1.2.0' }
+        }
+      })
+    },
+    {
+      manager: 'npm v3',
+      lockName: 'package-lock.json',
+      lock: JSON.stringify({
+        name: 'workspace-root',
+        lockfileVersion: 3,
+        packages: {
+          '': {
+            name: 'workspace-root',
+            version: '1.0.0',
+            dependencies: { '@scope/tool': '^1.0.0' }
+          },
+          'node_modules/@scope/tool': { version: '1.2.0' }
+        }
+      })
+    },
+    {
       manager: 'pnpm',
       lockName: 'pnpm-lock.yaml',
       lock: [
