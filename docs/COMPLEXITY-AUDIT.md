@@ -1174,3 +1174,9 @@ memory. Dynamic keys and unresolved/mutable receivers remain outside the
 model. The concurrency suite covers 256 independent same-function keys plus
 immutable and mutable receiver aliases; full distributed-lock and cross-file
 modeling remain open for #89.
+
+Discarded database transaction detection uses the same per-function declaration
+index and follows unique visible immutable `const` receiver aliases up to 16
+links. For `D` declarations, `C` calls and `H ≤ 16` alias hops, this adds
+`O(D + C × H)` expected time and `O(D + C)` source-bounded space; mutable or
+ambiguous receiver aliases remain unresolved.

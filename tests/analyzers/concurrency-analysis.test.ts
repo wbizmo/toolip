@@ -284,6 +284,24 @@ function customClient() {
     ).toBe(true);
   });
 
+  it('follows immutable database receiver aliases but rejects mutable aliases', () => {
+    const findings = analyzeAstSource(
+      'src/transactions.ts',
+      `function immutableAlias() {
+  const dbAlias = db;
+  const transactionClient = dbAlias;
+  transactionClient.$transaction(() => writeInvoice());
+}
+function mutableAlias() {
+  let dbAlias = db;
+  dbAlias = utility;
+  dbAlias.transaction(() => writeOther());
+}`
+    ).filter((finding) => finding.ruleId === 'TLP-RACE-004');
+
+    expect(findings.map((finding) => finding.location?.line)).toEqual([4]);
+  });
+
   it('recognizes statically computed transaction method names', () => {
     const findings = analyzeAstSource(
       'src/transactions.ts',

@@ -113,7 +113,10 @@ function methodName(call: ts.CallExpression): string | undefined {
   return undefined;
 }
 
-function isDiscardedDatabaseTransaction(call: ts.CallExpression): boolean {
+function isDiscardedDatabaseTransaction(
+  call: ts.CallExpression,
+  aliases: ReadonlyMap<string, ts.VariableDeclaration | null>
+): boolean {
   const target = call.expression;
   const method = methodName(call);
   if (!method || !['$transaction', 'transaction'].includes(method))
@@ -154,14 +157,7 @@ function isDiscardedDatabaseTransaction(call: ts.CallExpression): boolean {
     break;
   }
   if (!discarded) return false;
-  let receiver: ts.Expression = target.expression;
-  let receiverName: string | undefined;
-  while (ts.isPropertyAccessExpression(receiver)) {
-    receiverName = receiver.name.text;
-    receiver = receiver.expression;
-  }
-  if (receiverName && databaseReceivers.has(receiverName)) return true;
-  return ts.isIdentifier(receiver) && databaseReceivers.has(receiver.text);
+  return isRecognizedReceiver(call, aliases, databaseReceivers);
 }
 
 function createDiscardedTransactionFinding(
@@ -942,6 +938,18 @@ function isRecognizedRedisReceiver(
   call: ts.CallExpression,
   aliases: ReadonlyMap<string, ts.VariableDeclaration | null>
 ): boolean {
+  return isRecognizedReceiver(
+    call,
+    aliases,
+    new Set(['redis', 'redisclient', 'cacheclient'])
+  );
+}
+
+function isRecognizedReceiver(
+  call: ts.CallExpression,
+  aliases: ReadonlyMap<string, ts.VariableDeclaration | null>,
+  recognizedRoots: ReadonlySet<string>
+): boolean {
   let receiver = callRootReceiver(call);
   if (!receiver) return false;
   const visibleScopes = new Set<ts.Node>();
@@ -955,8 +963,7 @@ function isRecognizedRedisReceiver(
   const visited = new Set<string>();
   for (let depth = 0; depth <= 16; depth += 1) {
     const normalized = receiver.toLowerCase();
-    if (['redis', 'redisclient', 'cacheclient'].includes(normalized))
-      return true;
+    if (recognizedRoots.has(normalized)) return true;
     if (visited.has(receiver)) return false;
     visited.add(receiver);
     const declaration = aliases.get(receiver);
@@ -975,6 +982,17 @@ function isRecognizedRedisReceiver(
     receiver = declaration.initializer.text;
   }
   return false;
+}
+
+function findDiscardedTransactions(
+  sourceFile: ts.SourceFile,
+  facts: FunctionFacts,
+  findings: Finding[]
+): void {
+  const aliases = redisReceiverAliases(facts.declarations);
+  for (const call of facts.calls)
+    if (isDiscardedDatabaseTransaction(call, aliases))
+      findings.push(createDiscardedTransactionFinding(sourceFile, call));
 }
 
 function hasRedisSetNxOption(call: ts.CallExpression): boolean {
@@ -1162,8 +1180,6 @@ export function analyzeConcurrencySource(
       topLevelFacts;
     if (ts.isCallExpression(node)) {
       facts.calls.push(node);
-      if (isDiscardedDatabaseTransaction(node))
-        findings.push(createDiscardedTransactionFinding(sourceFile, node));
       findUnboundedPromiseAll(
         sourceFile,
         node,
@@ -1179,6 +1195,7 @@ export function analyzeConcurrencySource(
     if (startsFunction) functionStack.pop();
   };
   visit(sourceFile);
+  findDiscardedTransactions(sourceFile, topLevelFacts, findings);
   findFilesystemCheckUse(
     sourceFile,
     topLevelFacts.calls,
@@ -1188,6 +1205,7 @@ export function analyzeConcurrencySource(
   findReadCheckWrite(sourceFile, topLevelFacts, findings);
   findRedisReadCheckWrite(sourceFile, topLevelFacts, findings);
   for (const facts of factsByFunction.values()) {
+    findDiscardedTransactions(sourceFile, facts, findings);
     findFilesystemCheckUse(
       sourceFile,
       facts.calls,

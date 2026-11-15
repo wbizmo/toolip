@@ -1964,10 +1964,22 @@ suites passed 52 tests together; typecheck and targeted Biome checks passed.
 Cross-file async ownership, distributed lock semantics, framework accuracy
 and external review remain open; #89 remains code incomplete.
 
+Discarded database transaction warnings now also follow up to 16 unique,
+visible, immutable `const` receiver aliases within the same function. Mutable,
+ambiguous, forward, cyclic and out-of-scope aliases remain unresolved. A
+regression covers a two-hop alias and a reassigned `let` alias. The concurrency
+suite passed 29 tests; typecheck and targeted lint passed. Full verification
+also passes: unit tests passed **1,405 / 4 skipped** across 128 files; coverage
+passed **1,403 / 3 skipped** across 127 files at 85.55% statements, 79.62%
+branches, 93.16% functions and 88.14% lines. Cross-file async ownership, lock
+semantics, transaction isolation and broad accuracy remain open, so #89 is not
+complete. All three Stage A workflow pins use scanner digest
+`aac8b285228d748ff47df7b000ecdf28aee27a3e8303c95720f30de9ecffbe31`.
+
 The combined #60/#95/#61/#89 changes then passed `npm run verify` on Linux Node
-24.22.1. The follow-up dynamic HTTP receiver regression also passed the full
-gate: unit tests passed **1,404 / 4 skipped** across 128 files; coverage passed
-**1,402 / 3 skipped** across 127 files at 85.55% statements, 79.62% branches,
+24.22.1. The dynamic HTTP receiver and database alias regressions passed the
+full gate: unit tests passed **1,405 / 4 skipped** across 128 files; coverage
+passed **1,403 / 3 skipped** across 127 files at 85.55% statements, 79.62% branches,
 93.16% functions and 88.14% lines. Changelog, lint, formatting, workflow
 policy, lockfile integrity, npm audit (zero vulnerabilities), typecheck,
 compiler quality, build, and built-package verification passed. This local
