@@ -160,8 +160,8 @@ describe('non-executing malicious content chain analysis', () => {
         path: 'package.json',
         content: JSON.stringify({
           scripts: {
-            prepare: 'npm run stage:payload',
-            'stage:payload': 'node ./loader.js'
+            prepare: 'npm run stage:payload.min',
+            'stage:payload.min': 'node ./loader.js'
           }
         })
       },
@@ -177,7 +177,7 @@ describe('non-executing malicious content chain analysis', () => {
           JSON.stringify(finding.metadata?.trace) ===
           JSON.stringify([
             'package.json',
-            'package.json#scripts.stage:payload',
+            'package.json#scripts.stage:payload.min',
             'loader.js'
           ])
       )
@@ -195,6 +195,61 @@ describe('non-executing malicious content chain analysis', () => {
     ]);
 
     expect(result.findings).toEqual([]);
+  });
+
+  it.each([
+    'npm run-script payload',
+    'pnpm run payload',
+    'yarn run payload'
+  ])('follows package-manager command %s', (command) => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({
+          scripts: { prepare: command, payload: 'node ./loader.js' }
+        })
+      },
+      {
+        path: 'loader.js',
+        content: "const code = atob('ZXZpbA=='); eval(code);"
+      }
+    ]);
+
+    expect(
+      result.findings.some((finding) =>
+        (finding.metadata?.trace as string[] | undefined)?.includes(
+          'package.json#scripts.payload'
+        )
+      )
+    ).toBe(true);
+  });
+
+  it('bounds cyclic nested package scripts without reporting benign work', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({
+          scripts: { prepare: 'npm run build', build: 'yarn run prepare' }
+        })
+      }
+    ]);
+
+    expect(result.findings).toEqual([]);
+  });
+
+  it('marks shell-selected nested package scripts as unresolved', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({
+          scripts: { prepare: 'npm run "$TOOLIP_SCRIPT"' }
+        })
+      }
+    ]);
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]?.ruleId).toBe('TLP-MAL-002');
+    expect(result.findings[0]?.metadata?.trace).toEqual(['package.json']);
   });
 
   it.each([

@@ -2182,11 +2182,13 @@ coverage remain open for #95.
 The local analyzer now follows literal `npm run`/`run-script`, `pnpm run` and
 `yarn run` calls to scripts in the same package manifest, then continues into
 their local executable references. Regressions cover an automatic lifecycle
-script reaching an encoded local payload and a harmless nested bundler command.
-All 63 malicious-content tests pass; typecheck and targeted Biome checks pass
-with two existing informational style notices. Full local verification passes:
-1,439 unit tests (4 skipped), 1,437 coverage tests (3 skipped), 85.42%
-statements, 79.43% branches, 93.16% functions and 88.1% lines; package build
-verification passes. This is a targeted #95 improvement; runtime command
-construction, broader adversarial accuracy and independent review remain
-incomplete.
+script reaching an encoded local payload, harmless nested bundler work, dotted
+script names, dynamic script selectors and benign call cycles. The focused
+malicious-content suite passes 68 tests; typecheck and targeted Biome checks
+pass with two existing informational style notices. Full local verification
+passes for this follow-up: 1,444 unit tests (4 skipped), 1,442 coverage tests
+(3 skipped), 85.55% statements, 79.62% branches, 93.16% functions and 88.24%
+lines; package build verification passes. All three Stage A pins use digest
+`6c734e14420f80e30cb1886f31a72bc40c61280e802aa1091120aa0c16e6d53b`. This is a
+targeted #95 improvement; runtime command construction, broader adversarial
+accuracy and independent review remain incomplete.

@@ -3,7 +3,9 @@
 ## Current static analysis status
 
 `toolip doctor` includes an experimental, non-executing malicious-content pass.
-It recognizes root and workspace npm script entrypoints, VS Code tasks whose
+It recognizes root and workspace npm script entrypoints, follows literal
+nested `npm run`, `pnpm run` and `yarn run` calls within the same manifest,
+and reports a shell-selected script name as unresolved. VS Code tasks whose
 `runOptions.runOn` is `folderOpen`,
 tasks and their named task dependencies, tracked Husky hooks, GitHub Actions
 inline and block-scalar `run` steps with their step/default working

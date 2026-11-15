@@ -98,6 +98,8 @@ const localImport =
   /(?:\bfrom\s*|\brequire\s*\(|\bimport\s*\(|\bimport\s+|\b(?:load|require)\s+)["'](\.{1,2}\/[^"']+)["']/gu;
 const shellSourceReference =
   /(?:^|[;&|]\s*)(?:source|\.)\s+["']?((?:\.{1,2}\/)?[^\s"';&|]+)["']?/gmu;
+const packageScriptReference =
+  /\b(?:npm|pnpm|yarn)\s+(?:run|run-script)\s+(?:"([^"\n]+)"|'([^'\n]+)'|([^\s;&|]+))/giu;
 const suspiciousPayload =
   /(?:\beval\s*\(\s*(?:atob|Buffer\.from|decodeURIComponent)|new\s+Function\s*\(\s*(?:atob|Buffer\.from)|\b(?:atob|Buffer\.from)\s*\([^;\n]{0,200}[\s\S]{0,240}\b(?:eval|new\s+Function)\s*\(|\b(?:curl|wget)\b[^\n|]{0,240}\|\s*(?:sh|bash)|\b(?:Invoke-Expression|IEX)\s*\(?\s*(?:\(Invoke-WebRequest|\$env:))/iu;
 const dynamicExecution =
@@ -641,10 +643,11 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
           scriptContents.set(scriptKey, value);
           const refs = new Set<string>();
           addExecutableReferences(value, refs);
-          const packageScriptReference =
-            /\b(?:npm|pnpm|yarn)\s+(?:run|run-script)\s+([\w:-]+)(?=\s|$)/giu;
           for (const match of value.matchAll(packageScriptReference))
-            addReference(refs, `npm-script:${match[1] ?? ''}`);
+            addReference(
+              refs,
+              `npm-script:${match[1] ?? match[2] ?? match[3] ?? ''}`
+            );
           addEntry({
             file: file.path,
             referenceBase: file.path,
@@ -1078,10 +1081,8 @@ export function analyzeMaliciousContent(
         if (signals.size > 0 || automaticScript.test(targetText)) payload = true;
         for (const nested of targetAnalysis.references ?? [])
           if (!enqueue(from, nested)) break;
-        const packageScriptReference =
-          /\b(?:npm|pnpm|yarn)\s+(?:run|run-script)\s+([\w:-]+)(?=\s|$)/giu;
         for (const match of targetText.matchAll(packageScriptReference)) {
-          const nested = match[1];
+          const nested = match[1] ?? match[2] ?? match[3];
           if (nested && !enqueue(from, `npm-script:${nested}`)) break;
         }
         continue;
