@@ -504,6 +504,32 @@ describe('route authorization candidates', () => {
     ).toBe('low');
   });
 
+  it('resolves unique const aliases of explicit resource guards but not mutable aliases', () => {
+    const immutable = analyzeAstSource(
+      'src/routes/aliased-guard.ts',
+      `router.get('/records/:id', async (req, res) => {
+  const verifyOwner = assertOwner;
+  await verifyOwner(req.user, req.params.id);
+  return records.findById(req.params.id);
+});`
+    );
+    const mutable = analyzeAstSource(
+      'src/routes/mutable-guard.ts',
+      `router.get('/records/:id', async (req, res) => {
+  let verifyOwner = assertOwner;
+  await verifyOwner(req.user, req.params.id);
+  return records.findById(req.params.id);
+});`
+    );
+
+    expect(immutable.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      false
+    );
+    expect(mutable.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      true
+    );
+  });
+
   it('does not let a guard for a different request identifier authorize the lookup', () => {
     const findings = analyzeAstSource(
       'src/routes/mismatched-resource-guard.ts',

@@ -37,6 +37,11 @@ const normalizedBooleanGuards = new Set(
 const authenticatedRequestRoots = new Set(['req', 'request', 'ctx', 'context']);
 const authenticatedClaimNames =
   /^(?:id|sub|subject|(?:user|tenant|account|organization|workspace|owner|principal)(?:id|key))$/iu;
+const explicitGuardAliasIndex = new WeakMap<
+  ts.SourceFile,
+  ReadonlyMap<string, readonly ts.VariableDeclaration[]>
+>();
+const maxExplicitGuardAliasDepth = 16;
 
 function callName(call: ts.CallExpression): string | undefined {
   const target = call.expression;
@@ -702,8 +707,8 @@ function isResourceAuthorizationCall(
   lookupKeys: ReadonlySet<string>
 ): boolean {
   if (!ts.isCallExpression(expression)) return false;
-  const name = callName(expression);
-  if (!name || !explicitGuards.has(name)) return false;
+  const name = resolvedExplicitGuardName(expression);
+  if (!name) return false;
   const checksIdentity = expression.arguments.some((argument) =>
     authIdentity(argument, identityParameters)
   );
@@ -711,6 +716,80 @@ function isResourceAuthorizationCall(
     [...requestObjectKeys(argument)].some((key) => lookupKeys.has(key))
   );
   return checksIdentity && checksRequestedObject;
+}
+
+/** Resolves only unique, visible, immutable local aliases of known guards. */
+function resolvedExplicitGuardName(
+  call: ts.CallExpression
+): string | undefined {
+  const direct = callName(call);
+  if (!direct) return undefined;
+  if (explicitGuards.has(direct)) return direct;
+  const sourceFile = call.getSourceFile();
+  let aliases = explicitGuardAliasIndex.get(sourceFile);
+  if (!aliases) {
+    const collected = new Map<string, ts.VariableDeclaration[]>();
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.initializer &&
+        ts.isIdentifier(node.initializer) &&
+        ts.isVariableDeclarationList(node.parent) &&
+        (node.parent.flags & ts.NodeFlags.Const) !== 0
+      ) {
+        const declarations = collected.get(node.name.text) ?? [];
+        declarations.push(node);
+        collected.set(node.name.text, declarations);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+    aliases = collected;
+    explicitGuardAliasIndex.set(sourceFile, aliases);
+  }
+
+  const scopes = new Map<ts.Node, number>();
+  let scope: ts.Node | undefined = call;
+  let distance = 0;
+  while (scope) {
+    if (ts.isBlock(scope) || ts.isSourceFile(scope)) {
+      scopes.set(scope, distance);
+      distance += 1;
+    }
+    scope = scope.parent;
+  }
+  const resolveAlias = (alias: string, before: number): string | undefined => {
+    let current = alias;
+    const visited = new Set<string>();
+    for (let depth = 0; depth < maxExplicitGuardAliasDepth; depth += 1) {
+      if (explicitGuards.has(current)) return current;
+      if (visited.has(current)) return undefined;
+      visited.add(current);
+      const declarations = aliases?.get(current);
+      if (declarations?.length !== 1) return undefined;
+      const declaration = declarations[0];
+      const initializer = declaration?.initializer;
+      if (
+        !declaration ||
+        (initializer?.getStart(sourceFile) ?? before) >= before
+      )
+        return undefined;
+      let declarationScope: ts.Node | undefined = declaration;
+      while (
+        declarationScope &&
+        !ts.isBlock(declarationScope) &&
+        !ts.isSourceFile(declarationScope)
+      )
+        declarationScope = declarationScope.parent;
+      if (!declarationScope || !scopes.has(declarationScope)) return undefined;
+      if (!initializer || !ts.isIdentifier(initializer)) return undefined;
+      current = initializer.text;
+      before = declaration.getStart(sourceFile);
+    }
+    return undefined;
+  };
+  return resolveAlias(direct, call.getStart(sourceFile));
 }
 
 function isBooleanOwnershipGuard(

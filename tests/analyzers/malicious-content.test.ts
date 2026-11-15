@@ -55,7 +55,9 @@ describe('non-executing malicious content chain analysis', () => {
           {
             path: 'package.json',
             content: JSON.stringify({
-              scripts: { build: 'tar -czf dist.tar.gz ./dist && node ./build.js' }
+              scripts: {
+                build: 'tar -czf dist.tar.gz ./dist && node ./build.js'
+              }
             })
           },
           { path: 'build.js', content: "console.log('built');" }
@@ -761,6 +763,7 @@ describe('non-executing malicious content chain analysis', () => {
 
   it('recognizes PowerShell and Python archive extraction followed by execution', () => {
     for (const command of [
+      'cpio -idmv < bundle.cpio && ./bundle/init.sh',
       'Expand-Archive bundle.zip -DestinationPath out\n& .\\out\\init.ps1',
       'python -m zipfile -e bundle.zip out\npython out/init.py',
       'jar xf bundle.jar\njava -jar bundle/app.jar',
@@ -780,11 +783,52 @@ describe('non-executing malicious content chain analysis', () => {
     }
   });
 
+  it('does not treat CPIO creation or table-of-contents listing as extraction', () => {
+    for (const command of [
+      'find dist | cpio -o > bundle.cpio && node ./build.js',
+      'cpio -it < bundle.cpio && node ./build.js'
+    ]) {
+      const result = analyzeMaliciousContent([
+        {
+          path: 'package.json',
+          content: JSON.stringify({ scripts: { build: command } })
+        },
+        { path: 'build.js', content: 'console.log("built");' }
+      ]);
+      expect(
+        result.findings.some((finding) =>
+          JSON.stringify(finding.metadata?.behaviorSignals ?? []).includes(
+            'archive-extraction-and-execution'
+          )
+        )
+      ).toBe(false);
+    }
+  });
+
+  it('recognizes Windows batch call launchers after archive extraction', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({
+          scripts: {
+            prepare: 'cpio -id < bundle.cpio && call .\\bundle\\init.cmd'
+          }
+        })
+      }
+    ]);
+    expect(result.findings[0]?.metadata?.behaviorSignals).toContain(
+      'archive-extraction-and-execution'
+    );
+    expect(result.findings[0]?.metadata?.completeness).toBe('unknown');
+  });
+
   it('keeps language-level archive extraction followed by process launch unknown', () => {
     const result = analyzeMaliciousContent([
       {
         path: 'package.json',
-        content: JSON.stringify({ scripts: { prepare: 'python3 bootstrap.py' } })
+        content: JSON.stringify({
+          scripts: { prepare: 'python3 bootstrap.py' }
+        })
       },
       {
         path: 'bootstrap.py',

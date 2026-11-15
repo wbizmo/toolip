@@ -413,14 +413,17 @@ function workerEntry(): { entry: URL; execArgv: string[] } {
  * Estimate the structured-clone footprint of a worker context without
  * serializing it or creating another snapshot-sized temporary buffer.
  */
-function estimateIsolatedAnalyzerContextBytes(context: AnalyzerContext): number {
+function estimateIsolatedAnalyzerContextBytes(
+  context: AnalyzerContext
+): number {
   const snapshot = context.options?.snapshot as
     | {
         files?: readonly { bytes?: unknown; path?: unknown }[];
       }
     | undefined;
   if (!snapshot?.files) return 1024 * 1024;
-  if (!Array.isArray(snapshot.files)) return MAX_ISOLATED_ANALYZER_CONTEXT_BYTES + 1;
+  if (!Array.isArray(snapshot.files))
+    return MAX_ISOLATED_ANALYZER_CONTEXT_BYTES + 1;
 
   let bytes = 1024 * 1024;
   for (const file of snapshot.files) {

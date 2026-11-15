@@ -79,7 +79,9 @@ export function acquireIsolatedAnalyzerWorkerSlot(
     oldGenerationMb < 16 ||
     oldGenerationMb > MAX_ACTIVE_ISOLATED_ANALYZER_OLD_GENERATION_MB
   )
-    return Promise.reject(new Error('isolated analyzer heap exceeds its budget'));
+    return Promise.reject(
+      new Error('isolated analyzer heap exceeds its budget')
+    );
 
   return new Promise((resolve, reject) => {
     const waiter: Waiter = {
@@ -136,12 +138,13 @@ function start(waiter: Waiter): void {
   activeWorkers += 1;
   activeContextBytes += waiter.contextBytes;
   activeOldGenerationMb += waiter.oldGenerationMb;
-  waiter.resolve(
-    releaseFactory(waiter.contextBytes, waiter.oldGenerationMb)
-  );
+  waiter.resolve(releaseFactory(waiter.contextBytes, waiter.oldGenerationMb));
 }
 
-function releaseFactory(contextBytes: number, oldGenerationMb: number): () => void {
+function releaseFactory(
+  contextBytes: number,
+  oldGenerationMb: number
+): () => void {
   let released = false;
   return () => {
     if (released) return;

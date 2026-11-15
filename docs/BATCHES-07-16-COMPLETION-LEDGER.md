@@ -1910,3 +1910,37 @@ ownership, other lock APIs, transaction isolation and broader accuracy review
 remain open for #89. The current Stage A scanner digest is
 `d61a28534d2bd10efe75ccb5fdb940fbfb76ef41ad10cf041ca53a52cccb01df` at all
 three workflow pins.
+
+## 2026-11-15 local continuation — CPIO extraction chains for #95
+
+The non-executing archive-chain recognizers in the local analyzer and trusted
+Stage A scanner now recognize CPIO extraction (`-i` option bundles and
+`--extract`) followed by a local launch, including Windows batch `call`
+targets. They exclude CPIO creation (`-o`) and table-of-contents mode (`-t`)
+so archive building and listing do not become execution signals. Inert
+analyzer and real-Git Stage A fixtures cover extraction and launch, while
+analyzer regressions cover harmless modes. The malicious-content and Stage A
+suites passed 137 tests; typecheck, targeted formatting, workflow policy and
+scanner digest checks passed. Other archive formats, dynamic chains,
+representative accuracy calibration, and external acceptance remain
+incomplete; #95 remains code incomplete.
+
+## 2026-11-15 local continuation — immutable authorization guard aliases for #61
+
+Route authorization analysis now resolves a unique, visible `const` alias
+chain of up to 16 links when the final alias points to a recognized explicit
+resource guard. Mutable declarations and globally ambiguous aliases remain
+unresolved, preserving the low-confidence finding. A paired regression
+confirms a guarded lookup is suppressed only for the immutable alias. The
+authorization suite passed 23 tests. Re-exported guards, indirect
+grant semantics and broad accuracy measurements remain incomplete; #61 is
+still code incomplete.
+
+The combined #95/#61 change then passed `npm run verify` on Linux Node
+24.22.1. Unit tests passed **1,399 / 4 skipped** across 128 files; coverage
+passed **1,397 / 3 skipped** across 127 files at 85.55% statements, 79.62%
+branches, 93.16% functions and 88.14% lines. Changelog, lint, formatting,
+workflow policy, lockfile integrity, npm audit (zero vulnerabilities),
+typecheck, compiler quality, build, and built-package verification passed.
+This local gate does not provide hosted CI, supported-platform coverage,
+independent review or external issue acceptance.

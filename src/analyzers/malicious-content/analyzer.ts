@@ -122,8 +122,7 @@ function hasDynamicExecution(source: string): boolean {
 
   const functionAliases = new Set<string>();
   const namespaceAliases = new Set<string>();
-  const namedImport =
-    /\bimport\s*\{([^}]*)\}\s*from\s*(['"])([^'"]+)\2/gu;
+  const namedImport = /\bimport\s*\{([^}]*)\}\s*from\s*(['"])([^'"]+)\2/gu;
   for (const match of source.matchAll(namedImport)) {
     if (!childProcessModule.test(match[3] ?? '')) continue;
     for (const specifier of (match[1] ?? '').split(',')) {
@@ -222,9 +221,9 @@ const automaticScript =
   /\b(?:curl|wget)\b[^\n;&]{0,180}(?:\||;|&&)\s*(?:sh|bash)/iu;
 // Creation and archive listing do not constitute unpack-and-execute.
 const archiveExtraction =
-  /\b(?:tar\s+(?:--extract\b|--get\b|-?[a-z]*x[a-z]*\b)|bsdtar\s+(?:--extract\b|-?[a-z]*x[a-z]*\b)|(?:busybox\s+)?unzip\s+(?!-[lt]\b)|7z(?:a|z)?\s+(?:x|e)\b|(?:unrar|rar)\s+(?:x|e)\b|jar\s+(?:x[a-z]*\b|--extract\b)|Expand-Archive\b|python(?:3)?\s+-m\s+(?:zipfile|tarfile)\s+-e\b)/giu;
+  /\b(?:tar\s+(?:--extract\b|--get\b|-?[a-z]*x[a-z]*\b)|bsdtar\s+(?:--extract\b|-?[a-z]*x[a-z]*\b)|cpio\s+(?:--extract\b|-(?![a-z]*t)[a-z]*i[a-z]*\b)|(?:busybox\s+)?unzip\s+(?!-[lt]\b)|7z(?:a|z)?\s+(?:x|e)\b|(?:unrar|rar)\s+(?:x|e)\b|jar\s+(?:x[a-z]*\b|--extract\b)|Expand-Archive\b|python(?:3)?\s+-m\s+(?:zipfile|tarfile)\s+-e\b)/giu;
 const archiveExecutionTarget =
-  /(?:\b(?:node(?:\.exe)?|bash|sh|zsh|pwsh|powershell|python(?:3)?|java(?:\.exe)?|deno|bun|ruby|perl|php|cmd(?:\.exe)?)\b\s+(?:-jar\s+|\/(?:c|k)\s+)?[^\s;&|]+|(?:^|[;&|]\s*)(?:&\s*)?\.{1,2}[\\/]\S+)/imu;
+  /(?:\b(?:node(?:\.exe)?|bash|sh|zsh|pwsh|powershell|python(?:3)?|java(?:\.exe)?|deno|bun|ruby|perl|php|cmd(?:\.exe)?)\b\s+(?:-jar\s+|\/(?:c|k)\s+)?[^\s;&|]+|(?:^|[;&|]\s*)(?:call\s+)?(?:&\s*)?\.{1,2}[\\/]\S+)/imu;
 const archiveApiExtraction =
   /\b(?:(?:zipfile\.)?ZipFile|(?:tarfile\.)?TarFile|tarfile\.open)\s*\([\s\S]{0,1024}?\.\s*extract(?:all)?\s*\(/giu;
 const archiveApiExecution =

@@ -3390,20 +3390,19 @@ function sensitiveOutputSink(
   )
     return 'log';
   if (
-    (
-      [
-        'json',
-        'send',
-        'end',
-        'write',
-        'set',
-        'setheader',
-        'header',
-        'append',
-        'cookie',
-        'setcookie'
-      ].includes(method) || dynamicMethod
-    ) &&
+    ([
+      'json',
+      'send',
+      'end',
+      'write',
+      'set',
+      'setheader',
+      'header',
+      'append',
+      'cookie',
+      'setcookie'
+    ].includes(method) ||
+      dynamicMethod) &&
     ['res', 'response', 'reply'].includes(receiver ?? '')
   )
     return 'response';

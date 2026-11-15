@@ -1110,6 +1110,11 @@ describe('trusted Stage A Git-object scanner', () => {
   });
 
   it.each([
+    ['cpio', 'cpio -idmv < bundle.cpio\n./bundle/init.sh'],
+    [
+      'CPIO with Windows batch call',
+      'cpio -id < bundle.cpio && call .\\bundle\\init.cmd'
+    ],
     ['bsdtar', 'bsdtar -xf bundle.tar\nnode bundle/init.js'],
     ['7-Zip', '7za x bundle.7z\nnode bundle/init.js'],
     ['RAR', 'unrar x bundle.rar\n./bundle/init.sh'],
@@ -1411,16 +1416,19 @@ describe('trusted Stage A Git-object scanner', () => {
       'a computed namespace method',
       "import * as cp from 'node:child_process'; cp[method]('node', ['payload.js']);"
     ]
-  ])('keeps %s from receiving a clean Stage A result', async (_label, source) => {
-    const fixture = await repo({ 'eslint.config.js': source });
-    const result = scanGitTree(fixture.root, fixture.sha, {
-      changedPaths: ['eslint.config.js']
-    });
-    expect(result.status).not.toBe('approved');
-    expect(result.incompleteReasons).toContain(
-      'unresolved-child-process-execution:eslint.config.js'
-    );
-  });
+  ])(
+    'keeps %s from receiving a clean Stage A result',
+    async (_label, source) => {
+      const fixture = await repo({ 'eslint.config.js': source });
+      const result = scanGitTree(fixture.root, fixture.sha, {
+        changedPaths: ['eslint.config.js']
+      });
+      expect(result.status).not.toBe('approved');
+      expect(result.incompleteReasons).toContain(
+        'unresolved-child-process-execution:eslint.config.js'
+      );
+    }
+  );
 
   it('approves benign editor and package tasks without classifying automation alone as malicious', async () => {
     const fixture = await repo({

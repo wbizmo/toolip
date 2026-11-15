@@ -118,7 +118,10 @@ describe('AnalyzerRunner deadline enforcement (issue #34)', () => {
     const counters = new Int32Array(
       new SharedArrayBuffer(3 * Int32Array.BYTES_PER_ELEMENT)
     );
-    const context = { root: process.cwd(), options: { sharedCounters: counters.buffer } };
+    const context = {
+      root: process.cwd(),
+      options: { sharedCounters: counters.buffer }
+    };
     const results = await Promise.all(
       Array.from({ length: 2 }, async (_, index) => {
         const analyzer = new ConcurrentAnalyzer();
