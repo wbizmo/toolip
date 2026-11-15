@@ -1272,6 +1272,18 @@ not findings. The focused AST security suite passes 51 tests; full verification
 passed with 1,437 unit tests (4 skipped), 1,435 coverage tests (3 skipped),
 85.55% statements, 79.62% branches, 93.16% functions and 88.14% lines.
 
+### #95 npm script-to-script execution references — 2026-11-15
+
+The non-executing analyzer now indexes each manifest's scripts and follows
+literal `npm run`, `npm run-script`, `pnpm run` and `yarn run` references
+within that same manifest. Each command is scanned once while building the
+bounded entry graph; traversal remains bounded by the existing 100,000
+reference-work limit, with O(S+B+V+E) expected work and O(S+V+E) additional
+space for S scripts, B command bytes, V entrypoints and E references. Missing
+script names remain explicit unresolved references. Focused regression coverage
+checks an automatic script reaching a disguised local payload and a benign
+nested build script. The full release verification is pending for this change.
+
 ### #95 synthetic benign/suspicious corpus — 2026-11-15
 
 The non-executing malicious-content corpus now contains ten labeled fixtures:

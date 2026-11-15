@@ -154,6 +154,49 @@ describe('non-executing malicious content chain analysis', () => {
     });
   });
 
+  it('follows nested npm scripts to a suspicious local execution target', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({
+          scripts: {
+            prepare: 'npm run stage:payload',
+            'stage:payload': 'node ./loader.js'
+          }
+        })
+      },
+      {
+        path: 'loader.js',
+        content: "const code = atob('ZXZpbA=='); eval(code);"
+      }
+    ]);
+
+    expect(
+      result.findings.some(
+        (finding) =>
+          JSON.stringify(finding.metadata?.trace) ===
+          JSON.stringify([
+            'package.json',
+            'package.json#scripts.stage:payload',
+            'loader.js'
+          ])
+      )
+    ).toBe(true);
+  });
+
+  it('keeps nested ordinary npm scripts clean', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({
+          scripts: { prepare: 'npm run build', build: 'vite build' }
+        })
+      }
+    ]);
+
+    expect(result.findings).toEqual([]);
+  });
+
   it.each([
     [
       'aliased ESM imports',

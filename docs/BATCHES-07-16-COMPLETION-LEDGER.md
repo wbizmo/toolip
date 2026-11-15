@@ -2176,3 +2176,17 @@ base64-encoded text used as ordinary build data. All ten synthetic fixtures
 malicious-content suite passes 61 tests. These controlled fixtures do not
 estimate production accuracy; broader adversarial corpora and runtime wrapper
 coverage remain open for #95.
+
+## 2026-11-15 local continuation — nested npm script references for #95
+
+The local analyzer now follows literal `npm run`/`run-script`, `pnpm run` and
+`yarn run` calls to scripts in the same package manifest, then continues into
+their local executable references. Regressions cover an automatic lifecycle
+script reaching an encoded local payload and a harmless nested bundler command.
+All 63 malicious-content tests pass; typecheck and targeted Biome checks pass
+with two existing informational style notices. Full local verification passes:
+1,439 unit tests (4 skipped), 1,437 coverage tests (3 skipped), 85.42%
+statements, 79.43% branches, 93.16% functions and 88.1% lines; package build
+verification passes. This is a targeted #95 improvement; runtime command
+construction, broader adversarial accuracy and independent review remain
+incomplete.

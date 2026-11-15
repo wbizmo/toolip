@@ -588,8 +588,10 @@ function safeDisplayPath(value: string): string {
 function scriptEntries(files: readonly MaliciousContentFile[]): {
   entries: Entry[];
   truncated: boolean;
+  scripts: ReadonlyMap<string, string>;
 } {
   const entries: Entry[] = [];
+  const scriptContents = new Map<string, string>();
   let truncated = false;
   const addEntry = (entry: Entry) => {
     if (entries.length >= MAX_ENTRYPOINTS) {
@@ -635,8 +637,14 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
       if (scripts && typeof scripts === 'object' && !Array.isArray(scripts)) {
         for (const [name, value] of Object.entries(scripts)) {
           if (typeof value !== 'string') continue;
+          const scriptKey = `${file.path}\0${name}`;
+          scriptContents.set(scriptKey, value);
           const refs = new Set<string>();
           addExecutableReferences(value, refs);
+          const packageScriptReference =
+            /\b(?:npm|pnpm|yarn)\s+(?:run|run-script)\s+([\w:-]+)(?=\s|$)/giu;
+          for (const match of value.matchAll(packageScriptReference))
+            addReference(refs, `npm-script:${match[1] ?? ''}`);
           addEntry({
             file: file.path,
             referenceBase: file.path,
@@ -934,7 +942,7 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
       unknown: hasDynamicExecution(file.content) && refs.size === 0
     });
   }
-  return { entries, truncated };
+  return { entries, truncated, scripts: scriptContents };
 }
 
 function resolveLocalReference(
@@ -1054,6 +1062,30 @@ export function analyzeMaliciousContent(
       const referenceKey = `${from}\0${reference}`;
       if (!reference || seen.has(referenceKey)) continue;
       seen.add(referenceKey);
+      if (reference.startsWith('npm-script:')) {
+        const scriptName = reference.slice('npm-script:'.length);
+        const targetText = entryResult.scripts.get(`${from}\0${scriptName}`);
+        if (targetText === undefined) {
+          dynamicUnknown = true;
+          continue;
+        }
+        trace.push(`${from}#scripts.${scriptName}`);
+        const targetAnalysis = contentAnalysis(targetText);
+        dynamicUnknown ||=
+          targetAnalysis.unresolvedShellCommand ||
+          targetAnalysis.signals.includes('archive-extraction-and-execution');
+        for (const signal of targetAnalysis.signals) signals.add(signal);
+        if (signals.size > 0 || automaticScript.test(targetText)) payload = true;
+        for (const nested of targetAnalysis.references ?? [])
+          if (!enqueue(from, nested)) break;
+        const packageScriptReference =
+          /\b(?:npm|pnpm|yarn)\s+(?:run|run-script)\s+([\w:-]+)(?=\s|$)/giu;
+        for (const match of targetText.matchAll(packageScriptReference)) {
+          const nested = match[1];
+          if (nested && !enqueue(from, `npm-script:${nested}`)) break;
+        }
+        continue;
+      }
       const target = resolveLocalReference(
         from,
         reference,
