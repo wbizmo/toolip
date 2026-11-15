@@ -1929,16 +1929,29 @@ incomplete; #95 remains code incomplete.
 
 Route authorization analysis now resolves a unique, visible `const` alias
 chain of up to 16 links when the final alias points to a recognized explicit
-resource guard. Mutable declarations and globally ambiguous aliases remain
-unresolved, preserving the low-confidence finding. A paired regression
-confirms a guarded lookup is suppressed only for the immutable alias. The
-authorization suite passed 23 tests. Re-exported guards, indirect
-grant semantics and broad accuracy measurements remain incomplete; #61 is
-still code incomplete.
+resource guard. Statically renamed named imports also resolve when no local
+binding shadows them. Mutable declarations and globally ambiguous aliases
+remain unresolved, preserving the low-confidence finding. Regressions cover
+const aliases, imported renames and a mutable imported-name shadow. The
+authorization suite passed 24 tests. Re-exported guards, indirect grant
+semantics and broad accuracy measurements remain incomplete; #61 is still
+code incomplete.
 
-The combined #95/#61 change then passed `npm run verify` on Linux Node
-24.22.1. Unit tests passed **1,399 / 4 skipped** across 128 files; coverage
-passed **1,397 / 3 skipped** across 127 files at 85.55% statements, 79.62%
+## 2026-11-15 local continuation — immutable Redis receiver aliases for #89
+
+Redis same-function check-then-set detection now follows up to 16 unique
+same-scope `const` receiver aliases such as `const cache = redis`. Mutable,
+duplicate, out-of-scope, forward and cyclic aliases remain unrecognized, and
+the check/write still requires an exact static key match. Regression coverage
+confirms the immutable alias remains a race candidate while a mutable alias
+does not suppress or create a finding. The concurrency and authorization
+suites passed 52 tests together; typecheck and targeted Biome checks passed.
+Cross-file async ownership, distributed lock semantics, framework accuracy
+and external review remain open; #89 remains code incomplete.
+
+The combined #95/#61/#89 changes then passed `npm run verify` on Linux Node
+24.22.1. Unit tests passed **1,401 / 4 skipped** across 128 files; coverage
+passed **1,399 / 3 skipped** across 127 files at 85.55% statements, 79.62%
 branches, 93.16% functions and 88.14% lines. Changelog, lint, formatting,
 workflow policy, lockfile integrity, npm audit (zero vulnerabilities),
 typecheck, compiler quality, build, and built-package verification passed.

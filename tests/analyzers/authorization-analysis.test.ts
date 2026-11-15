@@ -530,6 +530,33 @@ describe('route authorization candidates', () => {
     );
   });
 
+  it('resolves statically renamed named imports of explicit resource guards', () => {
+    const findings = analyzeAstSource(
+      'src/routes/imported-guard.ts',
+      `import { assertOwner as verifyOwner } from './authorization.js';
+router.get('/records/:id', async (req, res) => {
+  await verifyOwner(req.user, req.params.id);
+  return records.findById(req.params.id);
+});`
+    );
+    const shadowed = analyzeAstSource(
+      'src/routes/shadowed-imported-guard.ts',
+      `import { assertOwner as verifyOwner } from './authorization.js';
+router.get('/records/:id', async (req, res) => {
+  let verifyOwner = checkSomethingElse;
+  await verifyOwner(req.user, req.params.id);
+  return records.findById(req.params.id);
+});`
+    );
+
+    expect(findings.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      false
+    );
+    expect(shadowed.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      true
+    );
+  });
+
   it('does not let a guard for a different request identifier authorize the lookup', () => {
     const findings = analyzeAstSource(
       'src/routes/mismatched-resource-guard.ts',

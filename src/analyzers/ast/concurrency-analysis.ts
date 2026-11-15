@@ -926,9 +926,55 @@ function findReadCheckWrite(
   }
 }
 
-function isRecognizedRedisReceiver(call: ts.CallExpression): boolean {
-  const receiver = callRootReceiver(call)?.toLowerCase();
-  return ['redis', 'redisclient', 'cacheclient'].includes(receiver ?? '');
+function redisReceiverAliases(
+  declarations: readonly ts.VariableDeclaration[]
+): Map<string, ts.VariableDeclaration | null> {
+  const aliases = new Map<string, ts.VariableDeclaration | null>();
+  for (const declaration of declarations) {
+    if (!ts.isIdentifier(declaration.name)) continue;
+    const name = declaration.name.text;
+    aliases.set(name, aliases.has(name) ? null : declaration);
+  }
+  return aliases;
+}
+
+function isRecognizedRedisReceiver(
+  call: ts.CallExpression,
+  aliases: ReadonlyMap<string, ts.VariableDeclaration | null>
+): boolean {
+  let receiver = callRootReceiver(call);
+  if (!receiver) return false;
+  const visibleScopes = new Set<ts.Node>();
+  for (
+    let current: ts.Node | undefined = call;
+    current;
+    current = current.parent
+  )
+    if (ts.isBlock(current) || ts.isSourceFile(current))
+      visibleScopes.add(current);
+  const visited = new Set<string>();
+  for (let depth = 0; depth <= 16; depth += 1) {
+    const normalized = receiver.toLowerCase();
+    if (['redis', 'redisclient', 'cacheclient'].includes(normalized))
+      return true;
+    if (visited.has(receiver)) return false;
+    visited.add(receiver);
+    const declaration = aliases.get(receiver);
+    if (
+      !declaration ||
+      !ts.isVariableDeclarationList(declaration.parent) ||
+      (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+      !declaration.initializer ||
+      !ts.isIdentifier(declaration.initializer) ||
+      declaration.initializer.getStart(call.getSourceFile()) >=
+        call.getStart(call.getSourceFile())
+    )
+      return false;
+    const scope = declarationScope(declaration);
+    if (!scope || !visibleScopes.has(scope)) return false;
+    receiver = declaration.initializer.text;
+  }
+  return false;
 }
 
 function hasRedisSetNxOption(call: ts.CallExpression): boolean {
@@ -966,6 +1012,7 @@ function findRedisReadCheckWrite(
   findings: Finding[]
 ): void {
   const { declarations, conditionals, calls } = facts;
+  const aliases = redisReceiverAliases(declarations);
   const readsByVariable = new Map<
     string,
     { receiver: string; key: string; position: number } | null
@@ -982,7 +1029,7 @@ function findRedisReadCheckWrite(
     if (
       !read ||
       !['get', 'exists'].includes(readMethod ?? '') ||
-      !isRecognizedRedisReceiver(read) ||
+      !isRecognizedRedisReceiver(read, aliases) ||
       !read.arguments[0]
     )
       continue;
@@ -1004,7 +1051,7 @@ function findRedisReadCheckWrite(
     const method = methodName(call)?.toLowerCase();
     if (
       !['set', 'del', 'delete'].includes(method ?? '') ||
-      !isRecognizedRedisReceiver(call) ||
+      !isRecognizedRedisReceiver(call, aliases) ||
       (method === 'set' && hasRedisSetNxOption(call))
     )
       continue;

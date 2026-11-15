@@ -215,6 +215,32 @@ async function load(path: string) {
     expect(JSON.stringify(unsafe)).not.toContain('payload');
   });
 
+  it('follows a unique const Redis client alias and rejects a mutable client alias', () => {
+    const immutable = analyzeAstSource(
+      'src/locks.ts',
+      `async function reserve(key: string, payload: string) {
+  const cache = redis;
+  const existing = await cache.get(key);
+  if (!existing) await cache.set(key, payload);
+}`
+    );
+    const mutable = analyzeAstSource(
+      'src/locks.ts',
+      `async function reserve(key: string, payload: string) {
+  let cache = redis;
+  const existing = await cache.get(key);
+  if (!existing) await cache.set(key, payload);
+}`
+    );
+
+    expect(immutable.map((finding) => finding.ruleId)).toContain(
+      'TLP-RACE-002'
+    );
+    expect(mutable.map((finding) => finding.ruleId)).not.toContain(
+      'TLP-RACE-002'
+    );
+  });
+
   it('handles many Redis check-then-set keys with bounded source passes', () => {
     const lines = Array.from({ length: 256 }, (_, index) => [
       `const present${index} = await redis.exists(key${index});`,
