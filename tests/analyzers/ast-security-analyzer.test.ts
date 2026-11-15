@@ -310,6 +310,24 @@ async function shadowed(req: RequestLike, sendRequest: (url: string) => void) {
     ).toHaveLength(8);
   });
 
+  it('treats request-controlled Node net and tls destinations as SSRF sinks', () => {
+    const findings = analyzeAstSource(
+      'routes.ts',
+      `import { connect as openSocket } from 'node:net';
+import * as tls from 'tls';
+function handler(req: RequestLike) {
+  openSocket(req.query.port, req.query.hostname);
+  tls.createConnection({ host: req.query.tlsHost, port: 443 });
+  openSocket(443, 'service.example');
+}`
+    );
+
+    expect(
+      findings.filter((finding) => finding.ruleId === 'TLP-AST-006')
+    ).toHaveLength(2);
+    expect(JSON.stringify(findings)).not.toContain('tlsHost');
+  });
+
   it('recognizes statically required HTTP clients and preserves local shadowing', () => {
     const findings = analyzeAstSource(
       'routes.ts',

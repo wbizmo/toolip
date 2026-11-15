@@ -2137,3 +2137,17 @@ skipped), 85.55% statements, 79.62% branches, 93.16% functions and 88.14%
 lines. This remains a bounded same-file candidate, not a proof of runtime
 overlap or database isolation; cross-file async races and safe-concurrency
 accuracy remain incomplete for #89.
+
+## 2026-11-15 local continuation — low-level Node SSRF sinks for #60
+
+The AST source/sink model now treats named and namespace `net.connect`,
+`net.createConnection`, `tls.connect` and `tls.createConnection` calls as
+outbound sinks when request-controlled host or port values reach them. Literal
+destinations remain clean. The AST security suite passes 50 tests, including
+both network APIs and redacted evidence; typecheck and targeted lint passed.
+All three Stage A pins use digest
+`2d18679a071df58a52b1da5ee785358a9625308d36a446f53a87155090c56dd8`. Full
+verification passed: 1,436 unit tests (4 skipped), 1,434 coverage tests (3
+skipped), 85.55% statements, 79.62% branches, 93.16% functions and 88.14%
+lines. Socket instances created by other wrappers, DNS pinning/rebinding and
+cross-project corpus accuracy remain open for #60.

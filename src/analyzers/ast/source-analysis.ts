@@ -991,14 +991,20 @@ const outboundClientModules = new Set([
   'https',
   'isomorphic-fetch',
   'ky',
+  'net',
   'node-fetch',
   'node:http',
   'node:https',
+  'node:net',
+  'node:tls',
   'superagent',
+  'tls',
   'undici'
 ]);
 const outboundClientFunctions = new Set([
   'delete',
+  'connect',
+  'createconnection',
   'fetch',
   'get',
   'patch',
@@ -3633,6 +3639,8 @@ function sensitiveOutputSink(
     (['fetch', 'request', 'get', 'post', 'put', 'patch', 'delete'].includes(
       method
     ) ||
+      ((method === 'connect' || method === 'createconnection') &&
+        ['net', 'tls'].includes(receiver ?? '')) ||
       (method === 'sendbeacon' && receiver === 'navigator') ||
       (method === 'send' &&
         receiverExpression &&
@@ -3645,6 +3653,8 @@ function sensitiveOutputSink(
         'http',
         'https',
         'got',
+        'net',
+        'tls',
         'request',
         'client',
         'navigator'
@@ -4215,10 +4225,14 @@ const outboundRequestModules = new Set([
   'got',
   'http',
   'https',
+  'net',
+  'node:net',
   'node:http',
   'node:https',
   'node-fetch',
   'ky',
+  'tls',
+  'node:tls',
   'superagent',
   'undici'
 ]);
@@ -4230,6 +4244,8 @@ const callableDefaultRequestModules = new Set([
   'node-fetch'
 ]);
 const outboundRequestMethods = new Set([
+  'connect',
+  'createconnection',
   'delete',
   'fetch',
   'get',
@@ -4284,9 +4300,16 @@ function isOutboundRequestCall(call: ts.CallExpression, scope: Scope): boolean {
   if (
     outboundRequestMethods.has(targetName) &&
     (targetName === 'fetch' ||
-      ['axios', 'http', 'https', 'got', 'request', 'client'].includes(
-        receiver ?? ''
-      ))
+      [
+        'axios',
+        'http',
+        'https',
+        'got',
+        'net',
+        'request',
+        'tls',
+        'client'
+      ].includes(receiver ?? ''))
   )
     return true;
 

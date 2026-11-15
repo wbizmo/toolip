@@ -1255,3 +1255,13 @@ static array slicing still bounds the checked input. Focused concurrency tests
 pass 31 cases. Full verification passed with 1,435 unit tests (4 skipped),
 1,433 coverage tests (3 skipped), 85.55% statements, 79.62% branches, 93.16%
 functions and 88.14% lines.
+
+### #60 Node socket SSRF sink checks — 2026-11-15
+
+The bounded AST sink classifier recognizes `connect` and `createConnection`
+from Node `net`/`tls` modules and their namespace receiver forms. It reuses
+existing request-taint propagation and does not treat literal-only socket
+destinations as candidates. The AST security suite passes 50 tests; full
+verification passed with 1,436 unit tests (4 skipped), 1,434 coverage tests
+(3 skipped), 85.55% statements, 79.62% branches, 93.16% functions and 88.14%
+lines.
