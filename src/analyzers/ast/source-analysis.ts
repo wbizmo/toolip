@@ -2374,8 +2374,14 @@ function isKnownOutboundClient(scope: Scope, name: string): boolean {
     let current: Scope | undefined = scope;
     current;
     current = current.parent
-  )
-    if (current.bindings.has(name)) return current.outboundClients.has(name);
+  ) {
+    if (current.bindings.has(name))
+      return (
+        current.outboundClients.has(name) &&
+        (current.writes.get(name)?.length ?? 0) === 0 &&
+        !current.dynamicWrites.has(name)
+      );
+  }
   return false;
 }
 
@@ -3929,6 +3935,22 @@ function isOutboundRequestCall(call: ts.CallExpression, scope: Scope): boolean {
     ts.isElementAccessExpression(target)
       ? propertyPath(target.expression)?.at(-1)?.toLowerCase()
       : undefined;
+  const outboundClientRoot =
+    ts.isPropertyAccessExpression(target) ||
+    ts.isElementAccessExpression(target)
+      ? rootIdentifier(target.expression)
+      : undefined;
+  const dynamicComputedMethod =
+    ts.isElementAccessExpression(target) &&
+    (!target.argumentExpression ||
+      (!ts.isStringLiteral(target.argumentExpression) &&
+        !ts.isNoSubstitutionTemplateLiteral(target.argumentExpression)));
+  if (
+    outboundClientRoot &&
+    isKnownOutboundClient(scope, outboundClientRoot.text) &&
+    (outboundRequestMethods.has(targetName) || dynamicComputedMethod)
+  )
+    return true;
   if (
     outboundRequestMethods.has(targetName) &&
     (targetName === 'fetch' ||
@@ -3968,11 +3990,6 @@ function isOutboundRequestCall(call: ts.CallExpression, scope: Scope): boolean {
     !ts.isElementAccessExpression(target)
   )
     return false;
-  const dynamicComputedMethod =
-    ts.isElementAccessExpression(target) &&
-    (!target.argumentExpression ||
-      (!ts.isStringLiteral(target.argumentExpression) &&
-        !ts.isNoSubstitutionTemplateLiteral(target.argumentExpression)));
   return (
     (imported.namespace &&
       (outboundRequestMethods.has(targetName) || dynamicComputedMethod)) ||

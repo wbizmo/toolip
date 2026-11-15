@@ -1747,6 +1747,17 @@ tests; typecheck and targeted Biome checks passed on Linux Node 24.22.1.
 Dynamic/runtime wrappers, other archive formats and cross-project accuracy
 remain incomplete; #95 remains code incomplete.
 
+## 2026-11-15 local continuation — CommonJS HTTP client aliases for #60
+
+Outbound-request taint analysis now recognizes a statically required HTTP
+client namespace stored in a local binding, for example `const client =
+require('axios'); client.get(taintedUrl)`. A later reassignment invalidates
+the static client identity, while direct unmodified aliases remain sinks.
+The AST security analyzer suite passed 47 tests and typecheck passed. Dynamic
+module construction, re-exported/custom wrappers, external API semantics,
+DNS behavior and race-safe filesystem identity remain incomplete; #60 is not
+complete.
+
 ## 2026-11-15 local continuation — aliased child-process APIs for #95
 
 Static dynamic-execution recognition now covers fixed `child_process` module
@@ -1950,7 +1961,7 @@ suites passed 52 tests together; typecheck and targeted Biome checks passed.
 Cross-file async ownership, distributed lock semantics, framework accuracy
 and external review remain open; #89 remains code incomplete.
 
-The combined #95/#61/#89 changes then passed `npm run verify` on Linux Node
+The combined #60/#95/#61/#89 changes then passed `npm run verify` on Linux Node
 24.22.1. Unit tests passed **1,403 / 4 skipped** across 128 files; coverage
 passed **1,401 / 3 skipped** across 127 files at 85.55% statements, 79.62%
 branches, 93.16% functions and 88.14% lines. Changelog, lint, formatting,
