@@ -1048,7 +1048,9 @@ tenant membership, grant, group, team and shared-resource predicates. It only
 accepts a nested predicate when it reaches an authenticated identity and keeps
 request-controlled membership identities as candidates. For `N` properties in
 the bounded query object, the added traversal is `O(N)` time with recursion
-limited to 32 relation levels and at most `O(32)` call-stack space; unsupported
+limited to 32 relation levels. A per-query weak memo stores at most two proof
+bits per visited object node, giving `O(N)` auxiliary space and preventing
+mutual ownership/relation checks from revisiting nested subtrees. Unsupported
 relation shapes remain unresolved.
 
 ### #95 additional archive formats — 2026-11-15
@@ -1078,7 +1080,7 @@ Node `tar.x()`/`tar.extract()` methods, paired with common child-process and
 Deno command launch APIs. The analyzer and trusted Stage A fixtures passed 145
 tests together, including a negative archive-creation case. The scans remain
 linear in the bounded source window; they do not unpack or execute archives.
-The full verification gate passed with 1,414 unit tests (4 skipped), 1,412
+The full verification gate passed with 1,415 unit tests (4 skipped), 1,413
 coverage tests (3 skipped), 85.55% statements, 79.62% branches, 93.16%
 functions and 88.14% lines.
 

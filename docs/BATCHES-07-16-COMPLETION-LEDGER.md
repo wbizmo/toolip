@@ -2000,7 +2000,7 @@ unmarked negative field, and assert that field names do not appear in finding
 evidence. The focused sensitive-flow suite passed 17 tests and typecheck passed;
 the latest full verification, including nested membership, dynamic HTTP client
 aliases, 7zr and Node archive-library chains, passed: unit tests passed
-**1,414 / 4 skipped** across 128 files; coverage passed **1,412 / 3 skipped**
+**1,415 / 4 skipped** across 128 files; coverage passed **1,413 / 3 skipped**
 across 127 files at 85.55% statements, 79.62% branches,
 93.16% functions and 88.14% lines. Workflow
 policy, digest, lockfile, npm audit, typecheck, compiler quality, build and
@@ -2015,9 +2015,9 @@ Authorization analysis now follows selected relation keys through nested
 tenant memberships, access grants, groups, teams and shared-resource filters.
 A nested predicate suppresses a candidate only if it reaches an authenticated
 identity; the paired request-controlled `req.query.userId` fixture remains a
-candidate. The focused authorization suite passed 25 tests; typecheck,
-targeted Biome, and the latest full gate passed (1,414 unit tests passed,
-4 skipped; 1,412 coverage tests passed, 3 skipped). Cross-file policy
+candidate. The focused authorization suite passed 26 tests; typecheck,
+targeted Biome, and the latest full gate passed (1,415 unit tests passed,
+4 skipped; 1,413 coverage tests passed, 3 skipped). Cross-file policy
 engines, implicit grants, framework differences and measured corpus accuracy
 remain incomplete; #61 is still code incomplete.
 
@@ -2029,9 +2029,9 @@ destructured known request methods. The existing fixed-point alias pass follows
 up to 16 immutable aliases; mutation disables static client trust. Shadowed
 `require` and static local modules outside the HTTP package allowlist are
 negative controls. Dynamic module expressions stay redacted in findings. The
-AST analyzer suite passed 49 tests and the latest full gate passed with 1,414
-unit tests (4 skipped) and 1,412 coverage tests (3 skipped); all three Stage A
-pins use digest `9f34c901d3cfeae2364cd4eddddbca6709adc8e1e9ef8a4b085ddf4ae0d7e1df`.
+AST analyzer suite passed 49 tests and the latest full gate passed with 1,415
+unit tests (4 skipped) and 1,413 coverage tests (3 skipped); all three Stage A
+pins use digest `b598ec60659a6876095640f63619c096a78e624dc8379cd0df375f0f41c5a778`.
 Runtime module resolution, wrapper summaries, URL/redirect safety, DNS and
 race-safe filesystem identity remain incomplete; #60 remains code incomplete.
 
@@ -2041,8 +2041,8 @@ The local malicious-content analyzer and trusted Stage A mirror now recognize
 7-Zip `7zr x`/`7zr e` extraction chains. A benign `7zr a` archive-creation
 fixture remains unflagged, and a Stage A Git-object fixture verifies the
 extraction chain is blocked before execution. Focused malicious-content and
-Stage A suites passed 141 tests together; full verification passed with 1,414
-unit tests (4 skipped), 1,412 coverage tests (3 skipped), and 85.55% statement,
+Stage A suites passed 141 tests together; full verification passed with 1,415
+unit tests (4 skipped), 1,413 coverage tests (3 skipped), and 85.55% statement,
 79.62% branch, 93.16% function and 88.14% line coverage. All three Stage A pins
 use digest `9f34c901d3cfeae2364cd4eddddbca6709adc8e1e9ef8a4b085ddf4ae0d7e1df`.
 Archive contents remain uninspected and the chain stays explicitly unknown.
@@ -2053,10 +2053,22 @@ Archive API analysis now recognizes `new AdmZip(...).extractAllTo(...)` and
 Node `tar.x(...)`/`tar.extract(...)` calls followed by common
 `child_process`/`Deno.Command` process launch APIs. Local analyzer and Stage A
 fixtures passed 145 tests together, including benign archive creation. Full
-verification passed: 1,414 unit tests (4 skipped), 1,412 coverage tests (3
+verification passed: 1,415 unit tests (4 skipped), 1,413 coverage tests (3
 skipped), 85.55% statements, 79.62% branches, 93.16% functions and 88.14%
 lines. All three Stage A pins use digest
-`9f34c901d3cfeae2364cd4eddddbca6709adc8e1e9ef8a4b085ddf4ae0d7e1df`. No
+`b598ec60659a6876095640f63619c096a78e624dc8379cd0df375f0f41c5a778`. No
 archive is opened or executed; findings remain incomplete/unknown. Broader
 archive APIs, runtime wrappers and corpus accuracy remain incomplete for
 #95/#96.
+
+## 2026-11-15 local continuation — memoized nested ownership proofs for #61
+
+Nested tenant and shared-grant proof now memoizes ownership and relation
+results per query object node, so mutually recursive checks visit each
+node/mode at most once. A 20-level negative membership fixture remains an
+authorization candidate, and the focused authorization suite passes 26 tests.
+The full gate passed with 1,415 unit tests (4 skipped), 1,413 coverage tests
+(3 skipped), 85.55% statements, 79.62% branches, 93.16% functions and 88.14%
+lines. The 32-level syntax cap and conservative handling of unsupported
+relations remain in force. All three Stage A pins use digest
+`b598ec60659a6876095640f63619c096a78e624dc8379cd0df375f0f41c5a778`.

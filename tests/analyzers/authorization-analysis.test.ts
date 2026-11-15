@@ -307,6 +307,24 @@ describe('route authorization candidates', () => {
     ).toBe(true);
   });
 
+  it('keeps deep unowned relation filters bounded and unresolved', () => {
+    let relation = '{}';
+    for (let index = 0; index < 20; index += 1)
+      relation = `{ memberships: { some: ${relation} } }`;
+    const findings = analyzeAstSource(
+      'src/routes/deep-membership.ts',
+      `router.get('/documents/:id', async (req, res) => {
+  return db.document.findFirst({
+    where: { id: req.params.id, tenant: ${relation} }
+  });
+});`
+    );
+
+    expect(findings.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      true
+    );
+  });
+
   it('does not treat ordinary non-route helpers as endpoint authorization findings', () => {
     const findings = analyzeAstSource(
       'src/services/users.ts',

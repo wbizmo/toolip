@@ -458,51 +458,72 @@ function authIdentity(
   return authenticatedClaimNames.test(claim);
 }
 
+function propertyKey(property: ts.PropertyAssignment): string | undefined {
+  const name = property.name;
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text;
+  return undefined;
+}
+
+type OwnershipProofCache = WeakMap<
+  ts.Node,
+  { ownership?: boolean; relation?: boolean }
+>;
+
 function relationIdentityInside(
   node: ts.Node,
-  identityParameters: ReadonlySet<string> = new Set(),
+  identities: ReadonlySet<string>,
+  cache: OwnershipProofCache,
   depth = 0
 ): boolean {
   if (depth > 32 || !ts.isObjectLiteralExpression(node)) return false;
+  const cached = cache.get(node)?.relation;
+  if (cached !== undefined) return cached;
+  let found = false;
   for (const property of node.properties) {
     if (!ts.isPropertyAssignment(property)) continue;
     const key = propertyKey(property);
     if (!key) continue;
-    if (key === 'id' && authIdentity(property.initializer, identityParameters))
-      return true;
+    if (key === 'id' && authIdentity(property.initializer, identities)) {
+      found = true;
+      break;
+    }
     if (
       key === 'is' &&
-      relationIdentityInside(
-        property.initializer,
-        identityParameters,
-        depth + 1
-      )
-    )
-      return true;
+      relationIdentityInside(property.initializer, identities, cache, depth + 1)
+    ) {
+      found = true;
+      break;
+    }
     if (
       key === 'some' &&
       (ownershipInsideWhere(
         property.initializer,
-        identityParameters,
+        identities,
+        cache,
         depth + 1
       ) ||
         relationIdentityInside(
           property.initializer,
-          identityParameters,
+          identities,
+          cache,
           depth + 1
         ))
-    )
-      return true;
+    ) {
+      found = true;
+      break;
+    }
     if (/^(?:AND|and)$/u.test(key)) {
       const clauses = ts.isArrayLiteralExpression(property.initializer)
         ? property.initializer.elements
         : [property.initializer];
       if (
         clauses.some((part) =>
-          relationIdentityInside(part, identityParameters, depth + 1)
+          relationIdentityInside(part, identities, cache, depth + 1)
         )
-      )
-        return true;
+      ) {
+        found = true;
+        break;
+      }
     }
     if (/^(?:OR|or)$/u.test(key)) {
       const clauses = ts.isArrayLiteralExpression(property.initializer)
@@ -511,34 +532,37 @@ function relationIdentityInside(
       if (
         clauses.length > 0 &&
         clauses.every((part) =>
-          relationIdentityInside(part, identityParameters, depth + 1)
+          relationIdentityInside(part, identities, cache, depth + 1)
         )
-      )
-        return true;
+      ) {
+        found = true;
+        break;
+      }
     }
     if (
       ownershipRelationKeys.has(key.toLowerCase()) &&
       ts.isObjectLiteralExpression(property.initializer) &&
       (ownershipInsideWhere(
         property.initializer,
-        identityParameters,
+        identities,
+        cache,
         depth + 1
       ) ||
         relationIdentityInside(
           property.initializer,
-          identityParameters,
+          identities,
+          cache,
           depth + 1
         ))
-    )
-      return true;
+    ) {
+      found = true;
+      break;
+    }
   }
-  return false;
-}
-
-function propertyKey(property: ts.PropertyAssignment): string | undefined {
-  const name = property.name;
-  if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text;
-  return undefined;
+  const result = cache.get(node) ?? {};
+  result.relation = found;
+  cache.set(node, result);
+  return found;
 }
 
 /**
@@ -550,9 +574,13 @@ function propertyKey(property: ts.PropertyAssignment): string | undefined {
 function ownershipInsideWhere(
   node: ts.Node,
   identities: ReadonlySet<string>,
+  cache: OwnershipProofCache,
   depth = 0
 ): boolean {
   if (depth > 32 || !ts.isObjectLiteralExpression(node)) return false;
+  const cached = cache.get(node)?.ownership;
+  if (cached !== undefined) return cached;
+  let found = false;
   for (const property of node.properties) {
     if (ts.isShorthandPropertyAssignment(property)) {
       if (
@@ -560,8 +588,10 @@ function ownershipInsideWhere(
           property.name.text
         ) &&
         authIdentity(property.name, identities)
-      )
-        return true;
+      ) {
+        found = true;
+        break;
+      }
       continue;
     }
     if (!ts.isPropertyAssignment(property)) continue;
@@ -572,8 +602,10 @@ function ownershipInsideWhere(
         key
       ) &&
       authIdentity(property.initializer, identities)
-    )
-      return true;
+    ) {
+      found = true;
+      break;
+    }
     if (/^(?:AND|and)$/u.test(key)) {
       const value = property.initializer;
       const clauses = ts.isArrayLiteralExpression(value)
@@ -581,10 +613,12 @@ function ownershipInsideWhere(
         : [value];
       if (
         clauses.some((part) =>
-          ownershipInsideWhere(part, identities, depth + 1)
+          ownershipInsideWhere(part, identities, cache, depth + 1)
         )
-      )
-        return true;
+      ) {
+        found = true;
+        break;
+      }
     }
     if (/^(?:OR|or)$/u.test(key)) {
       const value = property.initializer;
@@ -592,22 +626,39 @@ function ownershipInsideWhere(
         ts.isArrayLiteralExpression(value) &&
         value.elements.length > 0 &&
         value.elements.every((part) =>
-          ownershipInsideWhere(part, identities, depth + 1)
+          ownershipInsideWhere(part, identities, cache, depth + 1)
         )
-      )
-        return true;
+      ) {
+        found = true;
+        break;
+      }
     }
     // Related ownership and explicit share grants can constrain the base
     // record, but a side-loaded include/select relation cannot.
     if (
       ownershipRelationKeys.has(key.toLowerCase()) &&
       ts.isObjectLiteralExpression(property.initializer) &&
-      (ownershipInsideWhere(property.initializer, identities, depth + 1) ||
-        relationIdentityInside(property.initializer, identities, depth + 1))
-    )
-      return true;
+      (ownershipInsideWhere(
+        property.initializer,
+        identities,
+        cache,
+        depth + 1
+      ) ||
+        relationIdentityInside(
+          property.initializer,
+          identities,
+          cache,
+          depth + 1
+        ))
+    ) {
+      found = true;
+      break;
+    }
   }
-  return false;
+  const result = cache.get(node) ?? {};
+  result.ownership = found;
+  cache.set(node, result);
+  return found;
 }
 
 function hasOwnershipPredicate(
@@ -615,16 +666,17 @@ function hasOwnershipPredicate(
   identityParameters: ReadonlySet<string> = new Set()
 ): boolean {
   if (!ts.isObjectLiteralExpression(node)) return false;
+  const cache: OwnershipProofCache = new WeakMap();
   for (const property of node.properties) {
     if (
       ts.isPropertyAssignment(property) &&
       propertyKey(property) === 'where' &&
-      ownershipInsideWhere(property.initializer, identityParameters)
+      ownershipInsideWhere(property.initializer, identityParameters, cache)
     )
       return true;
   }
   // Some supported query APIs take the filter object directly.
-  return ownershipInsideWhere(node, identityParameters);
+  return ownershipInsideWhere(node, identityParameters, cache);
 }
 
 function hasRoleOrOwnershipGuard(
