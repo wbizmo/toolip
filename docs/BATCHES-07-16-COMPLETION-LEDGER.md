@@ -2151,3 +2151,14 @@ verification passed: 1,436 unit tests (4 skipped), 1,434 coverage tests (3
 skipped), 85.55% statements, 79.62% branches, 93.16% functions and 88.14%
 lines. Socket instances created by other wrappers, DNS pinning/rebinding and
 cross-project corpus accuracy remain open for #60.
+
+## 2026-11-15 local continuation — rename and formatting controls for #95
+
+The fixed benign/suspicious fixture corpus now includes a harmless script
+renamed to `.orc`, a whitespace-only entrypoint formatting change, and
+base64-encoded text used as ordinary build data. All ten synthetic fixtures
+(seven benign and three suspicious) match their expected classification, for
+0 false positives and 0 false negatives on this fixture set only. The
+malicious-content suite passes 61 tests. These controlled fixtures do not
+estimate production accuracy; broader adversarial corpora and runtime wrapper
+coverage remain open for #95.

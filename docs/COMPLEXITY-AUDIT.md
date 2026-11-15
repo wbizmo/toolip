@@ -1265,3 +1265,12 @@ destinations as candidates. The AST security suite passes 50 tests; full
 verification passed with 1,436 unit tests (4 skipped), 1,434 coverage tests
 (3 skipped), 85.55% statements, 79.62% branches, 93.16% functions and 88.14%
 lines.
+
+### #95 synthetic benign/suspicious corpus — 2026-11-15
+
+The non-executing malicious-content corpus now contains ten labeled fixtures:
+seven benign (including unusual-extension rename, whitespace-only formatting,
+ordinary bundler, and inert base64 data) and three suspicious. Expected labels
+match on every fixture. This is a controlled regression set, not a production
+false-positive or false-negative estimate. The malicious-content suite passes
+61 tests.

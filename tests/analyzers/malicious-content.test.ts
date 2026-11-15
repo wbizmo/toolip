@@ -64,6 +64,45 @@ describe('non-executing malicious content chain analysis', () => {
         ]
       },
       {
+        label: 'benign source renamed to an unusual extension',
+        expectedFinding: false,
+        files: [
+          {
+            path: 'package.json',
+            content: JSON.stringify({ scripts: { build: 'node ./build.orc' } })
+          },
+          { path: 'build.orc', content: "console.log('bundle built');" }
+        ]
+      },
+      {
+        label: 'whitespace-only command formatting change',
+        expectedFinding: false,
+        files: [
+          {
+            path: 'package.json',
+            content: JSON.stringify({
+              scripts: { prepare: 'node    ./prepare.js   ' }
+            })
+          },
+          { path: 'prepare.js', content: "console.log('prepare');" }
+        ]
+      },
+      {
+        label: 'benign base64 data used as text',
+        expectedFinding: false,
+        files: [
+          {
+            path: 'package.json',
+            content: JSON.stringify({ scripts: { build: 'node ./build.js' } })
+          },
+          {
+            path: 'build.js',
+            content:
+              "const message = Buffer.from('aGVsbG8=', 'base64').toString(); console.log(message);"
+          }
+        ]
+      },
+      {
         label: 'encoded lifecycle payload',
         expectedFinding: true,
         files: [
