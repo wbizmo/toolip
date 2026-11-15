@@ -1755,11 +1755,14 @@ require('axios'); client.get(taintedUrl)` and `const { get } = require('axios')`
 A unique immutable alias such as `const getUrl = client.get` is also traced;
 reassigned namespace or function aliases lose their static identity. Dynamic
 `require(moduleName)` and `import(moduleName)` expressions used directly as
-known HTTP request receivers remain SSRF candidates, without exposing the
-module expression in finding evidence. A regression covers both forms. The AST
-security analyzer suite passed 48 tests and typecheck passed. Re-exported/custom
-wrappers, external API semantics, DNS behavior and race-safe filesystem
-identity remain incomplete; #60 is not complete.
+request receivers, stored in a local binding, or destructured for known request
+methods remain SSRF candidates without exposing the module expression in
+finding evidence. Immutable namespace aliases are followed; shadowed
+`require`, static local modules outside the package allowlist and mutable
+client bindings are not trusted as HTTP clients. The AST security analyzer
+suite passed 49 tests and typecheck passed. Re-exported/custom wrappers,
+external API semantics, DNS behavior and race-safe filesystem identity remain
+incomplete; #60 is not complete.
 
 ## 2026-11-15 local continuation — aliased child-process APIs for #95
 
@@ -1995,13 +1998,14 @@ markers. Unmarked fields remain unclassified unless their names match the
 existing sensitive-name heuristic. Tests cover three positive tags and an
 unmarked negative field, and assert that field names do not appear in finding
 evidence. The focused sensitive-flow suite passed 17 tests and typecheck passed;
-the latest full verification, including the nested membership change, passed:
-unit tests passed **1,407 / 4 skipped** across 128 files; coverage passed
-**1,405 / 3 skipped** across 127 files at 85.55% statements, 79.62% branches,
+the latest full verification, including nested membership and dynamic HTTP
+client aliases, passed: unit tests passed **1,408 / 4 skipped** across 128
+files; coverage passed **1,406 / 3 skipped** across 127 files at 85.55%
+statements, 79.62% branches,
 93.16% functions and 88.14% lines. Workflow
 policy, digest, lockfile, npm audit, typecheck, compiler quality, build and
 package verification passed. All three Stage A pins use scanner digest
-`78a18bfbb71a3c046c1c2eba770765f43d85e23f22914499e3f78c623e6d5d03`. Schema
+`9e4a8ec9cb3a16b126d0307731205b3e1b95864884b169c6e04b877e395baf0a`. Schema
 inference without explicit tags, application serializer/redactor contracts
 and broad accuracy calibration remain incomplete; #91 remains code incomplete.
 
@@ -2012,6 +2016,21 @@ tenant memberships, access grants, groups, teams and shared-resource filters.
 A nested predicate suppresses a candidate only if it reaches an authenticated
 identity; the paired request-controlled `req.query.userId` fixture remains a
 candidate. The focused authorization suite passed 25 tests; typecheck,
-targeted Biome, and the full verification gate passed. Cross-file policy
+targeted Biome, and the full verification gate passed (1,408 unit tests passed,
+4 skipped; 1,406 coverage tests passed, 3 skipped). Cross-file policy
 engines, implicit grants, framework differences and measured corpus accuracy
 remain incomplete; #61 is still code incomplete.
+
+## 2026-11-15 local continuation — aliased dynamic HTTP clients for #60
+
+Outbound-request analysis now tracks dynamic `require(moduleName)` and awaited
+`import(moduleName)` results stored in local namespace bindings, plus
+destructured known request methods. The existing fixed-point alias pass follows
+up to 16 immutable aliases; mutation disables static client trust. Shadowed
+`require` and static local modules outside the HTTP package allowlist are
+negative controls. Dynamic module expressions stay redacted in findings. The
+AST analyzer suite passed 49 tests and the full gate passed with 1,408 unit
+tests (4 skipped) and 1,406 coverage tests (3 skipped); all three Stage A pins
+use digest `9e4a8ec9cb3a16b126d0307731205b3e1b95864884b169c6e04b877e395baf0a`.
+Runtime module resolution, wrapper summaries, URL/redirect safety, DNS and
+race-safe filesystem identity remain incomplete; #60 remains code incomplete.

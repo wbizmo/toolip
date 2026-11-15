@@ -1001,11 +1001,13 @@ HTTP clients) through imports and literal CommonJS `require()` calls. Named
 imports are restricted to known request functions; arbitrary imported classes
 are not treated as sinks. Identifier resolution respects lexical shadowing.
 Direct `require(moduleName).get(url)` and `import(moduleName).request(url)`
-receivers are retained as SSRF candidates without including the dynamic module
-name in evidence; the analyzer does not resolve or execute those modules.
-Re-export chains and custom wrappers remain unresolved. The sensitive-flow
-and AST suites pass 60 tests with typecheck and targeted lint passing on Linux
-Node 24.22.1. This is a static API model, not runtime client discovery or
+receivers, plus dynamically loaded local namespace and destructured-method
+aliases, are retained as SSRF candidates without including the module name in
+evidence; the analyzer does not resolve or execute those modules. Immutable
+alias propagation is capped at 16 passes over pending bindings. Re-export
+chains and custom wrappers remain unresolved. The sensitive-flow and AST
+suites pass 60 tests with typecheck and targeted lint passing on Linux Node
+24.22.1. This is a static API model, not runtime client discovery or
 URL/redirect safety proof (#60).
 
 ### #91 explicit sensitive-schema tags — 2026-11-15

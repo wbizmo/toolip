@@ -1598,6 +1598,12 @@ function collectBindings(
         )
           bindingScope.outboundClients.add(node.name.text);
         if (
+          ts.isIdentifier(node.name) &&
+          node.initializer &&
+          isDynamicOutboundModuleExpression(node.initializer, bindingScope)
+        )
+          bindingScope.outboundClients.add(node.name.text);
+        if (
           ts.isObjectBindingPattern(node.name) &&
           node.initializer &&
           ts.isCallExpression(node.initializer) &&
@@ -1617,6 +1623,23 @@ function collectBindings(
             const imported =
               propertyName(element.propertyName) ?? element.name.text;
             if (outboundClientFunctions.has(imported.toLowerCase()))
+              bindingScope.outboundClients.add(element.name.text);
+          }
+        }
+        if (
+          ts.isObjectBindingPattern(node.name) &&
+          node.initializer &&
+          isDynamicOutboundModuleExpression(node.initializer, bindingScope)
+        ) {
+          for (const element of node.name.elements) {
+            if (
+              ts.isOmittedExpression(element) ||
+              !ts.isIdentifier(element.name)
+            )
+              continue;
+            const imported =
+              propertyName(element.propertyName) ?? element.name.text;
+            if (outboundRequestMethods.has(imported.toLowerCase()))
               bindingScope.outboundClients.add(element.name.text);
           }
         }

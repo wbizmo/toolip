@@ -358,6 +358,31 @@ async function shadowed(req: RequestLike, sendRequest: (url: string) => void) {
     expect(JSON.stringify(findings)).not.toContain('apiModule');
   });
 
+  it('tracks dynamically loaded HTTP client aliases without trusting local or shadowed modules', () => {
+    const findings = analyzeAstSource(
+      'routes.ts',
+      `async function handler(req: RequestLike) {
+  const dynamicClient = require(req.query.clientModule);
+  const clientAlias = dynamicClient;
+  await clientAlias.get(req.query.destination);
+  const { request: sendRequest } = await import(req.query.apiModule);
+  await sendRequest(req.query.backup);
+  const localClient = require('./local-client');
+  await localClient.get(req.query.untrustedButNotHttp);
+}
+async function shadowed(require: (id: string) => any, req: RequestLike) {
+  const localModule = require(req.query.moduleName);
+  await localModule.get(req.query.destination);
+}`
+    );
+
+    expect(
+      findings.filter((finding) => finding.ruleId === 'TLP-AST-006')
+    ).toHaveLength(2);
+    expect(JSON.stringify(findings)).not.toContain('clientModule');
+    expect(JSON.stringify(findings)).not.toContain('apiModule');
+  });
+
   it('preserves taint through computed request fields and Promise callbacks', () => {
     const findings = analyzeAstSource(
       'routes.ts',
