@@ -653,6 +653,30 @@ Raw JSONL is [`toolip-v3.2.1-issue81-cargo-lock-2026-11-15-linux-node24.jsonl`](
 
 These are single parser-scale samples, not p50/p95 or cross-platform results. The 50k fixture exercises lock parsing and graph construction, not Cargo's full build resolver, target-specific feature activation, artifact download, or OSV matching.
 
+## Cargo optional-feature resolution hot path (2026-11-15)
+
+The Cargo resolver was also measured with a synthetic manifest containing only unrequested optional dependencies. Each isolated Linux Node 24.22.1 run asserted zero active optional features and zero optional graph edges. Raw JSONL is [`toolip-v3.2.1-cargo-optional-features-2026-11-15-linux-node24.jsonl`](benchmarks/toolip-v3.2.1-cargo-optional-features-2026-11-15-linux-node24.jsonl), SHA-256 `bcaea8f58bb73c1e661cdafcaa5ccd8e188f1c4ef55d03780c1fd3e13b8eb062`.
+
+| Optional declarations | Manifest bytes | Wall time | Sampled heap peak | Sampled RSS peak | Coverage / result     |
+| --------------------: | -------------: | --------: | ----------------: | ---------------: | --------------------- |
+|                 1,000 |         57,085 |  33.93 ms |          56.4 MiB |        214.5 MiB | complete; 0 activated |
+|                10,000 |        570,085 | 119.91 ms |          63.9 MiB |        223.1 MiB | complete; 0 activated |
+|                50,000 |      2,850,085 | 451.86 ms |         142.2 MiB |        333.1 MiB | complete; 0 activated |
+
+These are one cold measurement per size, not repeated percentiles. The 50x larger manifest took about 13.3x the wall time in this run. This isolates manifest optional-feature handling; it is not a complete Cargo build-resolution or whole-repository #40 benchmark.
+
+## Cargo workspace root-edge matching (2026-11-15)
+
+The wide-root fixture measures exact matching between manifest declarations and Cargo.lock identities. Each isolated run asserts one root edge for every declaration and one package record for every locked instance; registry dependency feature coverage remains explicitly incomplete. Raw JSONL is [`toolip-v3.2.1-cargo-workspace-edges-2026-11-15-linux-node24.jsonl`](benchmarks/toolip-v3.2.1-cargo-workspace-edges-2026-11-15-linux-node24.jsonl), SHA-256 `aa4b30e9947b1a649d6545ff2f0967b4015035a52c480092fa7aec85167d8ec8`.
+
+| Root dependencies | Manifest bytes | Lock bytes | Wall time | Sampled heap peak | Sampled RSS peak | Packages / root edges |
+| ----------------: | -------------: | ---------: | --------: | ----------------: | ---------------: | --------------------: |
+|             1,000 |         68,085 |    286,086 | 189.09 ms |          60.9 MiB |        255.1 MiB |         1,001 / 1,000 |
+|            10,000 |        680,085 |  2,860,086 | 884.05 ms |         126.1 MiB |        374.3 MiB |       10,001 / 10,000 |
+|            50,000 |      3,400,085 | 14,300,086 |    3.01 s |         351.4 MiB |        642.7 MiB |       50,001 / 50,000 |
+
+These are single cold samples on Linux Node 24.22.1, not percentiles or cross-platform qualification. The 50x larger graph took 15.9x the wall time. The fixture validates Toolip's manifest-to-lock matching path; it does not run Cargo or fetch artifacts.
+
 ## Issue #56 bounded AST worker rerun (2026-11-15)
 
 The AST project worker's old-generation V8 ceiling was lowered from 1,024 MiB to 512 MiB while preserving one active worker and one queued request. A 50k cold full scorecard and a concurrent pair both completed with complete file coverage; raw results are [`toolip-v3.2.1-issue56-worker512-2026-11-15-linux-node24.jsonl`](benchmarks/toolip-v3.2.1-issue56-worker512-2026-11-15-linux-node24.jsonl), SHA-256 `5fed77ab8302a0e801cf350b50bebea91424622a219e48d9496fd4d77da960c2`.

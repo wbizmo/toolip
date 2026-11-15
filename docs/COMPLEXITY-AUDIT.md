@@ -1122,3 +1122,50 @@ regression verifies newline and Unicode path names. The file-walker suite
 passed 10 tests; typecheck, targeted Biome and `git diff --check` passed. This
 reduces one discovery allocation but does not complete the repository-wide
 #40 audit.
+
+### #40 Cargo optional-feature indexing — 2026-11-15
+
+Cargo feature resolution now builds a per-module alias-to-declarations index
+once, then reuses it for feature activation. It no longer scans all feature
+definitions for every optional dependency or all declarations for every
+dependency-feature edge. For `D` declarations and `F` feature entries, this
+removes the prior `O(D × F)` optional-feature scan; index construction is
+`O(D + F)`, with target filtering limited to declarations sharing the
+requested alias. Optional dependency aliases remain inactive unless reached
+from an active feature, matching Cargo's feature semantics. A 1,200-optional
+dependency regression asserts that unused aliases produce no active features
+or graph edges. Ecosystem, SBOM and OSV suites pass 140 tests; typecheck and
+targeted Biome pass on Linux Node 24.22.1. Broader workspace feature/cfg
+qualification and the remaining codebase-wide #40 inventory remain open.
+
+The extended benchmark harness measured 1k/10k/50k optional declarations at
+33.93/119.91/451.86 ms with sampled heap peaks of 56.4/63.9/142.2 MiB and
+RSS peaks of 214.5/223.1/333.1 MiB. The 50x input increase took 13.3x the
+single-run wall time. Raw evidence and fixture hashes are in
+`docs/BENCHMARKS.md`; this is a single-run local curve, not percentile or
+cross-platform evidence.
+
+Cargo workspace root-edge construction previously scanned all `L` lockfile
+dependency records for each of `D` manifest declarations. It now indexes lock
+records by exact package name, manifest alias and target context once, then
+checks only identity-matched records against the declared version requirement.
+This changes the matching work from `O(D × L)` to expected `O(D + L + K)`,
+where `K` is the number of version candidates sharing an indexed identity.
+A 1,200-dependency regression asserts exact root-edge and package counts. The
+same isolated 1k/10k/50k wide-root fixture measured 189.09/884.05/3,009.26 ms
+and sampled 60.9/126.1/351.4 MiB heap peaks; raw data and hashes are in
+`docs/BENCHMARKS.md`. These single Linux runs do not provide percentiles or
+cross-platform evidence.
+
+### #89 Redis check-then-set detection — 2026-11-15
+
+Redis concurrency analysis indexes immutable local `get`/`exists` results by
+variable, and candidate `set`/delete writes by receiver and static key once per
+function. Each condition's identifiers are visited once; a binary search finds
+the first same-key write in the branch, and one finding per key is emitted.
+With `D` declarations, `C` calls, `Q` conditional-expression identifier
+occurrences and `R` findings, the added pass is `O(D + C + Q log C + R)` time
+and `O(D + C + Q)` bounded-by-source memory. Dynamic keys and unresolved
+receivers remain outside the model. The concurrency suite passed 27 tests,
+including 256 independent same-function keys; full distributed-lock and
+cross-file modeling remain open for #89.

@@ -44,6 +44,12 @@ Unsupported Cargo feature syntax, missing workspace manifests, ambiguous lock
 identities, unknown target contexts and exceeded work limits likewise produce
 warnings and incomplete coverage.
 
+An optional dependency's implicit feature is available for activation when
+another active feature requests it; the resolver does not activate every
+optional declaration merely because the implicit feature exists. This keeps
+unrequested dependencies out of the resolved workspace graph and avoids
+rescanning every feature definition for every optional dependency.
+
 Workspace patterns are matched against the immutable file snapshot, with
 bounded manifest counts and traversal depth. Missing, malformed, excluded,
 unmatched, or ambiguously locked members produce explicit warnings. Cargo.lock

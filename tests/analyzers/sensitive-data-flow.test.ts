@@ -63,6 +63,25 @@ describe('sensitive data flow candidates', () => {
     ]);
   });
 
+  it('detects credential values written to response headers and cookies', () => {
+    const findings = analyzeAstSource(
+      'src/routes/headers.ts',
+      [
+        'const secret = process.env.SERVICE_SECRET;',
+        "res.setHeader('authorization', secret);",
+        "response.header('x-service-token', secret);",
+        "reply.setCookie('session', secret);"
+      ].join('\n')
+    ).filter((item) => item.ruleId === 'TLP-DATA-001');
+
+    expect(findings).toHaveLength(3);
+    expect(
+      findings.every((finding) => finding.metadata?.sinkClass === 'response')
+    ).toBe(true);
+    expect(JSON.stringify(findings)).not.toContain('SERVICE_SECRET');
+    expect(JSON.stringify(findings)).not.toContain('x-service-token');
+  });
+
   it('recognizes explicitly annotated sensitive schema fields with non-sensitive names', () => {
     const root = '/toolip-sensitive-annotated';
     const code = [

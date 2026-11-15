@@ -159,6 +159,17 @@ async function load(path: string) {
   }, { isolationLevel: 'Serializable' });
 }`
     );
+    const sequelizeSerializable = analyzeAstSource(
+      'src/purchase.ts',
+      `async function purchase(id: string) {
+  await sequelize.transaction({ isolationLevel: Transaction.ISOLATION_LEVELS.SERIALIZABLE }, async (tx) => {
+    const item = await tx.item.findUnique({ where: { id } });
+    if (item.stock > 0) {
+      await tx.item.update({ where: { id }, data: { stock: item.stock - 1 } });
+    }
+  });
+}`
+    );
 
     expect(
       missingPredicate.some((finding) => finding.ruleId === 'TLP-RACE-002')
@@ -166,6 +177,57 @@ async function load(path: string) {
     expect(
       serializable.some((finding) => finding.ruleId === 'TLP-RACE-002')
     ).toBe(false);
+    expect(
+      sequelizeSerializable.some((finding) => finding.ruleId === 'TLP-RACE-002')
+    ).toBe(false);
+  });
+
+  it('flags non-atomic Redis check-then-set but accepts SET NX', () => {
+    const unsafe = analyzeAstSource(
+      'src/locks.ts',
+      `async function reserve(key: string, payload: string) {
+  const existing = await redis.exists(key);
+  if (!existing) await redis.set(key, payload);
+}`
+    );
+    const atomic = analyzeAstSource(
+      'src/locks.ts',
+      `async function reserve(key: string, payload: string) {
+  const existing = await redis.exists(key);
+  if (!existing) await redis.set(key, payload, { NX: true, PX: 5000 });
+}`
+    );
+    const atomicTemplate = analyzeAstSource(
+      'src/locks.ts',
+      `async function reserve(key: string, payload: string) {
+  const existing = await redis.exists(key);
+  if (!existing) await redis.set(key, payload, \`NX\`);
+}`
+    );
+
+    expect(unsafe.map((finding) => finding.ruleId)).toContain('TLP-RACE-002');
+    expect(atomic.map((finding) => finding.ruleId)).not.toContain(
+      'TLP-RACE-002'
+    );
+    expect(atomicTemplate.map((finding) => finding.ruleId)).not.toContain(
+      'TLP-RACE-002'
+    );
+    expect(JSON.stringify(unsafe)).not.toContain('payload');
+  });
+
+  it('handles many Redis check-then-set keys with bounded source passes', () => {
+    const lines = Array.from({ length: 256 }, (_, index) => [
+      `const present${index} = await redis.exists(key${index});`,
+      `if (!present${index}) await redis.set(key${index}, value${index});`
+    ]).flat();
+    const findings = analyzeAstSource(
+      'src/many-locks.ts',
+      `async function reserveMany() {\n${lines.join('\n')}\n}`
+    ).filter((finding) => finding.ruleId === 'TLP-RACE-002');
+
+    expect(findings).toHaveLength(256);
+    expect(JSON.stringify(findings)).not.toContain('key0');
+    expect(JSON.stringify(findings)).not.toContain('value0');
   });
 
   it('flags discarded database transaction promises but accepts awaited or returned transactions', () => {

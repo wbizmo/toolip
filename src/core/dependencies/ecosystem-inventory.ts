@@ -1854,6 +1854,11 @@ function resolveCargoWorkspaceFeatures(
   const byModule = new Map<string, CargoWorkspacePackage>();
   for (const item of packages) byModule.set(item.module || 'root', item);
   const featureValues = new Map<string, Map<string, string[]>>();
+  const declarationsByModuleAlias = new Map<
+    string,
+    Map<string, CargoDependencyDeclaration[]>
+  >();
+  const optionalAliasesByModule = new Map<string, Set<string>>();
   const activeFeatures = new Map<string, Set<string>>();
   const enabledDependencies = new Map<string, Set<string>>();
   const unresolvedModules = new Set<string>();
@@ -1901,7 +1906,13 @@ function resolveCargoWorkspaceFeatures(
       for (const value of values)
         if (value.startsWith('dep:'))
           dependencyFeatureSuppressions.add(value.slice(4));
+    const declarationsByAlias = new Map<string, CargoDependencyDeclaration[]>();
+    const optionalAliases = new Set<string>();
     for (const declaration of item.declarations) {
+      const declarations = declarationsByAlias.get(declaration.alias) ?? [];
+      declarations.push(declaration);
+      declarationsByAlias.set(declaration.alias, declarations);
+      if (declaration.optional) optionalAliases.add(declaration.alias);
       if (
         declaration.optional &&
         !dependencyFeatureSuppressions.has(declaration.alias) &&
@@ -1909,6 +1920,8 @@ function resolveCargoWorkspaceFeatures(
       )
         normalized.set(declaration.alias, [`dep:${declaration.alias}`]);
     }
+    declarationsByModuleAlias.set(module, declarationsByAlias);
+    optionalAliasesByModule.set(module, optionalAliases);
     featureValues.set(module, normalized);
     activeFeatures.set(module, new Set());
     enabledDependencies.set(module, new Set());
@@ -1949,9 +1962,9 @@ function resolveCargoWorkspaceFeatures(
     feature?: string
   ): void => {
     const module = parent.module || 'root';
-    const declarations = parent.declarations.filter(
-      (item) => item.alias === alias && targetState(parent, item) !== false
-    );
+    const declarations = (
+      declarationsByModuleAlias.get(module)?.get(alias) ?? []
+    ).filter((item) => targetState(parent, item) !== false);
     if (declarations.length === 0) {
       warnOnce(`cargo-feature-dependency-unresolved:${parent.file}`);
       unresolvedModules.add(module);
@@ -2007,19 +2020,6 @@ function resolveCargoWorkspaceFeatures(
         continue;
       activateDependency(item, declaration.alias);
     }
-    for (const declaration of item.declarations) {
-      if (
-        targetState(item, declaration) === false ||
-        !declaration.optional ||
-        !table?.has(declaration.alias)
-      )
-        continue;
-      const hasExplicitDependencyFeature = [...table.values()].some((values) =>
-        values.includes(`dep:${declaration.alias}`)
-      );
-      if (!hasExplicitDependencyFeature)
-        enqueueFeature(module, declaration.alias);
-    }
   }
 
   for (
@@ -2066,14 +2066,15 @@ function resolveCargoWorkspaceFeatures(
         enqueueFeature(current.module, value);
         continue;
       }
-      const implicitDependency = item.declarations.find(
-        (declaration) =>
-          declaration.alias === value &&
-          declaration.optional &&
-          targetState(item, declaration) !== false
-      );
+      const implicitDependency = optionalAliasesByModule
+        .get(current.module)
+        ?.has(value)
+        ? (
+            declarationsByModuleAlias.get(current.module)?.get(value) ?? []
+          ).some((declaration) => targetState(item, declaration) !== false)
+        : false;
       if (implicitDependency) {
-        activateDependency(item, implicitDependency.alias);
+        activateDependency(item, value);
         continue;
       }
       warnOnce(`cargo-feature-reference-unresolved:${item.file}`);
@@ -6329,6 +6330,20 @@ export async function readOtherEcosystemInventoryDetailed(
         section: 'dependency'
       });
     }
+    const lockedDependenciesByIdentity = new Map<
+      string,
+      NonNullable<LockedPackage['dependencies']>
+    >();
+    for (const dependency of member.workspaceItem.dependencies ?? []) {
+      const key = JSON.stringify([
+        dependency.name,
+        dependency.alias ?? dependency.name,
+        dependency.target ?? null
+      ]);
+      const matches = lockedDependenciesByIdentity.get(key) ?? [];
+      matches.push(dependency);
+      lockedDependenciesByIdentity.set(key, matches);
+    }
     for (const declaration of member.declarations) {
       if (
         !cargoFeatureResolution.enabledDependencies
@@ -6337,20 +6352,22 @@ export async function readOtherEcosystemInventoryDetailed(
         cargoTargetConditionMatches(declaration.target, cargoTarget) === false
       )
         continue;
-      const matchingLockDependencies = (
-        member.workspaceItem.dependencies ?? []
-      ).filter(
-        (dependency) =>
-          dependency.name === declaration.name &&
-          (dependency.alias ?? dependency.name) === declaration.alias &&
-          dependency.target === declaration.target &&
-          cargoRequirementMatches(
-            dependency.requirement,
-            declaration.requirement
-          )
-      );
       const lockSources = new Set(
-        matchingLockDependencies
+        (
+          lockedDependenciesByIdentity.get(
+            JSON.stringify([
+              declaration.name,
+              declaration.alias,
+              declaration.target ?? null
+            ])
+          ) ?? []
+        )
+          .filter((dependency) =>
+            cargoRequirementMatches(
+              dependency.requirement,
+              declaration.requirement
+            )
+          )
           .map((dependency) => dependency.cargoLockSource)
           .filter((source): source is string => source !== undefined)
       );

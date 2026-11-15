@@ -1287,6 +1287,96 @@ describe('non-npm lockfile inventory', () => {
     );
   });
 
+  it('does not activate unreferenced optional Cargo dependencies in large manifests', async () => {
+    const root = await fixture();
+    const declarations = Array.from(
+      { length: 1_200 },
+      (_, index) => `optional-${index} = { version = "1.0.0", optional = true }`
+    );
+    await writeFile(
+      path.join(root, 'Cargo.toml'),
+      [
+        '[package]',
+        'name = "app"',
+        'version = "0.1.0"',
+        'edition = "2021"',
+        '',
+        '[dependencies]',
+        ...declarations
+      ].join('\n')
+    );
+    await writeFile(
+      path.join(root, 'Cargo.lock'),
+      [
+        'version = 4',
+        '',
+        '[[package]]',
+        'name = "app"',
+        'version = "0.1.0"'
+      ].join('\n')
+    );
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+    const app = graph.packages.find((item) => item.name === 'app');
+
+    expect(app?.activeFeatures).toEqual([]);
+    expect(
+      graph.edges.some(
+        (edge) => edge.from === app?.id && edge.name.startsWith('optional-')
+      )
+    ).toBe(false);
+  }, 30_000);
+
+  it('indexes high-cardinality Cargo root edges by exact lock identity', async () => {
+    const root = await fixture();
+    const registry = 'registry+https://github.com/rust-lang/crates.io-index';
+    const count = 1_200;
+    const names = Array.from(
+      { length: count },
+      (_, index) => `fixture-crate-${String(index).padStart(6, '0')}`
+    );
+    await writeFile(
+      path.join(root, 'Cargo.toml'),
+      [
+        '[package]',
+        'name = "app"',
+        'version = "1.0.0"',
+        'edition = "2021"',
+        '',
+        '[dependencies]',
+        ...names.map((name) => `${name} = "1.0.0"`)
+      ].join('\n')
+    );
+    await writeFile(
+      path.join(root, 'Cargo.lock'),
+      [
+        'version = 4',
+        '',
+        '[[package]]',
+        'name = "app"',
+        'version = "1.0.0"',
+        `dependencies = [${names.map((name) => `"${name} 1.0.0 (${registry})"`).join(', ')}]`,
+        ...names.flatMap((name) => [
+          '',
+          '[[package]]',
+          `name = "${name}"`,
+          'version = "1.0.0"',
+          `source = "${registry}"`,
+          `checksum = "${'a'.repeat(64)}"`
+        ])
+      ].join('\n')
+    );
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+    const directEdges = graph.edges.filter((edge) => edge.from === 'root');
+
+    expect(directEdges).toHaveLength(count);
+    expect(directEdges.map((edge) => edge.name).sort()).toEqual(names);
+    expect(
+      graph.packages.filter((item) => item.ecosystem === 'crates.io')
+    ).toHaveLength(count + 1);
+  }, 30_000);
+
   it('preserves merged normal and target Cargo dependency contexts from cargo metadata', async () => {
     const root = await fixture();
     try {

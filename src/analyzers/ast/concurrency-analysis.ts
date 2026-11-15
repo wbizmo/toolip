@@ -415,7 +415,7 @@ function isSerializableTransaction(
       (method === '$transaction' &&
         ['db', 'prisma', 'database', 'client'].includes(receiver ?? '')) ||
       (method === 'transaction' &&
-        ['dataSource', 'entityManager'].includes(receiver ?? ''))
+        ['dataSource', 'entityManager', 'sequelize'].includes(receiver ?? ''))
     ))
       continue;
     // An isolation option on a helper method says nothing about the
@@ -429,8 +429,11 @@ function isSerializableTransaction(
       callRootReceiver(write) !== handle.text
     )
       continue;
-    const options = call.arguments[1];
-    if (!options || !ts.isObjectLiteralExpression(options)) continue;
+    const options = [call.arguments[1], call.arguments[0]].find(
+      (argument): argument is ts.ObjectLiteralExpression =>
+        argument !== undefined && ts.isObjectLiteralExpression(argument)
+    );
+    if (!options) continue;
     return options.properties.some((property) => {
       if (
         !ts.isPropertyAssignment(property) ||
@@ -784,7 +787,11 @@ function createFinding(
     evidence: [
       {
         summary:
-          '[same-path filesystem check/use pattern; path and data values omitted]',
+          kind === 'filesystem-check-then-use'
+            ? '[same-path filesystem check/use pattern; path and data values omitted]'
+            : kind === 'non-atomic-read-check-write'
+              ? '[same-object check/write pattern; keys and values omitted]'
+              : '[unbounded collection mutation pattern; source values omitted]',
         fingerprint
       }
     ],
@@ -919,6 +926,140 @@ function findReadCheckWrite(
   }
 }
 
+function isRecognizedRedisReceiver(call: ts.CallExpression): boolean {
+  const receiver = callRootReceiver(call)?.toLowerCase();
+  return ['redis', 'redisclient', 'cacheclient'].includes(receiver ?? '');
+}
+
+function hasRedisSetNxOption(call: ts.CallExpression): boolean {
+  for (const argument of call.arguments.slice(2)) {
+    if (
+      (ts.isStringLiteral(argument) ||
+        ts.isNoSubstitutionTemplateLiteral(argument)) &&
+      argument.text.toUpperCase() === 'NX'
+    )
+      return true;
+    if (!ts.isObjectLiteralExpression(argument)) continue;
+    let nxValue: boolean | undefined;
+    let valid = true;
+    for (const property of argument.properties) {
+      if (!ts.isPropertyAssignment(property)) {
+        valid = false;
+        break;
+      }
+      if (propertyName(property.name)?.toUpperCase() === 'NX') {
+        if (nxValue !== undefined) {
+          valid = false;
+          break;
+        }
+        nxValue = property.initializer.kind === ts.SyntaxKind.TrueKeyword;
+      }
+    }
+    if (valid && nxValue === true) return true;
+  }
+  return false;
+}
+
+function findRedisReadCheckWrite(
+  sourceFile: ts.SourceFile,
+  facts: FunctionFacts,
+  findings: Finding[]
+): void {
+  const { declarations, conditionals, calls } = facts;
+  const readsByVariable = new Map<
+    string,
+    { receiver: string; key: string; position: number } | null
+  >();
+  for (const declaration of declarations) {
+    if (
+      !ts.isIdentifier(declaration.name) ||
+      !ts.isVariableDeclarationList(declaration.parent) ||
+      !(declaration.parent.flags & ts.NodeFlags.Const)
+    )
+      continue;
+    const read = unwrapCall(declaration.initializer);
+    const readMethod = read ? methodName(read)?.toLowerCase() : undefined;
+    if (
+      !read ||
+      !['get', 'exists'].includes(readMethod ?? '') ||
+      !isRecognizedRedisReceiver(read) ||
+      !read.arguments[0]
+    )
+      continue;
+    const receiver = callRootReceiver(read);
+    const key = read.arguments[0]?.getText(sourceFile).replace(/\s+/gu, '');
+    if (!receiver || !key || key.length > 256) continue;
+    const name = declaration.name.text;
+    if (readsByVariable.has(name)) readsByVariable.set(name, null);
+    else
+      readsByVariable.set(name, {
+        receiver: receiver.toLowerCase(),
+        key,
+        position: declaration.getStart(sourceFile)
+      });
+  }
+
+  const writesByKey = new Map<string, ts.CallExpression[]>();
+  for (const call of calls) {
+    const method = methodName(call)?.toLowerCase();
+    if (
+      !['set', 'del', 'delete'].includes(method ?? '') ||
+      !isRecognizedRedisReceiver(call) ||
+      (method === 'set' && hasRedisSetNxOption(call))
+    )
+      continue;
+    const receiver = callRootReceiver(call)?.toLowerCase();
+    const key = call.arguments[0]?.getText(sourceFile).replace(/\s+/gu, '');
+    if (!receiver || !key || key.length > 256) continue;
+    const indexKey = `${receiver}\0${key}`;
+    const writes = writesByKey.get(indexKey) ?? [];
+    writes.push(call);
+    writesByKey.set(indexKey, writes);
+  }
+  const reported = new Set<string>();
+  for (const conditional of conditionals) {
+    const names = new Set<string>();
+    const collectNames = (node: ts.Node): void => {
+      if (node !== conditional.expression && ts.isFunctionLike(node)) return;
+      if (
+        ts.isIdentifier(node) &&
+        !(
+          (ts.isPropertyAccessExpression(node.parent) &&
+            node.parent.name === node) ||
+          (ts.isPropertyAssignment(node.parent) && node.parent.name === node)
+        )
+      )
+        names.add(node.text);
+      ts.forEachChild(node, collectNames);
+    };
+    collectNames(conditional.expression);
+    for (const name of names) {
+      const read = readsByVariable.get(name);
+      if (!read || read.position >= conditional.getStart(sourceFile)) continue;
+      const indexKey = `${read.receiver}\0${read.key}`;
+      if (reported.has(indexKey)) continue;
+      const writes = writesByKey.get(indexKey);
+      if (!writes) continue;
+      const branchStart = conditional.thenStatement.getStart(sourceFile);
+      const branchEnd = conditional.thenStatement.getEnd();
+      let low = 0;
+      let high = writes.length;
+      while (low < high) {
+        const middle = (low + high) >>> 1;
+        if ((writes[middle]?.getStart(sourceFile) ?? 0) < branchStart)
+          low = middle + 1;
+        else high = middle;
+      }
+      const write = writes[low];
+      if (!write || write.getEnd() > branchEnd) continue;
+      findings.push(
+        createFinding(sourceFile, write, 'non-atomic-read-check-write')
+      );
+      reported.add(indexKey);
+    }
+  }
+}
+
 /** Detects narrow, same-function filesystem and shared-state concurrency candidates. */
 export function analyzeConcurrencySource(
   filePath: string,
@@ -998,6 +1139,7 @@ export function analyzeConcurrencySource(
     findings
   );
   findReadCheckWrite(sourceFile, topLevelFacts, findings);
+  findRedisReadCheckWrite(sourceFile, topLevelFacts, findings);
   for (const facts of factsByFunction.values()) {
     findFilesystemCheckUse(
       sourceFile,
@@ -1006,6 +1148,7 @@ export function analyzeConcurrencySource(
       findings
     );
     findReadCheckWrite(sourceFile, facts, findings);
+    findRedisReadCheckWrite(sourceFile, facts, findings);
   }
   return [
     ...new Map(findings.map((finding) => [finding.id, finding])).values()

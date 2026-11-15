@@ -1852,3 +1852,61 @@ extensionless payload and block before Stage B. The Stage A suite passed 84
 tests; combined with the 49 malicious-content tests, the focused #95/#96 set
 passes 133 tests. These fixtures never execute their contents. Broad accuracy
 calibration, non-npm provenance and protected-main bootstrap remain open.
+
+## 2026-11-15 local continuation — Cargo optional feature work for #40/#81
+
+Cargo feature resolution previously scanned all feature definitions for each
+optional dependency and activated unrequested optional aliases. It now indexes
+declarations by module and alias once, and activates an optional dependency
+only when an active feature reaches it. A 1,200-optional-dependency fixture
+asserts unrequested aliases remain absent from active features and graph
+edges. The ecosystem inventory, SBOM and OSV suites passed 140 tests on Linux
+Node 24.22.1; typecheck and targeted Biome checks passed. The per-module
+index removes the `O(D × F)` optional-feature scan for `D` dependency
+declarations and `F` feature entries. Authoritative Cargo target/feature
+qualification, artifact checksum verification, cross-platform CI and
+independent review remain for #81; the repository-wide complexity inventory
+remains open for #40. All three Stage A workflow pins were refreshed to the
+scanner digest `5d8268aec2131ddf1f1327fe30465bbb141939e002e110b824d2a51cc4dbfb53`.
+An isolated 1k/10k/50k optional-feature benchmark measured 33.93/119.91/451.86
+ms and sampled 56.4/63.9/142.2 MiB heap peaks; its raw record SHA-256 is
+`bcaea8f58bb73c1e661cdafcaa5ccd8e188f1c4ef55d03780c1fd3e13b8eb062`.
+The exact manifest-to-lock root-edge matching curve measured 189.09/884.05/
+3,009.26 ms at 1k/10k/50k dependencies; raw record SHA-256 is
+`aa4b30e9947b1a649d6545ff2f0967b4015035a52c480092fa7aec85167d8ec8`.
+After the benchmark harness and all docs were formatted, `npm run verify`
+passed on Linux Node 24.22.1: 1,390 unit tests passed / 4 skipped; 1,388
+coverage tests passed / 3 skipped (85.55% statements, 79.62% branches,
+93.16% functions, 88.17% lines); changelog, lint, format, workflow, lockfile,
+audit, typecheck, quality, build and built-package verification passed. The
+17 Biome template-literal notices are informational. This remains partial
+implementation evidence for #40/#81, not full issue acceptance.
+
+## 2026-11-15 local continuation — response header/cookie sinks for #91
+
+The sensitive-flow pass now treats `res.setHeader`, response `header` and
+`append`, and cookie setters as response sinks, in addition to body methods.
+Regressions verify authorization headers, custom token headers, and response
+cookies are detected without exposing environment variable or header names.
+The sensitive-flow and AST security suites passed 63 tests; typecheck and
+targeted Biome checks passed on Linux Node 24.22.1. Schema-derived models,
+external serializers, configurable sanitizer contracts, dynamic/reflection
+sinks, accuracy calibration and independent review remain incomplete for #91.
+All three Stage A workflow pins now use scanner digest
+`88d0d9d42dfc01466fb69e878c4f1926d4fe4702563008d9efb7db2de897ad5c`.
+
+## 2026-11-15 local continuation — Redis check-then-set race for #89
+
+The same-function concurrency pass now reports a Redis `get`/`exists` result
+checked before a `set`/delete against the same static key. A supported Redis
+`SET NX` option is treated as an atomic guard; dynamic keys and unknown client
+names are not matched. A 256-key regression verifies the indexed pass retains
+all distinct candidates without exposing keys or values. Supported
+callback-scoped serializable transactions now also include Sequelize options;
+read and write calls must both use the callback transaction handle. The
+concurrency suite passed 27 tests; typecheck and targeted Biome checks passed
+on Linux Node 24.22.1. Distributed lock lease expiry/renewal, cross-file async
+ownership, other lock APIs, transaction isolation and broader accuracy review
+remain open for #89. The current Stage A scanner digest is
+`d61a28534d2bd10efe75ccb5fdb940fbfb76ef41ad10cf041ca53a52cccb01df` at all
+three workflow pins.

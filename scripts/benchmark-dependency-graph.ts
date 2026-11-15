@@ -507,6 +507,162 @@ async function benchmarkCargoLock(size: number): Promise<void> {
   }
 }
 
+/** Measures optional-feature resolution without activating unrequested aliases. */
+async function benchmarkCargoOptionalFeatures(size: number): Promise<void> {
+  const root = await mkdtemp(
+    path.join(os.tmpdir(), 'toolip-cargo-optional-benchmark-')
+  );
+  const declarations = Array.from(
+    { length: size },
+    (_, index) =>
+      `optional-${String(index).padStart(6, '0')} = { version = "1.0.0", optional = true }`
+  );
+  const manifest = [
+    '[package]',
+    'name = "benchmark-root"',
+    'version = "1.0.0"',
+    'edition = "2021"',
+    '',
+    '[dependencies]',
+    ...declarations,
+    ''
+  ].join('\n');
+  const lockfile = [
+    'version = 4',
+    '',
+    '[[package]]',
+    'name = "benchmark-root"',
+    'version = "1.0.0"',
+    ''
+  ].join('\n');
+  try {
+    await writeFile(path.join(root, 'Cargo.toml'), manifest);
+    await writeFile(path.join(root, 'Cargo.lock'), lockfile);
+    const measurement = await measure(async () => {
+      const graph = await readOtherEcosystemInventoryDetailed(root);
+      const rootPackage = graph.packages.find(
+        (item) => item.name === 'benchmark-root'
+      );
+      const activeFeatures = rootPackage?.activeFeatures ?? [];
+      const optionalEdges = graph.edges.filter(
+        (edge) =>
+          edge.from === rootPackage?.id && edge.name.startsWith('optional-')
+      ).length;
+      if (activeFeatures.length !== 0 || optionalEdges !== 0)
+        throw new Error(
+          'unrequested Cargo optional dependencies were activated'
+        );
+      return {
+        declarations: size,
+        activeFeatures: activeFeatures.length,
+        optionalEdges,
+        complete: graph.complete,
+        warnings: graph.warnings,
+        graphDigest: digestDependencyGraph(graph)
+      };
+    });
+    const fixtureSha256 = createHash('sha256')
+      .update(manifest)
+      .update('\0')
+      .update(lockfile)
+      .digest('hex');
+    emit('cargo-optional-feature-resolution', size, 'cold', {
+      ...measurement,
+      result: measurement.result,
+      manifestBytes: Buffer.byteLength(manifest),
+      lockfileBytes: Buffer.byteLength(lockfile),
+      fixtureSha256,
+      dependencyShape: 'unrequested optional dependencies',
+      providerRequests: 0
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+/** Measures exact manifest-to-lock matching for a wide Cargo workspace root. */
+async function benchmarkCargoWorkspaceEdges(size: number): Promise<void> {
+  const root = await mkdtemp(
+    path.join(os.tmpdir(), 'toolip-cargo-workspace-edge-benchmark-')
+  );
+  const registry = 'registry+https://github.com/rust-lang/crates.io-index';
+  const checksum = 'b'.repeat(64);
+  const names = Array.from(
+    { length: size },
+    (_, index) => `cargo-edge-${String(index).padStart(6, '0')}`
+  );
+  const manifest = [
+    '[package]',
+    'name = "benchmark-root"',
+    'version = "1.0.0"',
+    'edition = "2021"',
+    '',
+    '[dependencies]',
+    ...names.map(
+      (name) => `${name} = { version = "1.0.0", default-features = false }`
+    ),
+    ''
+  ].join('\n');
+  const lockfile = [
+    'version = 4',
+    '',
+    '[[package]]',
+    'name = "benchmark-root"',
+    'version = "1.0.0"',
+    'dependencies = [',
+    ...names.map((name) => `  "${name} 1.0.0 (${registry})",`),
+    ']',
+    ...names.flatMap((name) => [
+      '',
+      '[[package]]',
+      `name = "${name}"`,
+      'version = "1.0.0"',
+      `source = "${registry}"`,
+      `checksum = "${checksum}"`
+    ]),
+    ''
+  ].join('\n');
+  try {
+    await writeFile(path.join(root, 'Cargo.toml'), manifest);
+    await writeFile(path.join(root, 'Cargo.lock'), lockfile);
+    const measurement = await measure(async () => {
+      const graph = await readOtherEcosystemInventoryDetailed(root);
+      const packages = graph.packages.filter(
+        (item) => item.ecosystem === 'crates.io'
+      );
+      const rootEdges = graph.edges.filter((edge) => edge.from === 'root');
+      if (packages.length !== size + 1 || rootEdges.length !== size)
+        throw new Error(
+          `Cargo workspace graph mismatch: expected ${size + 1} packages and ${size} root edges, received ${packages.length} packages and ${rootEdges.length} edges`
+        );
+      return {
+        packages: packages.length,
+        rootEdges: rootEdges.length,
+        complete: graph.complete,
+        warnings: graph.warnings,
+        graphDigest: digestDependencyGraph(graph)
+      };
+    });
+    const fixtureSha256 = createHash('sha256')
+      .update(manifest)
+      .update('\0')
+      .update(lockfile)
+      .digest('hex');
+    emit('cargo-workspace-root-edges', size, 'cold', {
+      ...measurement,
+      result: measurement.result,
+      manifestBytes: Buffer.byteLength(manifest),
+      lockfileBytes: Buffer.byteLength(lockfile),
+      fixtureSha256,
+      dependencyShape: 'wide registry root dependency set',
+      source: registry,
+      providerRequests: 0
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 async function createSourceFixture(root: string, size: number): Promise<void> {
   const batchSize = 128;
   for (let offset = 0; offset < size; offset += batchSize) {
@@ -1100,6 +1256,12 @@ async function runWorker(fixture: string, size: number): Promise<void> {
     case 'cargo-lock-chain':
       await benchmarkCargoLock(size);
       break;
+    case 'cargo-optional-features':
+      await benchmarkCargoOptionalFeatures(size);
+      break;
+    case 'cargo-workspace-edges':
+      await benchmarkCargoWorkspaceEdges(size);
+      break;
     default:
       throw new Error(`unknown benchmark worker fixture: ${fixture}`);
   }
@@ -1128,7 +1290,9 @@ if (workerIndex >= 0) {
       'repository-scorecard-concurrent',
       'npm-lock-wide',
       'npm-lock-converging',
-      'cargo-lock-chain'
+      'cargo-lock-chain',
+      'cargo-optional-features',
+      'cargo-workspace-edges'
     ]) {
       const child = spawnSync(
         process.execPath,
