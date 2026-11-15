@@ -2211,7 +2211,9 @@ ms and returned a complete three-file trace each time. It measures the general
 graph workload; workspace selector tracing is covered by the focused tests.
 Raw data is in
 `docs/benchmarks/toolip-v3.2.1-issue95-workspace-scripts-2026-11-15-linux-node24.jsonl`.
-A source-pinned scale rerun for the final selector refinements is pending.
+The final selector-form rerun against source `2a6322e` measured 22.86/90.88/358.54
+ms at 1k/10k/50k files with complete traces; raw data is in
+`docs/benchmarks/toolip-v3.2.1-issue95-workspace-selectors-2026-11-15-linux-node24.jsonl`.
 
 ## 2026-11-15 local continuation — bounded JSON size preflight for #40
 

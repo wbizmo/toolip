@@ -1303,8 +1303,12 @@ statements, 79.77% branches, 93.2% functions and 88.37% lines. The scale fixture
 the general graph path; workspace-selector correctness remains covered by the
 focused tests rather than this benchmark. Raw results are in
 `docs/benchmarks/toolip-v3.2.1-issue95-workspace-scripts-2026-11-15-linux-node24.jsonl`.
-The final accepted selector-form refinements are included in the full
-verification above; a source-pinned scale rerun is pending.
+After the final npm `--prefix` and equals-form selector refinements, the same
+scale fixture against `2a6322ed6d22c286e7097f72278696c7b24a4c65` took
+22.86/90.88/358.54 ms at 1k/10k/50k files with complete three-file traces. This
+still measures the general graph workload; selector correctness is tested
+separately. Raw data is in
+`docs/benchmarks/toolip-v3.2.1-issue95-workspace-selectors-2026-11-15-linux-node24.jsonl`.
 
 ### #40 bounded JSON report size check — 2026-11-15
 

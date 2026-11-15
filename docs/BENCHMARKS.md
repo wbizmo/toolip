@@ -717,3 +717,13 @@ The bounded scale fixture was rerun against `8c488d1680fdb95d5b4a903868c4b923d9a
 |       1,000 |       32,002 |  25.83 ms |  66.0 MiB | 207.0 MiB | 3 files / complete |
 |      10,000 |      320,002 |  85.21 ms |  55.6 MiB | 212.8 MiB | 3 files / complete |
 |      50,000 |    1,600,002 | 413.80 ms | 131.2 MiB | 289.3 MiB | 3 files / complete |
+
+### Issue #95 selector-form source rerun — 2026-11-15
+
+After adding npm `--prefix` and equals-form selectors, the bounded scale fixture was rerun against `2a6322ed6d22c286e7097f72278696c7b24a4c65`. As above, this measures the general execution graph rather than a workspace-selector-heavy input; focused adversarial tests cover selector correctness. Results are single isolated Linux Node 24.22.1 samples with no payload execution or provider requests. Raw JSONL: [`toolip-v3.2.1-issue95-workspace-selectors-2026-11-15-linux-node24.jsonl`](benchmarks/toolip-v3.2.1-issue95-workspace-selectors-2026-11-15-linux-node24.jsonl).
+
+| Input files | Source bytes | Wall time | Peak heap |  Peak RSS | Trace / coverage   |
+| ----------: | -----------: | --------: | --------: | --------: | ------------------ |
+|       1,000 |       32,002 |  22.86 ms |  66.0 MiB | 205.4 MiB | 3 files / complete |
+|      10,000 |      320,002 |  90.88 ms |  73.9 MiB | 213.6 MiB | 3 files / complete |
+|      50,000 |    1,600,002 | 358.54 ms | 135.3 MiB | 292.7 MiB | 3 files / complete |
