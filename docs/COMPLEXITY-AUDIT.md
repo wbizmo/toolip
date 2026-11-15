@@ -1289,19 +1289,22 @@ skipped), 1,442 coverage tests (3 skipped), 85.55% statements, 79.62% branches,
 `0f29e38a2f0dd33b775c23df763e3c115a62d6b9` took 20.43/130.71/350.63 ms and
 returned a complete three-file trace; raw data is in `docs/benchmarks/`.
 
-The graph now also resolves explicit `npm --workspace`, `pnpm --filter` and
-`yarn workspace` script calls by unique package name or local manifest path.
+The graph now also resolves explicit `npm --workspace`/`--prefix`,
+`pnpm --filter` and `yarn workspace` script calls by unique package name or
+local manifest path. Space and equals option forms are covered.
 Manifest/package-name indexing adds O(P) time and space for P manifests; the
 existing bounded reference traversal covers the additional script edges.
-Three regressions verify a malicious root-to-workspace chain. The focused suite
-passes 71 tests. Full verification passes with 1,448 unit tests (4 skipped),
-1,446 coverage tests (3 skipped), 85.64% statements, 79.65% branches, 93.2%
-functions and 88.3% lines. The scale fixture was rerun against
+Six regressions verify malicious root-to-workspace chains and unresolved
+dynamic selectors. The focused suite passes 80 tests. Full verification passes
+with 1,457 unit tests (4 skipped), 1,455 coverage tests (3 skipped), 85.71%
+statements, 79.77% branches, 93.2% functions and 88.37% lines. The scale fixture was rerun against
 `8c488d1680fdb95d5b4a903868c4b923d9a051c3`: 25.83/85.21/413.80 ms at
 1k/10k/50k files, each with a complete three-file chain. The fixture measures
 the general graph path; workspace-selector correctness remains covered by the
 focused tests rather than this benchmark. Raw results are in
 `docs/benchmarks/toolip-v3.2.1-issue95-workspace-scripts-2026-11-15-linux-node24.jsonl`.
+The final accepted selector-form refinements are included in the full
+verification above; a source-pinned scale rerun is pending.
 
 ### #40 bounded JSON report size check — 2026-11-15
 
@@ -1312,9 +1315,9 @@ escaping and UTF-8 accounting stay delegated to the runtime. A 33 MiB newline
 string that exceeded the five-second coverage-test limit now rejects in a
 single local sample at 211.5 ms without constructing the full escaped output.
 The report-writer suite passes five tests, including a split-surrogate UTF-8
-boundary case. Full verification passes with 1,448 unit tests (4 skipped),
-1,446 coverage tests (3 skipped), 85.64% statements, 79.65% branches, 93.2%
-functions and 88.3% lines.
+boundary case. The latest full verification passes with 1,457 unit tests (4
+skipped), 1,455 coverage tests (3 skipped), 85.71% statements, 79.77% branches,
+93.2% functions and 88.37% lines.
 
 ### #95 synthetic benign/suspicious corpus — 2026-11-15
 

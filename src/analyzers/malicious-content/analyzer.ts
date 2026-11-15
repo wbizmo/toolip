@@ -101,7 +101,7 @@ const shellSourceReference =
 const packageScriptReference =
   /\b(?:npm|pnpm|yarn)\s+(?:run|run-script)\s+(?:"([^"\n]+)"|'([^'\n]+)'|([^\s;&|]+))/giu;
 const workspaceScriptReference =
-  /\b(?:npm\s+(?:--workspace|-w)\s+([^\s]+)\s+(?:run|run-script)\s+([^\s;&|]+)|npm\s+(?:run|run-script)\s+([^\s;&|]+)\s+--workspace\s+([^\s;&|]+)|pnpm\s+--filter\s+([^\s]+)\s+(?:run\s+)?([^\s;&|]+)|yarn\s+workspace\s+([^\s]+)\s+([^\s;&|]+))/giu;
+  /\b(?:npm\s+(?:--workspace(?:=|\s+)|--prefix(?:=|\s+)|-w\s+)([^\s]+)\s+(?:run|run-script)\s+([^\s;&|]+)|npm\s+(?:run|run-script)\s+([^\s;&|]+)\s+--(?:workspace|prefix)(?:=|\s+)([^\s;&|]+)|pnpm\s+--filter(?:=|\s+)([^\s]+)\s+(?:run\s+)?([^\s;&|]+)|yarn\s+workspace\s+([^\s]+)\s+([^\s;&|]+))/giu;
 const suspiciousPayload =
   /(?:\beval\s*\(\s*(?:atob|Buffer\.from|decodeURIComponent)|new\s+Function\s*\(\s*(?:atob|Buffer\.from)|\b(?:atob|Buffer\.from)\s*\([^;\n]{0,200}[\s\S]{0,240}\b(?:eval|new\s+Function)\s*\(|\b(?:curl|wget)\b[^\n|]{0,240}\|\s*(?:sh|bash)|\b(?:Invoke-Expression|IEX)\s*\(?\s*(?:\(Invoke-WebRequest|\$env:))/iu;
 const dynamicExecution =
@@ -518,7 +518,13 @@ function addPackageScriptReferences(
   workspaceScriptReference.lastIndex = 0;
   let unqualifiedSource = source;
   for (const match of source.matchAll(workspaceScriptReference)) {
-    const selector = match[1] ?? match[4] ?? match[5] ?? match[7] ?? '';
+    const rawSelector = match[1] ?? match[4] ?? match[5] ?? match[7] ?? '';
+    const selector =
+      rawSelector.length > 1 &&
+      rawSelector[0] === rawSelector.at(-1) &&
+      (rawSelector[0] === '"' || rawSelector[0] === "'")
+        ? rawSelector.slice(1, -1)
+        : rawSelector;
     const scriptName = match[2] ?? match[3] ?? match[6] ?? match[8] ?? '';
     const namedManifest = packageNameManifests.get(selector);
     let targetManifest = namedManifest;

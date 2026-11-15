@@ -239,7 +239,13 @@ describe('non-executing malicious content chain analysis', () => {
 
   it.each([
     'npm --workspace packages/web run prepare',
+    'npm --workspace=packages/web run prepare',
+    'npm --prefix packages/web run prepare',
+    'npm --prefix="packages/web" run prepare',
+    'npm run prepare --workspace=packages/web',
+    'npm run prepare --prefix packages/web',
     'pnpm --filter @scope/web run prepare',
+    'pnpm --filter=@scope/web run prepare',
     'yarn workspace @scope/web prepare'
   ])('follows explicit workspace script command %s', (command) => {
     const result = analyzeMaliciousContent([
@@ -280,6 +286,23 @@ describe('non-executing malicious content chain analysis', () => {
         content: JSON.stringify({
           scripts: { prepare: 'npm run "$TOOLIP_SCRIPT"' }
         })
+      }
+    ]);
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]?.ruleId).toBe('TLP-MAL-002');
+    expect(result.findings[0]?.metadata?.trace).toEqual(['package.json']);
+  });
+
+  it.each([
+    'npm --workspace "$TOOLIP_PACKAGE" run prepare',
+    'pnpm --filter "$TOOLIP_PACKAGE" run prepare',
+    'yarn workspace "$TOOLIP_PACKAGE" prepare'
+  ])('marks dynamic workspace selection as unresolved: %s', (command) => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({ scripts: { prepare: command } })
       }
     ]);
 

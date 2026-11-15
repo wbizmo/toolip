@@ -2196,21 +2196,22 @@ accuracy and independent review remain incomplete. The updated isolated
 ms, each with one finding and the complete three-file trace; raw measurements
 are in `docs/benchmarks/toolip-v3.2.1-issue95-nested-scripts-2026-11-15-linux-node24.jsonl`.
 
-The analyzer now also resolves explicit root-to-workspace script calls for npm,
-pnpm and Yarn using unique package names or local manifest paths. Three
-synthetic regressions trace an automatic root script through the selected
-workspace to a disguised local payload. The focused malicious-content suite
-passes 71 tests; typecheck and targeted lint pass. Ambiguous, dynamic and
-unsupported selector forms remain unresolved by design. The expanded full
-verification passes: 1,448 unit tests (4 skipped), 1,446 coverage
-tests (3 skipped), 85.64% statements, 79.65% branches, 93.2% functions and
-88.3% lines; packed-package verification passes. All Stage A pins use digest
-`f6267a1952230bdd73a6b4597a42bc3f2edb5abe23848e9de539fc8c92a5597c`. The
+The analyzer now also resolves explicit root-to-workspace script calls for npm
+`--workspace`/`--prefix`, pnpm `--filter` and Yarn `workspace` using unique
+package names or local manifest paths. Six synthetic regressions cover valid
+chains and unresolved dynamic selectors. The focused malicious-content suite
+passes 80 tests; typecheck and targeted lint pass. Ambiguous, dynamic and
+unsupported selector forms remain unresolved by design. Full verification
+passes with 1,457 unit tests (4 skipped), 1,455 coverage tests (3 skipped),
+85.71% statements, 79.77% branches, 93.2% functions and 88.37% lines;
+packed-package verification passes. All Stage A pins use digest
+`bee653aac55052deabaa1f766a0eb82c6e28b78ba3baae9add0b37802979d416`. The
 1k/10k/50k scale fixture against source `8c488d1` measured 25.83/85.21/413.80
 ms and returned a complete three-file trace each time. It measures the general
 graph workload; workspace selector tracing is covered by the focused tests.
 Raw data is in
 `docs/benchmarks/toolip-v3.2.1-issue95-workspace-scripts-2026-11-15-linux-node24.jsonl`.
+A source-pinned scale rerun for the final selector refinements is pending.
 
 ## 2026-11-15 local continuation — bounded JSON size preflight for #40
 
@@ -2219,5 +2220,6 @@ The JSON report writer now measures escaped string size in 64 KiB chunks. The
 211.5 ms in a local single sample; the previous implementation exceeded the
 5-second coverage-test timeout under the full parallel suite. The report-writer
 suite passes five tests, including UTF-8 accounting across a surrogate-pair
-chunk boundary. Full verification passes with the same 1,448 unit / 4 skipped
-and 1,446 coverage / 3 skipped totals above.
+chunk boundary. Latest full verification passes with 1,457 unit tests (4
+skipped), 1,455 coverage tests (3 skipped), 85.71% statements, 79.77% branches,
+93.2% functions and 88.37% lines.
