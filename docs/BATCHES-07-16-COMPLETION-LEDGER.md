@@ -2191,4 +2191,7 @@ passes for this follow-up: 1,444 unit tests (4 skipped), 1,442 coverage tests
 lines; package build verification passes. All three Stage A pins use digest
 `6c734e14420f80e30cb1886f31a72bc40c61280e802aa1091120aa0c16e6d53b`. This is a
 targeted #95 improvement; runtime command construction, broader adversarial
-accuracy and independent review remain incomplete.
+accuracy and independent review remain incomplete. The updated isolated
+1k/10k/50k runs against pushed source `0f29e38` measured 20.43/130.71/350.63
+ms, each with one finding and the complete three-file trace; raw measurements
+are in `docs/benchmarks/toolip-v3.2.1-issue95-nested-scripts-2026-11-15-linux-node24.jsonl`.

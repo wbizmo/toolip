@@ -1280,9 +1280,14 @@ within that same manifest. Each command is scanned once while building the
 bounded entry graph; traversal remains bounded by the existing 100,000
 reference-work limit, with O(S+B+V+E) expected work and O(S+V+E) additional
 space for S scripts, B command bytes, V entrypoints and E references. Missing
-script names remain explicit unresolved references. Focused regression coverage
-checks an automatic script reaching a disguised local payload and a benign
-nested build script. The full release verification is pending for this change.
+or shell-selected script names remain explicit unresolved references. Focused
+regressions cover npm, pnpm and Yarn invocation forms, dotted names, benign
+cycles, a suspicious local payload and a dynamic selector. The malicious-content
+suite passes 68 tests. Full local verification passes with 1,444 unit tests (4
+skipped), 1,442 coverage tests (3 skipped), 85.55% statements, 79.62% branches,
+93.16% functions and 88.24% lines. Isolated 1k/10k/50k runs against
+`0f29e38a2f0dd33b775c23df763e3c115a62d6b9` took 20.43/130.71/350.63 ms and
+returned a complete three-file trace; raw data is in `docs/benchmarks/`.
 
 ### #95 synthetic benign/suspicious corpus — 2026-11-15
 

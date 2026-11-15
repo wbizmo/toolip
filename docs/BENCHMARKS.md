@@ -697,3 +697,13 @@ A synthetic, non-executing fixture with one npm entrypoint, an extensionless wra
 |       1,000 |       32,002 |  20.09 ms |  72.2 MiB | 229.8 MiB | 3 files / complete |
 |      10,000 |      320,002 | 119.49 ms |  65.4 MiB | 220.7 MiB | 3 files / complete |
 |      50,000 |    1,600,002 | 366.75 ms | 128.5 MiB | 287.1 MiB | 3 files / complete |
+
+### Issue #95 nested package-script graph rerun — 2026-11-15
+
+The same synthetic chain was rerun against commit `0f29e38a2f0dd33b775c23df763e3c115a62d6b9`, which adds bounded nested npm/pnpm/Yarn script-reference traversal. Each isolated Linux Node 24.22.1 process retained one finding and a complete three-file trace. No fixture executed and provider requests were zero. These are single samples, not variance or cross-platform qualification. Raw JSONL: [`toolip-v3.2.1-issue95-nested-scripts-2026-11-15-linux-node24.jsonl`](benchmarks/toolip-v3.2.1-issue95-nested-scripts-2026-11-15-linux-node24.jsonl).
+
+| Input files | Source bytes | Wall time | Peak heap |  Peak RSS | Trace / coverage   |
+| ----------: | -----------: | --------: | --------: | --------: | ------------------ |
+|       1,000 |       32,002 |  20.43 ms |  56.8 MiB | 190.6 MiB | 3 files / complete |
+|      10,000 |      320,002 | 130.71 ms |  66.2 MiB | 220.0 MiB | 3 files / complete |
+|      50,000 |    1,600,002 | 350.63 ms | 133.4 MiB | 290.8 MiB | 3 files / complete |
