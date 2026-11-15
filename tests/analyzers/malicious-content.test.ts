@@ -895,6 +895,18 @@ describe('non-executing malicious content chain analysis', () => {
     [
       'node tar API',
       "tar.x({ file: 'bundle.tar', cwd: 'out' }); new Deno.Command('node', { args: ['out/init.js'] });"
+    ],
+    [
+      'Python shutil API',
+      "shutil.unpack_archive('bundle.zip', 'out'); subprocess.run(['node', 'out/init.js']);"
+    ],
+    [
+      'unzipper API',
+      "unzipper.Extract({ path: 'out' }); child_process.spawn('node', ['out/init.js']);"
+    ],
+    [
+      'extract-zip API',
+      "extractZip('bundle.zip', 'out'); child_process.execFile('node', ['out/init.js']);"
     ]
   ])(
     'keeps %s extraction followed by process launch unknown',

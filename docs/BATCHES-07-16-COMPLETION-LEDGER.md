@@ -2052,15 +2052,17 @@ Archive contents remain uninspected and the chain stays explicitly unknown.
 
 Archive API analysis now recognizes `new AdmZip(...).extractAllTo(...)` and
 Node `tar.x(...)`/`tar.extract(...)` calls followed by common
-`child_process`/`Deno.Command` process launch APIs. Local analyzer and Stage A
-fixtures passed 145 tests together, including benign archive creation. Full
-verification passed: 1,415 unit tests (4 skipped), 1,413 coverage tests (3
-skipped), 85.55% statements, 79.62% branches, 93.16% functions and 88.14%
-lines. All three Stage A pins use digest
-`b598ec60659a6876095640f63619c096a78e624dc8379cd0df375f0f41c5a778`. No
-archive is opened or executed; findings remain incomplete/unknown. Broader
-archive APIs, runtime wrappers and corpus accuracy remain incomplete for
-#95/#96.
+`child_process`/`Deno.Command` process launch APIs. Additional coverage includes
+Python `shutil.unpack_archive`, `unzipper.Extract` and `extractZip` followed by
+process launch. Local analyzer and Stage A suites passed 151 tests together,
+including benign archive creation. The trusted scanner digest is refreshed in
+all three pins to
+`cc16d6e89a1c7863d95ef20f8163ee7ca7f1966ce4dde7416306aaeec205370e`. Full
+verification passed: 1,423 unit tests (4 skipped), 1,421 coverage tests (3
+skipped), 85.62% statements, 79.66% branches, 93.16% functions and 88.21%
+lines. No archive is opened or executed; findings remain incomplete/unknown.
+Broader archive APIs, runtime wrappers and corpus accuracy remain incomplete
+for #95/#96.
 
 ## 2026-11-15 local continuation — memoized nested ownership proofs for #61
 

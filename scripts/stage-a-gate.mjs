@@ -580,7 +580,7 @@ const archiveExtraction =
 const archiveExecution =
   /(?:\bStart-Process\b(?:\s+-FilePath)?\s+[^\s;&|]+|\b(?:node(?:\.exe)?|bash|sh|zsh|pwsh|powershell|python(?:3)?|java(?:\.exe)?|deno|bun|ruby|perl|php|cmd(?:\.exe)?)\b\s+(?:-jar\s+|\/(?:c|k)\s+)?[^\s;&|]+|(?:^|[;&|\r\n]\s*)(?:call\s+)?(?:&\s*)?\.{1,2}[\\/]\S+)/imu;
 const archiveApiExtraction =
-  /\b(?:new\s+AdmZip\s*\([^)]{0,1024}\)\s*\.\s*extractAllTo\s*\(|(?:(?:zipfile\.)?ZipFile|(?:tarfile\.)?TarFile|tarfile\.open)\s*\([\s\S]{0,1024}?\.\s*extract(?:all)?\s*\(|(?:tar|tarModule)\s*\.\s*(?:x|extract)\s*\()/giu;
+  /\b(?:new\s+AdmZip\s*\([^)]{0,1024}\)\s*\.\s*extractAllTo\s*\(|(?:(?:zipfile\.)?ZipFile|(?:tarfile\.)?TarFile|tarfile\.open)\s*\([\s\S]{0,1024}?\.\s*extract(?:all)?\s*\(|(?:tar|tarModule)\s*\.\s*(?:x|extract)\s*\(|shutil\.unpack_archive\s*\(|unzipper\s*\.\s*Extract\s*\(|extractZip\s*\()/giu;
 const archiveApiExecution =
   /\b(?:subprocess\.(?:run|Popen|call|check_call|check_output)|os\.system|ProcessBuilder|Runtime\.getRuntime\s*\(\)\s*\.\s*exec|(?:child_process\.)?(?:exec|execFile|spawn|fork)|(?:new\s+)?Deno\.Command)\s*\(/u;
 
