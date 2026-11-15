@@ -70,6 +70,7 @@ type Scope = {
   projectModules?: ProjectModuleResolver;
 };
 type PendingBinding = {
+  declaration: ts.VariableDeclaration;
   name: ts.BindingName;
   initializer?: ts.Expression;
   scope: Scope;
@@ -1621,6 +1622,7 @@ function collectBindings(
         }
         if (node.initializer)
           pending.push({
+            declaration: node,
             name: node.name,
             initializer: node.initializer,
             scope: bindingScope
@@ -1725,6 +1727,24 @@ function collectBindings(
           ))
       )
         scope.dynamicWrites.add(name);
+    }
+  }
+
+  let changed = true;
+  for (let depth = 0; depth < 16 && changed; depth += 1) {
+    changed = false;
+    for (const item of pending) {
+      if (
+        !ts.isIdentifier(item.name) ||
+        !item.initializer ||
+        !ts.isVariableDeclarationList(item.declaration.parent) ||
+        (item.declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+        !isOutboundClientBindingExpression(item.initializer, item.scope) ||
+        item.scope.outboundClients.has(item.name.text)
+      )
+        continue;
+      item.scope.outboundClients.add(item.name.text);
+      changed = true;
     }
   }
 }
@@ -2406,6 +2426,34 @@ function isKnownOutboundClient(scope: Scope, name: string): boolean {
       );
   }
   return false;
+}
+
+function isOutboundClientBindingExpression(
+  expression: ts.Expression,
+  scope: Scope
+): boolean {
+  const value = unwrapExpression(expression);
+  if (ts.isIdentifier(value)) return isKnownOutboundClient(scope, value.text);
+  if (
+    !ts.isPropertyAccessExpression(value) &&
+    !ts.isElementAccessExpression(value)
+  )
+    return false;
+  const method = ts.isPropertyAccessExpression(value)
+    ? value.name.text.toLowerCase()
+    : value.argumentExpression &&
+        (ts.isStringLiteral(value.argumentExpression) ||
+          ts.isNoSubstitutionTemplateLiteral(value.argumentExpression))
+      ? value.argumentExpression.text.toLowerCase()
+      : '';
+  const dynamicMethod =
+    ts.isElementAccessExpression(value) && method.length === 0;
+  const receiver = rootIdentifier(value.expression);
+  return Boolean(
+    receiver &&
+    isKnownOutboundClient(scope, receiver.text) &&
+    (outboundRequestMethods.has(method) || dynamicMethod)
+  );
 }
 
 function isProcessEnvironmentObject(
@@ -3974,11 +4022,7 @@ function isOutboundRequestCall(call: ts.CallExpression, scope: Scope): boolean {
     (outboundRequestMethods.has(targetName) || dynamicComputedMethod)
   )
     return true;
-  if (
-    ts.isIdentifier(target) &&
-    isKnownOutboundClient(scope, target.text) &&
-    outboundRequestMethods.has(targetName)
-  )
+  if (ts.isIdentifier(target) && isKnownOutboundClient(scope, target.text))
     return true;
   if (
     outboundRequestMethods.has(targetName) &&

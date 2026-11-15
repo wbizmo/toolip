@@ -1752,9 +1752,9 @@ remain incomplete; #95 remains code incomplete.
 Outbound-request taint analysis now recognizes statically required HTTP
 client namespaces and destructured methods, for example `const client =
 require('axios'); client.get(taintedUrl)` and `const { get } = require('axios')`.
-A later reassignment invalidates the namespace identity, while immutable
-destructured request methods remain sinks. The AST security analyzer suite
-passed 47 tests and typecheck passed. Dynamic module construction,
+A unique immutable alias such as `const getUrl = client.get` is also traced;
+reassigned namespace or function aliases lose their static identity. The AST
+security analyzer suite passed 47 tests and typecheck passed. Dynamic module construction,
 re-exported/custom wrappers, external API semantics, DNS behavior and
 race-safe filesystem identity remain incomplete; #60 is not complete.
 
