@@ -2241,3 +2241,6 @@ Full verification passes with 1,458 unit tests (4 skipped), 1,456 coverage
 tests (3 skipped), 85.71% statements, 79.77% branches, 93.2% functions and
 88.37% lines; packed-package verification passes. All Stage A pins use digest
 `92f13097dfa267d683482dff9245bd498f46afc03682cb03efcda79994d38b05`.
+Live summary evidence is stored in
+`docs/benchmarks/toolip-v3.2.1-package-health-live-2026-11-15-linux-node24.jsonl`
+for source commit `0bf5ec9`.

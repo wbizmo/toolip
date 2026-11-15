@@ -47,6 +47,9 @@ versions using Node 24.22.1 with `NODE_USE_ENV_PROXY=1`: `is-number@7.0.0` and
 maintainer history. These are examples of metadata availability, not a
 calibrated benign-package accuracy sample or independent verification of
 ownership changes.
+The redacted status summary is recorded in
+`docs/benchmarks/toolip-v3.2.1-package-health-live-2026-11-15-linux-node24.jsonl`
+against source commit `0bf5ec9`.
 
 The provider evaluates at most the latest five dated releases when comparing
 publisher and maintainer identities, and relies on public packument metadata.

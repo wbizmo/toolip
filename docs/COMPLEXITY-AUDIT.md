@@ -1335,6 +1335,11 @@ and `lodash` returned observed publisher, maintainer and release history;
 `debug` returned observed release history and partial publisher/maintainer
 history. Results included only low-confidence review signals. This sample
 validates API compatibility, not benign-package precision or ownership truth.
+The exact source revision was `0bf5ec9f103da5ca283d66a366d1f9d3b6a312e4`; redacted
+status summaries are in
+`docs/benchmarks/toolip-v3.2.1-package-health-live-2026-11-15-linux-node24.jsonl`.
+Full verification passes with 1,458 unit tests (4 skipped), 1,456 coverage
+tests (3 skipped) and packed-package verification.
 
 ### #95 synthetic benign/suspicious corpus — 2026-11-15
 
