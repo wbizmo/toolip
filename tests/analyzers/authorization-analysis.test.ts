@@ -29,6 +29,39 @@ describe('route authorization candidates', () => {
     expect(candidate?.metadata?.limitation).toContain('Cross-file middleware');
   });
 
+  it('recognizes request-controlled params in Next.js route context', () => {
+    const directContext = analyzeAstSource(
+      'app/api/documents/[id]/route.ts',
+      `export async function GET(_request: Request, context: { params: { id: string } }) {
+  return db.document.findUnique({ where: { id: context.params.id } });
+}`
+    );
+    const destructuredParams = analyzeAstSource(
+      'app/api/documents/[id]/route.ts',
+      `export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  return db.document.findUnique({ where: { id } });
+}`
+    );
+    const otherContextField = analyzeAstSource(
+      'app/api/documents/[id]/route.ts',
+      `export async function GET(_request: Request, { params, user }: { params: Promise<{ id: string }>, user: { id: string } }) {
+  const { id } = await params;
+  return db.document.findUnique({ where: { id: user.id } });
+}`
+    );
+
+    expect(
+      directContext.some((finding) => finding.ruleId === 'TLP-AUTH-001')
+    ).toBe(true);
+    expect(
+      destructuredParams.some((finding) => finding.ruleId === 'TLP-AUTH-001')
+    ).toBe(true);
+    expect(
+      otherContextField.some((finding) => finding.ruleId === 'TLP-AUTH-001')
+    ).toBe(false);
+  });
+
   it('follows bounded local aliases and destructuring from request identifiers', () => {
     const directAlias = analyzeAstSource(
       'src/routes/alias.ts',
@@ -286,6 +319,22 @@ describe('route authorization candidates', () => {
     ).toEqual([4, 15]);
   });
 
+  it('does not treat a generic role authorization decorator as object ownership', () => {
+    const findings = analyzeAstSource(
+      'src/documents.controller.ts',
+      `class DocumentsController {
+  @Authorize('admin')
+  @Get(':id')
+  async load(@Param('id') id: string) {
+    return this.documents.findById(id);
+  }
+}`
+    );
+    expect(findings.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      true
+    );
+  });
+
   it('does not let an authorization check after the lookup hide the lookup', () => {
     const findings = analyzeAstSource(
       'src/routes/late-check.ts',
@@ -453,6 +502,20 @@ describe('route authorization candidates', () => {
       opaqueMiddleware.find((finding) => finding.ruleId === 'TLP-AUTH-001')
         ?.confidence
     ).toBe('low');
+  });
+
+  it('does not let a guard for a different request identifier authorize the lookup', () => {
+    const findings = analyzeAstSource(
+      'src/routes/mismatched-resource-guard.ts',
+      `router.get('/documents/:id', async (req, res) => {
+  await assertOwner(req.user, req.params.otherId);
+  if (!canReadDocument(req.user, req.params.anotherId)) throw new Error('forbidden');
+  return documents.findById(req.params.id);
+});`
+    );
+    expect(
+      findings.filter((finding) => finding.ruleId === 'TLP-AUTH-001')
+    ).toHaveLength(1);
   });
 
   it('does not let a conditional explicit guard hide a later object lookup', () => {

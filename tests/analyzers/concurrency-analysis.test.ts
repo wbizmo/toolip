@@ -14,6 +14,32 @@ describe('AST concurrency candidates', () => {
     expect(findings.map((finding) => finding.ruleId)).toContain('TLP-RACE-001');
   });
 
+  it('flags realpath validation followed by reopening the same path', () => {
+    const findings = analyzeAstSource(
+      'src/storage.ts',
+      `import { realpath, readFile } from 'node:fs/promises';
+async function load(path: string) {
+  await realpath(path);
+  return readFile(path);
+}`
+    );
+
+    expect(findings.map((finding) => finding.ruleId)).toContain('TLP-RACE-001');
+  });
+
+  it('tracks a realpath result back to the path later reopened', () => {
+    const findings = analyzeAstSource(
+      'src/storage.ts',
+      `import { realpath, readFile } from 'node:fs/promises';
+async function load(path: string) {
+  const canonicalPath = await realpath(path);
+  return readFile(canonicalPath);
+}`
+    );
+
+    expect(findings.map((finding) => finding.ruleId)).toContain('TLP-RACE-001');
+  });
+
   it('follows immutable local path aliases in filesystem check-then-use flows', () => {
     const findings = analyzeAstSource(
       'src/storage.ts',
@@ -140,6 +166,48 @@ describe('AST concurrency candidates', () => {
     expect(
       serializable.some((finding) => finding.ruleId === 'TLP-RACE-002')
     ).toBe(false);
+  });
+
+  it('flags discarded database transaction promises but accepts awaited or returned transactions', () => {
+    const findings = analyzeAstSource(
+      'src/transactions.ts',
+      `async function discarded() {
+  db.$transaction(async (tx) => tx.invoice.update({ where: { id: '1' }, data: { paid: true } }));
+  void prisma.$transaction(async (tx) => tx.invoice.update({ where: { id: '2' }, data: { paid: true } }));
+  db.$transaction(async (tx) => tx.invoice.update({ where: { id: '5' }, data: { paid: true } })).then(() => notify());
+}
+async function observed() {
+  await db.$transaction(async (tx) => tx.invoice.update({ where: { id: '3' }, data: { paid: true } }));
+  return prisma.$transaction(async (tx) => tx.invoice.update({ where: { id: '4' }, data: { paid: true } }));
+}
+function customClient() {
+  utility.transaction(() => persist());
+}`
+    );
+    const transactions = findings.filter(
+      (finding) => finding.ruleId === 'TLP-RACE-004'
+    );
+    expect(transactions).toHaveLength(3);
+    expect(transactions.map((finding) => finding.location?.line)).toEqual([
+      2, 3, 4
+    ]);
+    expect(
+      transactions.every((finding) => finding.metadata?.cwe === 'CWE-362')
+    ).toBe(true);
+  });
+
+  it('recognizes statically computed transaction method names', () => {
+    const findings = analyzeAstSource(
+      'src/transactions.ts',
+      `function persist() {
+  db['$transaction'](() => writeInvoice());
+  database['transaction'](() => writePayment()).catch(reportError);
+  const method = getMethod();
+  db[method](() => writeOther());
+}`
+    ).filter((finding) => finding.ruleId === 'TLP-RACE-004');
+
+    expect(findings.map((finding) => finding.location?.line)).toEqual([2, 3]);
   });
 
   it('does not trust a custom transaction method as a serializable database lock', () => {

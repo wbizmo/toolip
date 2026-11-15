@@ -41,6 +41,40 @@ function publicNpmSource(name: string, version: string) {
 }
 
 describe('scanDependencies', () => {
+  it('matches unresolved graph warnings to exact identities without repeating scans', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-deps-unresolved-')
+    );
+    try {
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': {
+              name: 'fixture',
+              version: '1.0.0',
+              dependencies: { '@acme/missing': '^1.0.0' }
+            }
+          }
+        })
+      );
+      const { scanDependencies } =
+        await import('../src/core/dependency-scan.js');
+
+      const result = await scanDependencies(root, { offline: true });
+
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]).toMatchObject({
+        name: '@acme/missing',
+        kind: 'unresolved'
+      });
+      expect(result.coverage.state).toBe('failed');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('reuses only exact dependency graph parsing across source-only snapshots', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-deps-cache-'));
     const cache = new AnalysisResultCache();

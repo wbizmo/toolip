@@ -10,7 +10,10 @@ import {
   mergePolicyLayers
 } from '../core/policy-as-code.js';
 import { sanitizeOutput } from '../core/safe-output.js';
-import { writeSarifReport } from '../core/report-writer.js';
+import {
+  serializeJsonOutputBounded,
+  writeSarifReport
+} from '../core/report-writer.js';
 import { TOOLIP_VERSION } from '../config/version.js';
 import type { FindingSeverity } from '../contracts/finding.js';
 
@@ -262,7 +265,7 @@ function registerEvaluation(command: Command, explain: boolean): void {
             }))
           )
         };
-        process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+        process.stdout.write(`${serializeJsonOutputBounded(output)}\n`);
         process.exitCode =
           evaluation.decision === 'pass'
             ? 0
@@ -277,7 +280,7 @@ function registerEvaluation(command: Command, explain: boolean): void {
             ? error.message
             : 'policy evaluation failed';
         process.stdout.write(
-          `${JSON.stringify({ decision: failureDecision, reasons: [message] })}\n`
+          `${serializeJsonOutputBounded({ decision: failureDecision, reasons: [message] })}\n`
         );
         process.exitCode = failureDecision === 'incomplete' ? 3 : 1;
       }

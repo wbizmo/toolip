@@ -10,6 +10,7 @@ import {
   type FailOn
 } from '../application/analysis-status.js';
 import { ToolipError } from '../errors/toolip-error.js';
+import { serializeJsonOutputBounded } from '../core/report-writer.js';
 import type { Finding } from '../contracts/finding.js';
 
 type AstScanOptions = {
@@ -89,22 +90,18 @@ export function registerAstScanCommand(
 
       if (options.json) {
         console.log(
-          JSON.stringify(
-            {
-              analyzer: result.analyzer,
-              durationMs: result.durationMs,
-              analysis: assessmentJson(assessment),
-              summary: {
-                filesAnalyzed: result.metadata?.filesAnalyzed ?? 0,
-                findings: result.findings.length,
-                warnings: result.warnings?.length ?? 0
-              },
-              findings: result.findings,
-              warnings: result.warnings ?? []
+          serializeJsonOutputBounded({
+            analyzer: result.analyzer,
+            durationMs: result.durationMs,
+            analysis: assessmentJson(assessment),
+            summary: {
+              filesAnalyzed: result.metadata?.filesAnalyzed ?? 0,
+              findings: result.findings.length,
+              warnings: result.warnings?.length ?? 0
             },
-            null,
-            2
-          )
+            findings: result.findings,
+            warnings: result.warnings ?? []
+          })
         );
       } else {
         console.log('Toolip AST Security Analysis');

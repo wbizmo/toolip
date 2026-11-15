@@ -52,6 +52,7 @@ function timeoutError(message: string): Error {
 
 const maximumConcurrentAstWorkers = 1;
 const maximumQueuedAstWorkers = 1;
+const maximumAstWorkerOldGenerationMb = 512;
 let activeAstWorkers = 0;
 type AstWorkerWaiter = {
   signal?: AbortSignal;
@@ -227,7 +228,7 @@ export async function planAstProjectInWorker(
         workerData: { mode: 'plan', inputs },
         ...(extension === 'ts' ? { execArgv: [] } : {}),
         resourceLimits: {
-          maxOldGenerationSizeMb: 1024,
+          maxOldGenerationSizeMb: maximumAstWorkerOldGenerationMb,
           maxYoungGenerationSizeMb: 128,
           stackSizeMb: 16
         }
@@ -417,7 +418,7 @@ export async function analyzeAstProjectInWorker(
         workerData: inputs,
         ...(extension === 'ts' ? { execArgv: [] } : {}),
         resourceLimits: {
-          maxOldGenerationSizeMb: 1024,
+          maxOldGenerationSizeMb: maximumAstWorkerOldGenerationMb,
           maxYoungGenerationSizeMb: 128,
           stackSizeMb: 16
         }

@@ -79,6 +79,7 @@ export type UnresolvedDependencyEdge = {
   section: DependencyEdge['section'];
 };
 
+/** Immutable captured dependency inputs shared by one project analysis. */
 export type DependencyFileSource = Readonly<{
   files: readonly string[];
   /** Bound Git revision from a trusted immutable source; never infer from export data. */
@@ -96,6 +97,18 @@ export type NpmDependencyGraph = {
   complete: boolean;
   warnings: string[];
 };
+
+// One immutable captured source is shared by all analyzers in a scan. Keep a
+// single-flight graph promise under that weak key, avoiding repeated YAML/JSON
+// parsing without retaining snapshots after their callers release them. The
+// source contract is immutable: successful graphs remain valid for its lifetime.
+const capturedDependencyGraphs = new WeakMap<
+  DependencyFileSource,
+  { root: string; promise: Promise<NpmDependencyGraph> }
+>();
+const maximumNpmLockEntries = 1_000_000;
+const maximumNpmDependencyDeclarations = 1_000_000;
+const maximumNpmResolutionDepth = 256;
 
 type PackageLockEntry = {
   name?: string;
@@ -133,18 +146,14 @@ function validPackageLockEntry(value: unknown): value is PackageLockEntry {
     'peerDependencies'
   ]) {
     const dependencies = value[field];
-    if (
-      dependencies !== undefined &&
-      (!isRecord(dependencies) ||
-        Object.values(dependencies).some(
-          (requirement) => typeof requirement !== 'string'
-        ))
-    )
+    if (dependencies !== undefined && !isStringRecord(dependencies))
       return false;
   }
   if (value.peerDependenciesMeta !== undefined) {
     if (!isRecord(value.peerDependenciesMeta)) return false;
-    for (const metadata of Object.values(value.peerDependenciesMeta)) {
+    for (const key in value.peerDependenciesMeta) {
+      if (!Object.hasOwn(value.peerDependenciesMeta, key)) continue;
+      const metadata = value.peerDependenciesMeta[key];
       if (
         !isRecord(metadata) ||
         (metadata.optional !== undefined &&
@@ -167,6 +176,15 @@ function validPackageLockEntry(value: unknown): value is PackageLockEntry {
       (!Array.isArray(value[field]) ||
         value[field].some((item) => typeof item !== 'string'))
     )
+      return false;
+  }
+  return true;
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  if (!isRecord(value)) return false;
+  for (const key in value) {
+    if (Object.hasOwn(value, key) && typeof value[key] !== 'string')
       return false;
   }
   return true;
@@ -287,29 +305,39 @@ function resolveCandidatePath(
 function resolveInstalledPath(
   packages: Record<string, PackageLockEntry>,
   fromPath: string,
-  dependencyName: string
+  dependencyName: string,
+  parentPathByInstallPath: ReadonlyMap<string, string>,
+  installPathsByParentAndName: ReadonlyMap<string, ReadonlyMap<string, string>>
 ): string | undefined {
   let cursor = fromPath;
-
-  while (true) {
-    const candidate = cursor
-      ? `${cursor}/node_modules/${dependencyName}`
-      : `node_modules/${dependencyName}`;
-    const resolved = resolveCandidatePath(packages, candidate);
+  let depth = 0;
+  while (depth <= maximumNpmResolutionDepth) {
+    const candidate = installPathsByParentAndName
+      .get(cursor)
+      ?.get(dependencyName);
+    const resolved = candidate
+      ? resolveCandidatePath(packages, candidate)
+      : undefined;
 
     if (resolved) {
       return resolved;
     }
 
     if (!cursor) return undefined;
-    cursor = parentPackagePath(cursor);
+    if (depth === maximumNpmResolutionDepth)
+      throw new Error(
+        `npm dependency resolution exceeds the ${maximumNpmResolutionDepth}-ancestor limit`
+      );
+    cursor = parentPathByInstallPath.get(cursor) ?? parentPackagePath(cursor);
+    depth += 1;
   }
+  return undefined;
 }
 
-function requirements(
+function* requirements(
   entry: PackageLockEntry,
   includeDevelopment: boolean
-): Array<{
+): Generator<{
   name: string;
   requirement: string;
   section: DependencyEdge['section'];
@@ -328,20 +356,45 @@ function requirements(
     sections.push({ section: 'devDependency', values: entry.devDependencies });
   }
 
-  return sections.flatMap(({ section, values }) =>
-    Object.entries(values ?? {}).map(([name, requirement]) => ({
-      name,
-      requirement,
-      section,
-      ...(section === 'peerDependency' &&
-      entry.peerDependenciesMeta?.[name]?.optional === true
-        ? { optional: true }
-        : {})
-    }))
-  );
+  for (const { section, values } of sections) {
+    if (!values) continue;
+    for (const name in values) {
+      if (!Object.hasOwn(values, name)) continue;
+      const requirement = values[name];
+      if (typeof requirement !== 'string') continue;
+      yield {
+        name,
+        requirement,
+        section,
+        ...(section === 'peerDependency' &&
+        entry.peerDependenciesMeta?.[name]?.optional === true
+          ? { optional: true }
+          : {})
+      };
+    }
+  }
 }
 
-export async function readNpmDependencyGraph(
+export function readNpmDependencyGraph(
+  root: string,
+  fileSource?: DependencyFileSource
+): Promise<NpmDependencyGraph> {
+  if (!fileSource) return readNpmDependencyGraphUncached(root);
+
+  const normalizedRoot = path.resolve(root);
+  const cached = capturedDependencyGraphs.get(fileSource);
+  if (cached?.root === normalizedRoot) return cached.promise;
+
+  const promise = readNpmDependencyGraphUncached(root, fileSource);
+  capturedDependencyGraphs.set(fileSource, { root: normalizedRoot, promise });
+  void promise.catch(() => {
+    if (capturedDependencyGraphs.get(fileSource)?.promise === promise)
+      capturedDependencyGraphs.delete(fileSource);
+  });
+  return promise;
+}
+
+async function readNpmDependencyGraphUncached(
   root: string,
   fileSource?: DependencyFileSource
 ): Promise<NpmDependencyGraph> {
@@ -379,6 +432,11 @@ export async function readNpmDependencyGraph(
       { code: 'DEPENDENCY_LOCKFILE_AMBIGUOUS' }
     );
   }
+  if (detected.length === 0) {
+    const error = new Error('npm package-manager lockfile is missing');
+    Object.assign(error, { code: 'ENOENT' });
+    throw error;
+  }
   const selected = detected[0]?.[1];
   if (selected === 'pnpm') return readPnpmDependencyGraph(root, fileSource);
   if (selected === 'yarn') return readYarnDependencyGraph(root, fileSource);
@@ -399,27 +457,54 @@ export async function readNpmDependencyGraph(
   }
 
   const lockfile = parsed as PackageLockV2;
-  const warnings: string[] = [];
+  const warnings = new Set<string>();
   const packageLockEntries = Object.create(null) as Record<
     string,
     PackageLockEntry
   >;
-  for (const [installPath, entry] of Object.entries(lockfile.packages ?? {})) {
+  let lockEntryCount = 0;
+  for (const installPath in lockfile.packages) {
+    if (!Object.hasOwn(lockfile.packages, installPath)) continue;
+    lockEntryCount += 1;
+    if (lockEntryCount > maximumNpmLockEntries)
+      throw new Error(
+        `npm lockfile exceeds the ${maximumNpmLockEntries}-entry limit`
+      );
+  }
+  for (const installPath in lockfile.packages) {
+    if (!Object.hasOwn(lockfile.packages, installPath)) continue;
+    const entry = lockfile.packages[installPath];
     if (!validPackageLockEntry(entry)) {
-      warnings.push('npm-lockfile-package-entry-invalid');
+      warnings.add('npm-lockfile-package-entry-invalid');
       continue;
     }
     packageLockEntries[installPath] = entry;
   }
 
   const identitiesByPath = new Map<string, DependencyIdentity>();
+  const parentPathByInstallPath = new Map<string, string>();
+  const installPathsByParentAndName = new Map<string, Map<string, string>>();
 
-  for (const [installPath, entry] of Object.entries(packageLockEntries)) {
+  for (const installPath in packageLockEntries) {
+    if (!Object.hasOwn(packageLockEntries, installPath)) continue;
+    const entry = packageLockEntries[installPath];
+    if (!entry) continue;
+    const parentPath = parentPackagePath(installPath);
+    parentPathByInstallPath.set(installPath, parentPath);
+    const installName = packageNameFromLockPath(installPath);
+    if (installName) {
+      let children = installPathsByParentAndName.get(parentPath);
+      if (!children) {
+        children = new Map<string, string>();
+        installPathsByParentAndName.set(parentPath, children);
+      }
+      children.set(installName, installPath);
+    }
     if (installPath === '') continue;
     if (!entry.version) {
-      if (!entry.link) warnings.push('npm-lockfile-version-unresolved');
+      if (!entry.link) warnings.add('npm-lockfile-version-unresolved');
       else if (!entry.resolved)
-        warnings.push('npm-lockfile-link-target-unresolved');
+        warnings.add('npm-lockfile-link-target-unresolved');
       continue;
     }
     if (
@@ -429,28 +514,28 @@ export async function readNpmDependencyGraph(
       installPath.includes('\0') ||
       installPath.split('/').includes('..')
     ) {
-      warnings.push('npm-lockfile-install-path-invalid');
+      warnings.add('npm-lockfile-install-path-invalid');
       continue;
     }
     if (!semver.valid(entry.version)) {
-      warnings.push('npm-lockfile-version-unresolved');
+      warnings.add('npm-lockfile-version-unresolved');
       continue;
     }
     const name = entry.name ?? packageNameFromLockPath(installPath);
     if (!name) {
-      warnings.push('npm-lockfile-package-name-unresolved');
+      warnings.add('npm-lockfile-package-name-unresolved');
       continue;
     }
     const resolution = sanitizedNpmResolution(entry.resolved);
     const integrity = npmIntegrityStatus(entry.integrity);
     if (resolution.unsafe && !entry.link)
-      warnings.push('npm-lockfile-source-url-unsafe');
+      warnings.add('npm-lockfile-source-url-unsafe');
     const isWorkspace =
       entry.link === true || !installPath.startsWith('node_modules/');
     const trustedRegistryOrigin = isTrustedPublicNpmRegistry(
       resolution.resolved
     );
-    if (integrity.malformed) warnings.push('npm-lockfile-integrity-malformed');
+    if (integrity.malformed) warnings.add('npm-lockfile-integrity-malformed');
 
     identitiesByPath.set(installPath, {
       id: identityId(installPath, name, entry.version),
@@ -488,17 +573,27 @@ export async function readNpmDependencyGraph(
   const unresolvedDependencies: UnresolvedDependencyEdge[] = [];
   const rootTargets = new Set<string>();
   const seenEdges = new Set<string>();
-  for (const [fromPath, entry] of Object.entries(packageLockEntries)) {
+  let declarationCount = 0;
+  for (const fromPath in packageLockEntries) {
+    if (!Object.hasOwn(packageLockEntries, fromPath)) continue;
+    const entry = packageLockEntries[fromPath];
+    if (!entry) continue;
     const fromIdentity =
       fromPath === '' ? undefined : identitiesByPath.get(fromPath);
 
-    if (fromPath !== '' && !fromIdentity) continue;
-
     for (const requirement of requirements(entry, fromPath === '')) {
+      declarationCount += 1;
+      if (declarationCount > maximumNpmDependencyDeclarations)
+        throw new Error(
+          `npm lockfile exceeds the ${maximumNpmDependencyDeclarations}-declaration limit`
+        );
+      if (fromPath !== '' && !fromIdentity) continue;
       const targetPath = resolveInstalledPath(
         packageLockEntries,
         fromPath,
-        requirement.name
+        requirement.name,
+        parentPathByInstallPath,
+        installPathsByParentAndName
       );
       if (!targetPath) {
         if (requirement.optional) continue;
@@ -508,7 +603,7 @@ export async function readNpmDependencyGraph(
           requirement: requirement.requirement,
           section: requirement.section
         });
-        warnings.push(
+        warnings.add(
           `unresolved npm dependency ${requirement.name}@${requirement.requirement} from ${fromPath || 'root'}`
         );
         continue;
@@ -522,7 +617,7 @@ export async function readNpmDependencyGraph(
           requirement: requirement.requirement,
           section: requirement.section
         });
-        warnings.push(
+        warnings.add(
           `unresolved npm package identity ${requirement.name}@${requirement.requirement} from ${fromPath || 'root'}`
         );
         continue;
@@ -547,16 +642,18 @@ export async function readNpmDependencyGraph(
     }
   }
 
-  const packages = [...identitiesByPath.values()]
-    .map((identity) => ({
+  const packages: DependencyIdentity[] = [];
+  for (const identity of identitiesByPath.values()) {
+    packages.push({
       ...identity,
       direct: rootTargets.has(identity.id)
-    }))
-    .sort((a, b) =>
-      `${a.name}@${a.version}:${a.installPath}`.localeCompare(
-        `${b.name}@${b.version}:${b.installPath}`
-      )
-    );
+    });
+  }
+  packages.sort((a, b) =>
+    `${a.name}@${a.version}:${a.installPath}`.localeCompare(
+      `${b.name}@${b.version}:${b.installPath}`
+    )
+  );
 
   return {
     manager: 'npm',
@@ -566,8 +663,8 @@ export async function readNpmDependencyGraph(
     ),
     unresolvedDependencies,
     rootDependencies: [...rootTargets].sort(),
-    complete: warnings.length === 0,
-    warnings: [...new Set(warnings)].sort()
+    complete: warnings.size === 0,
+    warnings: [...warnings].sort()
   };
 }
 

@@ -147,6 +147,20 @@ function hasRequestId(node: ts.Node): boolean {
   return found;
 }
 
+function requestObjectKeys(node: ts.Node): ReadonlySet<string> {
+  const keys = new Set<string>();
+  const walk = (child: ts.Node): void => {
+    if (ts.isExpression(child) && requestObjectId(child)) {
+      keys.add(child.getText());
+      return;
+    }
+    if (child !== node && ts.isFunctionLike(child)) return;
+    ts.forEachChild(child, walk);
+  };
+  walk(node);
+  return keys;
+}
+
 function decoratorName(decorator: ts.Decorator): string | undefined {
   const expression = decorator.expression;
   const target = ts.isCallExpression(expression)
@@ -158,11 +172,50 @@ function decoratorName(decorator: ts.Decorator): string | undefined {
     : undefined;
 }
 
+function isNextRouteExport(handler: ts.FunctionLikeDeclaration): boolean {
+  const name =
+    'name' in handler && handler.name && ts.isIdentifier(handler.name)
+      ? handler.name.text
+      : undefined;
+  return Boolean(
+    ts.isFunctionDeclaration(handler) &&
+    name &&
+    ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(name) &&
+    handler.modifiers?.some(
+      (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword
+    )
+  );
+}
+
 /** Returns direct values injected from framework-controlled request fields. */
 function frameworkRequestParameters(
   handler: ts.FunctionLikeDeclaration
 ): ReadonlySet<string> {
   const names = new Set<string>();
+  const collect = (binding: ts.BindingName): void => {
+    if (ts.isIdentifier(binding)) names.add(binding.text);
+    else
+      for (const element of binding.elements)
+        if (!ts.isOmittedExpression(element)) collect(element.name);
+  };
+  const collectRouteParams = (binding: ts.BindingName): void => {
+    if (ts.isIdentifier(binding)) {
+      names.add(binding.text);
+      return;
+    }
+    for (const element of binding.elements) {
+      if (ts.isOmittedExpression(element)) continue;
+      const key = element.propertyName
+        ? ts.isIdentifier(element.propertyName) ||
+          ts.isStringLiteral(element.propertyName)
+          ? element.propertyName.text
+          : undefined
+        : ts.isIdentifier(element.name)
+          ? element.name.text
+          : undefined;
+      if (key === 'params') collect(element.name);
+    }
+  };
   for (const parameter of handler.parameters) {
     const decorators = ts.canHaveDecorators(parameter)
       ? (ts.getDecorators(parameter) ?? [])
@@ -173,13 +226,14 @@ function frameworkRequestParameters(
       )
     )
       continue;
-    const collect = (binding: ts.BindingName): void => {
-      if (ts.isIdentifier(binding)) names.add(binding.text);
-      else
-        for (const element of binding.elements)
-          if (!ts.isOmittedExpression(element)) collect(element.name);
-    };
     collect(parameter.name);
+  }
+  if (isNextRouteExport(handler)) {
+    const context = handler.parameters[1];
+    if (context) {
+      if (ts.isIdentifier(context.name)) names.add(context.name.text);
+      else collectRouteParams(context.name);
+    }
   }
   return names;
 }
@@ -528,32 +582,29 @@ function hasRoleOrOwnershipGuard(
   resourceMiddlewareFunctions:
     WeakMap<ts.Identifier, ts.FunctionLikeDeclaration> | undefined,
   beforePosition: number,
-  requestParameters: ReadonlySet<string>,
+  lookup: ts.CallExpression,
   identityParameters: ReadonlySet<string>
 ): boolean {
+  const lookupKeys = requestObjectKeys(lookup);
+  if (lookupKeys.size === 0) return false;
   const decorators = ts.canHaveDecorators(handler)
     ? (ts.getDecorators(handler) ?? [])
     : [];
   if (
-    decorators.some((decorator) =>
-      ['authorize', 'authorizeresource'].includes(
-        decoratorName(decorator) ?? ''
-      )
+    decorators.some(
+      (decorator) => decoratorName(decorator) === 'authorizeresource'
     )
   )
     return true;
   if (
     registrationGuards.some(
       (guard) =>
-        isResourceAuthorizationCall(
-          guard,
-          requestParameters,
-          identityParameters
-        ) ||
+        isResourceAuthorizationCall(guard, identityParameters, lookupKeys) ||
         isVerifiedResourceMiddleware(
           guard,
           helperFunctions,
-          resourceMiddlewareFunctions
+          resourceMiddlewareFunctions,
+          lookupKeys
         )
     )
   )
@@ -565,7 +616,7 @@ function hasRoleOrOwnershipGuard(
       if (
         node.getEnd() <= beforePosition &&
         isUnconditionallyExecuted(node, handler) &&
-        isResourceAuthorizationCall(node, requestParameters, identityParameters)
+        isResourceAuthorizationCall(node, identityParameters, lookupKeys)
       ) {
         guarded = true;
         return;
@@ -582,8 +633,8 @@ function hasRoleOrOwnershipGuard(
         isBooleanOwnershipGuard(
           guardCondition.call,
           name,
-          requestParameters,
-          identityParameters
+          identityParameters,
+          lookupKeys
         ) &&
         checksIdentity
       ) {
@@ -606,7 +657,8 @@ function isVerifiedResourceMiddleware(
   resourceMiddlewareFunctions?: WeakMap<
     ts.Identifier,
     ts.FunctionLikeDeclaration
-  >
+  >,
+  lookupKeys: ReadonlySet<string> = new Set()
 ): boolean {
   if (!ts.isIdentifier(expression)) return false;
   const helper = resourceMiddlewareFunctions
@@ -615,10 +667,6 @@ function isVerifiedResourceMiddleware(
       ? helperFunctions.get(expression.text)?.[0]
       : undefined;
   if (!helper) return false;
-  const requests = requestControlledNames(
-    helper,
-    frameworkRequestParameters(helper)
-  );
   const identities = authenticatedIdentityAliases(
     helper,
     frameworkIdentityParameters(helper)
@@ -628,7 +676,7 @@ function isVerifiedResourceMiddleware(
     if (verified) return;
     if (ts.isCallExpression(node)) {
       if (
-        isResourceAuthorizationCall(node, requests, identities) &&
+        isResourceAuthorizationCall(node, identities, lookupKeys) &&
         isUnconditionallyExecuted(node, helper)
       ) {
         verified = true;
@@ -639,7 +687,7 @@ function isVerifiedResourceMiddleware(
     const condition = unwrapBooleanCondition(node.expression);
     if (!condition) return;
     const name = callName(condition.call);
-    if (!isBooleanOwnershipGuard(condition.call, name, requests, identities))
+    if (!isBooleanOwnershipGuard(condition.call, name, identities, lookupKeys))
       return;
     const denied = condition.negated ? node.thenStatement : node.elseStatement;
     if (denied && exitsBeforeContinuation(denied)) verified = true;
@@ -650,8 +698,8 @@ function isVerifiedResourceMiddleware(
 /** A guard must bind an authenticated identity to this requested resource. */
 function isResourceAuthorizationCall(
   expression: ts.Expression,
-  requestParameters: ReadonlySet<string>,
-  identityParameters: ReadonlySet<string>
+  identityParameters: ReadonlySet<string>,
+  lookupKeys: ReadonlySet<string>
 ): boolean {
   if (!ts.isCallExpression(expression)) return false;
   const name = callName(expression);
@@ -659,11 +707,8 @@ function isResourceAuthorizationCall(
   const checksIdentity = expression.arguments.some((argument) =>
     authIdentity(argument, identityParameters)
   );
-  const checksRequestedObject = expression.arguments.some(
-    (argument) =>
-      requestObjectId(argument) ||
-      hasRequestId(argument) ||
-      hasRequestParameter(argument, requestParameters)
+  const checksRequestedObject = expression.arguments.some((argument) =>
+    [...requestObjectKeys(argument)].some((key) => lookupKeys.has(key))
   );
   return checksIdentity && checksRequestedObject;
 }
@@ -671,8 +716,8 @@ function isResourceAuthorizationCall(
 function isBooleanOwnershipGuard(
   call: ts.CallExpression,
   name: string | undefined,
-  requestParameters: ReadonlySet<string>,
-  identityParameters: ReadonlySet<string>
+  identityParameters: ReadonlySet<string>,
+  lookupKeys: ReadonlySet<string>
 ): boolean {
   if (!name) return false;
   const normalized = name.replace(/[_-]/gu, '').toLowerCase();
@@ -685,11 +730,8 @@ function isBooleanOwnershipGuard(
   const checksIdentity = call.arguments.some((argument) =>
     authIdentity(argument, identityParameters)
   );
-  const checksRequestedObject = call.arguments.some(
-    (argument) =>
-      requestObjectId(argument) ||
-      hasRequestId(argument) ||
-      hasRequestParameter(argument, requestParameters)
+  const checksRequestedObject = call.arguments.some((argument) =>
+    [...requestObjectKeys(argument)].some((key) => lookupKeys.has(key))
   );
   return checksIdentity && checksRequestedObject;
 }
@@ -1059,7 +1101,7 @@ export function analyzeAuthorizationSource(
               helperFunctions,
               resourceMiddlewareFunctions,
               child.getStart(),
-              requestParameters,
+              child,
               identityParameters
             )
           )

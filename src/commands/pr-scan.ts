@@ -7,7 +7,10 @@ import {
   scanPullRequestDiff
 } from '../core/diff/pr-scan.js';
 import { readGitHubPullRequestEvent } from '../core/diff/github-pr-event.js';
-import { writeSarifReport } from '../core/report-writer.js';
+import {
+  serializeJsonOutputBounded,
+  writeSarifReport
+} from '../core/report-writer.js';
 import { sanitizeOutput } from '../core/safe-output.js';
 
 const failOnValues = new Set<FindingSeverity>([
@@ -121,7 +124,7 @@ export function registerPrScanCommand(program: Command): void {
             : result
         );
         if (options.json) {
-          process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+          process.stdout.write(`${serializeJsonOutputBounded(output)}\n`);
         } else {
           process.stdout.write(
             `${[

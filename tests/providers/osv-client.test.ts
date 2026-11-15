@@ -38,6 +38,39 @@ describe('OsvClient', () => {
     ).rejects.toThrow('OSV response exceeds its byte budget');
   });
 
+  it('caps response bytes across all sequential query batches', async () => {
+    const fetchImplementation = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            results: [{ vulns: [] }],
+            padding: 'x'.repeat(500)
+          }),
+          { status: 200 }
+        )
+    ) as unknown as typeof fetch;
+    const client = new OsvClient({
+      batchSize: 1,
+      maxResponseBytes: 2_048,
+      maxTotalResponseBytes: 1_024,
+      fetchImplementation
+    });
+
+    await expect(
+      client.queryBatch([
+        {
+          package: { ecosystem: 'npm', name: 'first-package' },
+          version: '1.0.0'
+        },
+        {
+          package: { ecosystem: 'npm', name: 'second-package' },
+          version: '1.0.0'
+        }
+      ])
+    ).rejects.toThrow('OSV aggregate response exceeds its byte budget');
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+  });
+
   it('rejects a declared oversized response and preserves exact result counts', async () => {
     const declaredOversize = new OsvClient({
       maxResponseBytes: 1_024,

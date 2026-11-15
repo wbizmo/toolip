@@ -41,8 +41,12 @@ resolved the actual module graph. They represent the result of parent POM
 properties, BOM management, Gradle constraints and lock overrides without
 asking Toolip to execute the project. Exact group, artifact and version
 coordinates become Maven package identities; module boundaries keep equal
-coordinates in separate workspaces distinct. Classifiers and non-default types
-are preserved in CycloneDX and SPDX Maven PURLs. `tests/fixtures/java` contains
+coordinates in separate workspaces distinct. Workspace identity uses an
+explicit project path together with coordinates when available, or the module
+coordinate otherwise, independent of export array order. Repeated or missing
+module identities make the affected graph incomplete instead of assigning
+order-dependent identities. Classifiers and non-default types are
+preserved in CycloneDX and SPDX Maven PURLs. `tests/fixtures/java` contains
 captured Maven and Gradle reference outputs for parent-property, BOM and Gradle
 lock-selection behavior, with tool versions and checksums recorded beside the
 fixtures.
@@ -62,7 +66,12 @@ Maven scopes are validated against the supported scope set. Gradle's common
 to dependency sections; unknown scopes and malformed `optional` or `omitted`
 flags keep the exact coordinate visible but mark graph coverage incomplete.
 
-This import support does not establish artifact provenance, run Maven/Gradle
-advisory tests, or verify that the exported file was generated from the current
-revision. Retain the export with the build that produced it and bind it to the
-same immutable project snapshot when using the API.
+When an export contains `toolipSource.manifestHashes`, Toolip checks those
+SHA-256 values against the exact bounded manifest bytes in the scanned input.
+When the dependency source also carries an authenticated snapshot/PR Git
+revision, Toolip requires the export's `toolipSource.sourceRevision` to match.
+These self-reported hashes are consistency checks, not signatures or proof of
+who ran the build; they do not establish artifact provenance. Exports without
+source hashes remain visible but have unknown resolution confidence. Retain
+the export with the build that produced it and bind it to the same immutable
+project snapshot when using the API.

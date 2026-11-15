@@ -101,8 +101,8 @@ describe('signed report verification command', () => {
         '--source-tree-sha256',
         sourceTreeDigest
       ]);
-      expect(log).toHaveBeenLastCalledWith(
-        expect.stringContaining('"status": "verified"')
+      expect(JSON.parse(String(log.mock.lastCall?.[0])).status).toBe(
+        'verified'
       );
       expect(process.exitCode).toBe(originalExitCode);
 
@@ -121,8 +121,8 @@ describe('signed report verification command', () => {
         '--scanner-artifact-sha256',
         'b'.repeat(64)
       ]);
-      expect(log).toHaveBeenLastCalledWith(
-        expect.stringContaining('"reason": "scanner-artifact-mismatch"')
+      expect(JSON.parse(String(log.mock.lastCall?.[0])).reason).toBe(
+        'scanner-artifact-mismatch'
       );
       expect(process.exitCode).toBe(2);
 
@@ -141,8 +141,8 @@ describe('signed report verification command', () => {
         '--source-tree-sha256',
         'f'.repeat(64)
       ]);
-      expect(log).toHaveBeenLastCalledWith(
-        expect.stringContaining('"reason": "source-tree-mismatch"')
+      expect(JSON.parse(String(log.mock.lastCall?.[0])).reason).toBe(
+        'source-tree-mismatch'
       );
       expect(process.exitCode).toBe(2);
     } finally {
@@ -217,8 +217,8 @@ describe('signed report verification command', () => {
         '--key-id',
         'release-key-v2'
       ]);
-      expect(log).toHaveBeenLastCalledWith(
-        expect.stringContaining('"status": "verified"')
+      expect(JSON.parse(String(log.mock.lastCall?.[0])).status).toBe(
+        'verified'
       );
 
       await writeFile(

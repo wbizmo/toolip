@@ -8,7 +8,6 @@ import {
   verify as verifyBytes,
   type KeyObject
 } from 'node:crypto';
-import { constants } from 'node:fs';
 import { lstat, open, realpath, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { AnalyzerCache } from '../../contracts/analyzer.js';
@@ -19,11 +18,16 @@ import {
   type DirectoryIdentity
 } from '../../core/local-state-fs.js';
 import { withLocalStateLock, type LockGuard } from '../../core/local-lock.js';
+import { readBoundedUtf8File } from '../../core/bounded-file.js';
 
 const schemaVersion = 1 as const;
 const maxSnapshotBytes = 64 * 1024 * 1024;
 const maxEntries = 200_000;
-const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW;
+const maxPendingValueBytes = 16 * 1024 * 1024;
+const maxPendingRecordBytes = maxPendingValueBytes + 8 * 1024;
+const maxPendingBytes = 64 * 1024 * 1024;
+const maxCanonicalDepth = 256;
+const maxCanonicalNodes = 1_000_000;
 
 type StoredRecord = { storedAt: string; value: unknown };
 type SnapshotSource = {
@@ -67,17 +71,86 @@ export type AdvisorySnapshotCacheOptions = {
 
 export type SnapshotSignatureStatus = 'unsigned' | 'unverified' | 'verified';
 
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value))
-    return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
-  if (value && typeof value === 'object') {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-      .join(',')}}`;
+function canonicalJson(
+  value: unknown,
+  maximumBytes = maxSnapshotBytes
+): string {
+  const budget = { nodes: 0, bytes: 0 };
+  const encodeString = (text: string): string => {
+    if (text.length > Math.floor((maximumBytes - 2) / 6))
+      throw new RangeError(
+        'Advisory snapshot canonical data exceeds its byte limit.'
+      );
+    return JSON.stringify(text);
+  };
+  function* serialize(item: unknown, depth: number): Generator<string> {
+    if (depth > maxCanonicalDepth)
+      throw new RangeError(
+        'Advisory snapshot canonical data exceeds its depth limit.'
+      );
+    if (++budget.nodes > maxCanonicalNodes)
+      throw new RangeError(
+        'Advisory snapshot canonical data exceeds its node limit.'
+      );
+    if (item === null) {
+      yield 'null';
+    } else if (typeof item === 'string') {
+      yield encodeString(item);
+    } else if (typeof item === 'boolean') {
+      yield item ? 'true' : 'false';
+    } else if (typeof item === 'number' && Number.isFinite(item)) {
+      const encoded = JSON.stringify(item);
+      if (encoded === undefined)
+        throw new TypeError('Advisory snapshot contains a non-JSON number.');
+      yield encoded;
+    } else if (!item || typeof item !== 'object') {
+      throw new TypeError('Advisory snapshot contains a non-JSON value.');
+    } else if (Array.isArray(item)) {
+      if (budget.nodes + item.length > maxCanonicalNodes)
+        throw new RangeError(
+          'Advisory snapshot canonical data exceeds its node limit.'
+        );
+      yield '[';
+      for (let index = 0; index < item.length; index += 1) {
+        if (index > 0) yield ',';
+        yield* serialize(item[index], depth + 1);
+      }
+      yield ']';
+    } else {
+      let keyCount = 0;
+      for (const key in item) {
+        if (!Object.hasOwn(item, key)) continue;
+        keyCount += 1;
+        if (budget.nodes + keyCount > maxCanonicalNodes)
+          throw new RangeError(
+            'Advisory snapshot canonical data exceeds its node limit.'
+          );
+      }
+      const record = item as Record<string, unknown>;
+      const keys = Object.keys(record).sort();
+      budget.nodes += keys.length;
+      yield '{';
+      for (let index = 0; index < keys.length; index += 1) {
+        const key = keys[index];
+        if (key === undefined) continue;
+        if (index > 0) yield ',';
+        yield encodeString(key);
+        yield ':';
+        yield* serialize(record[key], depth + 1);
+      }
+      yield '}';
+    }
   }
-  return JSON.stringify(value);
+  const chunks: string[] = [];
+  for (const text of serialize(value, 0)) {
+    budget.bytes += Buffer.byteLength(text, 'utf8');
+    if (budget.bytes > maximumBytes)
+      throw new RangeError(
+        'Advisory snapshot canonical data exceeds its byte limit.'
+      );
+    chunks.push(text);
+  }
+  return chunks.join('');
 }
 
 function digest(payload: SnapshotPayload): string {
@@ -156,7 +229,12 @@ function buildManifest(
     }
   >();
   const ecosystems = new Set<string>();
-  for (const [key, record] of Object.entries(records)) {
+  let recordCount = 0;
+  for (const key in records) {
+    if (!Object.hasOwn(records, key)) continue;
+    recordCount += 1;
+    const record = records[key];
+    if (!record) continue;
     const id = sourceId(key);
     const version = sourceVersion(key, record);
     const sourceKey = `${id}\0${version}`;
@@ -196,7 +274,7 @@ function buildManifest(
     format: 'toolip-advisory-bundle',
     version: 1,
     generatedAt,
-    recordCount: Object.keys(records).length,
+    recordCount,
     ecosystems: [...ecosystems].sort((left, right) =>
       left.localeCompare(right)
     ),
@@ -261,10 +339,13 @@ function parseDocument(
   ]);
   if (Object.keys(document).some((key) => !allowedKeys.has(key)))
     throw new Error('Advisory snapshot contains unsupported top-level fields.');
-  if (Object.keys(document.records).length > maxEntries) {
-    throw new Error('Advisory snapshot exceeds the record limit.');
-  }
-  for (const [key, value] of Object.entries(document.records)) {
+  let recordCount = 0;
+  for (const key in document.records) {
+    if (!Object.hasOwn(document.records, key)) continue;
+    recordCount += 1;
+    if (recordCount > maxEntries)
+      throw new Error('Advisory snapshot exceeds the record limit.');
+    const value = document.records[key];
     if (
       !key ||
       key.length > 2048 ||
@@ -379,27 +460,10 @@ async function readDocument(
   if (named.size > maxSnapshotBytes) {
     throw new Error('Advisory snapshot exceeds the byte limit.');
   }
-  const handle = await open(
-    filePath,
-    constants.O_RDONLY |
-      noFollow |
-      (process.platform === 'win32' ? 0 : constants.O_NONBLOCK)
+  return parseDocument(
+    await readBoundedUtf8File(filePath, maxSnapshotBytes),
+    options
   );
-  try {
-    const opened = await handle.stat();
-    const after = await lstat(filePath);
-    if (
-      after.isSymbolicLink() ||
-      !after.isFile() ||
-      opened.dev !== after.dev ||
-      opened.ino !== after.ino
-    ) {
-      throw new Error('Advisory snapshot changed while it was being opened.');
-    }
-    return parseDocument(await handle.readFile('utf8'), options);
-  } finally {
-    await handle.close();
-  }
 }
 
 /**
@@ -412,6 +476,8 @@ export class AdvisorySnapshotCache implements AnalyzerCache {
   private _manifest?: SnapshotManifest;
   private readonly base = new Map<string, StoredRecord>();
   private readonly pending = new Map<string, StoredRecord>();
+  private readonly pendingBytesByKey = new Map<string, number>();
+  private pendingBytes = 0;
   private readonly now: () => Date;
   private readonly signingKey?: KeyObject;
   private readonly signingKeyId?: string;
@@ -453,8 +519,11 @@ export class AdvisorySnapshotCache implements AnalyzerCache {
         );
       this.signingKeyId = options.signingKeyId;
     }
-    for (const [key, value] of Object.entries(document?.records ?? {}))
-      this.base.set(key, value);
+    const persistedRecords = document?.records ?? {};
+    for (const key in persistedRecords) {
+      if (Object.hasOwn(persistedRecords, key))
+        this.base.set(key, persistedRecords[key] as StoredRecord);
+    }
   }
 
   get generatedAt(): string | undefined {
@@ -466,10 +535,9 @@ export class AdvisorySnapshotCache implements AnalyzerCache {
   }
 
   get recordCount(): number {
-    return (
-      this.base.size +
-      [...this.pending.keys()].filter((key) => !this.base.has(key)).length
-    );
+    let count = this.base.size;
+    for (const key of this.pending.keys()) if (!this.base.has(key)) count += 1;
+    return count;
   }
 
   get snapshotAgeMs(): number | undefined {
@@ -480,9 +548,11 @@ export class AdvisorySnapshotCache implements AnalyzerCache {
 
   /** Age of the oldest captured source record, or undefined for an empty bundle. */
   get oldestSourceAgeMs(): number | undefined {
-    const captures = this._manifest?.sources.map((source) => source.capturedAt);
-    if (!captures || captures.length === 0) return undefined;
-    const oldest = Math.min(...captures.map((value) => Date.parse(value)));
+    const sources = this._manifest?.sources;
+    if (!sources || sources.length === 0) return undefined;
+    let oldest = Number.POSITIVE_INFINITY;
+    for (const source of sources)
+      oldest = Math.min(oldest, Date.parse(source.capturedAt));
     return Number.isFinite(oldest)
       ? Math.max(0, this.now().getTime() - oldest)
       : undefined;
@@ -545,7 +615,7 @@ export class AdvisorySnapshotCache implements AnalyzerCache {
   async get<T>(key: string): Promise<T | undefined> {
     const value = this.pending.get(key) ?? this.base.get(key);
     if (!value) return undefined;
-    return JSON.parse(JSON.stringify(value.value)) as T;
+    return JSON.parse(canonicalJson(value.value, maxPendingValueBytes)) as T;
   }
 
   async set<T>(key: string, value: T): Promise<void> {
@@ -553,24 +623,33 @@ export class AdvisorySnapshotCache implements AnalyzerCache {
       throw new Error('Invalid snapshot cache key.');
     let serialized: string | undefined;
     try {
-      serialized = JSON.stringify(value);
+      serialized = canonicalJson(value, maxPendingValueBytes);
     } catch {
-      throw new Error('Advisory snapshot values must be JSON-serializable.');
-    }
-    if (
-      serialized === undefined ||
-      Buffer.byteLength(serialized) > maxSnapshotBytes
-    ) {
       throw new Error(
-        'Advisory snapshot value is missing or exceeds the byte limit.'
+        'Advisory snapshot values must be bounded JSON-serializable data.'
       );
     }
+    if (serialized === undefined)
+      throw new Error(
+        'Advisory snapshot value is missing or not JSON-serializable.'
+      );
+    const entryBytes =
+      Buffer.byteLength(serialized, 'utf8') + Buffer.byteLength(key, 'utf8');
+    if (entryBytes > maxPendingRecordBytes)
+      throw new Error('Advisory snapshot record exceeds the 16 MiB limit.');
     if (
       !this.pending.has(key) &&
       !this.base.has(key) &&
       this.base.size + this.pending.size >= maxEntries
     )
       throw new Error('Advisory snapshot record limit reached.');
+    const previousBytes = this.pendingBytesByKey.get(key) ?? 0;
+    if (this.pendingBytes - previousBytes + entryBytes > maxPendingBytes)
+      throw new Error(
+        'Advisory snapshot pending cache exceeds the 64 MiB limit.'
+      );
+    this.pendingBytes += entryBytes - previousBytes;
+    this.pendingBytesByKey.set(key, entryBytes);
     this.pending.set(key, {
       storedAt: this.now().toISOString(),
       value: JSON.parse(serialized) as unknown
@@ -607,10 +686,11 @@ export class AdvisorySnapshotCache implements AnalyzerCache {
       const trustedCurrent =
         !this.signingKey || current?.signatureStatus === 'verified';
       if (trustedCurrent) {
-        for (const [key, record] of Object.entries(
-          current?.document.records ?? {}
-        ))
-          records.set(key, record);
+        const currentRecords = current?.document.records ?? {};
+        for (const key in currentRecords) {
+          if (Object.hasOwn(currentRecords, key))
+            records.set(key, currentRecords[key] as StoredRecord);
+        }
         for (const [key, record] of this.base) {
           if (!records.has(key)) records.set(key, record);
         }
@@ -620,11 +700,14 @@ export class AdvisorySnapshotCache implements AnalyzerCache {
         throw new Error('Advisory snapshot record limit reached.');
 
       const generatedAt = this.now().toISOString();
-      const sortedRecords = Object.fromEntries(
-        [...records.entries()].sort(([left], [right]) =>
-          left.localeCompare(right)
-        )
+      const sortedKeys = [...records.keys()].sort((left, right) =>
+        left.localeCompare(right)
       );
+      const sortedRecords = Object.create(null) as Record<string, StoredRecord>;
+      for (const key of sortedKeys) {
+        const record = records.get(key);
+        if (record) sortedRecords[key] = record;
+      }
       const payload: SnapshotPayload = {
         schemaVersion,
         generatedAt,
@@ -646,7 +729,7 @@ export class AdvisorySnapshotCache implements AnalyzerCache {
           ).toString('base64')
         };
       }
-      const serialized = `${JSON.stringify(document)}\n`;
+      const serialized = `${canonicalJson(document, maxSnapshotBytes - 1)}\n`;
       if (Buffer.byteLength(serialized) > maxSnapshotBytes)
         throw new Error('Advisory snapshot exceeds the byte limit.');
       await writeAtomic(
@@ -659,6 +742,8 @@ export class AdvisorySnapshotCache implements AnalyzerCache {
       this.base.clear();
       for (const [key, record] of records) this.base.set(key, record);
       this.pending.clear();
+      this.pendingBytesByKey.clear();
+      this.pendingBytes = 0;
       this._generatedAt = payload.generatedAt;
       this._manifest = payload.manifest;
       this._signatureStatus = this.signingKey ? 'verified' : 'unsigned';

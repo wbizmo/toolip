@@ -3,6 +3,7 @@ import { AnalyzerRunner } from '../application/analyzer-runner.js';
 import { OsvVulnerabilityAnalyzer } from '../analyzers/vulnerability/osv-analyzer.js';
 import { AdvisorySnapshotCache } from '../providers/intelligence/snapshot-cache.js';
 import { readPemKeyFile } from '../core/secure-key-file.js';
+import { serializeJsonOutputBounded } from '../core/report-writer.js';
 
 type SnapshotOptions = {
   path: string;
@@ -79,24 +80,20 @@ export function registerIntelligenceCommand(program: Command): void {
       }
       await cache.flush();
       console.log(
-        JSON.stringify(
-          {
-            state:
-              result.coverage?.state === 'complete' &&
-              (result.warnings?.length ?? 0) === 0
-                ? 'complete'
-                : 'partial',
-            file: cache.filePath,
-            records: cache.recordCount,
-            generatedAt: cache.generatedAt,
-            manifest: cache.manifest,
-            signatureStatus: cache.signatureStatus,
-            advisories: result.metadata?.dependenciesChecked,
-            warnings: result.warnings ?? []
-          },
-          null,
-          2
-        )
+        serializeJsonOutputBounded({
+          state:
+            result.coverage?.state === 'complete' &&
+            (result.warnings?.length ?? 0) === 0
+              ? 'complete'
+              : 'partial',
+          file: cache.filePath,
+          records: cache.recordCount,
+          generatedAt: cache.generatedAt,
+          manifest: cache.manifest,
+          signatureStatus: cache.signatureStatus,
+          advisories: result.metadata?.dependenciesChecked,
+          warnings: result.warnings ?? []
+        })
       );
     });
 
@@ -140,29 +137,25 @@ export function registerIntelligenceCommand(program: Command): void {
         const hasCoverage = (manifest?.ecosystems.length ?? 0) > 0;
         const stale = ageMs === undefined || ageMs > maxAgeMs;
         console.log(
-          JSON.stringify(
-            {
-              state: stale
-                ? 'stale'
-                : !hasCoverage
-                  ? 'incomplete'
-                  : cache.signatureStatus === 'verified'
-                    ? 'verified'
-                    : 'integrity-only',
-              integrity: 'sha256',
-              signature: cache.signatureStatus,
-              file: cache.filePath,
-              records: cache.recordCount,
-              generatedAt: cache.generatedAt,
-              coverage: hasCoverage ? 'declared' : 'unknown',
-              ecosystems: manifest?.ecosystems ?? [],
-              manifest,
-              ageMs,
-              generatedAtAgeMs
-            },
-            null,
-            2
-          )
+          serializeJsonOutputBounded({
+            state: stale
+              ? 'stale'
+              : !hasCoverage
+                ? 'incomplete'
+                : cache.signatureStatus === 'verified'
+                  ? 'verified'
+                  : 'integrity-only',
+            integrity: 'sha256',
+            signature: cache.signatureStatus,
+            file: cache.filePath,
+            records: cache.recordCount,
+            generatedAt: cache.generatedAt,
+            coverage: hasCoverage ? 'declared' : 'unknown',
+            ecosystems: manifest?.ecosystems ?? [],
+            manifest,
+            ageMs,
+            generatedAtAgeMs
+          })
         );
         if (stale || !hasCoverage) process.exitCode = 3;
       }

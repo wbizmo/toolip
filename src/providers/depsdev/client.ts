@@ -102,6 +102,8 @@ export type DepsDevClientOptions = {
   cacheTtlMs?: number;
   /** Maximum successful metadata entries retained by this client. */
   cacheMaxEntries?: number;
+  /** Maximum serialized successful metadata retained by this client. */
+  cacheMaxBytes?: number;
   /** Injectable clock for deterministic cache tests. */
   now?: () => number;
 };
@@ -112,11 +114,13 @@ export type DepsDevRequestMetrics = Readonly<{
   throttledResponses: number;
   retries: number;
   cacheHits: number;
+  cacheBytes: number;
 }>;
 
 const MAX_RESPONSE_BYTES = 1_048_576;
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_CACHE_MAX_ENTRIES = 2_000;
+const DEFAULT_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 
 async function readJson(response: Response): Promise<unknown> {
   const reader = response.body?.getReader();
@@ -157,7 +161,7 @@ type PendingRequest = {
   promise: Promise<unknown>;
 };
 
-type CachedResponse = { expiresAt: number; value: unknown };
+type CachedResponse = { expiresAt: number; bytes: number; value: unknown };
 
 export class DepsDevClient {
   private readonly endpoint: string;
@@ -168,6 +172,7 @@ export class DepsDevClient {
   private readonly retryDelayMs: number;
   private readonly cacheTtlMs: number;
   private readonly cacheMaxEntries: number;
+  private readonly cacheMaxBytes: number;
   private readonly now: () => number;
   private requests = 0;
   private activeRequests = 0;
@@ -177,6 +182,7 @@ export class DepsDevClient {
   private cacheHits = 0;
   private readonly inFlight = new Map<string, PendingRequest>();
   private readonly cache = new Map<string, CachedResponse>();
+  private cacheBytes = 0;
 
   constructor(options: DepsDevClientOptions = {}) {
     this.endpoint = options.endpoint ?? 'https://api.deps.dev/v3';
@@ -231,6 +237,15 @@ export class DepsDevClient {
       throw new RangeError(
         'deps.dev cache size must be between 1 and 100000 entries.'
       );
+    this.cacheMaxBytes = options.cacheMaxBytes ?? DEFAULT_CACHE_MAX_BYTES;
+    if (
+      !Number.isSafeInteger(this.cacheMaxBytes) ||
+      this.cacheMaxBytes < 1_024 ||
+      this.cacheMaxBytes > 64 * 1024 * 1024
+    )
+      throw new RangeError(
+        'deps.dev cache bytes must be between 1024 and 67108864.'
+      );
     this.now = options.now ?? Date.now;
   }
 
@@ -272,7 +287,8 @@ export class DepsDevClient {
       peakConcurrency: this.peakConcurrency,
       throttledResponses: this.throttledResponses,
       retries: this.retries,
-      cacheHits: this.cacheHits
+      cacheHits: this.cacheHits,
+      cacheBytes: this.cacheBytes
     });
   }
 
@@ -291,7 +307,7 @@ export class DepsDevClient {
         this.cache.set(key, cached);
         return Promise.resolve(structuredClone(cached.value) as T);
       }
-      this.cache.delete(key);
+      this.deleteCached(key);
     }
     let pending = this.inFlight.get(key);
     if (!pending) {
@@ -304,15 +320,25 @@ export class DepsDevClient {
         waiters: 0,
         promise: promise.then((value) => {
           if (this.cacheTtlMs > 0) {
-            if (this.cache.size >= this.cacheMaxEntries) {
-              const oldest = this.cache.keys().next().value as
-                string | undefined;
-              if (oldest !== undefined) this.cache.delete(oldest);
+            const serialized = JSON.stringify(value);
+            const bytes = Buffer.byteLength(serialized ?? '', 'utf8');
+            if (bytes <= this.cacheMaxBytes) {
+              while (
+                this.cache.size >= this.cacheMaxEntries ||
+                this.cacheBytes + bytes > this.cacheMaxBytes
+              ) {
+                const oldest = this.cache.keys().next().value as
+                  string | undefined;
+                if (oldest === undefined) break;
+                this.deleteCached(oldest);
+              }
+              this.cache.set(key, {
+                expiresAt: this.now() + this.cacheTtlMs,
+                bytes,
+                value: structuredClone(value)
+              });
+              this.cacheBytes += bytes;
             }
-            this.cache.set(key, {
-              expiresAt: this.now() + this.cacheTtlMs,
-              value: structuredClone(value)
-            });
           }
           return value;
         })
@@ -495,6 +521,13 @@ export class DepsDevClient {
       : Date.parse(value) - Date.now();
     if (!Number.isFinite(parsed) || parsed < 0) return undefined;
     return Math.min(10_000, parsed);
+  }
+
+  private deleteCached(key: string): void {
+    const cached = this.cache.get(key);
+    if (!cached) return;
+    this.cache.delete(key);
+    this.cacheBytes -= cached.bytes;
   }
 }
 

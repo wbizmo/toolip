@@ -6,6 +6,10 @@ import type {
   AnalyzerResult
 } from '../contracts/analyzer.js';
 import { mapConcurrent, MAX_CONCURRENT_OPERATIONS } from './concurrency.js';
+import {
+  acquireIsolatedAnalyzerWorkerSlot,
+  MAX_ISOLATED_ANALYZER_CONTEXT_BYTES
+} from './isolated-worker-pool.js';
 import { sanitizeOutput } from '../core/safe-output.js';
 
 export type AnalyzerRunnerOptions = {
@@ -216,6 +220,36 @@ export class AnalyzerRunner {
     const { entry, execArgv } = workerEntry();
     let timeout: NodeJS.Timeout | undefined;
     let cancel: (() => void) | undefined;
+    const workerDeadline = Date.now() + this.timeoutMs;
+
+    let releaseWorkerSlot: (() => void) | undefined;
+    try {
+      releaseWorkerSlot = await acquireIsolatedAnalyzerWorkerSlot(
+        context.signal,
+        this.timeoutMs,
+        estimateIsolatedAnalyzerContextBytes(context),
+        this.workerMaxOldGenerationMb
+      );
+    } catch (error) {
+      return {
+        outcome:
+          error instanceof Error && error.name === 'TimeoutError'
+            ? { kind: 'timed_out' }
+            : context.signal?.aborted
+              ? { kind: 'cancelled' }
+              : { kind: 'failed', error },
+        unresponsive: false
+      };
+    }
+    if (context.signal?.aborted) {
+      releaseWorkerSlot();
+      return { outcome: { kind: 'cancelled' }, unresponsive: false };
+    }
+    const remainingTimeoutMs = workerDeadline - Date.now();
+    if (remainingTimeoutMs <= 0) {
+      releaseWorkerSlot();
+      return { outcome: { kind: 'timed_out' }, unresponsive: false };
+    }
 
     let worker: Worker;
     try {
@@ -234,6 +268,7 @@ export class AnalyzerRunner {
       });
     } catch (error) {
       // e.g. DataCloneError for non-cloneable options: a failed outcome, not a rejected run().
+      releaseWorkerSlot();
       return { outcome: { kind: 'failed', error }, unresponsive: false };
     }
 
@@ -263,7 +298,7 @@ export class AnalyzerRunner {
 
       timeout = setTimeout(
         () => resolve({ kind: 'timed_out' }),
-        this.timeoutMs
+        remainingTimeoutMs
       );
 
       if (context.signal) {
@@ -280,7 +315,11 @@ export class AnalyzerRunner {
 
     // Enforceable stop: terminate() halts even a synchronous CPU loop and
     // resolves only after the thread has exited, so the slot is not freed early.
-    await worker.terminate();
+    try {
+      await worker.terminate();
+    } finally {
+      releaseWorkerSlot();
+    }
 
     return { outcome, unresponsive: false };
   }
@@ -368,4 +407,36 @@ function workerEntry(): { entry: URL; execArgv: string[] } {
         entry: new URL('./analyzer-worker.js', import.meta.url),
         execArgv: []
       };
+}
+
+/**
+ * Estimate the structured-clone footprint of a worker context without
+ * serializing it or creating another snapshot-sized temporary buffer.
+ */
+function estimateIsolatedAnalyzerContextBytes(context: AnalyzerContext): number {
+  const snapshot = context.options?.snapshot as
+    | {
+        files?: readonly { bytes?: unknown; path?: unknown }[];
+      }
+    | undefined;
+  if (!snapshot?.files) return 1024 * 1024;
+  if (!Array.isArray(snapshot.files)) return MAX_ISOLATED_ANALYZER_CONTEXT_BYTES + 1;
+
+  let bytes = 1024 * 1024;
+  for (const file of snapshot.files) {
+    if (!file || typeof file !== 'object')
+      return MAX_ISOLATED_ANALYZER_CONTEXT_BYTES + 1;
+    const fileBytes = file.bytes;
+    if (
+      typeof fileBytes !== 'number' ||
+      !Number.isSafeInteger(fileBytes) ||
+      fileBytes < 0
+    )
+      return MAX_ISOLATED_ANALYZER_CONTEXT_BYTES + 1;
+    const pathBytes = typeof file.path === 'string' ? file.path.length * 2 : 0;
+    bytes += fileBytes + pathBytes + 256;
+    if (bytes > MAX_ISOLATED_ANALYZER_CONTEXT_BYTES)
+      return MAX_ISOLATED_ANALYZER_CONTEXT_BYTES + 1;
+  }
+  return bytes;
 }

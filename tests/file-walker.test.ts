@@ -18,6 +18,23 @@ import {
 import { loadToolipIgnore } from '../src/core/load-toolip-ignore.js';
 
 describe('walkProjectFiles', () => {
+  it('does not materialize an oversized ignore file', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-walk-ignore-'));
+    try {
+      await writeFile(
+        path.join(root, '.toolipignore'),
+        `ignored.ts\n${'x'.repeat(1024 * 1024)}`
+      );
+      await writeFile(path.join(root, 'ignored.ts'), 'export {};');
+
+      const files = await walkProjectFiles(root);
+
+      expect(files.map((file) => file.relativePath)).toContain('ignored.ts');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('walks files while respecting .toolipignore', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-walk-'));
 
@@ -108,6 +125,34 @@ describe('walkProjectFiles', () => {
           expect.objectContaining({ relativePath: 'ignored-loader.orc' })
         ])
       );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('parses tracked paths incrementally without splitting the full Git listing', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-walk-paths-'));
+    const unusualName = 'line\nbreak-é.ts';
+    try {
+      await writeFile(path.join(root, unusualName), 'export {};');
+      execFileSync('git', ['init', '-q', root]);
+      execFileSync('git', ['-C', root, 'add', '--all']);
+      execFileSync('git', [
+        '-C',
+        root,
+        '-c',
+        'user.name=Toolip Test',
+        '-c',
+        'user.email=toolip-test@example.invalid',
+        'commit',
+        '-qm',
+        'fixture'
+      ]);
+
+      const files = await walkProjectFiles(root, {
+        includeTrackedIgnored: true
+      });
+      expect(files.map((file) => file.relativePath)).toContain(unusualName);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

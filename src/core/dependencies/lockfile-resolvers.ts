@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
-import { lstat, open, realpath } from 'node:fs/promises';
+import { lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import fg from 'fast-glob';
 import semver from 'semver';
 import { parseDocument } from 'yaml';
+import { readBoundedUtf8File } from '../bounded-file.js';
 import type {
   DependencyEdge,
   DependencyFileSource,
@@ -14,6 +14,12 @@ import type {
 } from './inventory.js';
 
 type RecordValue = Record<string, unknown>;
+type PnpmPackageEntry = {
+  locator: string;
+  entry: RecordValue;
+  parsed: { name: string; version: string; suffix: string };
+};
+type PnpmInstalledEntry = PnpmPackageEntry & { snapshot: RecordValue };
 type LockedInstance = {
   locator: string;
   name: string;
@@ -39,6 +45,21 @@ const maximumWorkspaceManifests = 10_000;
 const maximumWorkspaceManifestBytes = 1_048_576;
 const maximumWorkspaceManifestTotalBytes = 32 * 1024 * 1024;
 const maximumYarnResolverCandidateWork = 250_000;
+const maximumLockfileEntries = 1_000_000;
+const maximumDependencyDeclarations = 1_000_000;
+const maximumYarnLineCharacters = 1_048_576;
+
+function assertLockfileEntryLimit(entries: RecordValue, label: string): void {
+  let count = 0;
+  for (const key in entries) {
+    if (!Object.hasOwn(entries, key)) continue;
+    count += 1;
+    if (count > maximumLockfileEntries)
+      throw new Error(
+        `${label} exceeds the ${maximumLockfileEntries}-entry limit`
+      );
+  }
+}
 
 function record(value: unknown): RecordValue | undefined {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -269,31 +290,36 @@ function makeGraph(
     });
     if (spec.from === 'root') directIds.add(to);
   }
-  const packages = instances
-    .map((item) =>
+  const packages: DependencyIdentity[] = [];
+  for (const item of instances) {
+    packages.push(
       packageIdentity(
         manager,
         item,
         directIds.has(`${manager}:${item.locator}`)
       )
-    )
-    .sort((a, b) =>
-      `${a.name}@${a.version}:${a.installPath}`.localeCompare(
-        `${b.name}@${b.version}:${b.installPath}`
-      )
     );
-  const packageIds = new Set(packages.map((item) => item.id));
-  const validEdges = [
-    ...new Map(
-      edges
-        .filter((edge) => edge.from === 'root' || packageIds.has(edge.from))
-        .filter((edge) => packageIds.has(edge.to))
-        .map((edge) => [
-          `${edge.from}\0${edge.to}\0${edge.name}\0${edge.alias ?? ''}\0${edge.requirement}\0${edge.section}`,
-          edge
-        ])
-    ).values()
-  ];
+  }
+  packages.sort((a, b) =>
+    `${a.name}@${a.version}:${a.installPath}`.localeCompare(
+      `${b.name}@${b.version}:${b.installPath}`
+    )
+  );
+  const packageIds = new Set<string>();
+  for (const item of packages) packageIds.add(item.id);
+  const validEdges: DependencyEdge[] = [];
+  const seenEdges = new Set<string>();
+  for (const edge of edges) {
+    if (
+      (edge.from !== 'root' && !packageIds.has(edge.from)) ||
+      !packageIds.has(edge.to)
+    )
+      continue;
+    const key = `${edge.from}\0${edge.to}\0${edge.name}\0${edge.alias ?? ''}\0${edge.requirement}\0${edge.section}`;
+    if (seenEdges.has(key)) continue;
+    seenEdges.add(key);
+    validEdges.push(edge);
+  }
   return {
     manager,
     packages,
@@ -309,13 +335,13 @@ function makeGraph(
   };
 }
 
-function parseSections(
+function* parseSections(
   sections: RecordValue,
   resolve: (name: string, requirement: string) => LockedInstance | undefined,
   from: string,
   includeDevelopment: boolean,
   resolveRaw?: (name: string, raw: unknown) => LockedInstance | undefined
-): Array<{
+): Generator<{
   from: string;
   target?: LockedInstance;
   name: string;
@@ -323,14 +349,6 @@ function parseSections(
   section: DependencyEdge['section'];
   optional?: boolean;
 }> {
-  const result: Array<{
-    from: string;
-    target?: LockedInstance;
-    name: string;
-    requirement: string;
-    section: DependencyEdge['section'];
-    optional?: boolean;
-  }> = [];
   const fields: ReadonlyArray<readonly [string, DependencyEdge['section']]> = [
     ['dependencies', 'dependency'],
     ['optionalDependencies', 'optionalDependency'],
@@ -341,7 +359,10 @@ function parseSections(
   ];
   for (const [field, section] of fields) {
     const values = record(sections[field]);
-    for (const [name, raw] of Object.entries(values ?? {})) {
+    if (!values) continue;
+    for (const name in values) {
+      if (!Object.hasOwn(values, name)) continue;
+      const raw = values[name];
       const details = record(raw);
       const requirement =
         typeof details?.specifier === 'string'
@@ -358,7 +379,7 @@ function parseSections(
           : typeof details?.version === 'string'
             ? details.version
             : requirement;
-      result.push({
+      yield {
         from,
         target: resolveRaw
           ? resolveRaw(name, raw)
@@ -370,10 +391,34 @@ function parseSections(
         record(record(sections.peerDependenciesMeta)?.[name])?.optional === true
           ? { optional: true }
           : {})
-      });
+      };
     }
   }
-  return result;
+}
+
+function appendBoundedEdgeSpec(
+  edgeSpecs: Array<{
+    from: string;
+    target?: LockedInstance;
+    name: string;
+    requirement: string;
+    section: DependencyEdge['section'];
+    optional?: boolean;
+  }>,
+  edge: {
+    from: string;
+    target?: LockedInstance;
+    name: string;
+    requirement: string;
+    section: DependencyEdge['section'];
+    optional?: boolean;
+  }
+): void {
+  if (edgeSpecs.length >= maximumDependencyDeclarations)
+    throw new Error(
+      `lockfile exceeds the ${maximumDependencyDeclarations}-declaration limit`
+    );
+  edgeSpecs.push(edge);
 }
 
 /** Resolves pnpm v6-v9 lockfiles without coercing ranges into installed versions. */
@@ -396,103 +441,100 @@ export async function readPnpmDependencyGraph(
     throw new Error('pnpm lockfile has no supported packages map');
   if (!/^[6-9](?:\.\d+)?$/u.test(String(lock.lockfileVersion ?? '')))
     throw new Error('pnpm lockfile version is unsupported');
+  assertLockfileEntryLimit(packageMap, 'pnpm package map');
   const warnings: string[] = [];
   const instances: LockedInstance[] = [];
   const byNameAndVersion = new Map<string, LockedInstance[]>();
   const byNameVersionAndSuffix = new Map<string, LockedInstance[]>();
-  const packageEntries = Object.entries(packageMap).flatMap(
-    ([locator, raw]) => {
-      const parsed = parsePnpmLocator(locator);
-      if (!parsed) {
-        warnings.push(
-          `unsupported pnpm package locator ${locator.slice(0, 200)}`
-        );
-        return [];
-      }
-      const entry = record(raw);
-      if (!entry) {
-        warnings.push(
-          `pnpm package metadata is malformed: ${locator.slice(0, 200)}`
-        );
-        return [];
-      }
-      return [{ locator, entry, parsed }];
-    }
-  );
-  const packageEntriesByLocator = new Map(
-    packageEntries.map((item) => [item.locator, item])
-  );
-  const packageEntriesByNameVersion = new Map<string, typeof packageEntries>();
+  const packageEntriesByLocator = new Map<string, PnpmPackageEntry>();
+  const packageEntriesByNameVersion = new Map<string, PnpmPackageEntry[]>();
   const packageEntriesByNameVersionSuffix = new Map<
     string,
-    typeof packageEntries
+    PnpmPackageEntry[]
   >();
-  for (const item of packageEntries) {
+  for (const locator in packageMap) {
+    if (!Object.hasOwn(packageMap, locator)) continue;
+    const parsed = parsePnpmLocator(locator);
+    if (!parsed) {
+      warnings.push(
+        `unsupported pnpm package locator ${locator.slice(0, 200)}`
+      );
+      continue;
+    }
+    const entry = record(packageMap[locator]);
+    if (!entry) {
+      warnings.push(
+        `pnpm package metadata is malformed: ${locator.slice(0, 200)}`
+      );
+      continue;
+    }
+    const item = { locator, entry, parsed };
+    packageEntriesByLocator.set(locator, item);
     const versionKey = JSON.stringify([item.parsed.name, item.parsed.version]);
-    const versionEntries = packageEntriesByNameVersion.get(versionKey) ?? [];
+    let versionEntries = packageEntriesByNameVersion.get(versionKey);
+    if (!versionEntries) {
+      versionEntries = [];
+      packageEntriesByNameVersion.set(versionKey, versionEntries);
+    }
     versionEntries.push(item);
-    packageEntriesByNameVersion.set(versionKey, versionEntries);
     const suffixKey = JSON.stringify([
       item.parsed.name,
       item.parsed.version,
       item.parsed.suffix
     ]);
-    const suffixEntries =
-      packageEntriesByNameVersionSuffix.get(suffixKey) ?? [];
+    let suffixEntries = packageEntriesByNameVersionSuffix.get(suffixKey);
+    if (!suffixEntries) {
+      suffixEntries = [];
+      packageEntriesByNameVersionSuffix.set(suffixKey, suffixEntries);
+    }
     suffixEntries.push(item);
-    packageEntriesByNameVersionSuffix.set(suffixKey, suffixEntries);
   }
   const snapshots = record(lock.snapshots) ?? {};
+  assertLockfileEntryLimit(snapshots, 'pnpm snapshot map');
   const usesSnapshotGraph =
     Number.parseInt(String(lock.lockfileVersion), 10) >= 9;
-  const installedEntries = usesSnapshotGraph
-    ? Object.entries(snapshots)
-        .map(([locator, snapshot]) => {
-          const parsed = parsePnpmLocator(locator);
-          if (!parsed) {
-            warnings.push(
-              `unsupported pnpm snapshot locator ${locator.slice(0, 200)}`
-            );
-            return undefined;
-          }
-          const snapshotEntry = record(snapshot);
-          if (!snapshotEntry) {
-            warnings.push(
-              `pnpm snapshot record is malformed: ${locator.slice(0, 200)}`
-            );
-            return undefined;
-          }
-          const versionKey = JSON.stringify([parsed.name, parsed.version]);
-          const candidates = packageEntriesByNameVersion.get(versionKey) ?? [];
-          const suffixCandidates =
-            packageEntriesByNameVersionSuffix.get(
-              JSON.stringify([parsed.name, parsed.version, parsed.suffix])
-            ) ?? [];
-          const metadata =
-            packageEntriesByLocator.get(locator) ??
-            (suffixCandidates.length === 1 ? suffixCandidates[0] : undefined) ??
-            (candidates.length === 1 ? candidates[0] : undefined);
-          if (!metadata) {
-            warnings.push(
-              `pnpm snapshot has no unique package metadata: ${locator.slice(0, 200)}`
-            );
-            return undefined;
-          }
-          return {
-            locator,
-            parsed,
-            entry: metadata.entry,
-            snapshot: snapshotEntry
-          };
-        })
-        .filter((item): item is NonNullable<typeof item> => item !== undefined)
-    : packageEntries.map(({ locator, entry, parsed }) => ({
-        locator,
-        entry,
-        parsed,
-        snapshot: entry
-      }));
-  for (const { locator, entry, parsed, snapshot } of installedEntries) {
+  function* installedEntries(): Generator<PnpmInstalledEntry> {
+    if (!usesSnapshotGraph) {
+      for (const { locator, entry, parsed } of packageEntriesByLocator.values())
+        yield { locator, entry, parsed, snapshot: entry };
+      return;
+    }
+    for (const locator in snapshots) {
+      if (!Object.hasOwn(snapshots, locator)) continue;
+      const parsed = parsePnpmLocator(locator);
+      if (!parsed) {
+        warnings.push(
+          `unsupported pnpm snapshot locator ${locator.slice(0, 200)}`
+        );
+        continue;
+      }
+      const snapshotEntry = record(snapshots[locator]);
+      if (!snapshotEntry) {
+        warnings.push(
+          `pnpm snapshot record is malformed: ${locator.slice(0, 200)}`
+        );
+        continue;
+      }
+      const versionKey = JSON.stringify([parsed.name, parsed.version]);
+      const candidates = packageEntriesByNameVersion.get(versionKey) ?? [];
+      const suffixCandidates =
+        packageEntriesByNameVersionSuffix.get(
+          JSON.stringify([parsed.name, parsed.version, parsed.suffix])
+        ) ?? [];
+      const metadata =
+        packageEntriesByLocator.get(locator) ??
+        (suffixCandidates.length === 1 ? suffixCandidates[0] : undefined) ??
+        (candidates.length === 1 ? candidates[0] : undefined);
+      if (!metadata) {
+        warnings.push(
+          `pnpm snapshot has no unique package metadata: ${locator.slice(0, 200)}`
+        );
+        continue;
+      }
+      yield { locator, parsed, entry: metadata.entry, snapshot: snapshotEntry };
+    }
+  }
+  for (const { locator, entry, parsed, snapshot } of installedEntries()) {
     const resolution = record(entry.resolution);
     if (
       resolution?.tarball !== undefined &&
@@ -580,15 +622,17 @@ export async function readPnpmDependencyGraph(
     count: 0,
     bytes: 0
   };
-  const importerPaths = Object.keys(importers).filter((item) => item !== '.');
-  if (importerPaths.length > maximumWorkspaceManifests) {
-    warnings.push('pnpm workspace importer count exceeds the configured limit');
-  }
-  for (const importerPath of importerPaths.slice(
-    0,
-    maximumWorkspaceManifests
-  )) {
-    if (importerPath === '.') continue;
+  let importerCount = 0;
+  for (const importerPath in importers) {
+    if (!Object.hasOwn(importers, importerPath) || importerPath === '.')
+      continue;
+    importerCount += 1;
+    if (importerCount > maximumWorkspaceManifests) {
+      warnings.push(
+        'pnpm workspace importer count exceeds the configured limit'
+      );
+      break;
+    }
     const normalized = normalizeWorkspacePath(importerPath);
     const manifest = normalized
       ? await readWorkspaceManifest(
@@ -650,35 +694,40 @@ export async function readPnpmDependencyGraph(
     };
   const rootImporter = record(importers['.']);
   if (!rootImporter) warnings.push('pnpm lockfile has no root importer');
-  if (rootImporter)
-    edgeSpecs.push(
-      ...parseSections(
-        rootImporter,
-        resolve,
-        'root',
-        true,
-        resolveImporterDependency('.')
-      )
-    );
-  for (const [importerPath, rawImporter] of Object.entries(importers)) {
-    if (importerPath === '.') continue;
+  if (rootImporter) {
+    for (const edge of parseSections(
+      rootImporter,
+      resolve,
+      'root',
+      true,
+      resolveImporterDependency('.')
+    ))
+      appendBoundedEdgeSpec(edgeSpecs, edge);
+  }
+  for (const importerPath in importers) {
+    if (!Object.hasOwn(importers, importerPath) || importerPath === '.')
+      continue;
+    const rawImporter = importers[importerPath];
     const normalized = normalizeWorkspacePath(importerPath);
     const workspace = normalized ? workspaceByPath.get(normalized) : undefined;
     if (!workspace) continue;
-    edgeSpecs.push(
-      ...parseSections(
-        record(rawImporter) ?? {},
-        resolve,
-        `pnpm:${workspace.locator}`,
-        true,
-        resolveImporterDependency(importerPath)
-      )
-    );
+    for (const edge of parseSections(
+      record(rawImporter) ?? {},
+      resolve,
+      `pnpm:${workspace.locator}`,
+      true,
+      resolveImporterDependency(importerPath)
+    ))
+      appendBoundedEdgeSpec(edgeSpecs, edge);
   }
   for (const item of instances) {
-    edgeSpecs.push(
-      ...parseSections(item, resolve, `pnpm:${item.locator}`, false)
-    );
+    for (const edge of parseSections(
+      item,
+      resolve,
+      `pnpm:${item.locator}`,
+      false
+    ))
+      appendBoundedEdgeSpec(edgeSpecs, edge);
   }
   return makeGraph(
     'pnpm',
@@ -768,29 +817,53 @@ function splitYarnSelectors(header: string): string[] {
     }
     if (char === ',' && !quoted) {
       values.push(header.slice(start, index).trim().replace(/^"|"$/gu, ''));
+      if (values.length > maximumLockfileEntries)
+        throw new Error('Yarn lock selector count exceeds its entry limit');
       start = index + 1;
     }
   }
   values.push(header.slice(start).trim().replace(/^"|"$/gu, ''));
+  if (values.length > maximumLockfileEntries)
+    throw new Error('Yarn lock selector count exceeds its entry limit');
   return values.filter(Boolean);
+}
+
+function* yarnLines(source: string): Iterable<string> {
+  let start = 0;
+  while (start < source.length) {
+    const newline = source.indexOf('\n', start);
+    const end = newline < 0 ? source.length : newline;
+    if (end - start > maximumYarnLineCharacters)
+      throw new Error('Yarn lockfile line exceeds its bounded parser limit');
+    const raw = source.slice(start, end);
+    yield raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    if (newline < 0) return;
+    start = newline + 1;
+  }
 }
 
 function parseYarnClassic(source: string): RecordValue {
   const entries: RecordValue = {};
+  let entryCount = 0;
   let selectors: string[] = [];
   let entry: RecordValue = {};
   let activeSection = '';
   const flush = (): void => {
+    if (entryCount + selectors.length > maximumLockfileEntries)
+      throw new Error(
+        `Yarn classic lockfile exceeds the ${maximumLockfileEntries}-entry limit`
+      );
     for (const selector of selectors) {
       if (Object.hasOwn(entries, selector))
         throw new Error('Yarn classic lockfile has duplicate descriptors');
       entries[selector] = entry;
+      entryCount += 1;
     }
     selectors = [];
     entry = {};
     activeSection = '';
   };
-  for (const line of source.split(/\r?\n/u)) {
+  for (const line of yarnLines(source)) {
     if (!line.trim() || line.trimStart().startsWith('#')) continue;
     if (!/^\s/u.test(line)) {
       if (!line.endsWith(':'))
@@ -861,28 +934,33 @@ async function readYarnWorkspaces(
     ? manifest.workspaces
     : record(manifest.workspaces)?.packages;
   if (!Array.isArray(rawWorkspaces)) return [];
-  const patterns = rawWorkspaces.filter(
-    (value): value is string => typeof value === 'string'
-  );
-  if (patterns.length !== rawWorkspaces.length || patterns.length > 256) {
-    warnings.push(
-      'Yarn workspaces has malformed or excessive package patterns'
-    );
+  const safePatterns: string[] = [];
+  let patternCount = 0;
+  for (const value of rawWorkspaces) {
+    if (typeof value !== 'string') {
+      warnings.push(
+        'Yarn workspaces has malformed or excessive package patterns'
+      );
+      continue;
+    }
+    patternCount += 1;
+    if (patternCount > 256) {
+      warnings.push(
+        'Yarn workspaces has malformed or excessive package patterns'
+      );
+      break;
+    }
+    const normalized = value.replaceAll('\\', '/');
+    const safe =
+      !path.posix.isAbsolute(normalized) &&
+      !normalized.split('/').includes('..') &&
+      !normalized.includes('\0');
+    if (!safe) {
+      warnings.push(`unsafe Yarn workspace pattern: ${value.slice(0, 160)}`);
+      continue;
+    }
+    safePatterns.push(value);
   }
-  const safePatterns = patterns
-    .filter((pattern) => {
-      const normalized = pattern.replaceAll('\\', '/');
-      const safe =
-        !path.posix.isAbsolute(normalized) &&
-        !normalized.split('/').includes('..') &&
-        !normalized.includes('\0');
-      if (!safe)
-        warnings.push(
-          `unsafe Yarn workspace pattern: ${pattern.slice(0, 160)}`
-        );
-      return safe;
-    })
-    .slice(0, 256);
   const matched = fileSource
     ? snapshotWorkspaceDirectories(fileSource.files, safePatterns, warnings)
     : await streamYarnWorkspaceDirectories(root, safePatterns, warnings);
@@ -1067,6 +1145,7 @@ export async function readYarnDependencyGraph(
     if (document.errors.length)
       throw new Error('Yarn lockfile is malformed or has duplicate keys');
     lock = record(document.toJS()) ?? {};
+    assertLockfileEntryLimit(lock, 'Yarn lockfile');
     const metadata = record(lock.__metadata);
     if (
       !metadata ||
@@ -1109,7 +1188,9 @@ export async function readYarnDependencyGraph(
   const entryByDescriptor = new Map<string, LockedInstance>();
   const instancesByLocator = new Map<string, LockedInstance>();
   const localFileManifestCache = new Map<string, RecordValue | null>();
-  for (const [groupedDescriptor, raw] of Object.entries(lock)) {
+  for (const groupedDescriptor in lock) {
+    if (!Object.hasOwn(lock, groupedDescriptor)) continue;
+    const raw = lock[groupedDescriptor];
     if (groupedDescriptor === '__metadata') continue;
     const entry = record(raw);
     if (
@@ -1419,24 +1500,28 @@ export async function readYarnDependencyGraph(
     return matches.length === 1 ? matches[0] : undefined;
   };
   const edgeSpecs = [] as Parameters<typeof makeGraph>[2];
-  edgeSpecs.push(...parseSections(manifest, resolve, 'root', true));
+  for (const edge of parseSections(manifest, resolve, 'root', true))
+    appendBoundedEdgeSpec(edgeSpecs, edge);
   for (const workspace of workspaces) {
-    edgeSpecs.push(
-      ...parseSections(
-        workspace.dependencies ?? {},
-        resolve,
-        `yarn:${workspace.locator}`,
-        true
-      )
-    );
+    for (const edge of parseSections(
+      workspace.dependencies ?? {},
+      resolve,
+      `yarn:${workspace.locator}`,
+      true
+    ))
+      appendBoundedEdgeSpec(edgeSpecs, edge);
   }
   // Berry stores grouped selectors under the combined header, not under each
   // individual descriptor. Traverse the parsed unique instance records so a
   // grouped package never loses its transitive edges.
   for (const item of instances) {
-    edgeSpecs.push(
-      ...parseSections(item, resolve, `yarn:${item.locator}`, false)
-    );
+    for (const edge of parseSections(
+      item,
+      resolve,
+      `yarn:${item.locator}`,
+      false
+    ))
+      appendBoundedEdgeSpec(edgeSpecs, edge);
   }
   return makeGraph('yarn', [...instances, ...workspaces], edgeSpecs, warnings);
 }
@@ -1445,41 +1530,28 @@ export async function readBoundedDependencyText(
   filePath: string,
   maximumBytes = 64 * 1024 * 1024
 ): Promise<string> {
-  const metadata = await lstat(filePath, { bigint: true });
-  if (!metadata.isFile() || metadata.size > BigInt(maximumBytes))
-    throw new Error(
-      'dependency lockfile exceeds the bounded regular-file limit'
-    );
-  const noFollow =
-    process.platform === 'win32' ? 0 : (constants.O_NOFOLLOW ?? 0);
-  const handle = await open(filePath, constants.O_RDONLY | noFollow);
   try {
-    const opened = await handle.stat({ bigint: true });
+    return await readBoundedUtf8File(filePath, maximumBytes);
+  } catch (error) {
     if (
-      !opened.isFile() ||
-      opened.dev !== metadata.dev ||
-      opened.ino !== metadata.ino ||
-      opened.size !== metadata.size ||
-      opened.mtimeNs !== metadata.mtimeNs
-    ) {
-      throw new Error('dependency lockfile changed while opening');
-    }
-    const bytes = await handle.readFile();
-    if (bytes.length > maximumBytes)
-      throw new Error('dependency lockfile exceeds the bounded read limit');
-    const current = await lstat(filePath, { bigint: true });
+      error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      error.code === 'ENOENT'
+    )
+      throw error;
     if (
-      !current.isFile() ||
-      current.dev !== opened.dev ||
-      current.ino !== opened.ino ||
-      current.size !== opened.size ||
-      current.mtimeNs !== opened.mtimeNs
-    ) {
-      throw new Error('dependency lockfile changed while reading');
-    }
-    return bytes.toString('utf8');
-  } finally {
-    await handle.close();
+      error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      error.code === 'ERR_FILE_TOO_LARGE'
+    )
+      throw new Error(
+        'dependency lockfile exceeds the bounded regular-file limit'
+      );
+    throw new Error(
+      'dependency lockfile changed or exceeds the bounded regular-file limit'
+    );
   }
 }
 

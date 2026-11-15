@@ -66,6 +66,7 @@ type Scope = {
   bindings: Map<string, BindingKind>;
   writes: Map<string, BindingWrite[]>;
   dynamicWrites: Set<string>;
+  outboundClients: Set<string>;
   projectModules?: ProjectModuleResolver;
 };
 type PendingBinding = {
@@ -981,6 +982,36 @@ function isFileSystemModule(value: string): boolean {
   return ['fs', 'node:fs', 'fs/promises', 'node:fs/promises'].includes(value);
 }
 
+const outboundClientModules = new Set([
+  'axios',
+  'cross-fetch',
+  'got',
+  'http',
+  'https',
+  'isomorphic-fetch',
+  'ky',
+  'node-fetch',
+  'node:http',
+  'node:https',
+  'superagent',
+  'undici'
+]);
+const outboundClientFunctions = new Set([
+  'delete',
+  'fetch',
+  'get',
+  'patch',
+  'pipeline',
+  'post',
+  'put',
+  'request',
+  'stream'
+]);
+
+function isOutboundClientModule(name: string): boolean {
+  return outboundClientModules.has(name);
+}
+
 function scopeKind(node: ts.Node): ScopeKind | undefined {
   if (ts.isSourceFile(node)) return 'source';
   if (ts.isFunctionLike(node)) return 'function';
@@ -997,6 +1028,9 @@ function scopeKind(node: ts.Node): ScopeKind | undefined {
 
 const MAX_AST_TRAVERSAL_DEPTH = 512;
 const MAX_AST_TRAVERSAL_NODES = 1_000_000;
+const MAX_HOST_ALLOWLIST_PROOF_WORK = 250_000;
+const MAX_STATIC_HOST_ALLOWLIST_ENTRIES = 256;
+const MAX_HOST_ALLOWLIST_EXPRESSION_BYTES = 4_096;
 const MAX_BINDING_RESOLUTION_DEPTH = 256;
 
 function createScopeTree(
@@ -1019,6 +1053,7 @@ function createScopeTree(
         bindings: new Map<string, BindingKind>(),
         writes: new Map<string, BindingWrite[]>(),
         dynamicWrites: new Set<string>(),
+        outboundClients: new Set<string>(),
         projectModules
       }
     : (parent ?? {
@@ -1027,6 +1062,7 @@ function createScopeTree(
         bindings: new Map<string, BindingKind>(),
         writes: new Map<string, BindingWrite[]>(),
         dynamicWrites: new Set<string>(),
+        outboundClients: new Set<string>(),
         projectModules
       });
   scopes.set(node, scope);
@@ -1410,7 +1446,12 @@ function collectBindings(
       const fromUnsafeDeserializer = Boolean(
         moduleName === 'node-serialize' && !node.importClause.isTypeOnly
       );
-      if (node.importClause.name)
+      const fromOutboundClient = Boolean(
+        moduleName &&
+        isOutboundClientModule(moduleName) &&
+        !node.importClause.isTypeOnly
+      );
+      if (node.importClause.name) {
         scope.bindings.set(
           node.importClause.name.text,
           fromChildProcess
@@ -1421,6 +1462,9 @@ function collectBindings(
                 ? 'unsafeDeserializerNamespace'
                 : 'shadow'
         );
+        if (fromOutboundClient)
+          scope.outboundClients.add(node.importClause.name.text);
+      }
       const bindings = node.importClause.namedBindings;
       if (bindings && ts.isNamespaceImport(bindings)) {
         scope.bindings.set(
@@ -1433,6 +1477,7 @@ function collectBindings(
                 ? 'unsafeDeserializerNamespace'
                 : 'shadow'
         );
+        if (fromOutboundClient) scope.outboundClients.add(bindings.name.text);
       } else if (bindings && ts.isNamedImports(bindings)) {
         for (const element of bindings.elements) {
           const imported = element.propertyName?.text ?? element.name.text;
@@ -1463,6 +1508,12 @@ function collectBindings(
                   ? 'unsafeDeserializer'
                   : 'shadow';
           scope.bindings.set(element.name.text, binding);
+          if (
+            fromOutboundClient &&
+            !element.isTypeOnly &&
+            outboundClientFunctions.has(imported.toLowerCase())
+          )
+            scope.outboundClients.add(element.name.text);
         }
       }
     }
@@ -1533,6 +1584,18 @@ function collectBindings(
         : undefined;
       if (bindingScope) {
         bindPattern(node.name, bindingScope, 'shadow');
+        if (
+          ts.isIdentifier(node.name) &&
+          node.initializer &&
+          ts.isCallExpression(node.initializer) &&
+          ts.isIdentifier(node.initializer.expression) &&
+          node.initializer.expression.text === 'require' &&
+          lookupBinding(bindingScope, 'require') === undefined &&
+          node.initializer.arguments.length === 1 &&
+          ts.isStringLiteral(node.initializer.arguments[0]) &&
+          isOutboundClientModule(node.initializer.arguments[0].text)
+        )
+          bindingScope.outboundClients.add(node.name.text);
         if (node.initializer)
           pending.push({
             name: node.name,
@@ -1785,7 +1848,8 @@ function collectFlowNames(
     node: fallbackSourceFile,
     bindings: new Map<string, BindingKind>(),
     writes: new Map<string, BindingWrite[]>(),
-    dynamicWrites: new Set<string>()
+    dynamicWrites: new Set<string>(),
+    outboundClients: new Set<string>()
   };
   const reverse = new Map<Scope, Map<string, FlowBinding[]>>();
   const queue: FlowBinding[] = [];
@@ -2303,6 +2367,16 @@ function isSensitiveDataSource(
     return false;
   const parts = propertyPath(expression);
   return Boolean(parts?.slice(1).some((part) => sensitiveName.test(part)));
+}
+
+function isKnownOutboundClient(scope: Scope, name: string): boolean {
+  for (
+    let current: Scope | undefined = scope;
+    current;
+    current = current.parent
+  )
+    if (current.bindings.has(name)) return current.outboundClients.has(name);
+  return false;
 }
 
 function isProcessEnvironmentObject(
@@ -3274,19 +3348,39 @@ function sensitiveOutputSink(
   | 'storage'
   | undefined {
   const target = call.expression;
+  const computedMethod = ts.isElementAccessExpression(target);
   const method = ts.isPropertyAccessExpression(target)
     ? target.name.text.toLowerCase()
-    : ts.isIdentifier(target)
-      ? target.text.toLowerCase()
-      : '';
-  const receiver = ts.isPropertyAccessExpression(target)
-    ? propertyPath(target.expression)?.at(-1)?.toLowerCase()
-    : undefined;
-  const receiverPath = ts.isPropertyAccessExpression(target)
-    ? (propertyPath(target.expression) ?? []).map((part) => part.toLowerCase())
+    : computedMethod &&
+        target.argumentExpression &&
+        (ts.isStringLiteral(target.argumentExpression) ||
+          ts.isNoSubstitutionTemplateLiteral(target.argumentExpression))
+      ? target.argumentExpression.text.toLowerCase()
+      : ts.isIdentifier(target)
+        ? target.text.toLowerCase()
+        : '';
+  const receiverExpression =
+    ts.isPropertyAccessExpression(target) || computedMethod
+      ? target.expression
+      : undefined;
+  const receiverPath = receiverExpression
+    ? (propertyPath(receiverExpression) ?? []).map((part) => part.toLowerCase())
     : [];
+  const receiver = receiverPath.at(-1);
+  const dynamicMethod = computedMethod && method === '';
+  const importedReceiver =
+    receiverExpression &&
+    ts.isIdentifier(receiverExpression) &&
+    isKnownOutboundClient(scope, receiverExpression.text);
+  const importedDirectClient =
+    ts.isIdentifier(target) && isKnownOutboundClient(scope, target.text);
   if (
     (['log', 'info', 'warn', 'error', 'debug', 'trace'].includes(method) &&
+      (receiver === 'console' ||
+        receiver === 'logger' ||
+        receiver === 'log' ||
+        receiver?.endsWith('logger'))) ||
+    (dynamicMethod &&
       (receiver === 'console' ||
         receiver === 'logger' ||
         receiver === 'log' ||
@@ -3296,24 +3390,35 @@ function sensitiveOutputSink(
   )
     return 'log';
   if (
-    ['json', 'send', 'end'].includes(method) &&
+    (['json', 'send', 'end'].includes(method) || dynamicMethod) &&
     ['res', 'response', 'reply'].includes(receiver ?? '')
   )
     return 'response';
   if (
-    ['fetch', 'request', 'get', 'post', 'put', 'patch', 'delete'].includes(
+    (['fetch', 'request', 'get', 'post', 'put', 'patch', 'delete'].includes(
       method
-    ) &&
+    ) ||
+      dynamicMethod ||
+      importedDirectClient) &&
     (method === 'fetch' ||
       ['axios', 'http', 'https', 'got', 'request', 'client'].includes(
         receiver ?? ''
-      ))
+      ) ||
+      importedReceiver ||
+      importedDirectClient)
   )
     return 'outbound-request';
   if (
-    ['capture', 'captureexception', 'track', 'emit', 'record'].includes(
+    (['set', 'append'].includes(method) || dynamicMethod) &&
+    receiverExpression &&
+    isUrlSearchParametersReceiver(receiverExpression, scope)
+  )
+    return 'outbound-request';
+  if (
+    (['capture', 'captureexception', 'track', 'emit', 'record'].includes(
       method
-    ) &&
+    ) ||
+      dynamicMethod) &&
     ['telemetry', 'analytics', 'sentry', 'tracer', 'metrics'].includes(
       receiver ?? ''
     )
@@ -3352,6 +3457,58 @@ function sensitiveOutputSink(
   )
     return 'storage';
   return undefined;
+}
+
+function isUrlSearchParametersReceiver(
+  expression: ts.Expression,
+  scope: Scope
+): boolean {
+  const value = unwrapExpression(expression);
+  if (
+    ts.isPropertyAccessExpression(value) &&
+    value.name.text.toLowerCase() === 'searchparams'
+  )
+    return true;
+  if (!ts.isIdentifier(value)) return false;
+  for (
+    let current: Scope | undefined = scope;
+    current;
+    current = current.parent
+  ) {
+    if (!current.bindings.has(value.text)) continue;
+    const functionBody = ts.isFunctionLike(current.node)
+      ? (current.node as ts.FunctionLikeDeclaration).body
+      : undefined;
+    const statements = ts.isSourceFile(current.node)
+      ? current.node.statements
+      : ts.isBlock(current.node)
+        ? current.node.statements
+        : functionBody && ts.isBlock(functionBody)
+          ? functionBody.statements
+          : [];
+    return statements.some((statement) => {
+      if (!ts.isVariableStatement(statement)) return false;
+      return statement.declarationList.declarations.some(
+        (declaration) =>
+          ts.isIdentifier(declaration.name) &&
+          declaration.name.text === value.text &&
+          Boolean(
+            declaration.initializer &&
+            isUrlSearchParametersCreation(declaration.initializer)
+          )
+      );
+    });
+  }
+  return false;
+}
+
+function isUrlSearchParametersCreation(expression: ts.Expression): boolean {
+  const value = unwrapExpression(expression);
+  return (
+    ts.isNewExpression(value) &&
+    ts.isIdentifier(value.expression) &&
+    value.expression.text === 'URLSearchParams'
+  );
 }
 
 function htmlSink(node: ts.Node): boolean {
@@ -3404,12 +3561,26 @@ function isFileSystemSinkCall(call: ts.CallExpression, scope: Scope): boolean {
   const target = call.expression;
   if (ts.isIdentifier(target))
     return lookupBinding(scope, target.text) === 'filesystem';
-  if (
-    !ts.isPropertyAccessExpression(target) ||
-    !fileSystemMethods.has(target.name.text)
-  )
+  let receiver: ts.Expression;
+  if (ts.isPropertyAccessExpression(target)) {
+    if (!fileSystemMethods.has(target.name.text)) return false;
+    receiver = target.expression;
+  } else if (ts.isElementAccessExpression(target)) {
+    const argument = target.argumentExpression;
+    // A dynamic computed method on a known filesystem namespace is an
+    // unknown filesystem sink. Keep the finding conservative rather than
+    // assuming the selected method is harmless.
+    if (
+      argument &&
+      (ts.isStringLiteral(argument) ||
+        ts.isNoSubstitutionTemplateLiteral(argument))
+    ) {
+      if (!fileSystemMethods.has(argument.text)) return false;
+    }
+    receiver = target.expression;
+  } else {
     return false;
-  let receiver: ts.Expression = target.expression;
+  }
   while (ts.isPropertyAccessExpression(receiver))
     receiver = receiver.expression;
   return (
@@ -3431,18 +3602,22 @@ function unwrapExpression(expression: ts.Expression): ts.Expression {
   return current;
 }
 
-function failClosed(statement: ts.Statement): boolean {
+function failClosed(
+  statement: ts.Statement,
+  budget: { remaining: number }
+): boolean {
+  if (!spendHostAllowlistProofWork(budget)) return false;
   if (ts.isThrowStatement(statement) || ts.isReturnStatement(statement))
     return true;
   if (ts.isBlock(statement)) {
     const last = statement.statements.at(-1);
-    return last ? failClosed(last) : false;
+    return last ? failClosed(last, budget) : false;
   }
   if (ts.isIfStatement(statement))
     return Boolean(
       statement.elseStatement &&
-      failClosed(statement.thenStatement) &&
-      failClosed(statement.elseStatement)
+      failClosed(statement.thenStatement, budget) &&
+      failClosed(statement.elseStatement, budget)
     );
   return false;
 }
@@ -3474,15 +3649,20 @@ function isPublicLiteralIpv4(host: string): boolean {
   );
 }
 
-function literalHostAllowlist(expression: ts.Expression): boolean {
+function literalHostAllowlist(
+  expression: ts.Expression,
+  budget: { remaining: number }
+): boolean {
   const value = unwrapExpression(expression);
   if (
     !ts.isArrayLiteralExpression(value) ||
     value.elements.length === 0 ||
+    value.elements.length > MAX_STATIC_HOST_ALLOWLIST_ENTRIES ||
     !value.elements.every((element) => ts.isStringLiteral(element))
   )
     return false;
   return value.elements.every((element) => {
+    if (!spendHostAllowlistProofWork(budget)) return false;
     if (!ts.isStringLiteral(element)) return false;
     const host = element.text.trim().toLowerCase().replace(/\.$/u, '');
     return isPublicLiteralIpv4(host);
@@ -3491,7 +3671,8 @@ function literalHostAllowlist(expression: ts.Expression): boolean {
 
 function hostAllowlistGuard(
   statement: ts.IfStatement,
-  candidate: ts.Expression
+  candidate: ts.Expression,
+  budget: { remaining: number }
 ): boolean {
   const condition = unwrapExpression(statement.expression);
   if (
@@ -3500,7 +3681,7 @@ function hostAllowlistGuard(
   )
     return false;
   const denied = statement.thenStatement;
-  if (!failClosed(denied)) return false;
+  if (!failClosed(denied, budget)) return false;
   const check = unwrapExpression(condition.operand);
   if (!ts.isCallExpression(check) || check.arguments.length !== 1) return false;
   const member = check.expression;
@@ -3509,7 +3690,7 @@ function hostAllowlistGuard(
     !['includes', 'has'].includes(member.name.text)
   )
     return false;
-  if (!literalHostAllowlist(member.expression)) return false;
+  if (!literalHostAllowlist(member.expression, budget)) return false;
   const hostArgument = check.arguments[0];
   if (!hostArgument) return false;
   const host = unwrapExpression(hostArgument);
@@ -3521,6 +3702,11 @@ function hostAllowlistGuard(
     ['href', 'url'].includes(candidateValue.name.text.toLowerCase())
       ? candidateValue.expression
       : candidateValue;
+  if (
+    candidateHost.getWidth() > MAX_HOST_ALLOWLIST_EXPRESSION_BYTES ||
+    host.expression.getWidth() > MAX_HOST_ALLOWLIST_EXPRESSION_BYTES
+  )
+    return false;
   return (
     candidateHost.getText() === unwrapExpression(host.expression).getText()
   );
@@ -3536,17 +3722,28 @@ function rootIdentifier(expression: ts.Expression): ts.Identifier | undefined {
   return ts.isIdentifier(current) ? current : undefined;
 }
 
+function spendHostAllowlistProofWork(budget: { remaining: number }): boolean {
+  budget.remaining -= 1;
+  return budget.remaining >= 0;
+}
+
 function mutatedBetween(
   ownerBody: ts.Node,
   expression: ts.Expression,
   start: number,
-  end: number
-): boolean {
+  end: number,
+  budget: { remaining: number }
+): boolean | undefined {
   const root = rootIdentifier(expression);
   if (!root) return false;
   const aliases = new Set([root.text]);
+  let exhausted = false;
   const collectAliases = (node: ts.Node): void => {
-    if (node !== ownerBody && ts.isFunctionLike(node)) return;
+    if (exhausted || (node !== ownerBody && ts.isFunctionLike(node))) return;
+    if (!spendHostAllowlistProofWork(budget)) {
+      exhausted = true;
+      return;
+    }
     if (node.getStart() < end && ts.isVariableDeclaration(node)) {
       const source = node.initializer && rootIdentifier(node.initializer);
       if (ts.isIdentifier(node.name) && source && aliases.has(source.text))
@@ -3566,9 +3763,15 @@ function mutatedBetween(
     ts.forEachChild(node, collectAliases);
   };
   collectAliases(ownerBody);
+  if (exhausted) return undefined;
   let mutated = false;
   const visit = (node: ts.Node): void => {
-    if (mutated || (node !== ownerBody && ts.isFunctionLike(node))) return;
+    if (mutated || exhausted || (node !== ownerBody && ts.isFunctionLike(node)))
+      return;
+    if (!spendHostAllowlistProofWork(budget)) {
+      exhausted = true;
+      return;
+    }
     if (node.getStart() > start && node.getEnd() < end) {
       if (
         ts.isBinaryExpression(node) &&
@@ -3595,7 +3798,7 @@ function mutatedBetween(
     ts.forEachChild(node, visit);
   };
   visit(ownerBody);
-  return mutated;
+  return exhausted ? undefined : mutated;
 }
 
 function redirectsBlocked(call: ts.CallExpression): boolean {
@@ -3628,21 +3831,35 @@ function redirectsBlocked(call: ts.CallExpression): boolean {
  * names and dynamic policies remain review candidates. */
 function hasVerifiedFetchHostAllowlist(
   call: ts.CallExpression,
-  candidate: ts.Expression
+  candidate: ts.Expression,
+  budget: { remaining: number }
 ): boolean {
   if (!redirectsBlocked(call)) return false;
+  if (candidate.getWidth() > MAX_HOST_ALLOWLIST_EXPRESSION_BYTES) return false;
   let owner = call.parent;
   while (owner && !ts.isFunctionLike(owner)) owner = owner.parent;
   if (!owner || !('body' in owner) || !owner.body) return false;
   const ownerBody = owner.body;
   let verified = false;
+  let exhausted = false;
   const visit = (node: ts.Node): void => {
-    if (verified || (node !== owner && ts.isFunctionLike(node))) return;
+    if (verified || exhausted || (node !== owner && ts.isFunctionLike(node)))
+      return;
+    if (!spendHostAllowlistProofWork(budget)) {
+      exhausted = true;
+      return;
+    }
     if (
       ts.isIfStatement(node) &&
       node.getEnd() < call.getStart() &&
-      hostAllowlistGuard(node, candidate) &&
-      !mutatedBetween(ownerBody, candidate, node.getEnd(), call.getStart())
+      hostAllowlistGuard(node, candidate, budget) &&
+      mutatedBetween(
+        ownerBody,
+        candidate,
+        node.getEnd(),
+        call.getStart(),
+        budget
+      ) === false
     ) {
       verified = true;
       return;
@@ -3650,17 +3867,28 @@ function hasVerifiedFetchHostAllowlist(
     ts.forEachChild(node, visit);
   };
   visit(ownerBody);
-  return verified;
+  return verified && !exhausted;
 }
 
 const outboundRequestModules = new Set([
   'axios',
+  'cross-fetch',
   'got',
   'http',
   'https',
   'node:http',
   'node:https',
+  'node-fetch',
+  'ky',
+  'superagent',
   'undici'
+]);
+const callableDefaultRequestModules = new Set([
+  'axios',
+  'cross-fetch',
+  'got',
+  'ky',
+  'node-fetch'
 ]);
 const outboundRequestMethods = new Set([
   'delete',
@@ -3678,10 +3906,17 @@ function isOutboundRequestCall(call: ts.CallExpression, scope: Scope): boolean {
     ? target.text.toLowerCase()
     : ts.isPropertyAccessExpression(target)
       ? target.name.text.toLowerCase()
-      : '';
-  const receiver = ts.isPropertyAccessExpression(target)
-    ? propertyPath(target.expression)?.at(-1)?.toLowerCase()
-    : undefined;
+      : ts.isElementAccessExpression(target) &&
+          target.argumentExpression &&
+          (ts.isStringLiteral(target.argumentExpression) ||
+            ts.isNoSubstitutionTemplateLiteral(target.argumentExpression))
+        ? target.argumentExpression.text.toLowerCase()
+        : '';
+  const receiver =
+    ts.isPropertyAccessExpression(target) ||
+    ts.isElementAccessExpression(target)
+      ? propertyPath(target.expression)?.at(-1)?.toLowerCase()
+      : undefined;
   if (
     outboundRequestMethods.has(targetName) &&
     (targetName === 'fetch' ||
@@ -3693,7 +3928,8 @@ function isOutboundRequestCall(call: ts.CallExpression, scope: Scope): boolean {
 
   const importedIdentifier = ts.isIdentifier(target)
     ? target
-    : ts.isPropertyAccessExpression(target)
+    : ts.isPropertyAccessExpression(target) ||
+        ts.isElementAccessExpression(target)
       ? rootIdentifier(target.expression)
       : undefined;
   if (
@@ -3712,15 +3948,26 @@ function isOutboundRequestCall(call: ts.CallExpression, scope: Scope): boolean {
     return (
       outboundRequestMethods.has(imported.importedName ?? '') ||
       (imported.importedName === 'default' &&
-        ['axios', 'got'].includes(imported.moduleSpecifier))
+        callableDefaultRequestModules.has(imported.moduleSpecifier))
     );
   }
-  if (!ts.isPropertyAccessExpression(target)) return false;
+  if (
+    !ts.isPropertyAccessExpression(target) &&
+    !ts.isElementAccessExpression(target)
+  )
+    return false;
+  const dynamicComputedMethod =
+    ts.isElementAccessExpression(target) &&
+    (!target.argumentExpression ||
+      (!ts.isStringLiteral(target.argumentExpression) &&
+        !ts.isNoSubstitutionTemplateLiteral(target.argumentExpression)));
   return (
-    (imported.namespace && outboundRequestMethods.has(targetName)) ||
+    (imported.namespace &&
+      (outboundRequestMethods.has(targetName) || dynamicComputedMethod)) ||
     (imported.importedName === 'default' &&
-      ['axios', 'got'].includes(imported.moduleSpecifier) &&
-      outboundRequestMethods.has(targetName))
+      (callableDefaultRequestModules.has(imported.moduleSpecifier) ||
+        imported.moduleSpecifier === 'superagent') &&
+      (outboundRequestMethods.has(targetName) || dynamicComputedMethod))
   );
 }
 
@@ -3728,7 +3975,8 @@ function sourceSinkRule(
   node: ts.Node,
   scope: Scope,
   tainted: TaintedNames,
-  callReturns: WeakMap<ts.CallExpression, FlowBinding>
+  callReturns: WeakMap<ts.CallExpression, FlowBinding>,
+  hostAllowlistProofBudget: { remaining: number }
 ): AstSecurityRule | undefined {
   if (htmlSink(node) && ts.isBinaryExpression(node)) {
     return isTainted(node.right, scope, tainted, callReturns) &&
@@ -3796,7 +4044,7 @@ function sourceSinkRule(
     }
     if (
       isOutboundRequestCall(node, scope) &&
-      !hasVerifiedFetchHostAllowlist(node, first)
+      !hasVerifiedFetchHostAllowlist(node, first, hostAllowlistProofBudget)
     ) {
       return astSecurityRules.serverSideRequestForgery;
     }
@@ -3873,6 +4121,9 @@ export function analyzeAstSource(
   }
   const tainted = taintAnalysis.tainted;
   const sensitive = sensitiveAnalysis.tainted;
+  const hostAllowlistProofBudget = {
+    remaining: MAX_HOST_ALLOWLIST_PROOF_WORK
+  };
   const findings: Finding[] = [];
 
   const visit = (node: ts.Node): void => {
@@ -3949,12 +4200,43 @@ export function analyzeAstSource(
       }
     }
 
+    if (
+      ts.isNewExpression(node) &&
+      scope &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === 'URLSearchParams' &&
+      lookupBinding(scope, 'URLSearchParams') === undefined &&
+      node.arguments?.some((argument) =>
+        isSensitiveValue(
+          argument,
+          scope,
+          sensitive,
+          sensitiveAnalysis.callReturns,
+          projectSource?.text === content ? project?.checker : undefined
+        )
+      )
+    ) {
+      const finding = createFinding(
+        sourceFile,
+        node,
+        astSecurityRules.sensitiveDataExposure
+      );
+      finding.metadata = {
+        ...finding.metadata,
+        sourceClass: 'credential-like environment or sensitive-field value',
+        sinkClass: 'outbound-request',
+        analysisModel: 'bounded-project-sensitive-flow-v2'
+      };
+      findings.push(finding);
+    }
+
     if (scope) {
       const sourceSink = sourceSinkRule(
         node,
         scope,
         tainted,
-        taintAnalysis.callReturns
+        taintAnalysis.callReturns,
+        hostAllowlistProofBudget
       );
       if (sourceSink)
         findings.push(createFinding(sourceFile, node, sourceSink, filePath));

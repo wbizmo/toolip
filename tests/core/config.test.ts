@@ -1,8 +1,4 @@
-import {
-  mkdtemp,
-  rm,
-  writeFile
-} from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -11,13 +7,10 @@ import { applyFindingPolicy } from '../../src/core/config/policy.js';
 
 describe('Toolip configuration', () => {
   it('loads defaults when no file exists', async () => {
-    const root = await mkdtemp(
-      path.join(os.tmpdir(), 'toolip-config-')
-    );
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-config-'));
 
     try {
-      const config =
-        await loadToolipConfig(root);
+      const config = await loadToolipConfig(root);
 
       expect(config.schemaVersion).toBe('1.0');
       expect(config.history.enabled).toBe(true);
@@ -29,10 +22,24 @@ describe('Toolip configuration', () => {
     }
   });
 
+  it('rejects configuration files above the bounded text budget', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-config-limit-'));
+    try {
+      await writeFile(
+        path.join(root, 'toolip.config.json'),
+        ' '.repeat(1024 * 1024 + 1)
+      );
+
+      await expect(loadToolipConfig(root)).rejects.toThrow(
+        'Toolip configuration could not be read (oversized).'
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('applies severity overrides and suppressions', async () => {
-    const root = await mkdtemp(
-      path.join(os.tmpdir(), 'toolip-config-policy-')
-    );
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-config-policy-'));
 
     try {
       await writeFile(
@@ -53,8 +60,7 @@ describe('Toolip configuration', () => {
         })
       );
 
-      const config =
-        await loadToolipConfig(root);
+      const config = await loadToolipConfig(root);
 
       const findings = applyFindingPolicy(
         [
@@ -83,9 +89,7 @@ describe('Toolip configuration', () => {
       );
 
       expect(findings).toHaveLength(1);
-      expect(findings[0]?.severity).toBe(
-        'medium'
-      );
+      expect(findings[0]?.severity).toBe('medium');
     } finally {
       await rm(root, {
         recursive: true,

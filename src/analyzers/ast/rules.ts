@@ -178,5 +178,16 @@ export const astSecurityRules = {
       'A value is read, checked, then mutated without a visible compare-and-swap or version predicate.',
     remediation:
       'Move the state predicate into an atomic conditional update, compare a version, or use an isolation mechanism that prevents competing updates.'
+  },
+  discardedDatabaseTransaction: {
+    id: 'TLP-RACE-004',
+    title: 'Database transaction promise is discarded',
+    category: 'concurrency',
+    severity: 'medium',
+    confidence: 'low',
+    message:
+      'A recognized database transaction call is used as a statement without awaiting or returning its completion.',
+    remediation:
+      'Await the transaction or return its promise so callers observe commit and failure before continuing.'
   }
 } satisfies Record<string, AstSecurityRule>;

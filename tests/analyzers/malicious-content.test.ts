@@ -2,6 +2,163 @@ import { describe, expect, it } from 'vitest';
 import { analyzeMaliciousContent } from '../../src/analyzers/malicious-content/analyzer.js';
 
 describe('non-executing malicious content chain analysis', () => {
+  it('measures a fixed benign and suspicious fixture corpus without running files', () => {
+    const corpus = [
+      {
+        label: 'ordinary bundler scripts',
+        expectedFinding: false,
+        files: [
+          {
+            path: 'package.json',
+            content: JSON.stringify({
+              scripts: { build: 'vite build', test: 'vitest run' }
+            })
+          }
+        ]
+      },
+      {
+        label: 'benign automatic editor task',
+        expectedFinding: false,
+        files: [
+          {
+            path: '.vscode/tasks.json',
+            content: JSON.stringify({
+              tasks: [
+                {
+                  runOptions: { runOn: 'folderOpen' },
+                  command: 'npm',
+                  args: ['run', 'build']
+                }
+              ]
+            })
+          },
+          {
+            path: 'package.json',
+            content: JSON.stringify({ scripts: { build: 'tsc --noEmit' } })
+          }
+        ]
+      },
+      {
+        label: 'inert encoded example text',
+        expectedFinding: false,
+        files: [
+          {
+            path: 'README.md',
+            content: 'Buffer.from("eA==", "base64") is an encoding example.'
+          }
+        ]
+      },
+      {
+        label: 'archive creation in a build script',
+        expectedFinding: false,
+        files: [
+          {
+            path: 'package.json',
+            content: JSON.stringify({
+              scripts: { build: 'tar -czf dist.tar.gz ./dist && node ./build.js' }
+            })
+          },
+          { path: 'build.js', content: "console.log('built');" }
+        ]
+      },
+      {
+        label: 'encoded lifecycle payload',
+        expectedFinding: true,
+        files: [
+          {
+            path: 'package.json',
+            content: JSON.stringify({ scripts: { prepare: 'node init' } })
+          },
+          { path: 'init', content: 'const p = atob(value); eval(p);' }
+        ]
+      },
+      {
+        label: 'imported child process in tool config',
+        expectedFinding: true,
+        files: [
+          {
+            path: 'eslint.config.js',
+            content:
+              "import { spawn as launch } from 'node:child_process'; launch('node', ['loader.js']);"
+          }
+        ]
+      },
+      {
+        label: 'archive extraction and launch',
+        expectedFinding: true,
+        files: [
+          {
+            path: 'package.json',
+            content: JSON.stringify({
+              scripts: { prepare: 'tar -xzf bundle.tgz && node ./out/init.js' }
+            })
+          }
+        ]
+      }
+    ] as const;
+
+    const outcomes = corpus.map(({ expectedFinding, files }) => ({
+      expectedFinding,
+      actualFinding: analyzeMaliciousContent(files).findings.length > 0
+    }));
+    const falsePositives = outcomes.filter(
+      (outcome) => !outcome.expectedFinding && outcome.actualFinding
+    ).length;
+    const falseNegatives = outcomes.filter(
+      (outcome) => outcome.expectedFinding && !outcome.actualFinding
+    ).length;
+    expect({ falsePositives, falseNegatives }).toEqual({
+      falsePositives: 0,
+      falseNegatives: 0
+    });
+  });
+
+  it.each([
+    [
+      'aliased ESM imports',
+      "import { spawn as launch } from 'node:child_process'; launch('node', ['payload.js']);"
+    ],
+    [
+      'destructured CommonJS aliases',
+      "const { execFile: launch } = require('child_process'); launch('node', ['payload.js']);"
+    ],
+    [
+      'namespace aliases',
+      "const cp = require('node:child_process'); cp.spawn('node', ['payload.js']);"
+    ],
+    [
+      'default ESM namespace imports',
+      "import childProcess from 'node:child_process'; childProcess.execFile('node', ['payload.js']);"
+    ],
+    [
+      'direct CommonJS member calls',
+      "require('child_process').fork('payload.js');"
+    ],
+    [
+      'statically aliased child-process methods',
+      "import * as cp from 'node:child_process'; const launch = cp.spawn; launch('node', ['payload.js']);"
+    ],
+    [
+      'literal dynamic import aliases',
+      "const { spawn: launch } = await import('node:child_process'); launch('node', ['payload.js']);"
+    ],
+    [
+      'computed namespace methods',
+      "import * as cp from 'node:child_process'; cp[method]('node', ['payload.js']);"
+    ],
+    [
+      'nonliteral module resolution',
+      'await import(process.env.CONFIGURED_LOADER);'
+    ]
+  ])('keeps %s as unresolved dynamic execution', (_name, source) => {
+    const result = analyzeMaliciousContent([
+      { path: 'eslint.config.js', content: source }
+    ]);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]?.ruleId).toBe('TLP-MAL-002');
+    expect(result.findings[0]?.metadata?.completeness).toBe('unknown');
+  });
+
   it('traces a package prepare script to encoded extensionless dynamic code', () => {
     const result = analyzeMaliciousContent([
       {
@@ -580,6 +737,70 @@ describe('non-executing malicious content chain analysis', () => {
     ]);
 
     expect(result.findings[0]?.ruleId).toBe('TLP-MAL-001');
+    expect(result.findings[0]?.metadata?.completeness).toBe('unknown');
+  });
+
+  it('detects archive extraction followed by execution on another command line', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({
+          scripts: {
+            prepare: '7z e payload.7z\n./payload/init.sh'
+          }
+        })
+      }
+    ]);
+
+    expect(result.findings[0]?.ruleId).toBe('TLP-MAL-001');
+    expect(result.findings[0]?.metadata?.completeness).toBe('unknown');
+    expect(result.findings[0]?.metadata?.behaviorSignals).toContain(
+      'archive-extraction-and-execution'
+    );
+  });
+
+  it('recognizes PowerShell and Python archive extraction followed by execution', () => {
+    for (const command of [
+      'Expand-Archive bundle.zip -DestinationPath out\n& .\\out\\init.ps1',
+      'python -m zipfile -e bundle.zip out\npython out/init.py',
+      'jar xf bundle.jar\njava -jar bundle/app.jar',
+      'unrar x bundle.rar\n./bundle/init.sh',
+      '7zz x bundle.7z\nnode bundle/init.js'
+    ]) {
+      const result = analyzeMaliciousContent([
+        {
+          path: 'package.json',
+          content: JSON.stringify({ scripts: { prepare: command } })
+        }
+      ]);
+      expect(result.findings[0]?.metadata?.behaviorSignals).toContain(
+        'archive-extraction-and-execution'
+      );
+      expect(result.findings[0]?.metadata?.completeness).toBe('unknown');
+    }
+  });
+
+  it('keeps language-level archive extraction followed by process launch unknown', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({ scripts: { prepare: 'python3 bootstrap.py' } })
+      },
+      {
+        path: 'bootstrap.py',
+        content: [
+          'import subprocess',
+          'import zipfile',
+          "with zipfile.ZipFile('bundle.zip') as archive:",
+          "    archive.extractall('out')",
+          "subprocess.run(['node', 'out/init.js'])"
+        ].join('\n')
+      }
+    ]);
+    expect(result.findings[0]?.ruleId).toBe('TLP-MAL-001');
+    expect(result.findings[0]?.metadata?.behaviorSignals).toContain(
+      'archive-extraction-and-execution'
+    );
     expect(result.findings[0]?.metadata?.completeness).toBe('unknown');
   });
 

@@ -21,6 +21,7 @@ type Entry = {
   kind: string;
   automatic: boolean;
   references: Set<string>;
+  signals: readonly string[];
   suspicious: boolean;
   unknown: boolean;
 };
@@ -100,14 +101,134 @@ const shellSourceReference =
 const suspiciousPayload =
   /(?:\beval\s*\(\s*(?:atob|Buffer\.from|decodeURIComponent)|new\s+Function\s*\(\s*(?:atob|Buffer\.from)|\b(?:atob|Buffer\.from)\s*\([^;\n]{0,200}[\s\S]{0,240}\b(?:eval|new\s+Function)\s*\(|\b(?:curl|wget)\b[^\n|]{0,240}\|\s*(?:sh|bash)|\b(?:Invoke-Expression|IEX)\s*\(?\s*(?:\(Invoke-WebRequest|\$env:))/iu;
 const dynamicExecution =
-  /(?:\beval\s*\(|\bnew\s+Function\s*\(|\bchild_process\.(?:exec|execSync)\s*\()/u;
+  /(?:\beval\s*\(|\bnew\s+Function\s*\(|\b(?:node:)?child_process\.(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\s*\()/u;
+const childProcessFunctions = new Set([
+  'exec',
+  'execSync',
+  'execFile',
+  'execFileSync',
+  'spawn',
+  'spawnSync',
+  'fork'
+]);
+const childProcessModule = /^(?:node:)?child_process$/u;
+
+function hasDynamicExecution(source: string): boolean {
+  if (
+    dynamicExecution.test(source) ||
+    /\b(?:import|require)\s*\(\s*(?!['"])/u.test(source)
+  )
+    return true;
+
+  const functionAliases = new Set<string>();
+  const namespaceAliases = new Set<string>();
+  const namedImport =
+    /\bimport\s*\{([^}]*)\}\s*from\s*(['"])([^'"]+)\2/gu;
+  for (const match of source.matchAll(namedImport)) {
+    if (!childProcessModule.test(match[3] ?? '')) continue;
+    for (const specifier of (match[1] ?? '').split(',')) {
+      const parts = specifier.trim().split(/\s+as\s+/u);
+      const imported = parts[0]?.trim();
+      const local = parts[1]?.trim() ?? imported;
+      if (imported && local && childProcessFunctions.has(imported))
+        functionAliases.add(local);
+    }
+  }
+
+  const cjsDestructure =
+    /\b(?:const|let|var)\s*\{([^}]*)\}\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)/gu;
+  for (const match of source.matchAll(cjsDestructure)) {
+    if (!childProcessModule.test(match[3] ?? '')) continue;
+    for (const specifier of (match[1] ?? '').split(',')) {
+      const parts = specifier.trim().split(/\s*:\s*/u);
+      const imported = parts[0]?.trim();
+      const local = parts[1]?.trim() ?? imported;
+      if (imported && local && childProcessFunctions.has(imported))
+        functionAliases.add(local);
+    }
+  }
+  const dynamicImportDestructure =
+    /\b(?:const|let|var)\s*\{([^}]*)\}\s*=\s*(?:await\s+)?import\(\s*(['"])([^'"]+)\2\s*\)/gu;
+  for (const match of source.matchAll(dynamicImportDestructure)) {
+    if (!childProcessModule.test(match[3] ?? '')) continue;
+    for (const specifier of (match[1] ?? '').split(',')) {
+      const parts = specifier.trim().split(/\s*:\s*/u);
+      const imported = parts[0]?.trim();
+      const local = parts[1]?.trim() ?? imported;
+      if (imported && local && childProcessFunctions.has(imported))
+        functionAliases.add(local);
+    }
+  }
+
+  const namespaceImport =
+    /\bimport\s*\*\s*as\s+([A-Za-z_$][\w$]*)\s+from\s*(['"])([^'"]+)\2/gu;
+  for (const match of source.matchAll(namespaceImport))
+    if (childProcessModule.test(match[3] ?? '') && match[1])
+      namespaceAliases.add(match[1]);
+
+  const defaultImport =
+    /\bimport\s+([A-Za-z_$][\w$]*)\s+from\s*(['"])([^'"]+)\2/gu;
+  for (const match of source.matchAll(defaultImport))
+    if (childProcessModule.test(match[3] ?? '') && match[1])
+      namespaceAliases.add(match[1]);
+
+  const cjsNamespace =
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)/gu;
+  for (const match of source.matchAll(cjsNamespace))
+    if (childProcessModule.test(match[3] ?? '') && match[1])
+      namespaceAliases.add(match[1]);
+  const dynamicNamespace =
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?import\(\s*(['"])([^'"]+)\2\s*\)/gu;
+  for (const match of source.matchAll(dynamicNamespace))
+    if (childProcessModule.test(match[3] ?? '') && match[1])
+      namespaceAliases.add(match[1]);
+
+  const apiAliases =
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:([A-Za-z_$][\w$]*)\s*\.\s*(exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)|([A-Za-z_$][\w$]*))\s*(?=[;,\n])/gu;
+  for (const match of source.matchAll(apiAliases)) {
+    const alias = match[1];
+    const namespace = match[2];
+    const method = match[3];
+    const sourceAlias = match[4];
+    if (
+      alias &&
+      ((namespace && namespaceAliases.has(namespace) && method) ||
+        (sourceAlias && functionAliases.has(sourceAlias)))
+    )
+      functionAliases.add(alias);
+  }
+
+  if (functionAliases.size) {
+    const call = /\b([A-Za-z_$][\w$]*)\s*\(/gu;
+    for (const match of source.matchAll(call))
+      if (functionAliases.has(match[1] ?? '')) return true;
+  }
+  if (namespaceAliases.size) {
+    const memberCall =
+      /\b([A-Za-z_$][\w$]*)\s*\.\s*(exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\s*\(/gu;
+    for (const match of source.matchAll(memberCall))
+      if (namespaceAliases.has(match[1] ?? '')) return true;
+    const computedMemberCall =
+      /\b([A-Za-z_$][\w$]*)\s*\[[^\]\n]{1,128}\]\s*\(/gu;
+    for (const match of source.matchAll(computedMemberCall))
+      if (namespaceAliases.has(match[1] ?? '')) return true;
+  }
+  const directRequireCall =
+    /\brequire\(\s*(['"])(?:node:)?child_process\1\s*\)\s*\.\s*(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\s*\(/u;
+  if (directRequireCall.test(source)) return true;
+  return false;
+}
 const automaticScript =
   /\b(?:curl|wget)\b[^\n;&]{0,180}(?:\||;|&&)\s*(?:sh|bash)/iu;
 // Creation and archive listing do not constitute unpack-and-execute.
 const archiveExtraction =
-  /\b(?:tar\s+(?:--extract\b|--get\b|-?[a-z]*x[a-z]*\b)|(?:busybox\s+)?unzip\s+(?!-[lt]\b)|7z\s+x\b)/giu;
+  /\b(?:tar\s+(?:--extract\b|--get\b|-?[a-z]*x[a-z]*\b)|bsdtar\s+(?:--extract\b|-?[a-z]*x[a-z]*\b)|(?:busybox\s+)?unzip\s+(?!-[lt]\b)|7z(?:a|z)?\s+(?:x|e)\b|(?:unrar|rar)\s+(?:x|e)\b|jar\s+(?:x[a-z]*\b|--extract\b)|Expand-Archive\b|python(?:3)?\s+-m\s+(?:zipfile|tarfile)\s+-e\b)/giu;
 const archiveExecutionTarget =
-  /(?:\b(?:node(?:\.exe)?|bash|sh|zsh|pwsh|powershell|python(?:3)?|deno|bun|ruby|perl|php|cmd(?:\.exe)?)\b\s+(?:\/(?:c|k)\s+)?[^\s;&|]+|(?:^|[;&|]\s*)\.{1,2}\/[^\s;&|]+)/imu;
+  /(?:\b(?:node(?:\.exe)?|bash|sh|zsh|pwsh|powershell|python(?:3)?|java(?:\.exe)?|deno|bun|ruby|perl|php|cmd(?:\.exe)?)\b\s+(?:-jar\s+|\/(?:c|k)\s+)?[^\s;&|]+|(?:^|[;&|]\s*)(?:&\s*)?\.{1,2}[\\/]\S+)/imu;
+const archiveApiExtraction =
+  /\b(?:(?:zipfile\.)?ZipFile|(?:tarfile\.)?TarFile|tarfile\.open)\s*\([\s\S]{0,1024}?\.\s*extract(?:all)?\s*\(/giu;
+const archiveApiExecution =
+  /\b(?:subprocess\.(?:run|Popen|call|check_call|check_output)|os\.system|ProcessBuilder|Runtime\.getRuntime\s*\(\)\s*\.\s*exec)\s*\(/u;
 const credentialStoreAccess =
   /(?:keytar\.(?:getPassword|findPassword)|(?:security\s+find-(?:generic|internet)-password)|secret-tool\s+lookup|(?:cmdkey|vaultcmd)\s+\/list|(?:readFileSync|readFile|openSync|Get-Content|cat|type)\s*[^\n]{0,240}(?:\.aws[\\/]credentials|\.npmrc|\.docker[\\/]config\.json|\.ssh[\\/](?:id_rsa|id_ed25519)|Login Data|Local State|credential|token)|(?:AWS_SECRET_ACCESS_KEY|GITHUB_TOKEN|NPM_TOKEN|GH_TOKEN|AZURE_CLIENT_SECRET))/iu;
 const outboundTransfer =
@@ -125,12 +246,19 @@ function hasArchiveExecution(source: string): boolean {
     const after = source
       .slice((match.index ?? 0) + match[0].length)
       .slice(0, 1024);
-    const separator = after.search(/(?:&&|;|\|\|)/u);
+    const separator = after.search(/(?:&&|;|\|\||\r?\n)/u);
     if (
       separator >= 0 &&
       archiveExecutionTarget.test(after.slice(separator + 1))
     )
       return true;
+  }
+  archiveApiExtraction.lastIndex = 0;
+  for (const match of source.matchAll(archiveApiExtraction)) {
+    const after = source
+      .slice((match.index ?? 0) + match[0].length)
+      .slice(0, 2048);
+    if (archiveApiExecution.test(after)) return true;
   }
   return false;
 }
@@ -522,10 +650,11 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
               'prepack'
             ].includes(name),
             references: refs,
+            signals: contentAnalysis(value).signals,
             suspicious:
               contentAnalysis(value).signals.length > 0 ||
               automaticScript.test(value),
-            unknown: dynamicExecution.test(value) && refs.size === 0
+            unknown: hasDynamicExecution(value) && refs.size === 0
           });
         }
       }
@@ -576,7 +705,7 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
           addExecutableReferences(source, refs);
           if (object.type === 'npm' && typeof object.script === 'string')
             addReference(refs, 'package.json');
-          if (automatic || refs.size || dynamicExecution.test(source))
+          if (automatic || refs.size || hasDynamicExecution(source))
             addEntry({
               file: file.path,
               referenceBase: path.posix.join(
@@ -587,10 +716,11 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
               kind: 'editor-task',
               automatic,
               references: refs,
+              signals: contentAnalysis(source).signals,
               suspicious:
                 contentAnalysis(source).signals.length > 0 ||
                 automaticScript.test(source),
-              unknown: dynamicExecution.test(source) && refs.size === 0
+              unknown: hasDynamicExecution(source) && refs.size === 0
             });
         }
     }
@@ -609,7 +739,7 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
       if (
         refs.size ||
         suspiciousPayload.test(file.content) ||
-        dynamicExecution.test(file.content)
+        hasDynamicExecution(file.content)
       )
         addEntry({
           file: file.path,
@@ -617,8 +747,9 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
           kind: 'tool-config',
           automatic: true,
           references: refs,
+          signals: contentAnalysis(file.content).signals,
           suspicious: contentAnalysis(file.content).signals.length > 0,
-          unknown: dynamicExecution.test(file.content) && refs.size === 0
+          unknown: hasDynamicExecution(file.content) && refs.size === 0
         });
     }
   }
@@ -638,10 +769,11 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
       kind: 'git-hook',
       automatic: true,
       references: refs,
+      signals: contentAnalysis(file.content).signals,
       suspicious:
         contentAnalysis(file.content).signals.length > 0 ||
         automaticScript.test(file.content),
-      unknown: dynamicExecution.test(file.content) && refs.size === 0
+      unknown: hasDynamicExecution(file.content) && refs.size === 0
     });
   }
 
@@ -691,11 +823,12 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
           kind: 'github-actions-run',
           automatic: true,
           references: refs,
+          signals: contentAnalysis(value.run).signals,
           suspicious:
             contentAnalysis(value.run).signals.length > 0 ||
             automaticScript.test(value.run),
           unknown:
-            dynamicCwd || (dynamicExecution.test(value.run) && refs.size === 0)
+            dynamicCwd || (hasDynamicExecution(value.run) && refs.size === 0)
         });
       }
     }
@@ -797,8 +930,9 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
       kind: shebang ? 'shebang-script' : 'content-signature-script',
       automatic: false,
       references: refs,
+      signals,
       suspicious: signals.length > 0,
-      unknown: dynamicExecution.test(file.content) && refs.size === 0
+      unknown: hasDynamicExecution(file.content) && refs.size === 0
     });
   }
   return { entries, truncated };
@@ -893,8 +1027,11 @@ export function analyzeMaliciousContent(
       (reference) => [entry.referenceBase, reference] as const
     );
     const entryAnalysis = contentAnalysis(content.get(entry.file) ?? '');
-    let dynamicUnknown = entry.unknown || entryAnalysis.unresolvedShellCommand;
-    const signals = new Set(entryAnalysis.signals);
+    const signals = new Set([...entry.signals, ...entryAnalysis.signals]);
+    let dynamicUnknown =
+      entry.unknown ||
+      entryAnalysis.unresolvedShellCommand ||
+      signals.has('archive-extraction-and-execution');
     const enqueue = (from: string, reference: string) => {
       if (queue.length >= MAX_REFERENCE_WORK) {
         workExhausted = true;
@@ -931,7 +1068,9 @@ export function analyzeMaliciousContent(
       trace.push(target);
       const targetText = content.get(target) ?? '';
       const targetAnalysis = contentAnalysis(targetText);
-      dynamicUnknown ||= targetAnalysis.unresolvedShellCommand;
+      dynamicUnknown ||=
+        targetAnalysis.unresolvedShellCommand ||
+        targetAnalysis.signals.includes('archive-extraction-and-execution');
       for (const signal of targetAnalysis.signals) signals.add(signal);
       if (signals.size > 0 || automaticScript.test(targetText)) payload = true;
       const nestedReferences = targetAnalysis.references;

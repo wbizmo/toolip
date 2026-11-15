@@ -260,6 +260,32 @@ describe('DepsDevClient', () => {
     expect(fetchImplementation).toHaveBeenCalledTimes(4);
   });
 
+  it('bounds the metadata cache by serialized bytes as well as entry count', async () => {
+    const fetchImplementation = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ licenses: ['MIT'], padding: 'x'.repeat(600) }),
+          { status: 200 }
+        )
+    ) as unknown as typeof fetch;
+    const client = new DepsDevClient({
+      fetchImplementation,
+      cacheMaxEntries: 100_000,
+      cacheMaxBytes: 1_024,
+      maxRetries: 0
+    });
+
+    await client.getVersion('first', '1.0.0');
+    await client.getVersion('second', '1.0.0');
+    expect(client.getMetrics().cacheBytes).toBeLessThanOrEqual(1_024);
+    await client.getVersion('first', '1.0.0');
+
+    expect(fetchImplementation).toHaveBeenCalledTimes(3);
+    expect(() => new DepsDevClient({ cacheMaxBytes: 1_023 })).toThrow(
+      'cache bytes must be between'
+    );
+  });
+
   it('does not cache failed lookups or responses when TTL caching is disabled', async () => {
     const fetchImplementation = vi.fn(
       async () => new Response(JSON.stringify({ licenses: ['MIT'] }))

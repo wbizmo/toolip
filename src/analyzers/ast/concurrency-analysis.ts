@@ -8,7 +8,9 @@ const fileCheckMethods = new Set([
   'stat',
   'statSync',
   'lstat',
-  'lstatSync'
+  'lstatSync',
+  'realpath',
+  'realpathSync'
 ]);
 const fileUseMethods = new Set([
   'open',
@@ -80,6 +82,17 @@ const objectWriteMethods = new Set([
   'save',
   'replace'
 ]);
+const databaseReceivers = new Set([
+  'client',
+  'connection',
+  'dataSource',
+  'database',
+  'db',
+  'knex',
+  'manager',
+  'prisma',
+  'sequelize'
+]);
 
 type FindingKind =
   | 'filesystem-check-then-use'
@@ -88,11 +101,111 @@ type FindingKind =
 
 function methodName(call: ts.CallExpression): string | undefined {
   const target = call.expression;
-  return ts.isPropertyAccessExpression(target)
-    ? target.name.text
-    : ts.isIdentifier(target)
-      ? target.text
-      : undefined;
+  if (ts.isPropertyAccessExpression(target)) return target.name.text;
+  if (ts.isIdentifier(target)) return target.text;
+  if (
+    ts.isElementAccessExpression(target) &&
+    target.argumentExpression &&
+    (ts.isStringLiteral(target.argumentExpression) ||
+      ts.isNoSubstitutionTemplateLiteral(target.argumentExpression))
+  )
+    return target.argumentExpression.text;
+  return undefined;
+}
+
+function isDiscardedDatabaseTransaction(call: ts.CallExpression): boolean {
+  const target = call.expression;
+  const method = methodName(call);
+  if (!method || !['$transaction', 'transaction'].includes(method))
+    return false;
+  if (
+    !ts.isPropertyAccessExpression(target) &&
+    !ts.isElementAccessExpression(target)
+  )
+    return false;
+  let current: ts.Node = call;
+  let discarded = false;
+  while (true) {
+    const parent = current.parent;
+    if (!parent) break;
+    if (
+      ts.isAwaitExpression(parent) ||
+      (ts.isReturnStatement(parent) && parent.expression === current)
+    )
+      return false;
+    if (ts.isVoidExpression(parent) && parent.expression === current) {
+      current = parent;
+      continue;
+    }
+    if (
+      ts.isPropertyAccessExpression(parent) &&
+      parent.expression === current &&
+      ['then', 'catch', 'finally'].includes(parent.name.text)
+    ) {
+      current = parent;
+      continue;
+    }
+    if (ts.isCallExpression(parent) && parent.expression === current) {
+      current = parent;
+      continue;
+    }
+    discarded =
+      ts.isExpressionStatement(parent) && parent.expression === current;
+    break;
+  }
+  if (!discarded) return false;
+  let receiver: ts.Expression = target.expression;
+  let receiverName: string | undefined;
+  while (ts.isPropertyAccessExpression(receiver)) {
+    receiverName = receiver.name.text;
+    receiver = receiver.expression;
+  }
+  if (receiverName && databaseReceivers.has(receiverName)) return true;
+  return ts.isIdentifier(receiver) && databaseReceivers.has(receiver.text);
+}
+
+function createDiscardedTransactionFinding(
+  sourceFile: ts.SourceFile,
+  call: ts.CallExpression
+): Finding {
+  const start = sourceFile.getLineAndCharacterOfPosition(
+    call.getStart(sourceFile)
+  );
+  const location = {
+    file: sourceFile.fileName,
+    line: start.line + 1,
+    column: start.character + 1
+  };
+  const fingerprint = `TLP-RACE-004:${location.file}:${location.line}:${location.column}`;
+  return {
+    id: fingerprint,
+    ruleId: 'TLP-RACE-004',
+    title: 'Database transaction promise is discarded',
+    category: 'concurrency',
+    severity: 'medium',
+    confidence: 'low',
+    message:
+      'A recognized database transaction call is used as a statement without awaiting or returning its completion. The surrounding operation may proceed before transactional work commits or errors are observed.',
+    source: 'typescript-ast-concurrency-heuristic',
+    location,
+    evidence: [
+      {
+        summary:
+          '[discarded database transaction result; query and values omitted]',
+        fingerprint
+      }
+    ],
+    remediation: {
+      summary:
+        'Await the transaction or return its promise so callers observe commit and failure before continuing.'
+    },
+    metadata: {
+      analysisModel: 'discarded-database-transaction',
+      cwe: 'CWE-362',
+      limitation:
+        'Recognizes direct discarded transaction calls on common database client names; it does not model custom clients, promise ownership, or transaction isolation.'
+    }
+  };
 }
 
 function propertyName(name: ts.PropertyName): string | undefined {
@@ -188,6 +301,20 @@ function visiblePathKey(
     return direct;
   const nextSeen = new Set(seen);
   nextSeen.add(expression.text);
+  const initializerCall = unwrapCall(alias.initializer);
+  if (
+    initializerCall &&
+    ['realpath', 'realpathSync'].includes(methodName(initializerCall) ?? '') &&
+    initializerCall.arguments[0]
+  )
+    return visiblePathKey(
+      initializerCall.arguments[0],
+      usePosition,
+      visibleNodes,
+      aliases,
+      depth + 1,
+      nextSeen
+    );
   return visiblePathKey(
     alias.initializer,
     usePosition,
@@ -847,6 +974,8 @@ export function analyzeConcurrencySource(
       topLevelFacts;
     if (ts.isCallExpression(node)) {
       facts.calls.push(node);
+      if (isDiscardedDatabaseTransaction(node))
+        findings.push(createDiscardedTransactionFinding(sourceFile, node));
       findUnboundedPromiseAll(
         sourceFile,
         node,

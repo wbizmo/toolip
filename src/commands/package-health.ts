@@ -5,6 +5,7 @@ import {
   summarizeDepsDevTrust
 } from '../providers/depsdev/client.js';
 import { NpmPackageHealthClient } from '../providers/npm/package-health.js';
+import { serializeJsonOutputBounded } from '../core/report-writer.js';
 
 type PackageHealthOptions = {
   json?: boolean;
@@ -91,7 +92,7 @@ export function registerPackageHealthCommand(program: Command): void {
             options
           );
           if (options.json) {
-            console.log(JSON.stringify(observations, null, 2));
+            console.log(serializeJsonOutputBounded(observations));
             return;
           }
           console.log('Toolip Project Package Health');
@@ -193,7 +194,7 @@ export function registerPackageHealthCommand(program: Command): void {
         };
 
         if (options.json) {
-          console.log(JSON.stringify(result, null, 2));
+          console.log(serializeJsonOutputBounded(result));
           return;
         }
 

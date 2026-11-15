@@ -412,12 +412,14 @@ export async function buildSecurityScorecard(
   const warnings: string[] = [];
 
   if (packageHealthResult) {
-    findings.push(...packageHealthResult.findings);
-    warnings.push(...packageHealthResult.warnings);
+    for (const finding of packageHealthResult.findings) findings.push(finding);
+    for (const warning of packageHealthResult.warnings) warnings.push(warning);
   }
   if (licenseAnalysisResult) {
-    findings.push(...licenseAnalysisResult.findings);
-    warnings.push(...licenseAnalysisResult.warnings);
+    for (const finding of licenseAnalysisResult.findings)
+      findings.push(finding);
+    for (const warning of licenseAnalysisResult.warnings)
+      warnings.push(warning);
   }
 
   if (dependencyOutcome.status === 'rejected') {
@@ -428,15 +430,18 @@ export async function buildSecurityScorecard(
   } else {
     dependencySummary = dependencyOutcome.value.summary;
     npmProvenance = dependencyOutcome.value.npmProvenance;
-    findings.push(...dependencyOutcome.value.findings);
+    for (const finding of dependencyOutcome.value.findings)
+      findings.push(finding);
     const dependencyCoverage = dependencyOutcome.value.coverage;
 
     // OSV runs independently of registry lookups: a completed run's findings
     // and warnings must survive partial registry coverage.
     if (vulnerabilityExecution?.status === 'ok') {
-      findings.push(...vulnerabilityExecution.findings);
+      for (const finding of vulnerabilityExecution.findings)
+        findings.push(finding);
     }
-    warnings.push(...(vulnerabilityExecution?.warnings ?? []));
+    for (const warning of vulnerabilityExecution?.warnings ?? [])
+      warnings.push(warning);
 
     if (dependencyCoverage && dependencyCoverage.state !== 'complete') {
       // Some registry lookups failed or timed out: dependency health is NOT
@@ -534,8 +539,8 @@ export async function buildSecurityScorecard(
     );
   } else {
     const doctorResult = doctorOutcome.value;
-    findings.push(...doctorResult.findings);
-    warnings.push(...(doctorResult.warnings ?? []));
+    for (const finding of doctorResult.findings) findings.push(finding);
+    for (const warning of doctorResult.warnings ?? []) warnings.push(warning);
 
     if (
       doctorResult.summary.filesSkipped > 0 ||
@@ -574,7 +579,7 @@ export async function buildSecurityScorecard(
       'Git safety analysis failed.'
     );
   } else {
-    findings.push(...gitOutcome.value.findings);
+    for (const finding of gitOutcome.value.findings) findings.push(finding);
     gitDimension =
       gitOutcome.value.summary.ignoreStatus === 'unknown'
         ? unmeasuredDimension(

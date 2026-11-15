@@ -15,6 +15,7 @@ import {
   type HistoryDeltaFormat
 } from '../core/history/report.js';
 import { readHmacKeyFile } from '../core/secure-key-file.js';
+import { serializeJsonOutputBounded } from '../core/report-writer.js';
 
 type HistoryOptions = {
   path: string;
@@ -46,15 +47,11 @@ export function registerHistoryCommand(program: Command): void {
 
       if (options.json) {
         console.log(
-          JSON.stringify(
-            {
-              schemaVersion: history.schemaVersion,
-              integrityStatus: history.integrity ? 'verified' : 'unsigned',
-              entries
-            },
-            null,
-            2
-          )
+          serializeJsonOutputBounded({
+            schemaVersion: history.schemaVersion,
+            integrityStatus: history.integrity ? 'verified' : 'unsigned',
+            entries
+          })
         );
         return;
       }
@@ -237,16 +234,12 @@ export function registerHistoryCommand(program: Command): void {
         const entries = remediationSla(latest, policy);
         if (options.json) {
           console.log(
-            JSON.stringify(
-              {
-                coverage: latest.coverage,
-                integrityStatus: history.integrity ? 'verified' : 'unsigned',
-                entries,
-                overdue: entries.filter((entry) => entry.overdue).length
-              },
-              null,
-              2
-            )
+            serializeJsonOutputBounded({
+              coverage: latest.coverage,
+              integrityStatus: history.integrity ? 'verified' : 'unsigned',
+              entries,
+              overdue: entries.filter((entry) => entry.overdue).length
+            })
           );
           return;
         }

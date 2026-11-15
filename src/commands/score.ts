@@ -1,6 +1,7 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
 import { buildSecurityScorecard } from '../application/security-scorecard.js';
+import { serializeJsonOutputBounded } from '../core/report-writer.js';
 import type { ScoreDimension } from '../core/score.js';
 
 export function registerScoreCommand(program: Command): void {
@@ -36,7 +37,7 @@ export function registerScoreCommand(program: Command): void {
         );
 
         if (options.json) {
-          console.log(JSON.stringify(scorecard, null, 2));
+          console.log(serializeJsonOutputBounded(scorecard));
           return;
         }
 

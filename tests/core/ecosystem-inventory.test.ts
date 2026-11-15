@@ -3927,6 +3927,136 @@ describe('non-npm lockfile inventory', () => {
     expect(graph.complete).toBe(false);
   });
 
+  it('keeps Java module identities stable when export roots are reordered', async () => {
+    const root = await fixture();
+    const modules = [
+      {
+        groupId: 'org.example',
+        artifactId: 'service-a',
+        version: '1.0.0',
+        children: [
+          {
+            groupId: 'org.example',
+            artifactId: 'library-a',
+            version: '2.0.0',
+            children: []
+          }
+        ]
+      },
+      {
+        groupId: 'org.example',
+        artifactId: 'service-b',
+        version: '1.0.0',
+        children: [
+          {
+            groupId: 'org.example',
+            artifactId: 'library-b',
+            version: '3.0.0',
+            children: []
+          }
+        ]
+      }
+    ];
+    const exportPath = path.join(root, 'maven-dependency-tree.json');
+    const readModuleIdentities = async (
+      roots: typeof modules
+    ): Promise<Array<[string, string | undefined]>> => {
+      await writeFile(exportPath, JSON.stringify({ modules: roots }));
+      const graph = await (
+        await import('../../src/core/dependencies/ecosystem-inventory.js')
+      ).readOtherEcosystemInventoryDetailed(root);
+      expect(graph.complete).toBe(true);
+      return graph.packages
+        .map(
+          (item) => [item.name, item.workspace] as [string, string | undefined]
+        )
+        .sort(([left], [right]) => left.localeCompare(right));
+    };
+
+    const forward = await readModuleIdentities(modules);
+    const reversed = await readModuleIdentities([...modules].reverse());
+    expect(reversed).toEqual(forward);
+    expect(new Set(forward.map(([, workspace]) => workspace)).size).toBe(2);
+  });
+
+  it('withholds graphs whose export roots have duplicate module identities', async () => {
+    const root = await fixture();
+    const module = {
+      groupId: 'org.example',
+      artifactId: 'service',
+      version: '1.0.0',
+      children: [
+        {
+          groupId: 'org.example',
+          artifactId: 'library',
+          version: '2.0.0',
+          children: []
+        }
+      ]
+    };
+    await writeFile(
+      path.join(root, 'maven-dependency-tree.json'),
+      JSON.stringify({ modules: [module, module] })
+    );
+
+    const graph = await (
+      await import('../../src/core/dependencies/ecosystem-inventory.js')
+    ).readOtherEcosystemInventoryDetailed(root);
+
+    expect(graph.packages).toEqual([]);
+    expect(graph.warnings).toContain(
+      'java-export-module-identity-ambiguous:maven-dependency-tree.json'
+    );
+    expect(graph.complete).toBe(false);
+  });
+
+  it('uses explicit project paths to distinguish equal-coordinate Gradle modules', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'gradle-dependencies.json'),
+      JSON.stringify({
+        modules: [
+          {
+            group: 'org.example',
+            module: 'shared-app',
+            version: '1.0.0',
+            projectPath: ':api',
+            dependencies: [
+              {
+                group: 'org.example',
+                module: 'api-only',
+                version: '2.0.0',
+                dependencies: []
+              }
+            ]
+          },
+          {
+            group: 'org.example',
+            module: 'shared-app',
+            version: '1.0.0',
+            projectPath: ':service',
+            dependencies: [
+              {
+                group: 'org.example',
+                module: 'service-only',
+                version: '3.0.0',
+                dependencies: []
+              }
+            ]
+          }
+        ]
+      })
+    );
+
+    const graph = await (
+      await import('../../src/core/dependencies/ecosystem-inventory.js')
+    ).readOtherEcosystemInventoryDetailed(root);
+
+    expect(graph.complete).toBe(true);
+    expect(graph.packages).toHaveLength(2);
+    expect(new Set(graph.packages.map((item) => item.workspace)).size).toBe(2);
+  });
+
   it('checks Maven export revision against a trusted dependency source rather than a self-reported SHA', async () => {
     const root = await fixture();
     const pom = '<project><modelVersion>4.0.0</modelVersion></project>';

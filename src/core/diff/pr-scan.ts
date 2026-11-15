@@ -400,7 +400,7 @@ async function dependencyInventoryAtCommit(
   const packages: DependencyIdentity[] = [];
   try {
     const npm = await readNpmDependencyGraph(root, fileSource);
-    packages.push(...npm.packages);
+    for (const item of npm.packages) packages.push(item);
     npm.warnings.forEach((warning) => {
       warnings.add(`npm:${warning}`);
     });
@@ -425,7 +425,7 @@ async function dependencyInventoryAtCommit(
       warnings.add('npm:manifest-requirements-not-installed-identities');
   }
   const other = await readOtherEcosystemInventoryDetailed(root, fileSource);
-  packages.push(...other.packages);
+  for (const item of other.packages) packages.push(item);
   other.warnings.forEach((warning) => {
     warnings.add(`other:${warning}`);
   });
@@ -805,7 +805,8 @@ function scanText(filePath: string, content: string): Finding[] {
   ];
   const extension = filePath.split('.').at(-1)?.toLowerCase() ?? '';
   if (sourceExtensions.has(extension))
-    findings.push(...analyzeAstSource(filePath, content));
+    for (const finding of analyzeAstSource(filePath, content))
+      findings.push(finding);
   return findings;
 }
 

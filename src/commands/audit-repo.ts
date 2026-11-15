@@ -2,6 +2,7 @@ import type { Command } from 'commander';
 import { auditRemoteRepository } from '../core/github/remote-audit.js';
 
 import { sanitizeOutput } from '../core/safe-output.js';
+import { serializeJsonOutputBounded } from '../core/report-writer.js';
 
 export function registerAuditRepoCommand(program: Command): void {
   program
@@ -14,7 +15,7 @@ export function registerAuditRepoCommand(program: Command): void {
       const result = await auditRemoteRepository(url);
 
       if (options.json) {
-        console.log(JSON.stringify(sanitizeOutput(result), null, 2));
+        console.log(serializeJsonOutputBounded(sanitizeOutput(result)));
         return;
       }
 

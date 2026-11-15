@@ -3,10 +3,10 @@ import {
   sign as cryptoSign,
   verify as cryptoVerify
 } from 'node:crypto';
-import { constants } from 'node:fs';
-import { lstat, open, readdir, realpath } from 'node:fs/promises';
+import { lstat, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { canonicalJson } from './canonical-json.js';
+import { readBoundedRegularFile } from './bounded-file.js';
 import type { ToolipReport } from './report.js';
 
 export type ReportEvidenceRulePack = Readonly<{
@@ -415,41 +415,12 @@ async function readArtifactFile(
   filePath: string,
   maximumBytes: number
 ): Promise<Buffer> {
-  const named = await lstat(filePath, { bigint: true });
-  if (!named.isFile() || named.size > BigInt(maximumBytes))
-    throw new Error(
-      'Toolip scanner artifact file exceeds its regular-file budget.'
-    );
-  const noFollow =
-    process.platform === 'win32' ? 0 : (constants.O_NOFOLLOW ?? 0);
-  const handle = await open(filePath, constants.O_RDONLY | noFollow);
   try {
-    const opened = await handle.stat({ bigint: true });
-    if (
-      !opened.isFile() ||
-      opened.dev !== named.dev ||
-      opened.ino !== named.ino ||
-      opened.size !== named.size ||
-      opened.mtimeNs !== named.mtimeNs ||
-      opened.ctimeNs !== named.ctimeNs
-    )
-      throw new Error('Toolip scanner artifact changed while opening.');
-    const bytes = await handle.readFile();
-    const current = await lstat(filePath, { bigint: true });
-    if (
-      bytes.length > maximumBytes ||
-      !current.isFile() ||
-      current.isSymbolicLink() ||
-      current.dev !== opened.dev ||
-      current.ino !== opened.ino ||
-      current.size !== opened.size ||
-      current.mtimeNs !== opened.mtimeNs ||
-      current.ctimeNs !== opened.ctimeNs
-    )
-      throw new Error('Toolip scanner artifact changed while reading.');
-    return bytes;
-  } finally {
-    await handle.close();
+    return await readBoundedRegularFile(filePath, maximumBytes);
+  } catch {
+    throw new Error(
+      'Toolip scanner artifact changed or exceeds its regular-file budget.'
+    );
   }
 }
 

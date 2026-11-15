@@ -3,7 +3,15 @@ import type {
   AnalyzerContext,
   AnalyzerResult
 } from '../../contracts/analyzer.js';
-import { realpathSync, type Dirent } from 'node:fs';
+import {
+  constants,
+  closeSync,
+  fstatSync,
+  openSync,
+  readSync,
+  realpathSync,
+  type Dirent
+} from 'node:fs';
 import { lstat, readdir, realpath as realpathAsync } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -31,6 +39,7 @@ const maxInstalledPackageManifests = 20_000;
 const maxInstalledPackageManifestBytes = 64 * 1024;
 const maxInstalledPackageManifestTotalBytes = 64 * 1024 * 1024;
 const maxYarnNodeModulesEntries = 100_000;
+const maxResolvedSourceBytes = 1024 * 1024;
 
 type InstalledPackageManifest = {
   name: string;
@@ -312,13 +321,69 @@ function createRootBoundResolverHost(root: string): ts.ModuleResolutionHost {
       return undefined;
     }
   };
+  const readBoundedSource = (fileName: string): string | undefined => {
+    const canonical = canonicalWithin(fileName);
+    if (!canonical) return undefined;
+    let descriptor: number | undefined;
+    try {
+      const noFollow = constants.O_NOFOLLOW ?? 0;
+      const nonBlocking =
+        process.platform === 'win32' ? 0 : (constants.O_NONBLOCK ?? 0);
+      descriptor = openSync(
+        canonical,
+        constants.O_RDONLY | noFollow | nonBlocking
+      );
+      const before = fstatSync(descriptor, { bigint: true });
+      if (
+        !before.isFile() ||
+        before.size < 0n ||
+        before.size > BigInt(maxResolvedSourceBytes)
+      )
+        return undefined;
+      const bytes = Buffer.alloc(Number(before.size));
+      let offset = 0;
+      while (offset < bytes.length) {
+        const count = readSync(
+          descriptor,
+          bytes,
+          offset,
+          bytes.length - offset,
+          offset
+        );
+        if (count === 0) return undefined;
+        offset += count;
+      }
+      const extra = Buffer.alloc(1);
+      if (readSync(descriptor, extra, 0, 1, bytes.length) !== 0)
+        return undefined;
+      const after = fstatSync(descriptor, { bigint: true });
+      if (
+        before.dev !== after.dev ||
+        before.ino !== after.ino ||
+        before.size !== after.size ||
+        before.mtimeNs !== after.mtimeNs ||
+        before.ctimeNs !== after.ctimeNs ||
+        canonicalWithin(fileName) !== canonical
+      )
+        return undefined;
+      return bytes.toString('utf8');
+    } catch {
+      return undefined;
+    } finally {
+      if (descriptor !== undefined) {
+        try {
+          closeSync(descriptor);
+        } catch {
+          // A close failure makes this one compiler-host read unavailable; it
+          // must not escape from TypeScript's synchronous host callback.
+        }
+      }
+    }
+  };
   return {
     fileExists: (fileName) =>
       canonicalWithin(fileName) !== undefined && ts.sys.fileExists(fileName),
-    readFile: (fileName) =>
-      canonicalWithin(fileName) !== undefined
-        ? ts.sys.readFile(fileName)
-        : undefined,
+    readFile: (fileName) => readBoundedSource(fileName),
     directoryExists: (directoryName) =>
       canonicalWithin(directoryName) !== undefined &&
       (ts.sys.directoryExists?.(directoryName) ?? false),

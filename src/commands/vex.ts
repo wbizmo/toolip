@@ -1,4 +1,4 @@
-import { readFile, stat, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Command } from 'commander';
 import { AnalyzerRunner } from '../application/analyzer-runner.js';
@@ -13,6 +13,8 @@ import {
 } from '../core/vex.js';
 import { AdvisorySnapshotCache } from '../providers/intelligence/snapshot-cache.js';
 import { readPemKeyFile } from '../core/secure-key-file.js';
+import { readBoundedUtf8File } from '../core/bounded-file.js';
+import { serializeJsonOutputBounded } from '../core/report-writer.js';
 
 const maxInputBytes = 16 * 1024 * 1024;
 
@@ -116,7 +118,7 @@ export function registerVexCommand(program: Command): void {
           : exportCycloneDxVex(result.findings, { author: options.author });
       await writeFile(
         path.resolve(options.output),
-        `${JSON.stringify(document, null, 2)}\n`,
+        `${serializeJsonOutputBounded(document)}\n`,
         { encoding: 'utf8', mode: 0o600 }
       );
       console.log(`VEX document written to ${path.resolve(options.output)}.`);
@@ -135,11 +137,8 @@ export function registerVexCommand(program: Command): void {
     .action(async (options: VexSignOptions) => {
       if (options.format !== 'openvex' && options.format !== 'cyclonedx')
         throw new Error('VEX format must be openvex or cyclonedx.');
-      const fileStat = await stat(options.input);
-      if (fileStat.size > maxInputBytes)
-        throw new Error('VEX input exceeds the 16 MiB limit.');
       const document = JSON.parse(
-        await readFile(options.input, 'utf8')
+        await readBoundedUtf8File(options.input, maxInputBytes)
       ) as unknown;
       const signed = signVexDocument(
         document,
@@ -149,7 +148,7 @@ export function registerVexCommand(program: Command): void {
       );
       await writeFile(
         path.resolve(options.output),
-        `${JSON.stringify(signed, null, 2)}\n`,
+        `${serializeJsonOutputBounded(signed)}\n`,
         { encoding: 'utf8', mode: 0o600 }
       );
       console.log(
@@ -174,11 +173,8 @@ export function registerVexCommand(program: Command): void {
           throw new Error('VEX format must be openvex or cyclonedx.');
         if (options.trustedKeyId && !options.trustedPublicKey)
           throw new Error('--trusted-key-id requires --trusted-public-key.');
-        const fileStat = await stat(options.input);
-        if (fileStat.size > maxInputBytes)
-          throw new Error('VEX input exceeds the 16 MiB limit.');
         const document = JSON.parse(
-          await readFile(options.input, 'utf8')
+          await readBoundedUtf8File(options.input, maxInputBytes)
         ) as unknown;
         const assessments = parseVexDocument(
           document,
@@ -197,20 +193,16 @@ export function registerVexCommand(program: Command): void {
           }
         );
         console.log(
-          JSON.stringify(
-            {
-              state: 'valid',
-              format: options.format,
-              assessments: assessments.length,
-              notAffected: assessments.filter(
-                (assessment) => assessment.status === 'not_affected'
-              ).length,
-              signatureStatus: assessments[0]?.signatureStatus ?? 'unsigned',
-              signatureKeyId: assessments[0]?.signatureKeyId
-            },
-            null,
-            2
-          )
+          serializeJsonOutputBounded({
+            state: 'valid',
+            format: options.format,
+            assessments: assessments.length,
+            notAffected: assessments.filter(
+              (assessment) => assessment.status === 'not_affected'
+            ).length,
+            signatureStatus: assessments[0]?.signatureStatus ?? 'unsigned',
+            signatureKeyId: assessments[0]?.signatureKeyId
+          })
         );
       }
     );

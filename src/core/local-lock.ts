@@ -4,7 +4,6 @@ import {
   lstat,
   opendir,
   open,
-  readFile,
   rename,
   rm,
   unlink,
@@ -12,10 +11,12 @@ import {
 } from 'node:fs/promises';
 import path from 'node:path';
 import lockfile from 'proper-lockfile';
+import { readBoundedUtf8File } from './bounded-file.js';
 
 const staleMs = 30_000;
 const updateMs = 10_000;
 const staleMarkerCleanupLimit = 256;
+const maximumOwnerMarkerBytes = 256;
 
 export type LockGuard = () => Promise<void>;
 
@@ -87,7 +88,9 @@ export async function withLocalStateLock<T>(
       }
       let currentToken: string;
       try {
-        currentToken = (await readFile(ownerPath, 'utf8')).trim();
+        currentToken = (
+          await readBoundedUtf8File(ownerPath, maximumOwnerMarkerBytes)
+        ).trim();
       } catch (error) {
         compromised = localLockCompromised(error);
         throw compromised;
@@ -210,7 +213,10 @@ async function ownsLockDirectory(
 /** Checks that the lock owner marker still contains this process's lease token. */
 async function ownsMarker(ownerPath: string, token: string): Promise<boolean> {
   try {
-    return (await readFile(ownerPath, 'utf8')).trim() === token;
+    return (
+      (await readBoundedUtf8File(ownerPath, maximumOwnerMarkerBytes)).trim() ===
+      token
+    );
   } catch {
     return false;
   }

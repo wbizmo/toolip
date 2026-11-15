@@ -18,8 +18,17 @@ import type {
   FileSnapshot,
   TextFileReadResult
 } from '../core/text-file-reader.js';
+import type { DependencyFileSource } from '../core/dependencies/inventory.js';
 
 const snapshotContextIds = new WeakMap<ScannerContext, string>();
+// An immutable snapshot's bounded text index is shared by dependency parsers
+// across analyzers; weak keys release the index with the snapshot lifecycle.
+const snapshotDependencySources = new WeakMap<
+  ProjectSnapshot,
+  DependencyFileSource
+>();
+const lockfilePathPattern =
+  /(?:^|\/)(?:package\.json|package-lock\.json|npm-shrinkwrap\.json|\.npmrc|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|\.yarnrc(?:\.yml)?|Cargo\.toml|Cargo\.lock|go\.mod|go\.sum|go\.work(?:\.sum)?|composer\.json|composer\.lock|Pipfile(?:\.lock)?|pyproject\.toml|poetry\.lock|uv\.lock|requirements(?:-[^/]+)?\.txt|pom\.xml|gradle\.lockfile|gradle\.properties|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?)$/iu;
 
 /** Immutable, content-addressed input to repeatable analysis. */
 export type ProjectSnapshot = Readonly<{
@@ -80,12 +89,11 @@ function throwIfSnapshotCancelled(signal?: AbortSignal): void {
 }
 
 /** Dependency resolvers consume lockfiles and manifests from the same captured input. */
-export function dependencyFileSourceFromSnapshot(snapshot: ProjectSnapshot): {
-  files: readonly string[];
-  sourceRevision?: string;
-  hasFile: (relativePath: string) => boolean;
-  readText: (relativePath: string) => string | undefined;
-} {
+export function dependencyFileSourceFromSnapshot(
+  snapshot: ProjectSnapshot
+): DependencyFileSource {
+  const cached = snapshotDependencySources.get(snapshot);
+  if (cached) return cached;
   // Build the index directly. `map(([path, content]))` allocated one tuple per
   // file, then spreading `contents.keys()` allocated another full path array;
   // both transients overlapped with the retained snapshot on large projects.
@@ -95,7 +103,7 @@ export function dependencyFileSourceFromSnapshot(snapshot: ProjectSnapshot): {
     files.push(file.path);
     contents.set(file.path, file.content);
   }
-  return Object.freeze({
+  const source = Object.freeze({
     files: Object.freeze(files),
     ...(snapshot.gitIndexStatus === 'available' && snapshot.gitHeadRevision
       ? { sourceRevision: snapshot.gitHeadRevision }
@@ -103,6 +111,8 @@ export function dependencyFileSourceFromSnapshot(snapshot: ProjectSnapshot): {
     hasFile: (relativePath: string) => contents.has(relativePath),
     readText: (relativePath: string) => contents.get(relativePath)
   });
+  snapshotDependencySources.set(snapshot, source);
+  return source;
 }
 
 async function readGitIndexDigest(root: string): Promise<{
@@ -207,6 +217,16 @@ export async function createProjectSnapshot(
   throwIfSnapshotCancelled(options.signal);
   const rootPath = await realpath(path.resolve(root));
   throwIfSnapshotCancelled(options.signal);
+  const budgets = {
+    maxFiles: options.maxFiles ?? defaultTextFileBudget.maxFiles,
+    maxFileBytes: options.maxFileBytes ?? defaultTextFileBudget.maxFileBytes,
+    maxTotalBytes: options.maxTotalBytes ?? defaultTextFileBudget.maxTotalBytes
+  };
+  if (
+    options.discoveredFiles &&
+    options.discoveredFiles.length > budgets.maxFiles
+  )
+    throw new Error('snapshot file count exceeds the configured budget');
   const files = options.discoveredFiles
     ? [...options.discoveredFiles]
     : await walkProjectFiles(rootPath, {
@@ -214,16 +234,18 @@ export async function createProjectSnapshot(
         signal: options.signal,
         includeTrackedIgnored: true
       });
-  const budgets = {
-    maxFiles: options.maxFiles ?? defaultTextFileBudget.maxFiles,
-    maxFileBytes: options.maxFileBytes ?? defaultTextFileBudget.maxFileBytes,
-    maxTotalBytes: options.maxTotalBytes ?? defaultTextFileBudget.maxTotalBytes
-  };
   // A caller-provided discovery list is still untrusted metadata. Detect
   // duplicate aliases before reuse or hashing so a scan never reports two
   // independent identities for the same captured project path.
   if (files.length > budgets.maxFiles)
     throw new Error('snapshot file count exceeds the configured budget');
+  files.sort((left, right) =>
+    left.relativePath < right.relativePath
+      ? -1
+      : left.relativePath > right.relativePath
+        ? 1
+        : 0
+  );
   const discoveredPaths = new Set<string>();
   for (const file of files) {
     throwIfSnapshotCancelled(options.signal);
@@ -250,12 +272,12 @@ export async function createProjectSnapshot(
       throw new Error('duplicate snapshot path in pre-discovered file list');
     discoveredPaths.add(file.relativePath);
   }
-  const previousFiles = new Map(
-    options.previous?.root === rootPath
-      ? options.previous.files.map((file) => [file.path, file])
-      : []
-  );
+  const previousFiles = new Map<string, ProjectSnapshot['files'][number]>();
+  if (options.previous?.root === rootPath)
+    for (const file of options.previous.files)
+      previousFiles.set(file.path, file);
   const reusable = new Map<string, ProjectSnapshot['files'][number]>();
+  let reusedBytes = 0;
   for (const file of files) {
     const prior = previousFiles.get(file.relativePath);
     const stat = file.snapshot;
@@ -271,12 +293,9 @@ export async function createProjectSnapshot(
       prior.bytes === stat.size
     ) {
       reusable.set(file.relativePath, prior);
+      reusedBytes += prior.bytes;
     }
   }
-  const reusedBytes = [...reusable.values()].reduce(
-    (total, file) => total + file.bytes,
-    0
-  );
   if (reusable.size > budgets.maxFiles || reusedBytes > budgets.maxTotalBytes)
     throw new Error('snapshot reuse exceeds the configured project budget');
   const reader = new TextFileReader(
@@ -340,32 +359,28 @@ export async function createProjectSnapshot(
       })
     );
   }
-  const lockGraphDigest =
-    options.lockGraphDigest ??
-    createHash('sha256')
-      .update(
-        JSON.stringify(
-          content
-            .filter((file) =>
-              /(?:^|\/)(?:package\.json|package-lock\.json|npm-shrinkwrap\.json|\.npmrc|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|\.yarnrc(?:\.yml)?|Cargo\.toml|Cargo\.lock|go\.mod|go\.sum|go\.work(?:\.sum)?|composer\.json|composer\.lock|Pipfile(?:\.lock)?|pyproject\.toml|poetry\.lock|uv\.lock|requirements(?:-[^/]+)?\.txt|pom\.xml|gradle\.lockfile|gradle\.properties|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?)$/iu.test(
-                file.path
-              )
-            )
-            .map((file) => [file.path, file.sha256])
-            .sort((left, right) =>
-              String(left[0]).localeCompare(String(right[0]))
-            )
-        )
-      )
-      .digest('hex');
+  content.sort((left, right) =>
+    left.path < right.path ? -1 : left.path > right.path ? 1 : 0
+  );
+  let lockGraphDigest = options.lockGraphDigest;
+  if (lockGraphDigest === undefined) {
+    const digest = createHash('sha256');
+    digest.update('[');
+    let first = true;
+    for (const file of content) {
+      if (!lockfilePathPattern.test(file.path)) continue;
+      if (!first) digest.update(',');
+      first = false;
+      digest.update(JSON.stringify([file.path, file.sha256]));
+    }
+    digest.update(']');
+    lockGraphDigest = digest.digest('hex');
+  }
   const sourceTreeDigest = createHash('sha256')
     .update('toolip-source-snapshot-v1\0')
     .update(String(content.length))
     .update('\0');
-  const sourceFiles = [...content].sort((left, right) =>
-    left.path < right.path ? -1 : left.path > right.path ? 1 : 0
-  );
-  for (const file of sourceFiles) {
+  for (const file of content) {
     sourceTreeDigest
       .update(String(Buffer.byteLength(file.path, 'utf8')))
       .update(':')
@@ -379,73 +394,66 @@ export async function createProjectSnapshot(
       .update('\0');
   }
   const sourceTreeDigestHex = sourceTreeDigest.digest('hex');
-  const configDigest =
-    options.configDigest ??
-    createHash('sha256')
-      .update(
-        JSON.stringify(
-          content
-            .filter(
-              (file) =>
-                file.path.startsWith('.toolip/') ||
-                file.path === 'toolip.config.json' ||
-                file.path === '.tooliprc'
-            )
-            .map((file) => [file.path, file.sha256])
-            .sort((left, right) =>
-              String(left[0]).localeCompare(String(right[0]))
-            )
-        )
+  let configDigest = options.configDigest;
+  if (configDigest === undefined) {
+    const digest = createHash('sha256');
+    digest.update('[');
+    let first = true;
+    for (const file of content) {
+      if (
+        !file.path.startsWith('.toolip/') &&
+        file.path !== 'toolip.config.json' &&
+        file.path !== '.tooliprc'
       )
-      .digest('hex');
+        continue;
+      if (!first) digest.update(',');
+      first = false;
+      digest.update(JSON.stringify([file.path, file.sha256]));
+    }
+    digest.update(']');
+    configDigest = digest.digest('hex');
+  }
   const git = await readGitIndexDigest(rootPath);
   const gitRevision = options.gitRevision ?? git.revision;
   const gitIndexDigest = git.digest;
-  const digest = createHash('sha256')
-    .update(
-      JSON.stringify({
-        root: rootPath,
-        gitRevision: gitRevision ?? null,
-        gitHeadRevision: git.revision ?? null,
-        gitIndexDigest: gitIndexDigest ?? null,
-        gitIndexStatus: git.status,
-        sourceTreeDigest: sourceTreeDigestHex,
-        lockGraphDigest,
-        configDigest,
-        budget: budgets,
-        files: content.map(
-          ({
-            path: filePath,
-            fileId,
-            mtimeNs,
-            ctimeNs,
-            mtimeMs,
-            ctimeMs,
-            dev,
-            ino,
-            sha256,
-            bytes,
-            binary
-          }) => [
-            filePath,
-            fileId,
-            mtimeNs,
-            ctimeNs,
-            mtimeMs,
-            ctimeMs,
-            dev,
-            ino,
-            sha256,
-            bytes,
-            binary
-          ]
-        )
-      })
-    )
-    .digest('hex');
+  const digest = createHash('sha256');
+  const digestPrefix = JSON.stringify({
+    root: rootPath,
+    gitRevision: gitRevision ?? null,
+    gitHeadRevision: git.revision ?? null,
+    gitIndexDigest: gitIndexDigest ?? null,
+    gitIndexStatus: git.status,
+    sourceTreeDigest: sourceTreeDigestHex,
+    lockGraphDigest,
+    configDigest,
+    budget: budgets
+  });
+  digest.update(digestPrefix.slice(0, -1)).update(',"files":[');
+  for (let index = 0; index < content.length; index += 1) {
+    if (index > 0) digest.update(',');
+    const file = content[index];
+    if (!file) continue;
+    digest.update(
+      JSON.stringify([
+        file.path,
+        file.fileId,
+        file.mtimeNs,
+        file.ctimeNs,
+        file.mtimeMs,
+        file.ctimeMs,
+        file.dev,
+        file.ino,
+        file.sha256,
+        file.bytes,
+        file.binary
+      ])
+    );
+  }
+  digest.update(']}');
+  const snapshotId = digest.digest('hex');
   return Object.freeze({
     root: rootPath,
-    id: digest,
+    id: snapshotId,
     ...(gitRevision ? { gitRevision } : {}),
     ...(git.revision ? { gitHeadRevision: git.revision } : {}),
     ...(gitIndexDigest ? { gitIndexDigest } : {}),

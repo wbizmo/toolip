@@ -40,6 +40,54 @@ afterEach(async () => {
 });
 
 describe('AdvisorySnapshotCache', () => {
+  it('rejects a single pending record that exceeds its retained byte budget', async () => {
+    const root = await tempDirectory();
+    const cache = await AdvisorySnapshotCache.open(
+      path.join(root, 'advisories.json')
+    );
+
+    await expect(
+      cache.set('oversized', 'x'.repeat(16 * 1024 * 1024))
+    ).rejects.toThrow('bounded JSON-serializable data');
+    expect(cache.recordCount).toBe(0);
+  });
+
+  it('rejects deeply nested values before canonical hashing can recurse without a bound', async () => {
+    const root = await tempDirectory();
+    const cache = await AdvisorySnapshotCache.open(
+      path.join(root, 'advisories.json')
+    );
+    let value: unknown = 'leaf';
+    for (let depth = 0; depth < 300; depth += 1) value = { child: value };
+
+    await expect(cache.set('deep', value)).rejects.toThrow(
+      'bounded JSON-serializable data'
+    );
+    expect(cache.recordCount).toBe(0);
+  });
+
+  it('rejects records above the cap without first enumerating a key array', async () => {
+    const root = await tempDirectory();
+    const file = path.join(root, 'advisories.json');
+    const records: Record<string, unknown> = {};
+    const storedAt = '2026-11-06T12:00:00.000Z';
+    for (let index = 0; index <= 200_000; index += 1)
+      records[`record-${index}`] = { storedAt, value: null };
+    await writeFile(
+      file,
+      JSON.stringify({
+        schemaVersion: 1,
+        generatedAt: storedAt,
+        sha256: '0'.repeat(64),
+        records
+      })
+    );
+
+    await expect(AdvisorySnapshotCache.open(file)).rejects.toThrow(
+      'Advisory snapshot exceeds the record limit.'
+    );
+  });
+
   it('persists deterministic integrity-checked records with private file mode', async () => {
     const root = await tempDirectory();
     const file = path.join(root, 'advisories.json');

@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { lstat, mkdir, open } from 'node:fs/promises';
+import { mkdir, open } from 'node:fs/promises';
 import path from 'node:path';
 import type { Command } from 'commander';
 import { parseDocument } from 'yaml';
@@ -9,6 +9,8 @@ import {
   createNpmTarballAttestation,
   verifyNpmTarballAttestation
 } from '../core/npm-package-attestation.js';
+import { readBoundedRegularFile as readCappedFile } from '../core/bounded-file.js';
+import { serializeJsonOutputWithinBudget } from '../core/report-writer.js';
 
 const maximumTarballBytes = 32 * 1024 * 1024;
 const maximumBundleBytes = 16 * 1024 * 1024;
@@ -35,57 +37,12 @@ async function readBoundedRegularFile(
   maximumBytes: number,
   description: string
 ): Promise<Buffer> {
-  const absolute = path.resolve(filePath);
-  const named = await lstat(absolute, { bigint: true });
-  if (
-    named.isSymbolicLink() ||
-    !named.isFile() ||
-    named.size === 0n ||
-    named.size > BigInt(maximumBytes)
-  )
-    throw new Error(
-      `${description} must be a bounded regular non-symlink file.`
-    );
-
-  const handle = await open(
-    absolute,
-    constants.O_RDONLY |
-      (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW)
-  );
   try {
-    const opened = await handle.stat({ bigint: true });
-    const after = await lstat(absolute, { bigint: true });
-    if (
-      !opened.isFile() ||
-      after.isSymbolicLink() ||
-      opened.dev !== after.dev ||
-      opened.ino !== after.ino ||
-      opened.size > BigInt(maximumBytes)
-    )
-      throw new Error(`${description} changed while it was being opened.`);
-    const bytes = await handle.readFile();
-    const finished = await handle.stat({ bigint: true });
-    const finalPath = await lstat(absolute, { bigint: true });
-    if (
-      bytes.length === 0 ||
-      bytes.length > maximumBytes ||
-      BigInt(bytes.length) !== opened.size
-    )
-      throw new Error(`${description} exceeds the size limit.`);
-    if (
-      finished.dev !== opened.dev ||
-      finished.ino !== opened.ino ||
-      finished.size !== opened.size ||
-      finished.mtimeNs !== opened.mtimeNs ||
-      finished.ctimeNs !== opened.ctimeNs ||
-      finalPath.dev !== opened.dev ||
-      finalPath.ino !== opened.ino ||
-      finalPath.isSymbolicLink()
-    )
-      throw new Error(`${description} changed while it was being read.`);
+    const bytes = await readCappedFile(path.resolve(filePath), maximumBytes);
+    if (bytes.length === 0) throw new Error(`${description} is empty.`);
     return bytes;
-  } finally {
-    await handle.close();
+  } catch {
+    throw new Error(`${description} is not a stable bounded regular file.`);
   }
 }
 
@@ -93,9 +50,10 @@ async function createBundleFile(
   filePath: string,
   bundle: unknown
 ): Promise<void> {
-  const bytes = Buffer.from(`${JSON.stringify(bundle)}\n`, 'utf8');
-  if (bytes.length > maximumBundleBytes)
-    throw new Error('Generated npm attestation bundle exceeds 16 MiB.');
+  const bytes = Buffer.from(
+    `${serializeJsonOutputWithinBudget(bundle, maximumBundleBytes - 1)}\n`,
+    'utf8'
+  );
   const absolute = path.resolve(filePath);
   await mkdir(path.dirname(absolute), { recursive: true });
   const handle = await open(
@@ -170,12 +128,15 @@ export function registerNpmAttestationCommand(program: Command): void {
       });
       await createBundleFile(options.output, result.bundle);
       process.stdout.write(
-        `${JSON.stringify({
-          packageName: result.identity.name,
-          packageVersion: result.identity.version,
-          tarballSha512: result.sha512,
-          scannerArtifactSha256
-        })}\n`
+        `${serializeJsonOutputWithinBudget(
+          {
+            packageName: result.identity.name,
+            packageVersion: result.identity.version,
+            tarballSha512: result.sha512,
+            scannerArtifactSha256
+          },
+          1023
+        )}\n`
       );
     });
 
@@ -223,7 +184,9 @@ export function registerNpmAttestationCommand(program: Command): void {
         expectedSourceCommit: options.sourceCommit,
         expectedScannerArtifactSha256: options.scannerArtifactSha256
       });
-      process.stdout.write(`${JSON.stringify(result)}\n`);
+      process.stdout.write(
+        `${serializeJsonOutputWithinBudget(result, 64 * 1024 - 1)}\n`
+      );
       if (result.status !== 'verified')
         throw new Error(
           `npm package attestation did not verify (${result.status}: ${result.reason}).`

@@ -238,6 +238,88 @@ function hasUnsupportedToolchainExecution(source) {
   );
 }
 
+function hasUnresolvedChildProcessExecution(source) {
+  const moduleName = /^(?:node:)?child_process$/u;
+  const methods = new Set([
+    'exec',
+    'execSync',
+    'execFile',
+    'execFileSync',
+    'spawn',
+    'spawnSync',
+    'fork'
+  ]);
+  const functionAliases = new Set();
+  const namespaceAliases = new Set();
+  const namedImport = /\bimport\s*\{([^}]*)\}\s*from\s*(['"])([^'"]+)\2/gu;
+  for (const match of source.matchAll(namedImport)) {
+    if (!moduleName.test(match[3] ?? '')) continue;
+    for (const specifier of (match[1] ?? '').split(',')) {
+      const [imported, local] = specifier.trim().split(/\s+as\s+/u);
+      if (methods.has(imported ?? '')) functionAliases.add(local ?? imported);
+    }
+  }
+  const cjsDestructure =
+    /\b(?:const|let|var)\s*\{([^}]*)\}\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)/gu;
+  for (const match of source.matchAll(cjsDestructure)) {
+    if (!moduleName.test(match[3] ?? '')) continue;
+    for (const specifier of (match[1] ?? '').split(',')) {
+      const [imported, local] = specifier.trim().split(/\s*:\s*/u);
+      if (methods.has(imported ?? '')) functionAliases.add(local ?? imported);
+    }
+  }
+  const dynamicImportDestructure =
+    /\b(?:const|let|var)\s*\{([^}]*)\}\s*=\s*(?:await\s+)?import\(\s*(['"])([^'"]+)\2\s*\)/gu;
+  for (const match of source.matchAll(dynamicImportDestructure)) {
+    if (!moduleName.test(match[3] ?? '')) continue;
+    for (const specifier of (match[1] ?? '').split(',')) {
+      const [imported, local] = specifier.trim().split(/\s*:\s*/u);
+      if (methods.has(imported ?? '')) functionAliases.add(local ?? imported);
+    }
+  }
+  const namespaceBindings = [
+    /\bimport\s*\*\s*as\s+([A-Za-z_$][\w$]*)\s+from\s*(['"])([^'"]+)\2/gu,
+    /\bimport\s+([A-Za-z_$][\w$]*)\s+from\s*(['"])([^'"]+)\2/gu,
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])([^'"]+)\2\s*\)/gu,
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:await\s+)?import\(\s*(['"])([^'"]+)\2\s*\)/gu
+  ];
+  for (const pattern of namespaceBindings)
+    for (const match of source.matchAll(pattern))
+      if (moduleName.test(match[3] ?? '') && match[1])
+        namespaceAliases.add(match[1]);
+  const apiAliases =
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:([A-Za-z_$][\w$]*)\s*\.\s*(exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)|([A-Za-z_$][\w$]*))\s*(?=[;,\n])/gu;
+  for (const match of source.matchAll(apiAliases)) {
+    const alias = match[1];
+    const namespace = match[2];
+    const method = match[3];
+    const sourceAlias = match[4];
+    if (
+      alias &&
+      ((namespace && namespaceAliases.has(namespace) && method) ||
+        (sourceAlias && functionAliases.has(sourceAlias)))
+    )
+      functionAliases.add(alias);
+  }
+  if (functionAliases.size) {
+    const calls = /\b([A-Za-z_$][\w$]*)\s*\(/gu;
+    for (const match of source.matchAll(calls))
+      if (functionAliases.has(match[1] ?? '')) return true;
+  }
+  if (namespaceAliases.size) {
+    const members =
+      /\b([A-Za-z_$][\w$]*)\s*\.\s*(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\s*\(/gu;
+    for (const match of source.matchAll(members))
+      if (namespaceAliases.has(match[1] ?? '')) return true;
+    const computedMembers = /\b([A-Za-z_$][\w$]*)\s*\[[^\]\n]{1,128}\]\s*\(/gu;
+    for (const match of source.matchAll(computedMembers))
+      if (namespaceAliases.has(match[1] ?? '')) return true;
+  }
+  return /\brequire\(\s*(['"])(?:node:)?child_process\1\s*\)\s*\.\s*(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\s*\(/u.test(
+    source
+  );
+}
+
 function hasDynamicShellCommandResolution(source) {
   return (
     /\balias\s+[^\s=]+\s*=/iu.test(source) ||
@@ -494,9 +576,13 @@ const startupPersistence =
   /(?:\bcrontab\s+-|\b(?:systemctl|launchctl)\s+(?:enable|load|bootstrap)|\.config[\\/]autostart|(?:\.bashrc|\.zshrc|\.profile|Startup[\\/])|(?:CurrentVersion[\\/]Run|HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run))/iu;
 // Creation and archive listing do not constitute unpack-and-execute.
 const archiveExtraction =
-  /\b(?:tar\s+(?:--extract\b|--get\b|-?[a-z]*x[a-z]*\b)|(?:busybox\s+)?unzip\s+(?!-[lt]\b)|7z\s+x\b)/giu;
+  /\b(?:tar\s+(?:--extract\b|--get\b|-?[a-z]*x[a-z]*\b)|bsdtar\s+(?:--extract\b|-?[a-z]*x[a-z]*\b)|(?:busybox\s+)?unzip\s+(?!-[lt]\b)|7z(?:a|z)?\s+(?:x|e)\b|(?:unrar|rar)\s+(?:x|e)\b|jar\s+(?:x[a-z]*\b|--extract\b)|Expand-Archive\b|python(?:3)?\s+-m\s+(?:zipfile|tarfile)\s+-e\b)/giu;
 const archiveExecution =
-  /\b(?:node(?:\.exe)?|bash|sh|zsh|pwsh|powershell|python(?:3)?|deno|bun|ruby|perl|php|cmd(?:\.exe)?)\b\s+(?:\/(?:c|k)\s+)?[^\s;&|]+/iu;
+  /(?:\b(?:node(?:\.exe)?|bash|sh|zsh|pwsh|powershell|python(?:3)?|java(?:\.exe)?|deno|bun|ruby|perl|php|cmd(?:\.exe)?)\b\s+(?:-jar\s+|\/(?:c|k)\s+)?[^\s;&|]+|(?:^|[;&|\r\n]\s*)(?:&\s*)?\.{1,2}[\\/]\S+)/imu;
+const archiveApiExtraction =
+  /\b(?:(?:zipfile\.)?ZipFile|(?:tarfile\.)?TarFile|tarfile\.open)\s*\([\s\S]{0,1024}?\.\s*extract(?:all)?\s*\(/giu;
+const archiveApiExecution =
+  /\b(?:subprocess\.(?:run|Popen|call|check_call|check_output)|os\.system|ProcessBuilder|Runtime\.getRuntime\s*\(\)\s*\.\s*exec)\s*\(/u;
 
 function hasArchiveExtractionAndExecution(source) {
   archiveExtraction.lastIndex = 0;
@@ -504,9 +590,16 @@ function hasArchiveExtractionAndExecution(source) {
     const after = source
       .slice((match.index ?? 0) + match[0].length)
       .slice(0, 1024);
-    const separator = after.search(/(?:&&|;|\|\|)/u);
+    const separator = after.search(/(?:&&|;|\|\||\r?\n)/u);
     if (separator >= 0 && archiveExecution.test(after.slice(separator + 1)))
       return true;
+  }
+  archiveApiExtraction.lastIndex = 0;
+  for (const match of source.matchAll(archiveApiExtraction)) {
+    const after = source
+      .slice((match.index ?? 0) + match[0].length)
+      .slice(0, 2048);
+    if (archiveApiExecution.test(after)) return true;
   }
   return false;
 }
@@ -3492,6 +3585,12 @@ function scanText(name, text, incompleteReasons = []) {
       ))
   )
     incompleteReasons.push(`unsupported-toolchain-execution:${name}`);
+  if (
+    executableText &&
+    hasUnresolvedChildProcessExecution(behaviorContent) &&
+    !hasUnsupportedToolchainExecution(behaviorContent)
+  )
+    incompleteReasons.push(`unresolved-child-process-execution:${name}`);
   if (shebang && hasUnsupportedToolchainExecution(scanContent))
     incompleteReasons.push(`unsupported-toolchain-execution:${name}`);
   if (executableText && hasCredentialTransfer(behaviorContent))

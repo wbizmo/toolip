@@ -1008,7 +1008,8 @@ export class InfrastructureAnalyzer implements Analyzer {
           kind === 'terraform'
             ? scanTerraform(file.relativePath, read.content)
             : scanYaml(file.relativePath, read.content);
-        findings.push(...bindSourceProvenance(current, file, read));
+        for (const finding of bindSourceProvenance(current, file, read))
+          findings.push(finding);
         if (kind === 'terraform') {
           for (const issue of terraformModuleSourceIssues(
             normalizedPath,

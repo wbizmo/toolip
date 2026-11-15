@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
@@ -10,6 +9,7 @@ import {
   type DependencyFileSource,
   type DependencyIdentity
 } from '../dependencies/inventory.js';
+import { readBoundedDependencyText } from '../dependencies/lockfile-resolvers.js';
 import { digestDependencyGraph } from '../dependencies/graph-digest.js';
 import { readOtherEcosystemInventoryDetailed } from '../dependencies/ecosystem-inventory.js';
 import type { GoCommandRunner } from '../dependencies/go-module-graph.js';
@@ -23,6 +23,7 @@ import {
 } from '../../providers/npm/provenance.js';
 
 export type SbomFormat = 'cyclonedx' | 'spdx';
+const maximumRootManifestBytes = 2 * 1024 * 1024;
 
 const parseSpdxExpression = createRequire(import.meta.url)(
   'spdx-expression-parse'
@@ -371,16 +372,32 @@ export async function generateSbom(
   const manifestPath = 'package.json';
   if (options.fileSource) {
     const captured = options.fileSource.readText(manifestPath);
-    if (captured !== undefined) manifest = JSON.parse(captured) as RootManifest;
-    else if (options.fileSource.hasFile(manifestPath))
+    if (captured !== undefined) {
+      if (Buffer.byteLength(captured, 'utf8') > maximumRootManifestBytes)
+        throw new Error('Root package manifest exceeds the 2 MiB limit.');
+      manifest = JSON.parse(captured) as RootManifest;
+    } else if (options.fileSource.hasFile(manifestPath))
       throw new Error(
         'Root package manifest is unavailable in the bounded snapshot.'
       );
   } else {
     try {
-      manifest = JSON.parse(
-        await readFile(path.join(root, manifestPath), 'utf8')
-      ) as RootManifest;
+      const content = await readBoundedDependencyText(
+        path.join(root, manifestPath),
+        maximumRootManifestBytes
+      ).catch((error: unknown) => {
+        if (
+          error instanceof Error &&
+          error.message ===
+            'dependency lockfile exceeds the bounded regular-file limit'
+        ) {
+          throw new Error('Root package manifest exceeds the 2 MiB limit.', {
+            cause: error
+          });
+        }
+        throw error;
+      });
+      manifest = JSON.parse(content) as RootManifest;
     } catch (error) {
       if (
         !error ||

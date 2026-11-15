@@ -92,14 +92,24 @@ async function trackedEntries(
       code: 'SCAN_DISCOVERY_INCOMPLETE'
     });
   const prefix = prefixResult.stdout.toString('utf8').trim();
-  const listedPaths = listing.stdout.toString('utf8');
-  if (!Buffer.from(listedPaths, 'utf8').equals(listing.stdout)) {
-    throw new ToolipError('Git returned a non-UTF-8 tracked project path.', {
-      code: 'SCAN_DISCOVERY_INCOMPLETE'
-    });
-  }
   const entries: string[] = [];
-  for (const raw of listedPaths.split('\0')) {
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  let start = 0;
+  for (let index = 0; index <= listing.stdout.length; index += 1) {
+    if (index < listing.stdout.length && listing.stdout[index] !== 0) continue;
+    if (index === start) {
+      start = index + 1;
+      continue;
+    }
+    let raw: string;
+    try {
+      raw = decoder.decode(listing.stdout.subarray(start, index));
+    } catch {
+      throw new ToolipError('Git returned a non-UTF-8 tracked project path.', {
+        code: 'SCAN_DISCOVERY_INCOMPLETE'
+      });
+    }
+    start = index + 1;
     if (!raw) continue;
     if (raw.includes('\\')) {
       throw new ToolipError('Git returned an unsupported tracked path.', {

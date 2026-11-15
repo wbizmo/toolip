@@ -1238,7 +1238,8 @@ export class DockerfileAnalyzer implements Analyzer {
           }
         }
       }
-      findings.push(...bindSourceProvenance(fileFindings, file, read));
+      for (const finding of bindSourceProvenance(fileFindings, file, read))
+        findings.push(finding);
     }
 
     return {

@@ -72,6 +72,16 @@ is quadratic. These measurements describe this machine and fixture; CI
 thresholds require stable, documented runner hardware before they are made
 gating.
 
+An additional isolated Linux Node 24.22.1 pass is recorded in
+[`toolip-v3.2.1-secret-locations-2026-11-14-linux-node24.jsonl`](benchmarks/toolip-v3.2.1-secret-locations-2026-11-14-linux-node24.jsonl).
+The optimized location pass measured 1.56 ms for 1,000 lines/200 matches,
+8.94 ms for 10,000 lines/2,000 matches, and 38.52 ms for 50,000 lines/10,000
+matches. The baseline measured 12.58 ms and 396.57 ms at 1k and 10k; its 50k
+run was intentionally skipped. Matching checksums were identical at the two
+sizes where both implementations ran. A source regression also exercises
+50,000 matches in a 2 MiB input. This is a single local sample, not a timing
+threshold or cross-platform result.
+
 The end-to-end scorecard fixture contains the requested TypeScript source
 files plus a package manifest, empty lockfile and `.gitignore`. Each measured
 pass includes one filesystem discovery, immutable snapshot creation, all
@@ -105,6 +115,38 @@ on the reachable identity set in both cases.
 
 The one-million-file release benchmark is reserved for final release
 validation and has not been run.
+
+## Issue #40 bounded-output and lock-graph rerun (2026-11-14)
+
+After adding race-checked bounded input reads, bounded report/CLI JSON output,
+bounded watcher discovery, direct lockfile property iteration, incremental
+dependency-section parsing, indexed npm install-path resolution and streaming
+graph digest serialization, the complete 1k/10k/50k harness passed on Linux
+Node 24.22.1. The 54-row raw artifact is
+[`toolip-v3.2.1-issue40-rerun-2026-11-14-linux-node24.jsonl`](benchmarks/toolip-v3.2.1-issue40-rerun-2026-11-14-linux-node24.jsonl).
+All scorecards reported complete coverage and zero provider requests.
+
+| Offline scorecard   | Source files | Pass                 | Wall time | Files opened / bytes read | Sampled heap peak | Sampled RSS peak |
+| ------------------- | -----------: | -------------------- | --------: | ------------------------: | ----------------: | ---------------: |
+| Linux, Node 24.22.1 |        1,000 | cold                 |    1.34 s |             1,003 / 54 KB |            70 MiB |          358 MiB |
+| Linux, Node 24.22.1 |        1,000 | warm                 |    676 ms |                     0 / 0 |            74 MiB |          388 MiB |
+| Linux, Node 24.22.1 |        1,000 | one-file incremental |    904 ms |                  1 / 58 B |            78 MiB |          403 MiB |
+| Linux, Node 24.22.1 |       10,000 | cold                 |    5.77 s |           10,003 / 540 KB |           148 MiB |          592 MiB |
+| Linux, Node 24.22.1 |       10,000 | warm                 |    1.42 s |                     0 / 0 |           120 MiB |          651 MiB |
+| Linux, Node 24.22.1 |       10,000 | one-file incremental |    1.86 s |                  1 / 58 B |           154 MiB |          676 MiB |
+| Linux, Node 24.22.1 |       50,000 | cold                 |   21.86 s |          50,003 / 2.70 MB |           331 MiB |          869 MiB |
+| Linux, Node 24.22.1 |       50,000 | warm                 |    4.76 s |                     0 / 0 |           293 MiB |          935 MiB |
+| Linux, Node 24.22.1 |       50,000 | one-file incremental |    4.99 s |                  1 / 58 B |           439 MiB |        1,105 MiB |
+
+The 50k concurrent pair completed both scorecards in 10.64 s with complete
+coverage; its sampled process peak was 465 MiB heap / 1,001 MiB RSS. The wide
+50k npm graph completed in 691 ms cold / 511 ms warm. The converging 50k npm
+graph (50,000 vertices and 99,998 edges) completed in 1.13 s cold / 863 ms
+warm, with 49,998 transitive packages and depth 50,000. Its sampled process RSS
+peaked at 999 / 1,041 MiB. These process peaks include retained runtime and
+fixture state; the 50k graph-digest regression protects against the prior
+generic one-million-node serialization failure. This is one synthetic Linux
+host run, not a cross-platform guarantee or release qualification.
 
 ## Post-audit exact-commit rerun (2026-11-08)
 
@@ -572,3 +614,62 @@ explicit checked helper; scanner and benchmark behavior did not change.
 This is one cold sample per size. It does not provide p50/p95, compare Node
 majors or platforms, establish a memory bound, or qualify a release. Earlier
 raw benchmark evidence was preserved unchanged.
+
+## Issue #40 current-worktree rerun (2026-11-14)
+
+After the bounded file reader, bounded report serializer, incremental graph digest, and lockfile traversal changes, the full 54-row benchmark harness was rerun from the current dirty worktree on Linux x64, Node 24.22.1, kernel 6.18.57, AMD EPYC 9V74 (4 logical CPUs assigned). The raw JSONL is [`toolip-v3.2.1-issue40-final-2026-11-14-linux-node24.jsonl`](benchmarks/toolip-v3.2.1-issue40-final-2026-11-14-linux-node24.jsonl), SHA-256 `b8892f93fb3c2da930f6bda5f98d81118a1452bec5c2d44b1b2c5dc0ea2f08e8`. Each size ran in an isolated fixture process; cold/warm/incremental share the captured project snapshot and cache. All scorecards had complete coverage and zero provider requests.
+
+| Source files | Cold / warm / one-file incremental | Sampled heap peak, cold / warm / incremental | Sampled RSS peak, cold / warm / incremental | Snapshot reads, incremental |
+| -----------: | ---------------------------------: | -------------------------------------------: | ------------------------------------------: | --------------------------: |
+|        1,000 |           1.21 s / 759 ms / 1.24 s |                             68 / 71 / 84 MiB |                         358 / 391 / 435 MiB |               1 file / 58 B |
+|       10,000 |           5.46 s / 1.35 s / 1.71 s |                          148 / 150 / 151 MiB |                         592 / 649 / 674 MiB |               1 file / 58 B |
+|       50,000 |          20.11 s / 5.21 s / 5.48 s |                          254 / 444 / 627 MiB |                     829 / 1,058 / 1,267 MiB |               1 file / 58 B |
+
+At 50k, the concurrent cold pair completed in 10.38 s with 418 MiB sampled heap and 1,041 MiB RSS. The 50k wide graph (50,000 vertices, 50,000 edges) completed in 562 ms cold / 595 ms warm. The 50k converging graph (50,000 vertices, 99,997 edges, depth 50,000) completed in 873 ms cold / 835 ms warm, with 49,998 transitive instances. Graph inventory sharing produced identical digests with three separate graphs vs one shared graph; parsing the converging 50k graph took 10.57 s independently vs 7.61 s with shared inventory. These are single samples; retained process state is included in heap/RSS peaks. The substantial incremental and warm RSS remains an unresolved peak-space issue for #40/#56, and this evidence does not establish p50/p95, a hard memory ceiling, cross-platform behavior, or release qualification.
+
+## Issue #56 snapshot streaming rerun (2026-11-14)
+
+After streaming prior-snapshot indexing, lock/config digests and snapshot-ID serialization, and caching the dependency-file view per immutable snapshot, the same 54-row harness was rerun on the same Linux x64 / Node 24.22.1 / kernel 6.18.57 / AMD EPYC 9V74 host. Raw data is [`toolip-v3.2.1-issue56-snapshot-streaming-2026-11-14-linux-node24.jsonl`](benchmarks/toolip-v3.2.1-issue56-snapshot-streaming-2026-11-14-linux-node24.jsonl), SHA-256 `57e75c7466693e26d91473da135ae06f816045ee66daba41eec90b5dbdaca25f`. All full scorecards reported complete coverage, and no provider requests were made.
+
+| Source files | Cold / warm / one-file incremental | Sampled heap peak, cold / warm / incremental | Sampled RSS peak, cold / warm / incremental | Concurrent cold pair |
+| -----------: | ---------------------------------: | -------------------------------------------: | ------------------------------------------: | -------------------: |
+|        1,000 |           1.37 s / 589 ms / 1.21 s |                             70 / 75 / 79 MiB |                         369 / 396 / 406 MiB |     1.12 s / 416 MiB |
+|       10,000 |           5.46 s / 1.31 s / 1.68 s |                          122 / 123 / 149 MiB |                         597 / 643 / 667 MiB |     2.90 s / 650 MiB |
+|       50,000 |          20.80 s / 4.80 s / 4.96 s |                          240 / 412 / 599 MiB |                     840 / 1,046 / 1,246 MiB |  10.34 s / 1,035 MiB |
+
+The raw file also contains 50k wide/converging dependency-graph and shared-inventory runs. These are single measurements and the worktree includes other local changes, so they do not isolate the snapshot refactor's causal effect. Peak RSS remains material; the results do not close #56 or establish p50/p95, a process memory bound, or cross-platform behavior.
+
+## Issue #81 Cargo lock graph scale (2026-11-15)
+
+Added a deterministic Cargo.lock chain fixture to the existing harness. The runner constructs one exact workspace root and `N` registry package records with 64-character lock checksums and one resolved edge per record, parses the inert files through Toolip's ecosystem inventory, and asserts graph cardinality. It does not fetch crates or run Cargo. The fixture and parser report incomplete coverage because registry dependency features are not present in Cargo.lock and are intentionally not guessed.
+
+Raw JSONL is [`toolip-v3.2.1-issue81-cargo-lock-2026-11-15-linux-node24.jsonl`](benchmarks/toolip-v3.2.1-issue81-cargo-lock-2026-11-15-linux-node24.jsonl), SHA-256 `1d9f6cc8b5a90548c24c57e38016304a7e7db6dee0ca37a8bd85c76600daa463`. Runs were isolated Linux x64 / Node 24.22.1 / kernel 6.18.57 / AMD EPYC 9V74 processes.
+
+| Registry packages | Lock bytes | Wall time | Sampled heap peak | Sampled RSS peak | Parsed vertices / edges | Coverage                              |
+| ----------------: | ---------: | --------: | ----------------: | ---------------: | ----------------------: | ------------------------------------- |
+|             1,000 |    250,067 |  73.54 ms |          62.3 MiB |        219.4 MiB |           1,001 / 1,001 | incomplete; explicit feature unknowns |
+|            10,000 |  2,500,067 | 466.42 ms |         145.9 MiB |        348.8 MiB |         10,001 / 10,001 | incomplete; explicit feature unknowns |
+|            50,000 | 12,500,067 |    1.78 s |         306.4 MiB |        574.8 MiB |         50,001 / 50,001 | incomplete; explicit feature unknowns |
+
+These are single parser-scale samples, not p50/p95 or cross-platform results. The 50k fixture exercises lock parsing and graph construction, not Cargo's full build resolver, target-specific feature activation, artifact download, or OSV matching.
+
+## Issue #56 bounded AST worker rerun (2026-11-15)
+
+The AST project worker's old-generation V8 ceiling was lowered from 1,024 MiB to 512 MiB while preserving one active worker and one queued request. A 50k cold full scorecard and a concurrent pair both completed with complete file coverage; raw results are [`toolip-v3.2.1-issue56-worker512-2026-11-15-linux-node24.jsonl`](benchmarks/toolip-v3.2.1-issue56-worker512-2026-11-15-linux-node24.jsonl), SHA-256 `5fed77ab8302a0e801cf350b50bebea91424622a219e48d9496fd4d77da960c2`.
+
+| Workload                      | Wall time | Sampled heap peak | Sampled process RSS peak | Coverage                   |
+| ----------------------------- | --------: | ----------------: | -----------------------: | -------------------------- |
+| 50k cold full scorecard       |   18.82 s |         292.3 MiB |                860.3 MiB | complete; 50,003 / 50,003  |
+| 50k concurrent scorecard pair |    9.55 s |         459.2 MiB |              1,035.9 MiB | both complete; 50,003 each |
+
+These single samples do not show an RSS reduction against the prior runs (which were about 840 MiB cold and 1,035 MiB concurrent). The change narrows the worker heap ceiling; process RSS still includes the parent, queued snapshot and native/external memory, so a process-wide hard memory budget remains unresolved. Larger workspace limits, cross-platform behavior and repeated percentiles remain to be measured.
+
+## Issue #95 malicious-content execution-chain scale — 2026-11-15
+
+A synthetic, non-executing fixture with one npm entrypoint, an extensionless wrapper, one disguised `.orc` payload, and inert filler files was measured in isolated Linux Node 24.22.1 processes. Each size produced the same complete three-file trace and one finding; no payload ran and provider requests were zero. This is one sample per size, not a repeated-run variance claim or cross-platform result. Raw JSONL: [`toolip-v3.2.1-issue95-malicious-content-2026-11-15-linux-node24.jsonl`](benchmarks/toolip-v3.2.1-issue95-malicious-content-2026-11-15-linux-node24.jsonl).
+
+| Input files | Source bytes | Wall time | Peak heap |  Peak RSS | Trace / coverage   |
+| ----------: | -----------: | --------: | --------: | --------: | ------------------ |
+|       1,000 |       32,002 |  20.09 ms |  72.2 MiB | 229.8 MiB | 3 files / complete |
+|      10,000 |      320,002 | 119.49 ms |  65.4 MiB | 220.7 MiB | 3 files / complete |
+|      50,000 |    1,600,002 | 366.75 ms | 128.5 MiB | 287.1 MiB | 3 files / complete |

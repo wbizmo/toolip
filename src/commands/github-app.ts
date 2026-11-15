@@ -1,9 +1,8 @@
 import type { Command } from 'commander';
-import { constants } from 'node:fs';
-import { lstat, open } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { z } from 'zod';
+import { readBoundedRegularFile } from '../core/bounded-file.js';
 import {
   createGitHubAppScorecardScanner,
   GitHubAppWebhookService
@@ -42,40 +41,11 @@ export async function loadGitHubAppConfiguration(
 ): Promise<GitHubAppConfiguration> {
   const maximumBytes = 256 * 1024;
   const absolutePath = path.resolve(filePath);
-  const before = await lstat(absolutePath, { bigint: true });
-  if (!before.isFile() || before.size > BigInt(maximumBytes))
-    throw new Error('GitHub App configuration must be a bounded regular file.');
-  const handle = await open(
-    absolutePath,
-    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)
-  );
   let bytes: Buffer;
   try {
-    const opened = await handle.stat({ bigint: true });
-    if (
-      !opened.isFile() ||
-      opened.dev !== before.dev ||
-      opened.ino !== before.ino ||
-      opened.size !== before.size
-    )
-      throw new Error('GitHub App configuration changed while opening.');
-    bytes = await handle.readFile();
-    const after = await handle.stat({ bigint: true });
-    const afterPath = await lstat(absolutePath, { bigint: true });
-    if (
-      bytes.byteLength > maximumBytes ||
-      opened.dev !== after.dev ||
-      opened.ino !== after.ino ||
-      opened.size !== after.size ||
-      opened.mtimeNs !== after.mtimeNs ||
-      opened.ctimeNs !== after.ctimeNs ||
-      afterPath.isSymbolicLink() ||
-      afterPath.dev !== opened.dev ||
-      afterPath.ino !== opened.ino
-    )
-      throw new Error('GitHub App configuration changed while reading.');
-  } finally {
-    await handle.close();
+    bytes = await readBoundedRegularFile(absolutePath, maximumBytes);
+  } catch {
+    throw new Error('GitHub App configuration must be a bounded regular file.');
   }
   let document: unknown;
   try {

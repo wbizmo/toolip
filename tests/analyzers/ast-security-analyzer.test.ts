@@ -288,11 +288,18 @@ async function handler(req: RequestLike, db: Database) {
 import { get as fetchOverHttp } from 'node:https';
 import * as httpClient from 'node:http';
 import axios from 'axios';
+import requestWithFetch from 'node-fetch';
+import superagent from 'superagent';
 async function handler(req: RequestLike) {
   await sendRequest(req.query.destination);
   await fetchOverHttp(req.query.backup);
   await httpClient.request(req.query.namespaceUrl);
   await axios(req.query.axiosUrl);
+  await httpClient['request'](req.query.computedUrl);
+  const method = req.query.clientMethod;
+  await axios[method](req.query.dynamicUrl);
+  await requestWithFetch(req.query.nodeFetchUrl);
+  await superagent.get(req.query.superagentUrl);
 }
 async function shadowed(req: RequestLike, sendRequest: (url: string) => void) {
   await sendRequest(req.query.localCallback);
@@ -300,7 +307,7 @@ async function shadowed(req: RequestLike, sendRequest: (url: string) => void) {
     );
     expect(
       findings.filter((finding) => finding.ruleId === 'TLP-AST-006')
-    ).toHaveLength(4);
+    ).toHaveLength(8);
   });
 
   it('recognizes statically required HTTP clients and preserves local shadowing', () => {
@@ -420,6 +427,46 @@ async function shadowed(req: RequestLike, sendRequest: (url: string) => void) {
     );
   });
 
+  it('keeps large literal host lists unverified instead of traversing them repeatedly', () => {
+    const hosts = Array.from(
+      { length: 257 },
+      (_, index) => `'8.8.8.${(index % 254) + 1}'`
+    ).join(', ');
+    const findings = analyzeAstSource(
+      'src/routes/large-allowlist.ts',
+      `async function handler(req: RequestLike) {
+  const url = new URL(req.query.destination);
+  if (![${hosts}].includes(url.hostname)) throw new Error('blocked');
+  await fetch(url, { redirect: 'error' });
+}`
+    );
+
+    expect(findings.some((finding) => finding.ruleId === 'TLP-AST-006')).toBe(
+      true
+    );
+  });
+
+  it('keeps SSRF findings visible when repeated host-proof work reaches its budget', () => {
+    const calls = Array.from({ length: 400 }, (_, index) => {
+      const url = `url${index}`;
+      return [
+        `const ${url} = new URL(req.query.destination);`,
+        `if (!['8.8.8.8'].includes(${url}.hostname)) throw new Error('blocked');`,
+        `await fetch(${url}, { redirect: 'error' });`
+      ].join('\n');
+    }).join('\n');
+    const findings = analyzeAstSource(
+      'src/routes/repeated-fetch.ts',
+      `async function handler(req: RequestLike) {
+  ${calls}
+}`
+    );
+
+    expect(findings.some((finding) => finding.ruleId === 'TLP-AST-006')).toBe(
+      true
+    );
+  });
+
   it('does not trust redirect errors that can be overridden by spreads or duplicate keys', () => {
     const findings = analyzeAstSource(
       'src/routes/image.ts',
@@ -510,6 +557,9 @@ import path from 'node:path';
 async function handler(req: RequestLike) {
   const candidate = path.resolve('/srv/data', req.query.file);
   await fs.readFile(candidate);
+  await fs['readFile'](req.query.computed);
+  const selectedMethod = req.query.method;
+  await fs[selectedMethod](req.query.dynamic);
   await load(req.params.name);
 }
 function harmless(readFile: (path: string) => void, req: RequestLike) {
@@ -517,6 +567,8 @@ function harmless(readFile: (path: string) => void, req: RequestLike) {
 }`
     );
     expect(findings.map((finding) => finding.ruleId)).toEqual([
+      'TLP-AST-009',
+      'TLP-AST-009',
       'TLP-AST-009',
       'TLP-AST-009'
     ]);

@@ -1,5 +1,6 @@
 import type { FindingSeverity } from '../../contracts/finding.js';
 import { sanitizeOutput } from '../safe-output.js';
+import { serializeJsonOutputBounded } from '../report-writer.js';
 import type { BaselineDelta } from './baseline.js';
 import type { HistoryEntry, HistoryFindingRecord } from './types.js';
 
@@ -23,21 +24,26 @@ export function renderHistoryDelta(input: {
   const { delta, current, baseline, format } = input;
   const rows = deltaRows(delta, current, baseline);
   if (format === 'json') {
-    return `${JSON.stringify(
+    return `${serializeJsonOutputBounded(
       sanitizeOutput({
         schemaVersion: 1,
         comparisonBase: delta.comparisonBase,
         coverageComparable: delta.coverageComparable,
         counts: countStates(rows),
         findings: rows
-      }),
-      null,
-      2
+      })
     )}\n`;
   }
-  if (format === 'markdown') return renderMarkdown(delta, rows);
-  if (format === 'html') return renderHtml(delta, rows);
-  return `${JSON.stringify(createSarif(delta, current, rows), null, 2)}\n`;
+  if (format === 'markdown')
+    return boundedText(renderMarkdown(delta, rows), 'Markdown');
+  if (format === 'html') return boundedText(renderHtml(delta, rows), 'HTML');
+  return `${serializeJsonOutputBounded(createSarif(delta, current, rows))}\n`;
+}
+
+function boundedText(value: string, format: string): string {
+  if (Buffer.byteLength(value, 'utf8') > 64 * 1024 * 1024)
+    throw new RangeError(`${format} history report exceeds its byte limit.`);
+  return value;
 }
 
 function deltaRows(

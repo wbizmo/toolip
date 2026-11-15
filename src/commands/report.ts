@@ -1,5 +1,3 @@
-import { constants } from 'node:fs';
-import { lstat, open } from 'node:fs/promises';
 import type { Command } from 'commander';
 import { ToolipError } from '../errors/toolip-error.js';
 import { readPemKeyFile } from '../core/secure-key-file.js';
@@ -9,41 +7,14 @@ import {
   readEvidenceTrustStore,
   resolveEvidenceTrust
 } from '../core/evidence-trust-store.js';
+import { readBoundedRegularFile } from '../core/bounded-file.js';
+import { serializeJsonOutputBounded } from '../core/report-writer.js';
 
 const maxReportBytes = 8 * 1024 * 1024;
 
 async function readReport(filePath: string): Promise<ToolipReport> {
-  const named = await lstat(filePath);
-  if (named.isSymbolicLink() || !named.isFile() || named.size > maxReportBytes)
-    throw new ToolipError('Report must be a bounded regular file.', {
-      code: 'REPORT_INPUT_INVALID',
-      exitCode: 1
-    });
-  const handle = await open(
-    filePath,
-    constants.O_RDONLY |
-      (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW)
-  );
   try {
-    const opened = await handle.stat();
-    const after = await lstat(filePath);
-    if (
-      !opened.isFile() ||
-      after.isSymbolicLink() ||
-      opened.dev !== after.dev ||
-      opened.ino !== after.ino ||
-      opened.size > maxReportBytes
-    )
-      throw new ToolipError('Report changed while it was being opened.', {
-        code: 'REPORT_INPUT_CHANGED',
-        exitCode: 1
-      });
-    const bytes = await handle.readFile();
-    if (bytes.length > maxReportBytes)
-      throw new ToolipError('Report exceeds the input size limit.', {
-        code: 'REPORT_INPUT_INVALID',
-        exitCode: 1
-      });
+    const bytes = await readBoundedRegularFile(filePath, maxReportBytes);
     const report = JSON.parse(
       new TextDecoder('utf-8', { fatal: true }).decode(bytes)
     ) as unknown;
@@ -62,12 +33,13 @@ async function readReport(filePath: string): Promise<ToolipReport> {
     return report as ToolipReport;
   } catch (error) {
     if (error instanceof ToolipError) throw error;
-    throw new ToolipError('Report JSON is malformed or unreadable.', {
-      code: 'REPORT_INPUT_INVALID',
-      exitCode: 1
-    });
-  } finally {
-    await handle.close();
+    throw new ToolipError(
+      'Report is malformed, unreadable, or over the input limit.',
+      {
+        code: 'REPORT_INPUT_INVALID',
+        exitCode: 1
+      }
+    );
   }
 }
 
@@ -158,7 +130,7 @@ export function registerReportCommand(program: Command): void {
           expectedSourceTreeSha256: options.sourceTreeSha256,
           maxAgeMs: maxAgeDays * 24 * 60 * 60 * 1000
         });
-        console.log(JSON.stringify(result, null, 2));
+        console.log(serializeJsonOutputBounded(result));
         if (result.status !== 'verified') process.exitCode = 2;
       }
     );

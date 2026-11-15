@@ -122,6 +122,66 @@ const corpus: CorpusCase[] = [
     ruleId: 'TLP-AUTH-001',
     expected: false,
     source: `router.get('/records/:id', async (req, res) => { return prisma.record.findFirst({ where: { id: req.params.id, ownerId: req.user.id } }); });`
+  },
+  {
+    name: 'CommonJS destructured shell alias',
+    ruleId: 'TLP-AST-003',
+    expected: true,
+    source: `const { exec: run } = require('node:child_process'); run(req.query.command);`
+  },
+  {
+    name: 'ESM namespace shell call',
+    ruleId: 'TLP-AST-003',
+    expected: true,
+    source: `import * as child from 'node:child_process'; child.exec(req.query.command);`
+  },
+  {
+    name: 'untrusted value reaches imported filesystem API',
+    ruleId: 'TLP-AST-009',
+    expected: true,
+    source: `import { readFile } from 'node:fs/promises'; await readFile(req.query.path);`
+  },
+  {
+    name: 'untrusted value reaches document.write',
+    ruleId: 'TLP-AST-007',
+    expected: true,
+    source: `document.write(req.query.html);`
+  },
+  {
+    name: 'CommonJS member shell call',
+    ruleId: 'TLP-AST-003',
+    expected: true,
+    source: `const child = require('child_process'); child.exec(req.query.command);`
+  },
+  {
+    name: 'local function named exec is not a child-process call',
+    ruleId: 'TLP-AST-003',
+    expected: false,
+    source: `function exec(value: string) { return value; } exec(req.query.command);`
+  },
+  {
+    name: 'shadowed CommonJS require is not trusted',
+    ruleId: 'TLP-AST-003',
+    expected: false,
+    source: `function route(require: (name: string) => { exec(value: string): void }) { const child = require('node:child_process'); child.exec(req.query.command); }`
+  },
+  {
+    name: 'spawn argument vector does not enable a shell',
+    ruleId: 'TLP-AST-010',
+    expected: false,
+    source: `import { spawn } from 'node:child_process'; spawn('tool', [req.query.command]);`
+  },
+  {
+    name: 'imported axios receives a fixed URL',
+    ruleId: 'TLP-AST-006',
+    expected: false,
+    source: `import axios from 'axios'; await axios.get('https://service.example.test/health');`
+  },
+  {
+    name: 'comment and string text do not create AST sinks',
+    ruleId: 'TLP-AST-003',
+    expected: false,
+    source: `// exec(req.query.command);\nconst note = "child_process.exec(req.query.command)";`
   }
 ];
 
@@ -166,9 +226,9 @@ describe('AST fixed positive/negative corpus', () => {
       falseNegatives: falseNegatives.map((item) => item.name),
       invalidLocations: invalidLocations.map((item) => item.name)
     }).toEqual({
-      cases: 19,
-      positives: 10,
-      negatives: 9,
+      cases: 29,
+      positives: 15,
+      negatives: 14,
       falsePositives: [],
       falseNegatives: [],
       invalidLocations: []

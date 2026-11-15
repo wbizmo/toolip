@@ -1109,6 +1109,48 @@ describe('trusted Stage A Git-object scanner', () => {
     ).toBe(false);
   });
 
+  it.each([
+    ['bsdtar', 'bsdtar -xf bundle.tar\nnode bundle/init.js'],
+    ['7-Zip', '7za x bundle.7z\nnode bundle/init.js'],
+    ['RAR', 'unrar x bundle.rar\n./bundle/init.sh'],
+    [
+      'PowerShell',
+      'Expand-Archive bundle.zip -DestinationPath out\n./out/init.ps1'
+    ],
+    ['Java archives', 'jar xf bundle.jar\njava -jar bundle/app.jar'],
+    [
+      'Python archive modules',
+      'python -m zipfile -e bundle.zip out\nnode out/init.js'
+    ]
+  ])('blocks %s extraction followed by execution', async (_label, source) => {
+    const fixture = await repo({ 'runner.sh': `#!/bin/sh\n${source}` });
+    const result = scanGitTree(fixture.root, fixture.sha, {
+      changedPaths: ['runner.sh']
+    });
+    expect(result.status).toBe('blocked');
+    expect(result.findings).toContain('runner.sh#archive-execution');
+  });
+
+  it('blocks Python archive library extraction followed by process launch', async () => {
+    const fixture = await repo({
+      'package.json': JSON.stringify({
+        scripts: { prepare: 'python3 bootstrap.py' }
+      }),
+      'bootstrap.py': [
+        'import subprocess',
+        'import zipfile',
+        "with zipfile.ZipFile('bundle.zip') as archive:",
+        "    archive.extractall('out')",
+        "subprocess.run(['node', 'out/init.js'])"
+      ].join('\n')
+    });
+    const result = scanGitTree(fixture.root, fixture.sha, {
+      changedPaths: ['package.json']
+    });
+    expect(result.status).toBe('blocked');
+    expect(result.findings).toContain('bootstrap.py#archive-execution');
+  });
+
   it('blocks a wrapper that executes a uniquely assigned local shell variable', async () => {
     const fixture = await repo({
       'package.json': JSON.stringify({
@@ -1264,6 +1306,120 @@ describe('trusted Stage A Git-object scanner', () => {
       'https://collector.invalid'
     );
     expect(JSON.stringify(result.findings)).not.toContain('GITHUB_TOKEN');
+  });
+
+  it('traces an unchanged payload when a benign-looking file is renamed into an entrypoint', async () => {
+    const fixture = await repo({
+      'configuration.txt': "import './init';\nexport default [];\n",
+      init: 'const payload = atob(encoded); eval(payload);'
+    });
+    const git = (args: string[]) =>
+      execFileSync('git', ['-C', fixture.root, ...args], {
+        encoding: 'utf8'
+      }).trim();
+    await import('node:fs/promises').then(({ rename }) =>
+      rename(
+        path.join(fixture.root, 'configuration.txt'),
+        path.join(fixture.root, 'eslint.config.js')
+      )
+    );
+    git(['add', '--all']);
+    git([
+      '-c',
+      'user.name=Toolip Test',
+      '-c',
+      'user.email=test@example.invalid',
+      'commit',
+      '-qm',
+      'rename config entrypoint'
+    ]);
+    const head = git(['rev-parse', 'HEAD']);
+    const changedPaths = listPullRequestChanges(
+      fixture.root,
+      fixture.sha,
+      head
+    );
+    const result = scanGitTree(fixture.root, head, { changedPaths });
+
+    expect(changedPaths).toContain('eslint.config.js');
+    expect(result.status).toBe('blocked');
+    expect(result.findings).toContain(
+      'execution-chain:eslint.config.js -> init'
+    );
+  });
+
+  it('traces unchanged payloads when an entrypoint diff changes whitespace only', async () => {
+    const fixture = await repo({
+      'eslint.config.js': "import './init';\nexport default [];\n",
+      init: 'const payload = atob(encoded); eval(payload);'
+    });
+    const git = (args: string[]) =>
+      execFileSync('git', ['-C', fixture.root, ...args], {
+        encoding: 'utf8'
+      }).trim();
+    await writeFile(
+      path.join(fixture.root, 'eslint.config.js'),
+      "import './init';\n\nexport default [];\n"
+    );
+    git(['add', 'eslint.config.js']);
+    git([
+      '-c',
+      'user.name=Toolip Test',
+      '-c',
+      'user.email=test@example.invalid',
+      'commit',
+      '-qm',
+      'whitespace config change'
+    ]);
+    const head = git(['rev-parse', 'HEAD']);
+    const changedPaths = listPullRequestChanges(
+      fixture.root,
+      fixture.sha,
+      head
+    );
+    const result = scanGitTree(fixture.root, head, { changedPaths });
+
+    expect(changedPaths).toEqual(['eslint.config.js']);
+    expect(result.status).toBe('blocked');
+    expect(result.findings).toContain(
+      'execution-chain:eslint.config.js -> init'
+    );
+  });
+
+  it.each([
+    [
+      'an aliased ESM spawn import',
+      "import { spawn as launch } from 'node:child_process'; launch('node', ['payload.js']);"
+    ],
+    [
+      'a destructured CommonJS execFile import',
+      "const { execFile: launch } = require('child_process'); launch('node', ['payload.js']);"
+    ],
+    [
+      'a CommonJS namespace alias',
+      "const cp = require('node:child_process'); cp.fork('payload.js');"
+    ],
+    [
+      'a local alias of an imported API',
+      "import * as cp from 'node:child_process'; const launch = cp.spawn; launch('node', ['payload.js']);"
+    ],
+    [
+      'a literal dynamic import alias',
+      "const { spawn: launch } = await import('node:child_process'); launch('node', ['payload.js']);"
+    ],
+    [
+      'a computed namespace method',
+      "import * as cp from 'node:child_process'; cp[method]('node', ['payload.js']);"
+    ]
+  ])('keeps %s from receiving a clean Stage A result', async (_label, source) => {
+    const fixture = await repo({ 'eslint.config.js': source });
+    const result = scanGitTree(fixture.root, fixture.sha, {
+      changedPaths: ['eslint.config.js']
+    });
+    expect(result.status).not.toBe('approved');
+    expect(result.incompleteReasons).toContain(
+      'unresolved-child-process-execution:eslint.config.js'
+    );
   });
 
   it('approves benign editor and package tasks without classifying automation alone as malicious', async () => {

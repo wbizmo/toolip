@@ -13,6 +13,7 @@ export class OsvClient {
       fetchImplementation?: typeof fetch;
       batchSize?: number;
       maxResponseBytes?: number;
+      maxTotalResponseBytes?: number;
     } = {}
   ) {}
 
@@ -33,11 +34,20 @@ export class OsvClient {
     const maxResponseBytes = Number.isSafeInteger(requestedMaximum)
       ? Math.max(1_024, Math.min(requestedMaximum, 64 * 1024 * 1024))
       : 16 * 1024 * 1024;
+    const requestedTotalMaximum =
+      this.options.maxTotalResponseBytes ?? 64 * 1024 * 1024;
+    const maxTotalResponseBytes = Number.isSafeInteger(requestedTotalMaximum)
+      ? Math.max(1_024, Math.min(requestedTotalMaximum, 256 * 1024 * 1024))
+      : 64 * 1024 * 1024;
     const results: OsvQueryResult[] = [];
+    let totalResponseBytes = 0;
 
     for (let start = 0; start < queries.length; start += batchSize) {
       if (signal?.aborted)
         throw new Error('OSV vulnerability lookup timed out or was cancelled.');
+      const remainingResponseBytes = maxTotalResponseBytes - totalResponseBytes;
+      if (remainingResponseBytes <= 0)
+        throw new Error('OSV aggregate response exceeds its byte budget.');
       const batch = queries.slice(start, start + batchSize);
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -61,8 +71,12 @@ export class OsvClient {
           throw new Error(`OSV request failed with HTTP ${response.status}.`);
         const responseBytes = await boundedResponseBytes(
           response,
-          maxResponseBytes
+          Math.min(maxResponseBytes, remainingResponseBytes),
+          remainingResponseBytes < maxResponseBytes
+            ? 'OSV aggregate response exceeds its byte budget.'
+            : 'OSV response exceeds its byte budget.'
         );
+        totalResponseBytes += responseBytes.byteLength;
         let payload: OsvBatchResponse;
         try {
           payload = JSON.parse(
@@ -128,11 +142,12 @@ export class OsvClient {
 
 async function boundedResponseBytes(
   response: Response,
-  maximum: number
+  maximum: number,
+  exceededMessage: string
 ): Promise<Uint8Array> {
   const declared = Number(response.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > maximum)
-    throw new Error('OSV response exceeds its byte budget.');
+    throw new Error(exceededMessage);
   if (!response.body) throw new Error('OSV response body is unavailable.');
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -142,8 +157,7 @@ async function boundedResponseBytes(
       const next = await reader.read();
       if (next.done) break;
       size += next.value.byteLength;
-      if (size > maximum)
-        throw new Error('OSV response exceeds its byte budget.');
+      if (size > maximum) throw new Error(exceededMessage);
       chunks.push(next.value);
     }
   } catch (error) {

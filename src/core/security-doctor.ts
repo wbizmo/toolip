@@ -702,7 +702,8 @@ export async function runSecurityDoctor(
     }>(cacheScope, taskId, 'security-doctor-source-v3');
     if (cachedAnalysis) {
       cacheHits++;
-      suppressedFixtureIds.push(...cachedAnalysis.suppressedFixtureIds);
+      for (const id of cachedAnalysis.suppressedFixtureIds)
+        suppressedFixtureIds.push(id);
       const customFindings = cachedAnalysis.findings.filter((finding) =>
         finding.source.startsWith('signed-rule-pack:')
       );
@@ -742,10 +743,13 @@ export async function runSecurityDoctor(
       });
 
       if (codeExtensions.has(file.extension)) {
-        filteredFindings.push(
-          ...(astFindingsByPath?.get(file.relativePath) ?? []),
-          ...scanConfigurationContent(file.relativePath, read.content)
-        );
+        for (const finding of astFindingsByPath?.get(file.relativePath) ?? [])
+          filteredFindings.push(finding);
+        for (const finding of scanConfigurationContent(
+          file.relativePath,
+          read.content
+        ))
+          filteredFindings.push(finding);
       }
       if (!rulePackCoverageIncomplete && options.rulePacks?.length) {
         const customFindings = analyzeRulePacks(
@@ -754,7 +758,7 @@ export async function runSecurityDoctor(
           read.content,
           rulePackFindingBudget - rulePackFindings
         );
-        filteredFindings.push(...customFindings);
+        for (const finding of customFindings) filteredFindings.push(finding);
         rulePackFindings += customFindings.length;
         if (rulePackFindings >= rulePackFindingBudget) {
           rulePackCoverageIncomplete = true;
@@ -771,9 +775,14 @@ export async function runSecurityDoctor(
         'security-doctor-source-v3',
         cachedAnalysis
       );
-      suppressedFixtureIds.push(...suppressedForFile);
+      for (const id of suppressedForFile) suppressedFixtureIds.push(id);
     }
-    findings.push(...bindSourceProvenance(cachedAnalysis.findings, file, read));
+    for (const finding of bindSourceProvenance(
+      cachedAnalysis.findings,
+      file,
+      read
+    ))
+      findings.push(finding);
   }
 
   if (pendingAstProjectCache && options.analysisCache) {
@@ -815,11 +824,10 @@ export async function runSecurityDoctor(
     }
   }
 
-  findings.push(
-    ...detectMissingSecurityHeaders(
-      context.files.map((file) => file.relativePath)
-    )
-  );
+  for (const finding of detectMissingSecurityHeaders(
+    context.files.map((file) => file.relativePath)
+  ))
+    findings.push(finding);
 
   if (contentProvider) {
     for (const file of options.maliciousContentFiles ?? context.files) {
@@ -853,7 +861,7 @@ export async function runSecurityDoctor(
       contentProvider === undefined,
       knownBinaryPaths
     );
-    findings.push(...result.findings);
+    for (const finding of result.findings) findings.push(finding);
     maliciousContent = {
       coverage: result.coverage,
       filesScanned: result.filesScanned,
@@ -875,7 +883,7 @@ export async function runSecurityDoctor(
     signal: options.signal,
     options: { scannerContext: context, contentProvider }
   });
-  findings.push(...infrastructure.findings);
+  for (const finding of infrastructure.findings) findings.push(finding);
   const docker = await new DockerfileAnalyzer().analyze({
     root: context.root,
     signal: options.signal,
@@ -885,7 +893,7 @@ export async function runSecurityDoctor(
       contentProvider
     }
   });
-  findings.push(...docker.findings);
+  for (const finding of docker.findings) findings.push(finding);
 
   const pluginFiles = snapshot
     ? snapshot.files
@@ -903,8 +911,8 @@ export async function runSecurityDoctor(
       pluginFiles,
       options.signal
     );
-    findings.push(...result.findings);
-    warnings.push(...result.warnings);
+    for (const finding of result.findings) findings.push(finding);
+    for (const warning of result.warnings) warnings.push(warning);
     analyzerPlugins.push({
       id: plugin.id,
       sha256: plugin.moduleSha256,

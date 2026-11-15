@@ -94,6 +94,39 @@ type DependencyScanInputs = {
   graphWarnings: string[];
 };
 
+function warningNamesResolvedAsEdges(
+  warning: string,
+  unresolvedNames: ReadonlySet<string>
+): boolean {
+  const prefixes = [
+    'unresolved npm dependency ',
+    'unresolved npm package identity ',
+    'unresolved pnpm dependency ',
+    'unresolved yarn dependency '
+  ];
+  const prefix = prefixes.find((item) => warning.startsWith(item));
+  if (!prefix) return false;
+  const from = warning.lastIndexOf(' from ');
+  if (from <= prefix.length) return false;
+  const identity = warning.slice(prefix.length, from);
+  const separator = identity.startsWith('@')
+    ? identity.indexOf('@', identity.indexOf('/') + 1)
+    : identity.indexOf('@');
+  if (separator <= 0) return false;
+  return unresolvedNames.has(identity.slice(0, separator));
+}
+
+function graphWarningsWithoutResolvedEdges(
+  inputs: DependencyScanInputs
+): string[] {
+  const unresolvedNames = new Set(
+    inputs.unresolvedDependencies.map((dependency) => dependency.name)
+  );
+  return inputs.graphWarnings.filter(
+    (warning) => !warningNamesResolvedAsEdges(warning, unresolvedNames)
+  );
+}
+
 function dependencyKey(
   dependency: Pick<DependencyIdentity, 'name' | 'version' | 'registry'>
 ): string {
@@ -302,6 +335,7 @@ export async function scanDependencies(
       }
     );
   }
+  const additionalGraphWarnings = graphWarningsWithoutResolvedEdges(inputs);
   const failures: DependencyLookupFailure[] = [
     ...inputs.unresolvedDependencies.map((dependency) => ({
       name: dependency.name,
@@ -310,18 +344,11 @@ export async function scanDependencies(
       message:
         'Dependency requirement is not an exact installed package identity.'
     })),
-    ...inputs.graphWarnings
-      .filter(
-        (warning) =>
-          !inputs.unresolvedDependencies.some((dependency) =>
-            warning.includes(dependency.name)
-          )
-      )
-      .map((message) => ({
-        name: 'dependency graph',
-        kind: 'unresolved' as const,
-        message
-      })),
+    ...additionalGraphWarnings.map((message) => ({
+      name: 'dependency graph',
+      kind: 'unresolved' as const,
+      message
+    })),
     ...outcomes.flatMap((outcome) => (outcome.ok ? [] : [outcome.failure]))
   ];
   const findings = packages.flatMap(packageToFindings);
@@ -354,12 +381,7 @@ export async function scanDependencies(
     eligible:
       inputs.dependencies.length +
       inputs.unresolvedDependencies.length +
-      inputs.graphWarnings.filter(
-        (warning) =>
-          !inputs.unresolvedDependencies.some((dependency) =>
-            warning.includes(dependency.name)
-          )
-      ).length,
+      additionalGraphWarnings.length,
     scanned: packages.length,
     skipped: failures.filter(
       (f) => f.kind === 'timed_out' || f.kind === 'cancelled'

@@ -5,6 +5,9 @@ import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { buildDependencyTree } from '../src/core/dependency-tree.js';
+import { readNpmDependencyGraph } from '../src/core/dependencies/inventory.js';
+import { readOtherEcosystemInventoryDetailed } from '../src/core/dependencies/ecosystem-inventory.js';
+import { digestDependencyGraph } from '../src/core/dependencies/graph-digest.js';
 import { walkProjectFiles } from '../src/core/file-walker.js';
 import { TextFileReader } from '../src/core/text-file-reader.js';
 import { indexSourceDirectoryChildren } from '../src/analyzers/ast/source-analysis.js';
@@ -20,6 +23,7 @@ import {
   findSecretMatches,
   secretFingerprint
 } from '../src/core/secret-utils.js';
+import { analyzeMaliciousContent } from '../src/analyzers/malicious-content/analyzer.js';
 
 const defaultSizes = [1_000, 10_000, 50_000];
 const defaultSourceBody =
@@ -340,6 +344,60 @@ async function benchmarkLockfile(
     const lockfileText = JSON.stringify(lockfile);
     await writeFile(path.join(root, 'package-lock.json'), lockfileText);
 
+    const analyzerConsumers = 3;
+    for (const sharing of ['independent', 'shared'] as const) {
+      let sourceReads = 0;
+      const createSource = () => ({
+        files: ['package-lock.json'],
+        hasFile: (relativePath: string) => relativePath === 'package-lock.json',
+        readText: (relativePath: string) => {
+          if (relativePath !== 'package-lock.json') return undefined;
+          sourceReads += 1;
+          return lockfileText;
+        }
+      });
+      const sharedSource = sharing === 'shared' ? createSource() : undefined;
+      const inventoryPass = await measure(async () => {
+        const graphs = await Promise.all(
+          Array.from({ length: analyzerConsumers }, () =>
+            readNpmDependencyGraph(root, sharedSource ?? createSource())
+          )
+        );
+        const first = graphs[0];
+        if (
+          !first ||
+          graphs.some(
+            (graph) =>
+              digestDependencyGraph(graph) !== digestDependencyGraph(first)
+          )
+        ) {
+          throw new Error(
+            `dependency graph consumers diverged at size ${size}`
+          );
+        }
+        return {
+          consumers: graphs.length,
+          uniqueGraphObjects: new Set(graphs).size,
+          packages: first.packages.length,
+          edges: first.edges.length,
+          complete: first.complete,
+          graphDigest: digestDependencyGraph(first)
+        };
+      });
+      emit('npm-lock-inventory-sharing', size, sharing, {
+        ...inventoryPass,
+        result: inventoryPass.result,
+        sourceReads,
+        analyzerConsumers,
+        fixtureSha256: createHash('sha256').update(lockfileText).digest('hex'),
+        lockfileBytes: Buffer.byteLength(lockfileText),
+        cacheContract:
+          sharing === 'shared'
+            ? 'one immutable source identity shared by concurrent analyzers'
+            : 'independent source identities model uncached analyzer parses'
+      });
+    }
+
     for (const pass of ['cold', 'warm'] as const) {
       const measurement = await measure(() => buildDependencyTree(root));
       const expectedDirect = shape === 'wide' ? size : Math.min(size, 2);
@@ -368,6 +426,82 @@ async function benchmarkLockfile(
                 (graphFanout * (graphFanout - 1)) / 2
       });
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+/** Parse a bounded Cargo.lock chain and report exact graph cardinality. */
+async function benchmarkCargoLock(size: number): Promise<void> {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-cargo-benchmark-'));
+  const lines = ['version = 4', ''];
+  const checksum = 'a'.repeat(64);
+  const rootName = 'benchmark-root';
+  const firstName = 'cargo-fixture-000000';
+  const manifest = [
+    '[package]',
+    `name = "${rootName}"`,
+    'version = "1.0.0"',
+    '',
+    '[dependencies]',
+    `${firstName} = "1.0.0"`,
+    ''
+  ].join('\n');
+  lines.push(
+    '[[package]]',
+    `name = "${rootName}"`,
+    'version = "1.0.0"',
+    `dependencies = ["${firstName} 1.0.0"]`,
+    ''
+  );
+  for (let index = 0; index < size; index += 1) {
+    const name = `cargo-fixture-${String(index).padStart(6, '0')}`;
+    lines.push(
+      '[[package]]',
+      `name = "${name}"`,
+      'version = "1.0.0"',
+      'source = "registry+https://github.com/rust-lang/crates.io-index"',
+      `checksum = "${checksum}"`,
+      ...(index + 1 < size
+        ? [
+            `dependencies = ["cargo-fixture-${String(index + 1).padStart(6, '0')} 1.0.0"]`
+          ]
+        : []),
+      ''
+    );
+  }
+  const lockfile = lines.join('\n');
+  try {
+    await writeFile(path.join(root, 'Cargo.toml'), manifest);
+    await writeFile(path.join(root, 'Cargo.lock'), lockfile);
+    const measurement = await measure(async () => {
+      const graph = await readOtherEcosystemInventoryDetailed(root);
+      const digest = digestDependencyGraph(graph);
+      const vertices = graph.packages.filter(
+        (item) => item.ecosystem === 'crates.io'
+      ).length;
+      if (vertices !== size + 1 || graph.edges.length < size)
+        throw new Error(
+          `Cargo graph cardinality mismatch: expected ${size + 1} packages and at least ${size} edges, received ${vertices} packages and ${graph.edges.length} edges`
+        );
+      return {
+        packages: vertices,
+        edges: graph.edges.length,
+        complete: graph.complete,
+        warnings: graph.warnings,
+        graphDigest: digest
+      };
+    });
+    emit('cargo-lock-chain', size, 'cold', {
+      ...measurement,
+      result: measurement.result,
+      lockfileBytes: Buffer.byteLength(lockfile),
+      manifestBytes: Buffer.byteLength(manifest),
+      fixtureSha256: createHash('sha256').update(lockfile).digest('hex'),
+      dependencyShape: 'single chain',
+      source: 'registry+https://github.com/rust-lang/crates.io-index',
+      providerRequests: 0
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -877,8 +1011,65 @@ async function benchmarkSecretLocations(size: number): Promise<void> {
   }
 }
 
+async function benchmarkMaliciousContent(size: number): Promise<void> {
+  if (size < 3) throw new Error('malicious-content fixture requires 3 files');
+  const files = [
+    {
+      path: 'package.json',
+      content: JSON.stringify({ scripts: { prepare: 'node init' } })
+    },
+    { path: 'init', content: 'node ./payload.orc\n' },
+    {
+      path: 'payload.orc',
+      content: "eval(atob('Y29uc29sZS5sb2coJ2JlbmNoJyk='));\n"
+    },
+    ...Array.from({ length: size - 3 }, (_, index) => ({
+      path: `fixtures/inert-${index}.txt`,
+      content: 'inert bounded benchmark fixture\n'
+    }))
+  ];
+  const fixtureHash = createHash('sha256');
+  let sourceBytes = 0;
+  for (const file of files) {
+    sourceBytes += Buffer.byteLength(file.content);
+    fixtureHash
+      .update(file.path)
+      .update('\0')
+      .update(file.content)
+      .update('\0');
+  }
+  const measurement = await measure(async () => {
+    const result = analyzeMaliciousContent(files);
+    const trace = result.findings[0]?.metadata?.trace;
+    if (
+      result.filesScanned !== size ||
+      result.coverage.state !== 'complete' ||
+      result.findings.length !== 1 ||
+      !Array.isArray(trace) ||
+      trace.length !== 3
+    )
+      throw new Error('malicious-content scale fixture lost coverage or trace');
+    return {
+      filesScanned: result.filesScanned,
+      bytesScanned: result.bytesScanned,
+      findings: result.findings.length,
+      trace,
+      coverage: result.coverage.state
+    };
+  });
+  emit('malicious-content-execution-chain', size, 'single-pass', {
+    ...measurement,
+    result: measurement.result,
+    fixtureSha256: fixtureHash.digest('hex'),
+    sourceBytes
+  });
+}
+
 async function runWorker(fixture: string, size: number): Promise<void> {
   switch (fixture) {
+    case 'malicious-content':
+      await benchmarkMaliciousContent(size);
+      break;
     case 'secret-locations':
       await benchmarkSecretLocations(size);
       break;
@@ -906,6 +1097,9 @@ async function runWorker(fixture: string, size: number): Promise<void> {
     case 'npm-lock-converging':
       await benchmarkLockfile(size, 'converging');
       break;
+    case 'cargo-lock-chain':
+      await benchmarkCargoLock(size);
+      break;
     default:
       throw new Error(`unknown benchmark worker fixture: ${fixture}`);
   }
@@ -926,13 +1120,15 @@ if (workerIndex >= 0) {
   );
   for (const size of sizes) {
     for (const fixture of [
+      'malicious-content',
       'secret-locations',
       'source-tree',
       'ast-directory-index',
       'repository-scorecard',
       'repository-scorecard-concurrent',
       'npm-lock-wide',
-      'npm-lock-converging'
+      'npm-lock-converging',
+      'cargo-lock-chain'
     ]) {
       const child = spawnSync(
         process.execPath,

@@ -1,10 +1,11 @@
-import { constants } from 'node:fs';
-import { lstat, mkdir, open, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Command } from 'commander';
 import { TOOLIP_VERSION } from '../config/version.js';
 import { scannerArtifactDigest } from '../core/report-signature.js';
 import { readPemKeyFile } from '../core/secure-key-file.js';
+import { readBoundedRegularFile } from '../core/bounded-file.js';
+import { serializeJsonOutputBounded } from '../core/report-writer.js';
 import {
   signSbomAttestation,
   verifySbomAttestation
@@ -43,37 +44,11 @@ type SbomOptions = {
 const maximumJsonBytes = 32 * 1024 * 1024;
 
 async function readBoundedJson(filePath: string): Promise<unknown> {
-  const absolute = path.resolve(filePath);
-  const named = await lstat(absolute);
-  if (
-    named.isSymbolicLink() ||
-    !named.isFile() ||
-    named.size > maximumJsonBytes
-  )
-    throw new Error('SBOM input must be a bounded regular non-symlink file.');
-  const handle = await open(
-    absolute,
-    constants.O_RDONLY |
-      (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW)
+  const bytes = await readBoundedRegularFile(
+    path.resolve(filePath),
+    maximumJsonBytes
   );
-  try {
-    const opened = await handle.stat();
-    const after = await lstat(absolute);
-    if (
-      !opened.isFile() ||
-      after.isSymbolicLink() ||
-      opened.dev !== after.dev ||
-      opened.ino !== after.ino ||
-      opened.size > maximumJsonBytes
-    )
-      throw new Error('SBOM input changed while it was being opened.');
-    const bytes = await handle.readFile();
-    if (bytes.length > maximumJsonBytes)
-      throw new Error('SBOM input exceeds the size limit.');
-    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-  } finally {
-    await handle.close();
-  }
+  return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
 }
 
 function assertFormat(value: string): asserts value is SbomFormat {
@@ -180,7 +155,7 @@ export function registerSbomCommand(program: Command): void {
         goCommandRunner: options.goCommandRunner
       });
 
-      const output = `${JSON.stringify(document, null, 2)}\n`;
+      const output = `${serializeJsonOutputBounded(document)}\n`;
 
       let attestationText: string | undefined;
       if (options.signingKey && options.signingKeyId && options.projectId) {
@@ -206,7 +181,7 @@ export function registerSbomCommand(program: Command): void {
               : {})
           }
         });
-        attestationText = `${JSON.stringify(attestation, null, 2)}\n`;
+        attestationText = `${serializeJsonOutputBounded(attestation)}\n`;
       }
 
       if (!options.output) {

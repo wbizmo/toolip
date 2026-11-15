@@ -6,7 +6,6 @@ import {
   mkdir,
   mkdtemp,
   open,
-  readFile,
   realpath,
   rm,
   writeFile
@@ -14,6 +13,7 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import type { DependencyFileSource } from './inventory.js';
+import { readBoundedUtf8File } from '../bounded-file.js';
 
 const maxMetadataFiles = 5_000;
 const maxMetadataBytes = 32 * 1024 * 1024;
@@ -354,9 +354,33 @@ export async function captureGoMvsGraph(
     );
     sumFiles.add(path.join(temporaryRoot, 'go.sum'));
     sumFiles.add(path.join(temporaryRoot, 'go.work.sum'));
+    let generatedSumBytes = 0;
     for (const target of sumFiles) {
-      const content = await readFile(target, 'utf8').catch(() => '');
-      mergeSums(parseGoSums(content), sums);
+      const metadata = await lstat(target).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+          return undefined;
+        throw error;
+      });
+      if (!metadata) continue;
+      try {
+        const remaining = maxMetadataBytes - generatedSumBytes;
+        if (remaining <= 0)
+          throw new Error(
+            'Generated Go checksum files exceed their byte budget.'
+          );
+        const content = await readBoundedUtf8File(target, remaining);
+        generatedSumBytes += Buffer.byteLength(content, 'utf8');
+        mergeSums(parseGoSums(content), sums);
+      } catch (error) {
+        if (
+          error &&
+          typeof error === 'object' &&
+          'code' in error &&
+          error.code === 'ENOENT'
+        )
+          continue;
+        throw error;
+      }
     }
     void root;
     return {

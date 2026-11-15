@@ -54,6 +54,32 @@ afterEach(async () => {
 });
 
 describe('pnpm and Yarn exact dependency graphs', () => {
+  it('fails explicitly when npm dependency lookup exceeds its ancestor budget', async () => {
+    const root = await fixture();
+    const packages: Record<string, Record<string, unknown>> = Object.create(
+      null
+    );
+    let installPath = '';
+    for (let depth = 0; depth < 258; depth += 1) {
+      installPath = installPath
+        ? `${installPath}/node_modules/chain`
+        : 'node_modules/chain';
+      packages[installPath] = { name: 'chain', version: '1.0.0' };
+    }
+    const deepest = packages[installPath];
+    if (!deepest) throw new Error('Deep npm package fixture is missing.');
+    deepest.dependencies = { missing: '*' };
+    await writeFile(
+      path.join(root, 'package-lock.json'),
+      JSON.stringify({ name: 'fixture', lockfileVersion: 3, packages }),
+      'utf8'
+    );
+
+    await expect(readNpmDependencyGraph(root)).rejects.toThrow(
+      'npm dependency resolution exceeds the 256-ancestor limit'
+    );
+  });
+
   it.each([
     ['npm-v2', '18.2.0'],
     ['npm-v3', '18.2.0'],
@@ -435,6 +461,35 @@ describe('pnpm and Yarn exact dependency graphs', () => {
       });
       expect(graph.complete).toBe(true);
     }
+  });
+
+  it('does not retain a failed parsed graph promise for a captured source', async () => {
+    const root = await fixture();
+    let lockText = '{ malformed';
+    const fileSource = {
+      files: ['package-lock.json'],
+      hasFile: (relativePath: string) => relativePath === 'package-lock.json',
+      readText: (relativePath: string) =>
+        relativePath === 'package-lock.json' ? lockText : undefined
+    };
+
+    await expect(readNpmDependencyGraph(root, fileSource)).rejects.toThrow();
+    lockText = JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        '': {},
+        'node_modules/foo': {
+          version: '1.2.0',
+          resolved: 'https://registry.npmjs.org/foo/-/foo-1.2.0.tgz'
+        }
+      }
+    });
+    await expect(
+      readNpmDependencyGraph(root, fileSource)
+    ).resolves.toMatchObject({
+      complete: true,
+      packages: [expect.objectContaining({ name: 'foo', version: '1.2.0' })]
+    });
   });
 
   it('derives npm root and nested scoped install names from lock paths', async () => {

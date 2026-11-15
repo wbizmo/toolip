@@ -52,6 +52,25 @@ describe('immutable project snapshots', () => {
     ).rejects.toThrow(/snapshot.*budget/i);
   });
 
+  it('rejects oversized pre-discovered lists before copying their entries', async () => {
+    const root = await project();
+    const discovered = await walkProjectFiles(root);
+    const file = discovered[0];
+    if (!file) throw new Error('missing snapshot fixture');
+    const oversized = new Proxy([file], {
+      get(target, property, receiver) {
+        if (property === 'length') return 20_001;
+        if (property === Symbol.iterator)
+          throw new Error('oversized list was copied before preflight');
+        return Reflect.get(target, property, receiver);
+      }
+    });
+
+    await expect(
+      createProjectSnapshot(root, { discoveredFiles: oversized })
+    ).rejects.toThrow(/snapshot file count exceeds/);
+  });
+
   it('rejects forged discovery path/identity before reusing a snapshot', async () => {
     const root = await project();
     const files = await walkProjectFiles(root);
@@ -93,6 +112,80 @@ describe('immutable project snapshots', () => {
     expect(await verifyProjectSnapshot(snapshot)).toBe(false);
     const changed = await createProjectSnapshot(root);
     expect(changed.sourceTreeDigest).not.toBe(snapshot.sourceTreeDigest);
+  });
+
+  it('streams canonical snapshot digests without changing their JSON values', async () => {
+    const root = await project();
+    await writeFile(path.join(root, 'package.json'), '{"name":"fixture"}');
+    await writeFile(
+      path.join(root, 'package-lock.json'),
+      '{"lockfileVersion":3}'
+    );
+    await writeFile(path.join(root, '.tooliprc'), '{"policy":"default"}');
+    const discovered = await walkProjectFiles(root);
+    const snapshot = await createProjectSnapshot(root, {
+      discoveredFiles: [...discovered].reverse()
+    });
+    const files = [...snapshot.files].sort((left, right) =>
+      left.path < right.path ? -1 : left.path > right.path ? 1 : 0
+    );
+    const lockFiles = files
+      .filter((file) =>
+        /(?:^|\/)(?:package\.json|package-lock\.json|npm-shrinkwrap\.json|\.npmrc|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|\.yarnrc(?:\.yml)?|Cargo\.toml|Cargo\.lock|go\.mod|go\.sum|go\.work(?:\.sum)?|composer\.json|composer\.lock|Pipfile(?:\.lock)?|pyproject\.toml|poetry\.lock|uv\.lock|requirements(?:-[^/]+)?\.txt|pom\.xml|gradle\.lockfile|gradle\.properties|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?)$/iu.test(
+          file.path
+        )
+      )
+      .map((file) => [file.path, file.sha256])
+      .sort((left, right) => String(left[0]).localeCompare(String(right[0])));
+    const configFiles = files
+      .filter(
+        (file) =>
+          file.path.startsWith('.toolip/') ||
+          file.path === 'toolip.config.json' ||
+          file.path === '.tooliprc'
+      )
+      .map((file) => [file.path, file.sha256])
+      .sort((left, right) => String(left[0]).localeCompare(String(right[0])));
+    const snapshotFileTuples = files.map((file) => [
+      file.path,
+      file.fileId,
+      file.mtimeNs,
+      file.ctimeNs,
+      file.mtimeMs,
+      file.ctimeMs,
+      file.dev,
+      file.ino,
+      file.sha256,
+      file.bytes,
+      file.binary
+    ]);
+    expect(snapshot.files.map((file) => file.path)).toEqual(
+      [...snapshot.files.map((file) => file.path)].sort()
+    );
+    expect(snapshot.lockGraphDigest).toBe(
+      createHash('sha256').update(JSON.stringify(lockFiles)).digest('hex')
+    );
+    expect(snapshot.configDigest).toBe(
+      createHash('sha256').update(JSON.stringify(configFiles)).digest('hex')
+    );
+    expect(snapshot.id).toBe(
+      createHash('sha256')
+        .update(
+          JSON.stringify({
+            root: snapshot.root,
+            gitRevision: snapshot.gitRevision ?? null,
+            gitHeadRevision: snapshot.gitHeadRevision ?? null,
+            gitIndexDigest: snapshot.gitIndexDigest ?? null,
+            gitIndexStatus: snapshot.gitIndexStatus,
+            sourceTreeDigest: snapshot.sourceTreeDigest,
+            lockGraphDigest: snapshot.lockGraphDigest,
+            configDigest: snapshot.configDigest,
+            budget: snapshot.budgets,
+            files: snapshotFileTuples
+          })
+        )
+        .digest('hex')
+    );
   });
 
   it('fails closed when the snapshot exceeds explicit file budgets', async () => {
@@ -575,10 +668,13 @@ describe('immutable project snapshots', () => {
     const snapshot = await createProjectSnapshot(root);
     await writeFile(lockPath, lock('2.0.0'));
 
-    const captured = await readNpmDependencyGraph(
-      root,
-      dependencyFileSourceFromSnapshot(snapshot)
-    );
+    const capturedSource = dependencyFileSourceFromSnapshot(snapshot);
+    expect(dependencyFileSourceFromSnapshot(snapshot)).toBe(capturedSource);
+    const capturedRead = readNpmDependencyGraph(root, capturedSource);
+    const sharedCapturedRead = readNpmDependencyGraph(root, capturedSource);
+    expect(sharedCapturedRead).toBe(capturedRead);
+    const captured = await capturedRead;
+    expect(await sharedCapturedRead).toBe(captured);
     const current = await readNpmDependencyGraph(root);
     expect(
       captured.packages.find((item) => item.name === 'example')?.version

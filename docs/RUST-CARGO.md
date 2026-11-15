@@ -6,10 +6,12 @@ a valid Cargo crate name and semantic version; malformed names, versions, or
 dependency entries make coverage incomplete rather than creating an advisory
 identity. Registry packages from the official crates.io index require a
 lockfile SHA-256 checksum before they are queried as resolved third-party
-dependencies. That checksum is declared lock data, not independent
-verification of downloaded crate bytes or checksum-database inclusion. Git and
-unresolved path sources remain provenance-unknown and are withheld from OSV
-queries.
+dependencies. Normal inventory does not download crate bytes. In the trusted
+pre-execution Stage A gate, supported exact crates.io archives are fetched and
+checked against both the lock checksum and the protected operator-owned
+artifact policy; this is separate from default offline inventory. Neither path
+claims crates.io checksum-database inclusion. Git and unresolved path sources
+remain provenance-unknown and are withheld from OSV queries.
 
 For a declared Cargo workspace, Toolip matches captured `Cargo.toml` member
 manifests to exact package name/version identities in Cargo.lock and records

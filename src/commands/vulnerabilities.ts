@@ -1,5 +1,4 @@
 import type { Command } from 'commander';
-import { readFile, stat } from 'node:fs/promises';
 import type { AnalyzerCommandDeps } from '../application/analyzer-command.js';
 import {
   assessExecution,
@@ -10,6 +9,8 @@ import {
 } from '../application/analysis-status.js';
 import { AnalyzerRunner } from '../application/analyzer-runner.js';
 import { ToolipError } from '../errors/toolip-error.js';
+import { readBoundedUtf8File } from '../core/bounded-file.js';
+import { serializeJsonOutputBounded } from '../core/report-writer.js';
 import { OsvVulnerabilityAnalyzer } from '../analyzers/vulnerability/osv-analyzer.js';
 import { AdvisorySnapshotCache } from '../providers/intelligence/snapshot-cache.js';
 import { readPemKeyFile } from '../core/secure-key-file.js';
@@ -204,14 +205,8 @@ export function registerVulnerabilitiesCommand(
               code: 'INVALID_VEX_FORMAT',
               exitCode: 1
             });
-          const vexStat = await stat(options.vexFile);
-          if (vexStat.size > 16 * 1024 * 1024)
-            throw new ToolipError('VEX input exceeds the 16 MiB limit.', {
-              code: 'VEX_INPUT_TOO_LARGE',
-              exitCode: 1
-            });
           const document = JSON.parse(
-            await readFile(options.vexFile, 'utf8')
+            await readBoundedUtf8File(options.vexFile, 16 * 1024 * 1024)
           ) as unknown;
           vexResult = applyVexAssessments(
             findings,
@@ -230,24 +225,20 @@ export function registerVulnerabilitiesCommand(
 
         if (options.json) {
           console.log(
-            JSON.stringify(
-              {
-                ...result,
-                analysis: assessmentJson(assessment),
-                findings,
-                ...(vexResult
-                  ? {
-                      vex: {
-                        applied: vexResult.applied,
-                        suppressed: vexResult.suppressed,
-                        rejected: vexResult.rejected
-                      }
+            serializeJsonOutputBounded({
+              ...result,
+              analysis: assessmentJson(assessment),
+              findings,
+              ...(vexResult
+                ? {
+                    vex: {
+                      applied: vexResult.applied,
+                      suppressed: vexResult.suppressed,
+                      rejected: vexResult.rejected
                     }
-                  : {})
-              },
-              null,
-              2
-            )
+                  }
+                : {})
+            })
           );
         } else if (assessment.state === 'failed') {
           console.log('Toolip Vulnerability Intelligence');

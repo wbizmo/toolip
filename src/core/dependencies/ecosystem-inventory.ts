@@ -1050,10 +1050,16 @@ function fromTomlLock(
     }
 
     const optionalDependencies = asRecord(pkg?.['optional-dependencies']);
-    const optionalEntries = Object.entries(optionalDependencies ?? {});
-    if (optionalEntries.length > 64)
-      warnings.push(`python-lock-extra-context-invalid:${source}`);
-    for (const [extra, rawItems] of optionalEntries.slice(0, 64)) {
+    const optionalRecord = optionalDependencies ?? {};
+    let optionalContextCount = 0;
+    for (const extra in optionalRecord) {
+      if (!Object.hasOwn(optionalRecord, extra)) continue;
+      optionalContextCount += 1;
+      if (optionalContextCount > 64) {
+        warnings.push(`python-lock-extra-context-invalid:${source}`);
+        break;
+      }
+      const rawItems = optionalRecord[extra];
       if (Array.isArray(rawItems)) {
         for (const rawItem of rawItems) {
           if (typeof rawItem === 'string')
@@ -1845,9 +1851,8 @@ function resolveCargoWorkspaceFeatures(
   enabledDependencies: Map<string, Set<string>>;
   unresolvedModules: Set<string>;
 } {
-  const byModule = new Map(
-    packages.map((item) => [item.module || 'root', item])
-  );
+  const byModule = new Map<string, CargoWorkspacePackage>();
+  for (const item of packages) byModule.set(item.module || 'root', item);
   const featureValues = new Map<string, Map<string, string[]>>();
   const activeFeatures = new Map<string, Set<string>>();
   const enabledDependencies = new Map<string, Set<string>>();
@@ -1867,14 +1872,16 @@ function resolveCargoWorkspaceFeatures(
     const module = item.module || 'root';
     const rawFeatures = asRecord(item.manifest.features) ?? {};
     const normalized = new Map<string, string[]>();
-    if (Object.keys(rawFeatures).length > 4_096) {
-      warnOnce(`cargo-feature-count-over-budget:${item.file}`);
-      unresolvedModules.add(module);
-    }
-    for (const [name, rawValues] of Object.entries(rawFeatures).slice(
-      0,
-      4_096
-    )) {
+    let featureCount = 0;
+    for (const name in rawFeatures) {
+      if (!Object.hasOwn(rawFeatures, name)) continue;
+      featureCount += 1;
+      if (featureCount > 4_096) {
+        warnOnce(`cargo-feature-count-over-budget:${item.file}`);
+        unresolvedModules.add(module);
+        break;
+      }
+      const rawValues = rawFeatures[name];
       if (
         !/^[A-Za-z0-9_-]{1,128}$/u.test(name) ||
         !Array.isArray(rawValues) ||
@@ -1889,13 +1896,11 @@ function resolveCargoWorkspaceFeatures(
       }
       normalized.set(name, rawValues as string[]);
     }
-    const dependencyFeatureSuppressions = new Set(
-      [...normalized.values()].flatMap((values) =>
-        values
-          .filter((value) => value.startsWith('dep:'))
-          .map((value) => value.slice(4))
-      )
-    );
+    const dependencyFeatureSuppressions = new Set<string>();
+    for (const values of normalized.values())
+      for (const value of values)
+        if (value.startsWith('dep:'))
+          dependencyFeatureSuppressions.add(value.slice(4));
     for (const declaration of item.declarations) {
       if (
         declaration.optional &&
@@ -2499,19 +2504,77 @@ function fromJavaDependencyGraph(
   const output: LockedPackage[] = [];
   const maxPackages = 100_000;
   const maxDepth = 512;
-  for (const [rootIndex, rootValue] of roots.entries()) {
+  const rootCount = Math.min(roots.length, maxPackages);
+  if (roots.length > rootCount)
+    warnings.push(`java-export-module-budget-exceeded:${source}`);
+  const moduleIdentities = new Map<number, string>();
+  const identityCounts = new Map<string, number>();
+  for (let rootIndex = 0; rootIndex < rootCount; rootIndex += 1) {
+    const root = record(roots[rootIndex]);
+    if (!root) continue;
+    const group = root.groupId ?? root.group;
+    const artifact = root.artifactId ?? root.module ?? root.name;
+    const version = root.version;
+    const explicitProjectPath =
+      root.projectPath ?? root.path ?? root.modulePath;
+    const hasControlCharacter = (value: string): boolean => {
+      for (const character of value) {
+        const code = character.codePointAt(0) ?? 0;
+        if (code < 32 || code === 127) return true;
+      }
+      return false;
+    };
+    const validCoordinatePart = (part: unknown): part is string =>
+      typeof part === 'string' &&
+      part.length > 0 &&
+      part.length <= 512 &&
+      /^[A-Za-z0-9_.-]+$/u.test(part);
+    const coordinateIdentity =
+      validCoordinatePart(group) &&
+      validCoordinatePart(artifact) &&
+      exact(version) &&
+      version.length <= 256 &&
+      !/[${}]/u.test(version)
+        ? `${group}:${artifact}:${version}`
+        : undefined;
+    const validProjectPath =
+      typeof explicitProjectPath === 'string' &&
+      explicitProjectPath.length > 0 &&
+      explicitProjectPath.length <= 2_048 &&
+      !hasControlCharacter(explicitProjectPath);
+    const identity = coordinateIdentity
+      ? validProjectPath
+        ? `project:${explicitProjectPath}\0${coordinateIdentity}`
+        : `coordinate:${coordinateIdentity}`
+      : validProjectPath
+        ? `path:${explicitProjectPath}`
+        : undefined;
+    if (!identity) {
+      warnings.push(`java-export-module-identity-unresolved:${source}`);
+      continue;
+    }
+    moduleIdentities.set(rootIndex, identity);
+    identityCounts.set(identity, (identityCounts.get(identity) ?? 0) + 1);
+  }
+  const ambiguousModuleIdentities = new Set(
+    [...identityCounts]
+      .filter(([, count]) => count > 1)
+      .map(([identity]) => identity)
+  );
+  if (ambiguousModuleIdentities.size > 0)
+    warnings.push(`java-export-module-identity-ambiguous:${source}`);
+  for (let rootIndex = 0; rootIndex < rootCount; rootIndex += 1) {
+    const rootValue = roots[rootIndex];
     const root = record(rootValue);
     if (!root) {
       warnings.push(`java-export-module-invalid:${source}`);
       continue;
     }
-    const rootIdentity = [
-      root.groupId ?? root.group ?? '',
-      root.artifactId ?? root.module ?? root.name ?? '',
-      root.version ?? ''
-    ].join(':');
+    const rootIdentity = moduleIdentities.get(rootIndex);
+    if (!rootIdentity) continue;
+    if (ambiguousModuleIdentities.has(rootIdentity)) continue;
     const module = `module-${createHash('sha256')
-      .update(`${source}\0${rootIdentity}\0${rootIndex}`)
+      .update(`${source}\0${rootIdentity}`)
       .digest('hex')
       .slice(0, 16)}`;
     const moduleOutputStart = output.length;
@@ -4857,7 +4920,7 @@ export async function readOtherEcosystemInventoryDetailed(
         options.signal,
         pythonTarget
       );
-      output.push(...packages);
+      for (const item of packages) output.push(item);
       if (file === 'Pipfile.lock' && packages.length > 0)
         warnings.push('pipfile-lock-transitive-edges-unresolved');
       if (packages.length === 0 && file !== 'composer.lock')
@@ -4878,7 +4941,8 @@ export async function readOtherEcosystemInventoryDetailed(
       if (text === undefined) continue;
       loadedLockfiles.add(file);
       const before = output.length;
-      output.push(...fromTomlLock(text, ecosystem, source, warnings));
+      for (const item of fromTomlLock(text, ecosystem, source, warnings))
+        output.push(item);
       if (output.length === before)
         warnings.push(`no-exact-package-records:${file}`);
     } catch {
@@ -5454,9 +5518,9 @@ export async function readOtherEcosystemInventoryDetailed(
         runner: options.goCommandRunner
       });
       const graph = resolveGoToolGraph(captured);
-      output.push(...graph.packages);
+      for (const item of graph.packages) output.push(item);
       goMvsEdges = graph.edges;
-      warnings.push(...graph.warnings);
+      for (const warning of graph.warnings) warnings.push(warning);
       goToolGraphApplied = true;
     } catch {
       // Do not expose subprocess stderr: it can include repository metadata.
@@ -5476,7 +5540,8 @@ export async function readOtherEcosystemInventoryDetailed(
     !goToolGraphApplied
   )
     warnings.push('go-work-replace-resolution-incomplete');
-  if (!goToolGraphApplied) warnings.push(...goWorkspaceDirectiveWarnings);
+  if (!goToolGraphApplied)
+    for (const warning of goWorkspaceDirectiveWarnings) warnings.push(warning);
   if (goVendorText !== undefined) {
     const vendorPackages = fromGoVendorModules(goVendorText, warnings);
     for (const item of vendorPackages) {
@@ -5504,7 +5569,7 @@ export async function readOtherEcosystemInventoryDetailed(
       warnings,
       'go.work'
     );
-    output.push(...vendorPackages);
+    for (const item of vendorPackages) output.push(item);
     addGoVendorImportGraph(
       vendorPackages,
       fileSource,
@@ -5599,7 +5664,7 @@ export async function readOtherEcosystemInventoryDetailed(
       else
         warnings.push(`go-checksum-unavailable:${item.name}@${item.version}`);
     }
-    output.push(...goPackages);
+    for (const item of goPackages) output.push(item);
     if (goPackages.length === 0)
       warnings.push(`go.mod-has-no-exact-requirements:${module.path}`);
   }
@@ -5629,7 +5694,7 @@ export async function readOtherEcosystemInventoryDetailed(
       gradleLockAvailable = true;
       loadedLockfiles.add(gradleLockPath);
       const packages = fromGradleLock(gradleText, gradleLockPath);
-      gradleLockPackages.push(...packages);
+      for (const item of packages) gradleLockPackages.push(item);
       if (packages.length === 0)
         warnings.push(`no-exact-package-records:${gradleLockPath}`);
     } catch {
@@ -5666,7 +5731,7 @@ export async function readOtherEcosystemInventoryDetailed(
       gradleGraphAvailable = true;
       if (!verified)
         for (const item of graph) item.resolutionConfidence = 'unknown';
-      output.push(...graph);
+      for (const item of graph) output.push(item);
     }
   } catch {
     warnings.push('invalid-or-unreadable-lockfile:gradle-dependencies.json');
@@ -5708,7 +5773,7 @@ export async function readOtherEcosystemInventoryDetailed(
       mavenTreeAvailable = true;
       if (!verified)
         for (const item of graph) item.resolutionConfidence = 'unknown';
-      output.push(...graph);
+      for (const item of graph) output.push(item);
     }
   } catch {
     warnings.push('invalid-or-unreadable-lockfile:maven-dependency-tree.json');
@@ -5723,14 +5788,15 @@ export async function readOtherEcosystemInventoryDetailed(
       loadedLockfiles.add('maven-dependency-tree.txt');
       mavenTreeAvailable = true;
       const graph = fromMavenDependencyTree(mavenTree, warnings);
-      output.push(...graph);
+      for (const item of graph) output.push(item);
       if (graph.length === 0)
         warnings.push('no-exact-package-records:maven-dependency-tree.txt');
     }
   } catch {
     warnings.push('invalid-or-unreadable-lockfile:maven-dependency-tree.txt');
   }
-  if (!gradleGraphAvailable) output.push(...gradleLockPackages);
+  if (!gradleGraphAvailable)
+    for (const item of gradleLockPackages) output.push(item);
   if (gradleLockAvailable && !gradleGraphAvailable)
     warnings.push('gradle-graph-unavailable:gradle.lockfile-has-no-edges');
   const pom = await readInput(root, 'pom.xml', fileSource).catch(() => {
@@ -6586,7 +6652,8 @@ export async function readOtherEcosystemInventoryDetailed(
       const id = pendingCargoIds.pop();
       if (!id || reachableCargoIds.has(id)) continue;
       reachableCargoIds.add(id);
-      pendingCargoIds.push(...(edgesBySource.get(id) ?? []));
+      for (const target of edgesBySource.get(id) ?? [])
+        pendingCargoIds.push(target);
     }
     resolvedPackages = packages.filter(
       (item) => item.ecosystem !== 'crates.io' || reachableCargoIds.has(item.id)

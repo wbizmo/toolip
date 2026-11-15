@@ -27,6 +27,10 @@ trace without embedding source text or payload bytes. The bounded interpreter
 reference list includes Node, Deno, Bun, Python, Ruby, Perl, PHP, POSIX shells,
 PowerShell and Windows `cmd /c` or `/k`, with captured `.py`, `.rb`, `.pl`,
 `.php`, `.ps1`, `.cmd` and `.bat` targets resolved without execution.
+Archive-chain signals recognize common `tar`/`bsdtar`, `unzip`, 7-Zip, RAR,
+Java `jar`, PowerShell and Python extraction commands followed by a supported
+execution target. Extracted contents are not inspected; archive-derived chains
+remain explicitly unknown.
 For recognized shell scripts, an exact prior literal path variable passed to
 `sh -c`, `bash -c` or `zsh -c` is also traced. Reassigned, interpolated,
 constructed command strings, shell `eval` text, variable-selected `exec`
@@ -367,3 +371,32 @@ workflow can enforce. A change to the Stage A or downstream Stage B trust-root
 workflow is marked incomplete until an exact-tree, time-limited exception is
 approved by a current maintainer; the GitHub ruleset remains the authoritative
 merge control.
+
+### Imported child-process calls
+
+Both the local malicious-content analyzer and the protected Stage A scanner
+recognize child-process APIs imported from the fixed `child_process` and
+`node:child_process` built-ins. Covered forms include named ESM imports,
+default/namespace imports, CommonJS destructuring and namespace aliases,
+literal dynamic imports, local `const` aliases of imported methods, and
+computed namespace calls. They remain unresolved execution candidates (and
+Stage A returns incomplete) because static analysis does not establish the
+launched program's runtime target. Fixtures are inert and do not invoke these
+APIs. The bounded recognizer does not claim complete support for reflection,
+re-exports, custom wrappers or arbitrary runtime module resolution. A
+nonliteral `import()` or `require()` target inside a recognized entrypoint is
+also retained as an unknown execution reference.
+
+Archive-chain checks cover bounded command-line forms including `bsdtar`,
+7-Zip, RAR, `jar`, PowerShell `Expand-Archive`, and Python's `zipfile` and
+`tarfile` module extraction commands. They also recognize Python archive
+library extraction followed by common process-launch APIs. Such chains remain
+unknown because extracted contents are not available as scanned Git files;
+the scanner never unpacks or runs them.
+
+The current inert fixture calibration includes four benign cases (ordinary
+bundler scripts, a benign automatic editor task, encoded example text and
+archive creation) and three suspicious cases (encoded lifecycle execution,
+imported child-process execution and archive extraction followed by launch).
+The fixed set records 0/4 false positives and 0/3 false negatives. This is a
+small regression corpus, not a representative field accuracy estimate.

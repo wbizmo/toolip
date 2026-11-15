@@ -141,6 +141,29 @@ describe('SBOM generation', () => {
     return root;
   }
 
+  it('bounds the root package manifest for live and captured SBOM inputs', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-sbom-limit-'));
+    const oversizedManifest = ' '.repeat(2 * 1024 * 1024 + 1);
+    try {
+      await writeFile(path.join(root, 'package.json'), oversizedManifest);
+      await expect(generateSbom(root, 'cyclonedx')).rejects.toThrow(
+        'Root package manifest exceeds the 2 MiB limit.'
+      );
+      await expect(
+        generateSbom('/captured-fixture', 'cyclonedx', {
+          fileSource: {
+            files: ['package.json'],
+            hasFile: (file) => file === 'package.json',
+            readText: (file) =>
+              file === 'package.json' ? oversizedManifest : undefined
+          }
+        })
+      ).rejects.toThrow('Root package manifest exceeds the 2 MiB limit.');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     {
       manager: 'pnpm',
