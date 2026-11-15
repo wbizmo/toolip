@@ -791,6 +791,15 @@ function scriptEntries(files: readonly MaliciousContentFile[]): {
           addExecutableReferences(source, refs);
           if (object.type === 'npm' && typeof object.script === 'string')
             addReference(refs, 'package.json');
+          if (object.type === 'npm' && typeof object.script === 'string')
+            addReference(
+              refs,
+              `npm-script:${path.posix.join(
+                path.posix.dirname(file.path),
+                '..',
+                'package.json'
+              )}\0${object.script}`
+            );
           if (automatic || refs.size || hasDynamicExecution(source))
             addEntry({
               file: file.path,
@@ -1173,6 +1182,16 @@ export function analyzeMaliciousContent(
           targetAnalysis.signals.includes('archive-extraction-and-execution');
         for (const signal of targetAnalysis.signals) signals.add(signal);
         if (signals.size > 0 || automaticScript.test(targetText)) payload = true;
+        for (const hookName of [`pre${scriptName}`, `post${scriptName}`]) {
+          if (
+            entryResult.scripts.has(`${targetManifest}\0${hookName}`) &&
+            !enqueue(
+              targetManifest,
+              `npm-script:${targetManifest}\0${hookName}`
+            )
+          )
+            break;
+        }
         for (const nested of targetAnalysis.references ?? [])
           if (!enqueue(targetManifest, nested)) break;
         const nestedScripts = new Set<string>();

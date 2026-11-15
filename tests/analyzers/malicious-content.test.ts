@@ -747,8 +747,64 @@ describe('non-executing malicious content chain analysis', () => {
     expect(taskFinding?.metadata?.trace).toEqual([
       'packages/web/.vscode/tasks.json',
       'packages/web/package.json',
+      'packages/web/package.json#scripts.prepare',
       'packages/web/init'
     ]);
+  });
+
+  it('follows npm pre and post hooks for invoked scripts', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({
+          scripts: {
+            prepare: 'npm run build',
+            prebuild: 'node init',
+            build: 'tsc',
+            postbuild: 'node finalize'
+          }
+        })
+      },
+      {
+        path: 'init',
+        content: 'const payload = atob(encoded); eval(payload);'
+      },
+      { path: 'finalize', content: 'console.log("done");' }
+    ]);
+
+    const finding = result.findings.find(
+      (candidate) =>
+        candidate.metadata?.entrypointKind === 'npm-script:prepare'
+    );
+    expect(finding?.ruleId).toBe('TLP-MAL-001');
+    expect(finding?.metadata?.trace).toEqual([
+      'package.json',
+      'package.json#scripts.build',
+      'package.json#scripts.prebuild',
+      'package.json#scripts.postbuild',
+      'init',
+      'finalize'
+    ]);
+  });
+
+  it('keeps benign npm pre and post hooks clean', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({
+          scripts: {
+            prebuild: 'node prepare',
+            build: 'tsc',
+            postbuild: 'node summarize'
+          }
+        })
+      },
+      { path: 'prepare', content: 'console.log("prepare");' },
+      { path: 'summarize', content: 'console.log("done");' }
+    ]);
+
+    expect(result.findings).toEqual([]);
+    expect(result.coverage.state).toBe('complete');
   });
 
   it('follows direct extensionless executable references from npm scripts', () => {
