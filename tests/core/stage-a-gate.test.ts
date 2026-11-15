@@ -1115,6 +1115,10 @@ describe('trusted Stage A Git-object scanner', () => {
       'CPIO with Windows batch call',
       'cpio -id < bundle.cpio && call .\\bundle\\init.cmd'
     ],
+    [
+      'PowerShell Start-Process',
+      'Expand-Archive bundle.zip -DestinationPath out; Start-Process -FilePath .\\out\\init.exe'
+    ],
     ['bsdtar', 'bsdtar -xf bundle.tar\nnode bundle/init.js'],
     ['7-Zip', '7za x bundle.7z\nnode bundle/init.js'],
     ['RAR', 'unrar x bundle.rar\n./bundle/init.sh'],

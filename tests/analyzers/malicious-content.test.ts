@@ -822,6 +822,24 @@ describe('non-executing malicious content chain analysis', () => {
     expect(result.findings[0]?.metadata?.completeness).toBe('unknown');
   });
 
+  it('recognizes PowerShell Start-Process after archive extraction', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({
+          scripts: {
+            prepare:
+              'Expand-Archive bundle.zip -DestinationPath out; Start-Process -FilePath .\\out\\init.exe'
+          }
+        })
+      }
+    ]);
+    expect(result.findings[0]?.metadata?.behaviorSignals).toContain(
+      'archive-extraction-and-execution'
+    );
+    expect(result.findings[0]?.metadata?.completeness).toBe('unknown');
+  });
+
   it('keeps language-level archive extraction followed by process launch unknown', () => {
     const result = analyzeMaliciousContent([
       {

@@ -1920,8 +1920,9 @@ targets. They exclude CPIO creation (`-o`) and table-of-contents mode (`-t`)
 so archive building and listing do not become execution signals. Inert
 analyzer and real-Git Stage A fixtures cover extraction and launch, while
 analyzer regressions cover harmless modes. The malicious-content and Stage A
-suites passed 137 tests; typecheck, targeted formatting, workflow policy and
-scanner digest checks passed. Other archive formats, dynamic chains,
+suites passed 139 tests, including CPIO extraction, Windows batch `call`, and
+PowerShell `Start-Process` launch forms. Typecheck, targeted formatting,
+workflow policy and scanner digest checks passed. Other archive formats, dynamic chains,
 representative accuracy calibration, and external acceptance remain
 incomplete; #95 remains code incomplete.
 
@@ -1950,8 +1951,8 @@ Cross-file async ownership, distributed lock semantics, framework accuracy
 and external review remain open; #89 remains code incomplete.
 
 The combined #95/#61/#89 changes then passed `npm run verify` on Linux Node
-24.22.1. Unit tests passed **1,401 / 4 skipped** across 128 files; coverage
-passed **1,399 / 3 skipped** across 127 files at 85.55% statements, 79.62%
+24.22.1. Unit tests passed **1,403 / 4 skipped** across 128 files; coverage
+passed **1,401 / 3 skipped** across 127 files at 85.55% statements, 79.62%
 branches, 93.16% functions and 88.14% lines. Changelog, lint, formatting,
 workflow policy, lockfile integrity, npm audit (zero vulnerabilities),
 typecheck, compiler quality, build, and built-package verification passed.
