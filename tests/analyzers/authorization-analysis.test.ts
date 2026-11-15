@@ -133,6 +133,32 @@ describe('route authorization candidates', () => {
     );
   });
 
+  it('recognizes nested tenant memberships but rejects request-controlled membership identities', () => {
+    const scoped = analyzeAstSource(
+      'src/routes/tenant-documents.ts',
+      `router.get('/documents/:id', async (req, res) => {
+  return db.document.findFirst({
+    where: { id: req.params.id, tenant: { memberships: { some: { userId: req.user.id } } } }
+  });
+});`
+    );
+    const untrusted = analyzeAstSource(
+      'src/routes/untrusted-tenant-documents.ts',
+      `router.get('/documents/:id', async (req, res) => {
+  return db.document.findFirst({
+    where: { id: req.params.id, tenant: { memberships: { some: { userId: req.query.userId } } } }
+  });
+});`
+    );
+
+    expect(scoped.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      false
+    );
+    expect(untrusted.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      true
+    );
+  });
+
   it('does not accept an included relation filter as ownership on the loaded resource', () => {
     const findings = analyzeAstSource(
       'src/routes/documents.ts',

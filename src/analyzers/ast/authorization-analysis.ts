@@ -34,6 +34,32 @@ const booleanGuards = new Set([
 const normalizedBooleanGuards = new Set(
   [...booleanGuards].map((name) => name.replace(/[_-]/gu, '').toLowerCase())
 );
+const ownershipRelationKeys = new Set([
+  'tenant',
+  'account',
+  'organization',
+  'workspace',
+  'owner',
+  'user',
+  'sharedwith',
+  'collaborator',
+  'collaborators',
+  'member',
+  'members',
+  'membership',
+  'memberships',
+  'tenantmembership',
+  'tenantmemberships',
+  'accessgrants',
+  'grant',
+  'grants',
+  'group',
+  'groups',
+  'team',
+  'teams',
+  'sharedresource',
+  'sharedresources'
+]);
 const authenticatedRequestRoots = new Set(['req', 'request', 'ctx', 'context']);
 const authenticatedClaimNames =
   /^(?:id|sub|subject|(?:user|tenant|account|organization|workspace|owner|principal)(?:id|key))$/iu;
@@ -490,6 +516,21 @@ function relationIdentityInside(
       )
         return true;
     }
+    if (
+      ownershipRelationKeys.has(key.toLowerCase()) &&
+      ts.isObjectLiteralExpression(property.initializer) &&
+      (ownershipInsideWhere(
+        property.initializer,
+        identityParameters,
+        depth + 1
+      ) ||
+        relationIdentityInside(
+          property.initializer,
+          identityParameters,
+          depth + 1
+        ))
+    )
+      return true;
   }
   return false;
 }
@@ -559,9 +600,7 @@ function ownershipInsideWhere(
     // Related ownership and explicit share grants can constrain the base
     // record, but a side-loaded include/select relation cannot.
     if (
-      /^(?:tenant|account|organization|workspace|owner|user|sharedWith|collaborators|members|accessGrants)$/iu.test(
-        key
-      ) &&
+      ownershipRelationKeys.has(key.toLowerCase()) &&
       ts.isObjectLiteralExpression(property.initializer) &&
       (ownershipInsideWhere(property.initializer, identities, depth + 1) ||
         relationIdentityInside(property.initializer, identities, depth + 1))

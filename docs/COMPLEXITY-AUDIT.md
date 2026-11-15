@@ -1041,6 +1041,14 @@ budget. Authorization tests pass 22 cases with typecheck and targeted Biome
 checks passing on Linux Node 24.22.1. Nested policy engines, cross-module
 ownership contracts and corpus accuracy remain open.
 
+Ownership analysis also follows a bounded set of relation names into nested
+tenant membership, grant, group, team and shared-resource predicates. It only
+accepts a nested predicate when it reaches an authenticated identity and keeps
+request-controlled membership identities as candidates. For `N` properties in
+the bounded query object, the added traversal is `O(N)` time with recursion
+limited to 32 relation levels and at most `O(32)` call-stack space; unsupported
+relation shapes remain unresolved.
+
 ### #95 additional archive formats — 2026-11-15
 
 Archive execution classification now recognizes `bsdtar`, `7za`/`7zz`, RAR
