@@ -2200,13 +2200,17 @@ The analyzer now also resolves explicit root-to-workspace script calls for npm,
 pnpm and Yarn using unique package names or local manifest paths. Three
 synthetic regressions trace an automatic root script through the selected
 workspace to a disguised local payload. The focused malicious-content suite
-passes 71 tests; typecheck and targeted lint pass. Full verification and new
-scale measurements for this workspace extension are pending. Ambiguous,
-dynamic and unsupported selector forms remain unresolved by design. The
-expanded full verification passes: 1,448 unit tests (4 skipped), 1,446 coverage
+passes 71 tests; typecheck and targeted lint pass. Ambiguous, dynamic and
+unsupported selector forms remain unresolved by design. The expanded full
+verification passes: 1,448 unit tests (4 skipped), 1,446 coverage
 tests (3 skipped), 85.64% statements, 79.65% branches, 93.2% functions and
 88.3% lines; packed-package verification passes. All Stage A pins use digest
-`f6267a1952230bdd73a6b4597a42bc3f2edb5abe23848e9de539fc8c92a5597c`.
+`f6267a1952230bdd73a6b4597a42bc3f2edb5abe23848e9de539fc8c92a5597c`. The
+1k/10k/50k scale fixture against source `8c488d1` measured 25.83/85.21/413.80
+ms and returned a complete three-file trace each time. It measures the general
+graph workload; workspace selector tracing is covered by the focused tests.
+Raw data is in
+`docs/benchmarks/toolip-v3.2.1-issue95-workspace-scripts-2026-11-15-linux-node24.jsonl`.
 
 ## 2026-11-15 local continuation — bounded JSON size preflight for #40
 

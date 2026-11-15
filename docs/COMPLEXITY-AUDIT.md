@@ -1296,8 +1296,12 @@ existing bounded reference traversal covers the additional script edges.
 Three regressions verify a malicious root-to-workspace chain. The focused suite
 passes 71 tests. Full verification passes with 1,448 unit tests (4 skipped),
 1,446 coverage tests (3 skipped), 85.64% statements, 79.65% branches, 93.2%
-functions and 88.3% lines. New scale measurements for the workspace extension
-are pending.
+functions and 88.3% lines. The scale fixture was rerun against
+`8c488d1680fdb95d5b4a903868c4b923d9a051c3`: 25.83/85.21/413.80 ms at
+1k/10k/50k files, each with a complete three-file chain. The fixture measures
+the general graph path; workspace-selector correctness remains covered by the
+focused tests rather than this benchmark. Raw results are in
+`docs/benchmarks/toolip-v3.2.1-issue95-workspace-scripts-2026-11-15-linux-node24.jsonl`.
 
 ### #40 bounded JSON report size check — 2026-11-15
 

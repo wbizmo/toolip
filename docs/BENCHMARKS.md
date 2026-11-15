@@ -707,3 +707,13 @@ The same synthetic chain was rerun against commit `0f29e38a2f0dd33b775c23df763e3
 |       1,000 |       32,002 |  20.43 ms |  56.8 MiB | 190.6 MiB | 3 files / complete |
 |      10,000 |      320,002 | 130.71 ms |  66.2 MiB | 220.0 MiB | 3 files / complete |
 |      50,000 |    1,600,002 | 350.63 ms | 133.4 MiB | 290.8 MiB | 3 files / complete |
+
+### Issue #95 workspace-graph source rerun — 2026-11-15
+
+The bounded scale fixture was rerun against `8c488d1680fdb95d5b4a903868c4b923d9a051c3`, including the exact-package workspace lookup implementation. The scale fixture itself remains the same root-to-extensionless-to-disguised payload chain; explicit workspace traversal correctness is covered separately by three synthetic analyzer tests. These are single isolated samples, not cross-platform or variance claims. Raw JSONL: [`toolip-v3.2.1-issue95-workspace-scripts-2026-11-15-linux-node24.jsonl`](benchmarks/toolip-v3.2.1-issue95-workspace-scripts-2026-11-15-linux-node24.jsonl).
+
+| Input files | Source bytes | Wall time | Peak heap |  Peak RSS | Trace / coverage   |
+| ----------: | -----------: | --------: | --------: | --------: | ------------------ |
+|       1,000 |       32,002 |  25.83 ms |  66.0 MiB | 207.0 MiB | 3 files / complete |
+|      10,000 |      320,002 |  85.21 ms |  55.6 MiB | 212.8 MiB | 3 files / complete |
+|      50,000 |    1,600,002 | 413.80 ms | 131.2 MiB | 289.3 MiB | 3 files / complete |
