@@ -1121,6 +1121,7 @@ describe('trusted Stage A Git-object scanner', () => {
     ],
     ['bsdtar', 'bsdtar -xf bundle.tar\nnode bundle/init.js'],
     ['7-Zip', '7za x bundle.7z\nnode bundle/init.js'],
+    ['7zr', '7zr x bundle.7z\nnode bundle/init.js'],
     ['RAR', 'unrar x bundle.rar\n./bundle/init.sh'],
     [
       'PowerShell',

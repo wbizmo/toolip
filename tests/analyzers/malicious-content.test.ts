@@ -768,7 +768,8 @@ describe('non-executing malicious content chain analysis', () => {
       'python -m zipfile -e bundle.zip out\npython out/init.py',
       'jar xf bundle.jar\njava -jar bundle/app.jar',
       'unrar x bundle.rar\n./bundle/init.sh',
-      '7zz x bundle.7z\nnode bundle/init.js'
+      '7zz x bundle.7z\nnode bundle/init.js',
+      '7zr x bundle.7z\nnode bundle/init.js'
     ]) {
       const result = analyzeMaliciousContent([
         {
@@ -803,6 +804,26 @@ describe('non-executing malicious content chain analysis', () => {
         )
       ).toBe(false);
     }
+  });
+
+  it('does not classify 7zr archive creation as extraction', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({
+          scripts: { build: '7zr a bundle.7z ./dist && node ./build.js' }
+        })
+      },
+      { path: 'build.js', content: 'console.log("build");' }
+    ]);
+
+    expect(
+      result.findings.some((finding) =>
+        finding.metadata?.behaviorSignals?.includes(
+          'archive-extraction-and-execution'
+        )
+      )
+    ).toBe(false);
   });
 
   it('recognizes Windows batch call launchers after archive extraction', () => {

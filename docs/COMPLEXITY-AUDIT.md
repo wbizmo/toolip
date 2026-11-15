@@ -1062,6 +1062,15 @@ and targeted Biome checks passing on Linux Node 24.22.1. Archive-derived
 traces remain explicitly unknown; dynamic/runtime extraction and broad
 accuracy calibration remain open.
 
+### #95 `7zr` extraction recognition — 2026-11-15
+
+The same bounded archive-pattern pass now includes `7zr x` and `7zr e` while
+leaving `7zr a` creation outside the extraction rule. Local malicious-content
+and protected Stage A fixtures passed 141 tests together. The added regex arm
+preserves `O(B)` scan time and constant pattern space. The full verification
+gate passed: 1,410 unit tests (4 skipped), 1,408 coverage tests (3 skipped),
+85.55% statements, 79.62% branches, 93.16% functions and 88.14% lines.
+
 ### #40 bounded SSRF host-allowlist proof work — 2026-11-15
 
 Per-file AST analysis now shares a 250,000-node budget across URL host-guard

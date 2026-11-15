@@ -576,7 +576,7 @@ const startupPersistence =
   /(?:\bcrontab\s+-|\b(?:systemctl|launchctl)\s+(?:enable|load|bootstrap)|\.config[\\/]autostart|(?:\.bashrc|\.zshrc|\.profile|Startup[\\/])|(?:CurrentVersion[\\/]Run|HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run))/iu;
 // Creation and archive listing do not constitute unpack-and-execute.
 const archiveExtraction =
-  /\b(?:tar\s+(?:--extract\b|--get\b|-?[a-z]*x[a-z]*\b)|bsdtar\s+(?:--extract\b|-?[a-z]*x[a-z]*\b)|cpio\s+(?:--extract\b|-(?![a-z]*t)[a-z]*i[a-z]*\b)|(?:busybox\s+)?unzip\s+(?!-[lt]\b)|7z(?:a|z)?\s+(?:x|e)\b|(?:unrar|rar)\s+(?:x|e)\b|jar\s+(?:x[a-z]*\b|--extract\b)|Expand-Archive\b|python(?:3)?\s+-m\s+(?:zipfile|tarfile)\s+-e\b)/giu;
+  /\b(?:tar\s+(?:--extract\b|--get\b|-?[a-z]*x[a-z]*\b)|bsdtar\s+(?:--extract\b|-?[a-z]*x[a-z]*\b)|cpio\s+(?:--extract\b|-(?![a-z]*t)[a-z]*i[a-z]*\b)|(?:busybox\s+)?unzip\s+(?!-[lt]\b)|7z(?:a|r|z)?\s+(?:x|e)\b|(?:unrar|rar)\s+(?:x|e)\b|jar\s+(?:x[a-z]*\b|--extract\b)|Expand-Archive\b|python(?:3)?\s+-m\s+(?:zipfile|tarfile)\s+-e\b)/giu;
 const archiveExecution =
   /(?:\bStart-Process\b(?:\s+-FilePath)?\s+[^\s;&|]+|\b(?:node(?:\.exe)?|bash|sh|zsh|pwsh|powershell|python(?:3)?|java(?:\.exe)?|deno|bun|ruby|perl|php|cmd(?:\.exe)?)\b\s+(?:-jar\s+|\/(?:c|k)\s+)?[^\s;&|]+|(?:^|[;&|\r\n]\s*)(?:call\s+)?(?:&\s*)?\.{1,2}[\\/]\S+)/imu;
 const archiveApiExtraction =

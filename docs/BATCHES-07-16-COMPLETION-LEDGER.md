@@ -1998,14 +1998,14 @@ markers. Unmarked fields remain unclassified unless their names match the
 existing sensitive-name heuristic. Tests cover three positive tags and an
 unmarked negative field, and assert that field names do not appear in finding
 evidence. The focused sensitive-flow suite passed 17 tests and typecheck passed;
-the latest full verification, including nested membership and dynamic HTTP
-client aliases, passed: unit tests passed **1,408 / 4 skipped** across 128
-files; coverage passed **1,406 / 3 skipped** across 127 files at 85.55%
+the latest full verification, including nested membership, dynamic HTTP client
+aliases and the 7zr chain, passed: unit tests passed **1,410 / 4 skipped**
+across 128 files; coverage passed **1,408 / 3 skipped** across 127 files at 85.55%
 statements, 79.62% branches,
 93.16% functions and 88.14% lines. Workflow
 policy, digest, lockfile, npm audit, typecheck, compiler quality, build and
 package verification passed. All three Stage A pins use scanner digest
-`9e4a8ec9cb3a16b126d0307731205b3e1b95864884b169c6e04b877e395baf0a`. Schema
+`5f3cb04522f93854f19d658d234fdccba98464c2f06998a04d80e2f86f169d21`. Schema
 inference without explicit tags, application serializer/redactor contracts
 and broad accuracy calibration remain incomplete; #91 remains code incomplete.
 
@@ -2016,8 +2016,8 @@ tenant memberships, access grants, groups, teams and shared-resource filters.
 A nested predicate suppresses a candidate only if it reaches an authenticated
 identity; the paired request-controlled `req.query.userId` fixture remains a
 candidate. The focused authorization suite passed 25 tests; typecheck,
-targeted Biome, and the full verification gate passed (1,408 unit tests passed,
-4 skipped; 1,406 coverage tests passed, 3 skipped). Cross-file policy
+targeted Biome, and the full verification gate passed (1,410 unit tests passed,
+4 skipped; 1,408 coverage tests passed, 3 skipped). Cross-file policy
 engines, implicit grants, framework differences and measured corpus accuracy
 remain incomplete; #61 is still code incomplete.
 
@@ -2029,8 +2029,20 @@ destructured known request methods. The existing fixed-point alias pass follows
 up to 16 immutable aliases; mutation disables static client trust. Shadowed
 `require` and static local modules outside the HTTP package allowlist are
 negative controls. Dynamic module expressions stay redacted in findings. The
-AST analyzer suite passed 49 tests and the full gate passed with 1,408 unit
-tests (4 skipped) and 1,406 coverage tests (3 skipped); all three Stage A pins
-use digest `9e4a8ec9cb3a16b126d0307731205b3e1b95864884b169c6e04b877e395baf0a`.
+AST analyzer suite passed 49 tests and the latest full gate passed with 1,410
+unit tests (4 skipped) and 1,408 coverage tests (3 skipped); all three Stage A
+pins use digest `5f3cb04522f93854f19d658d234fdccba98464c2f06998a04d80e2f86f169d21`.
 Runtime module resolution, wrapper summaries, URL/redirect safety, DNS and
 race-safe filesystem identity remain incomplete; #60 remains code incomplete.
+
+## 2026-11-15 local continuation — `7zr` archive execution for #95/#96
+
+The local malicious-content analyzer and trusted Stage A mirror now recognize
+7-Zip `7zr x`/`7zr e` extraction chains. A benign `7zr a` archive-creation
+fixture remains unflagged, and a Stage A Git-object fixture verifies the
+extraction chain is blocked before execution. Focused malicious-content and
+Stage A suites passed 141 tests together; full verification passed with 1,410
+unit tests (4 skipped), 1,408 coverage tests (3 skipped), and 85.55% statement,
+79.62% branch, 93.16% function and 88.14% line coverage. All three Stage A pins
+use digest `5f3cb04522f93854f19d658d234fdccba98464c2f06998a04d80e2f86f169d21`.
+Archive contents remain uninspected and the chain stays explicitly unknown.
