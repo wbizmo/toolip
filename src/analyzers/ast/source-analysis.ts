@@ -2388,6 +2388,16 @@ const sensitiveSchemaTags = new Set([
   'protectedhealthinformation',
   'toolipsensitive'
 ]);
+const sensitiveSchemaDecorators = new Set([
+  'sensitive',
+  'sensitivedata',
+  'confidential',
+  'pii',
+  'personaldata',
+  'phi',
+  'protectedhealthinformation',
+  'toolipsensitive'
+]);
 const redactionHelpers = new Set([
   'redactSecret',
   'redactSecrets',
@@ -2416,6 +2426,26 @@ function isCredentialEnvironmentSource(expression: ts.Expression): boolean {
   );
 }
 
+function hasSensitiveSchemaMarker(declaration: ts.Declaration): boolean {
+  if (
+    ts
+      .getJSDocTags(declaration)
+      .some((tag) => sensitiveSchemaTags.has(tag.tagName.text.toLowerCase()))
+  )
+    return true;
+  if (!ts.canHaveDecorators(declaration)) return false;
+  return (ts.getDecorators(declaration) ?? []).some((decorator) => {
+    let expression = decorator.expression;
+    if (ts.isCallExpression(expression)) expression = expression.expression;
+    const name = ts.isIdentifier(expression)
+      ? expression.text
+      : ts.isPropertyAccessExpression(expression)
+        ? expression.name.text
+        : '';
+    return sensitiveSchemaDecorators.has(name.toLowerCase());
+  });
+}
+
 function isSensitiveDataSource(
   expression: ts.Expression,
   checker?: ts.TypeChecker
@@ -2424,16 +2454,7 @@ function isSensitiveDataSource(
   if (!isMemberAccessRoot(expression)) return false;
   if (checker && ts.isPropertyAccessExpression(expression)) {
     const symbol = checker.getSymbolAtLocation(expression.name);
-    if (
-      symbol?.declarations?.some((declaration) =>
-        ts
-          .getJSDocTags(declaration)
-          .some((tag) =>
-            sensitiveSchemaTags.has(tag.tagName.text.toLowerCase())
-          )
-      )
-    )
-      return true;
+    if (symbol?.declarations?.some(hasSensitiveSchemaMarker)) return true;
   }
   const parent = expression.parent;
   if (ts.isCallExpression(parent) && parent.expression === expression)
@@ -3517,12 +3538,25 @@ function sensitiveOutputSink(
     (['fetch', 'request', 'get', 'post', 'put', 'patch', 'delete'].includes(
       method
     ) ||
+      (method === 'sendbeacon' && receiver === 'navigator') ||
+      (method === 'send' &&
+        receiverExpression &&
+        isWebSocketReceiver(receiverExpression, scope)) ||
       dynamicMethod ||
       importedDirectClient) &&
     (method === 'fetch' ||
-      ['axios', 'http', 'https', 'got', 'request', 'client'].includes(
-        receiver ?? ''
-      ) ||
+      [
+        'axios',
+        'http',
+        'https',
+        'got',
+        'request',
+        'client',
+        'navigator'
+      ].includes(receiver ?? '') ||
+      (method === 'send' &&
+        receiverExpression &&
+        isWebSocketReceiver(receiverExpression, scope)) ||
       importedReceiver ||
       importedDirectClient)
   )
@@ -3530,7 +3564,8 @@ function sensitiveOutputSink(
   if (
     (['set', 'append'].includes(method) || dynamicMethod) &&
     receiverExpression &&
-    isUrlSearchParametersReceiver(receiverExpression, scope)
+    (isUrlSearchParametersReceiver(receiverExpression, scope) ||
+      isFormDataReceiver(receiverExpression, scope))
   )
     return 'outbound-request';
   if (
@@ -3627,6 +3662,96 @@ function isUrlSearchParametersCreation(expression: ts.Expression): boolean {
     ts.isNewExpression(value) &&
     ts.isIdentifier(value.expression) &&
     value.expression.text === 'URLSearchParams'
+  );
+}
+
+function isFormDataReceiver(expression: ts.Expression, scope: Scope): boolean {
+  return isBuiltInConstructorReceiver(expression, scope, 'FormData');
+}
+
+function isWebSocketReceiver(expression: ts.Expression, scope: Scope): boolean {
+  return isBuiltInConstructorReceiver(expression, scope, 'WebSocket');
+}
+
+const builtInConstructorReceiverCache = new WeakMap<
+  ts.Node,
+  Map<'FormData' | 'WebSocket', ReadonlySet<string>>
+>();
+
+function isBuiltInConstructorReceiver(
+  expression: ts.Expression,
+  scope: Scope,
+  constructorName: 'FormData' | 'WebSocket'
+): boolean {
+  const value = unwrapExpression(expression);
+  if (!ts.isIdentifier(value)) return false;
+  for (
+    let current: Scope | undefined = scope;
+    current;
+    current = current.parent
+  ) {
+    if (!current.bindings.has(value.text)) continue;
+    return builtInConstructorReceivers(current, constructorName).has(
+      value.text
+    );
+  }
+  return false;
+}
+
+function builtInConstructorReceivers(
+  scope: Scope,
+  constructorName: 'FormData' | 'WebSocket'
+): ReadonlySet<string> {
+  let byConstructor = builtInConstructorReceiverCache.get(scope.node);
+  if (!byConstructor) {
+    byConstructor = new Map();
+    builtInConstructorReceiverCache.set(scope.node, byConstructor);
+  }
+  const cached = byConstructor.get(constructorName);
+  if (cached) return cached;
+  const receivers = new Set<string>();
+  if (lookupBinding(scope, constructorName) === undefined) {
+    const functionBody = ts.isFunctionLike(scope.node)
+      ? (scope.node as ts.FunctionLikeDeclaration).body
+      : undefined;
+    const statements = ts.isSourceFile(scope.node)
+      ? scope.node.statements
+      : ts.isBlock(scope.node)
+        ? scope.node.statements
+        : functionBody && ts.isBlock(functionBody)
+          ? functionBody.statements
+          : [];
+    for (const statement of statements) {
+      if (!ts.isVariableStatement(statement)) continue;
+      for (const declaration of statement.declarationList.declarations) {
+        if (
+          ts.isIdentifier(declaration.name) &&
+          declaration.initializer &&
+          isBuiltInConstructorCreation(
+            declaration.initializer,
+            scope,
+            constructorName
+          )
+        )
+          receivers.add(declaration.name.text);
+      }
+    }
+  }
+  byConstructor.set(constructorName, receivers);
+  return receivers;
+}
+
+function isBuiltInConstructorCreation(
+  expression: ts.Expression,
+  scope: Scope,
+  constructorName: 'FormData' | 'WebSocket'
+): boolean {
+  const value = unwrapExpression(expression);
+  return (
+    ts.isNewExpression(value) &&
+    ts.isIdentifier(value.expression) &&
+    value.expression.text === constructorName &&
+    lookupBinding(scope, constructorName) === undefined
   );
 }
 
