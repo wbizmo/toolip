@@ -369,7 +369,7 @@ export class NpmPackageHealthClient {
             (async () => {
               response = await fetchImplementation(url, {
                 headers: {
-                  accept: 'application/vnd.npm.install-v1+json',
+                  accept: 'application/json',
                   'user-agent': 'toolip'
                 },
                 redirect: 'error',

@@ -1323,6 +1323,19 @@ boundary case. The latest full verification passes with 1,457 unit tests (4
 skipped), 1,455 coverage tests (3 skipped), 85.71% statements, 79.77% branches,
 93.2% functions and 88.37% lines.
 
+### #90 npm package-health live history response — 2026-11-15
+
+Live validation showed the npm `install-v1` response omits the packument's
+release `time` map, so history analysis marked valid public packages unavailable.
+The client now requests full `application/json` packuments while keeping its
+8 MiB response and 10,000-version limits. Eleven provider tests pass, including
+an assertion on the requested media type. A live Node 24 run with
+`NODE_USE_ENV_PROXY=1` inspected three known public exact versions: `is-number`
+and `lodash` returned observed publisher, maintainer and release history;
+`debug` returned observed release history and partial publisher/maintainer
+history. Results included only low-confidence review signals. This sample
+validates API compatibility, not benign-package precision or ownership truth.
+
 ### #95 synthetic benign/suspicious corpus — 2026-11-15
 
 The non-executing malicious-content corpus now contains ten labeled fixtures:

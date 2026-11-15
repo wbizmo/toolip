@@ -55,6 +55,18 @@ function packument(overrides: Record<string, unknown> = {}): Response {
 }
 
 describe('NpmPackageHealthClient', () => {
+  it('requests full registry metadata required for release history', async () => {
+    const fetchImplementation = vi.fn<typeof fetch>(async () => packument());
+    const client = new NpmPackageHealthClient({ fetchImplementation });
+
+    const result = await client.inspect('safe-package', '1.3.0');
+
+    expect(result.status).toBe('available');
+    expect(fetchImplementation).toHaveBeenCalledOnce();
+    const request = fetchImplementation.mock.calls[0]?.[1];
+    expect(new Headers(request?.headers).get('accept')).toBe('application/json');
+  });
+
   it('does not query scoped packages unless public disclosure is opted in', async () => {
     const fetchImplementation = vi.fn<typeof fetch>();
     const client = new NpmPackageHealthClient({ fetchImplementation });

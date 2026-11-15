@@ -8,8 +8,10 @@ coerce manifest ranges into installed versions. A project without a supported
 lockfile is an error or an unresolved inventory, never a clean package-health
 result.
 
-The provider uses the fixed HTTPS npm registry origin, rejects redirects,
-bounds packuments to 8 MiB and 10,000 versions, times out requests, retries only
+The provider uses the fixed HTTPS npm registry origin and requests the full
+`application/json` packument because npm's slim `install-v1` representation
+omits release timestamps required for history. It rejects redirects, bounds
+packuments to 8 MiB and 10,000 versions, times out requests, retries only
 rate limits and server errors, caps batches at 1,000 instances, and uses at
 most six concurrent lookups by default. Exact name/version lookups are cached
 for six hours in process memory. `--offline` prevents npm and deps.dev lookups;
@@ -38,6 +40,14 @@ package ownership, automation and release practices can change for benign
 reasons. No single signal is a compromise verdict, and the CLI does not
 automatically block or suppress a package.
 
+Live API compatibility was checked on 2026-11-15 against three public exact
+versions using Node 24.22.1 with `NODE_USE_ENV_PROXY=1`: `is-number@7.0.0` and
+`lodash@4.17.21` returned observed publisher, maintainer and release history;
+`debug@4.3.4` returned observed release history and partial publisher and
+maintainer history. These are examples of metadata availability, not a
+calibrated benign-package accuracy sample or independent verification of
+ownership changes.
+
 The provider evaluates at most the latest five dated releases when comparing
 publisher and maintainer identities, and relies on public packument metadata.
 For `V` packument versions the comparison costs O(V log V) time for release
@@ -51,3 +61,8 @@ private registry package, establish maintainer intent, or detect a compromise
 that leaves no registry-visible evidence. Treat missing
 publisher, maintainer, release or repository history as unknown and confirm
 important changes against independently trusted project and registry records.
+
+On Node 24, deployments using an HTTPS proxy can enable Node's built-in
+environment proxy support at process startup with `NODE_USE_ENV_PROXY=1`.
+Without network access the provider returns an explicit unavailable state; it
+does not substitute a clean score.
