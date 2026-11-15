@@ -1181,6 +1181,14 @@ describe('trusted Stage A Git-object scanner', () => {
     [
       'extract-zip API',
       "extractZip('bundle.zip', 'out'); child_process.execFile('node', ['out/init.js']);"
+    ],
+    [
+      'decompress API',
+      "decompress('bundle.zip', 'out'); child_process.spawn('node', ['out/init.js']);"
+    ],
+    [
+      'node-stream-zip API',
+      "zip.extract(null, 'out', () => child_process.execFile('node', ['out/init.js']));"
     ]
   ])(
     'blocks %s extraction followed by process launch',

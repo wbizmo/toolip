@@ -2064,6 +2064,20 @@ lines. No archive is opened or executed; findings remain incomplete/unknown.
 Broader archive APIs, runtime wrappers and corpus accuracy remain incomplete
 for #95/#96.
 
+## 2026-11-15 local continuation — additional Node archive APIs for #95
+
+The bounded archive-chain rules now recognize the `decompress` package and
+`node-stream-zip` extraction calls when followed by a supported process launch.
+Matching shared-analyzer and Stage A regressions assert an explicit unknown
+chain; a benign archive-library event-listener control remains clean. The two
+focused suites pass 156 tests. All three Stage A pins use digest
+`1aa16a490db24eca9bd035151cd61eb86d7e0ed90adf79910404ccd4d1ce1079`. Full
+verification passed: 1,428 unit tests (4 skipped), 1,426 coverage tests (3
+skipped), 85.55% statements, 79.62% branches, 93.16% functions and 88.14%
+lines. These patterns do not inspect or execute archive contents; broader
+wrappers, adversarial corpus, and accuracy evidence remain incomplete for
+#95/#96.
+
 ## 2026-11-15 local continuation — memoized nested ownership proofs for #61
 
 Nested tenant and shared-grant proof now memoizes ownership and relation

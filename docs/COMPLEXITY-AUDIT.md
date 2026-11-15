@@ -1084,6 +1084,14 @@ source window; they do not unpack or execute archives. Full verification
 passed with 1,423 unit tests (4 skipped), 1,421 coverage tests (3 skipped),
 85.62% statements, 79.66% branches, 93.16% functions and 88.21% lines.
 
+The same bounded pattern set now includes `decompress()` and
+`node-stream-zip` extraction calls. The malicious-content and Stage A suites
+passed 156 tests, including a benign event-listener control. The complete
+verification gate passed with 1,428 unit tests (4 skipped), 1,426 coverage
+tests (3 skipped), 85.55% statements, 79.62% branches, 93.16% functions and
+88.14% lines. The scan remains linear in the bounded source window and does
+not inspect archive contents.
+
 ### #37 scoped npm PURL manager matrix — 2026-11-15
 
 The scoped npm PURL conformance fixture now covers npm lockfile v2/v3, pnpm v9,

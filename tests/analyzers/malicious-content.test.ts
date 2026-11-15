@@ -907,6 +907,14 @@ describe('non-executing malicious content chain analysis', () => {
     [
       'extract-zip API',
       "extractZip('bundle.zip', 'out'); child_process.execFile('node', ['out/init.js']);"
+    ],
+    [
+      'decompress API',
+      "decompress('bundle.zip', 'out'); child_process.spawn('node', ['out/init.js']);"
+    ],
+    [
+      'node-stream-zip API',
+      "zip.extract(null, 'out', () => child_process.execFile('node', ['out/init.js']));"
     ]
   ])(
     'keeps %s extraction followed by process launch unknown',
@@ -926,6 +934,24 @@ describe('non-executing malicious content chain analysis', () => {
       expect(result.findings[0]?.metadata?.completeness).toBe('unknown');
     }
   );
+
+  it('does not treat archive library creation as extraction', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({ scripts: { prepare: 'node bootstrap.js' } })
+      },
+      {
+        path: 'bootstrap.js',
+        content:
+          "decompressor.on('entry', () => child_process.spawn('node', ['build.js']));"
+      }
+    ]);
+
+    expect(result.findings[0]?.metadata?.behaviorSignals ?? []).not.toContain(
+      'archive-extraction-and-execution'
+    );
+  });
 
   it('reports unresolved dynamic targets rather than a clean result', () => {
     const result = analyzeMaliciousContent([
