@@ -1218,6 +1218,79 @@ describe('non-executing malicious content chain analysis', () => {
     expect(result.findings[0]?.metadata?.completeness).toBe('unknown');
   });
 
+  it('keeps runtime command construction in a referenced wrapper unknown', () => {
+    for (const [command, wrapper] of [
+      [
+        'node wrapper.js',
+        [
+          "const childProcess = require('node:child_process');",
+          "childProcess.spawn('node', [process.env.TOOLIP_TARGET]);"
+        ].join('\n')
+      ],
+      [
+        'python3 wrapper.py',
+        [
+          'import os',
+          'import subprocess',
+          "subprocess.run(['node', os.environ['TOOLIP_TARGET']])"
+        ].join('\n')
+      ],
+      ['powershell -File wrapper.ps1', 'Start-Process $env:TOOLIP_TARGET']
+    ]) {
+      const extension = command.startsWith('python3')
+        ? 'py'
+        : command.startsWith('powershell')
+          ? 'ps1'
+          : 'js';
+      const result = analyzeMaliciousContent([
+        {
+          path: 'package.json',
+          content: JSON.stringify({ scripts: { prepare: command } })
+        },
+        { path: `wrapper.${extension}`, content: wrapper }
+      ]);
+
+      const finding = result.findings.find(
+        (candidate) =>
+          candidate.metadata?.entrypointKind === 'npm-script:prepare'
+      );
+      expect(finding?.ruleId).toBe('TLP-MAL-002');
+      expect(finding?.metadata?.completeness).toBe('unknown');
+      expect(finding?.metadata?.trace).toEqual([
+        'package.json',
+        `wrapper.${extension}`
+      ]);
+    }
+  });
+
+  it('traces a literal child_process target from an intermediate wrapper', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({ scripts: { prepare: 'node wrapper.js' } })
+      },
+      {
+        path: 'wrapper.js',
+        content: [
+          "const childProcess = require('node:child_process');",
+          "childProcess.spawn('node', ['./payload.orc']);"
+        ].join('\n')
+      },
+      { path: 'payload.orc', content: 'eval(atob(encoded));' }
+    ]);
+
+    const finding = result.findings.find(
+      (candidate) => candidate.metadata?.entrypointKind === 'npm-script:prepare'
+    );
+    expect(finding?.ruleId).toBe('TLP-MAL-001');
+    expect(finding?.metadata?.completeness).toBe('unknown');
+    expect(finding?.metadata?.trace).toEqual([
+      'package.json',
+      'wrapper.js',
+      'payload.orc'
+    ]);
+  });
+
   it('does not flag ordinary build commands or inert encoded text', () => {
     const result = analyzeMaliciousContent([
       {

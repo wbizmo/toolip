@@ -1361,3 +1361,15 @@ ordinary bundler, and inert base64 data) and three suspicious. Expected labels
 match on every fixture. This is a controlled regression set, not a production
 false-positive or false-negative estimate. The malicious-content suite passes
 61 tests.
+
+### #95 runtime wrapper propagation and Node child-process targets — 2026-11-15
+
+The digest-keyed content-analysis cache now stores whether bounded runtime
+execution patterns are present, avoiding repeated source scans as a shared
+wrapper is reached through multiple graph edges. Recognized Node namespace
+calls contribute at most 256 literal relative targets per cached source; all
+targets still pass through the canonical local-path resolver and existing
+reference-work cap. Traversal marks dynamic JavaScript, Python, and PowerShell
+process launch patterns unknown. The focused suite passes 84 tests. Full-suite
+verification could not complete in this runtime because process creation
+failed with `EAGAIN`; no new benchmark was captured for this follow-up.

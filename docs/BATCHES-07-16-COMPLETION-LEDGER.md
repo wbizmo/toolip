@@ -2269,3 +2269,25 @@ focused regressions. All 70 benchmark JSONL records are preserved in
 `docs/benchmarks/toolip-v3.2.1-issue95-npm-lifecycle-2026-11-15-linux-node24.jsonl`.
 Runtime/reflection wrapper coverage, broader benign/adversarial accuracy,
 cross-platform validation, and independent review remain outstanding for #95.
+
+## 2026-11-15 local continuation — unresolved runtime wrappers for #95
+
+Traversal now carries dynamic process execution from a referenced wrapper back
+to its automatic entrypoint as `TLP-MAL-002` with `completeness: unknown`.
+Known API patterns include Node child processes, Python `subprocess`/`os.system`,
+and PowerShell `Start-Process`. Literal relative targets in recognized Node
+child-process calls are followed into the target file, while retaining unknown
+completeness for the runtime launch. Regressions cover JavaScript, Python and
+PowerShell dynamic targets and a Node wrapper reaching an encoded `.orc` file.
+The focused malicious-content suite passes 84 tests. Typecheck, compiler
+quality, lint, formatting, workflow policy, clean build, and packed-package
+verification pass. Stage A's three pins match digest
+`dbab588869db17309e6152bf1ef251e66920f6b4310b97b131d1d995dadd657c`.
+
+Full-suite verification remains blocked by this container's exhausted process
+table: 32,236 orphaned zombies are owned by PID 1 (`tail -f /dev/null`). A
+single-thread retry passed the Git-hook suite, but the full suite then failed
+in AST-worker and staged-Git tests with `EAGAIN`/Git fork errors. The run was
+stopped after those resource failures. No scale measurement was captured for
+this latest source. These changes remain local and unpushed pending a fresh
+runtime and green full verification; #95 remains incomplete.

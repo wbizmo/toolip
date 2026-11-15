@@ -39,6 +39,7 @@ const contentAnalysisCache = new Map<
     references?: readonly string[];
     signals: readonly string[];
     unresolvedShellCommand: boolean;
+    dynamicExecution: boolean;
   }>
 >();
 const binaryExtensions = new Set([
@@ -120,6 +121,8 @@ const childProcessModule = /^(?:node:)?child_process$/u;
 function hasDynamicExecution(source: string): boolean {
   if (
     dynamicExecution.test(source) ||
+    archiveApiExecution.test(source) ||
+    /\bStart-Process\b/u.test(source) ||
     /\b(?:import|require)\s*\(\s*(?!['"])/u.test(source)
   )
     return true;
@@ -220,6 +223,34 @@ function hasDynamicExecution(source: string): boolean {
     /\brequire\(\s*(['"])(?:node:)?child_process\1\s*\)\s*\.\s*(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\s*\(/u;
   if (directRequireCall.test(source)) return true;
   return false;
+}
+
+/** Resolves literal relative targets from recognized child_process namespaces. */
+function staticChildProcessTargets(source: string): string[] {
+  const aliases = new Set<string>();
+  const namespaceRequire =
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])(?:node:)?child_process\2\s*\)/gu;
+  const namespaceImport =
+    /\bimport\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s+from\s*(['"])(?:node:)?child_process\2/gu;
+  for (const match of source.matchAll(namespaceRequire))
+    if (match[1]) aliases.add(match[1]);
+  for (const match of source.matchAll(namespaceImport))
+    if (match[1]) aliases.add(match[1]);
+
+  const targets = new Set<string>();
+  for (const alias of aliases) {
+    const calls = new RegExp(
+      `\\b${alias}\\s*\\.\\s*(?:spawn|execFile)(?:Sync)?\\s*\\(\\s*(['"])(?:node|bash|sh|python3?|deno|bun)\\1\\s*,\\s*\\[\\s*(['"])(\\.{1,2}\\/[^'"]+)\\2`,
+      'gu'
+    );
+    for (const match of source.matchAll(calls)) {
+      const target = match[3];
+      if (target) targets.add(target);
+      if (targets.size >= MAX_CACHED_REFERENCES_PER_CONTENT) break;
+    }
+    if (targets.size >= MAX_CACHED_REFERENCES_PER_CONTENT) break;
+  }
+  return [...targets].sort();
 }
 const automaticScript =
   /\b(?:curl|wget)\b[^\n;&]{0,180}(?:\||;|&&)\s*(?:sh|bash)/iu;
@@ -376,6 +407,7 @@ function contentAnalysis(source: string): Readonly<{
   references?: readonly string[];
   signals: readonly string[];
   unresolvedShellCommand: boolean;
+  dynamicExecution: boolean;
 }> {
   const digest = createHash('sha256').update(source).digest('hex');
   const cached = contentAnalysisCache.get(digest);
@@ -410,12 +442,15 @@ function contentAnalysis(source: string): Readonly<{
   }
   const shellAnalysis = staticShellTargets(source);
   for (const target of shellAnalysis.targets) references.add(target);
+  for (const target of staticChildProcessTargets(source))
+    references.add(target);
   const result = Object.freeze({
     ...(references.size <= MAX_CACHED_REFERENCES_PER_CONTENT
       ? { references: Object.freeze([...references].sort()) }
       : {}),
     signals: Object.freeze(behaviorSignals(source)),
-    unresolvedShellCommand: shellAnalysis.unresolvedShellCommand
+    unresolvedShellCommand: shellAnalysis.unresolvedShellCommand,
+    dynamicExecution: hasDynamicExecution(source)
   });
   contentAnalysisCache.set(digest, result);
   if (contentAnalysisCache.size > MAX_CACHED_CONTENT_ANALYSES) {
@@ -1178,6 +1213,7 @@ export function analyzeMaliciousContent(
         trace.push(`${targetManifest}#scripts.${scriptName}`);
         const targetAnalysis = contentAnalysis(targetText);
         dynamicUnknown ||=
+          targetAnalysis.dynamicExecution ||
           targetAnalysis.unresolvedShellCommand ||
           targetAnalysis.signals.includes('archive-extraction-and-execution');
         for (const signal of targetAnalysis.signals) signals.add(signal);
@@ -1221,6 +1257,7 @@ export function analyzeMaliciousContent(
       const targetText = content.get(target) ?? '';
       const targetAnalysis = contentAnalysis(targetText);
       dynamicUnknown ||=
+        targetAnalysis.dynamicExecution ||
         targetAnalysis.unresolvedShellCommand ||
         targetAnalysis.signals.includes('archive-extraction-and-execution');
       for (const signal of targetAnalysis.signals) signals.add(signal);
