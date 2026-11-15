@@ -1985,3 +1985,21 @@ policy, lockfile integrity, npm audit (zero vulnerabilities), typecheck,
 compiler quality, build, and built-package verification passed. This local
 gate does not provide hosted CI, supported-platform coverage, independent
 review or external issue acceptance.
+
+## 2026-11-15 local continuation — sensitive schema tag vocabulary for #91
+
+The AST project checker now treats explicit JSDoc tags `@personalData`, `@phi`
+and `@protectedHealthInformation` as sensitive schema declarations, alongside
+the existing `@sensitive`, `@confidential`, `@pii` and `@toolipSensitive`
+markers. Unmarked fields remain unclassified unless their names match the
+existing sensitive-name heuristic. Tests cover three positive tags and an
+unmarked negative field, and assert that field names do not appear in finding
+evidence. The focused sensitive-flow suite passed 17 tests and typecheck passed;
+full verification also passes: unit tests passed **1,406 / 4 skipped** across
+128 files; coverage passed **1,404 / 3 skipped** across 127 files at 85.55%
+statements, 79.62% branches, 93.16% functions and 88.14% lines. Workflow
+policy, digest, lockfile, npm audit, typecheck, compiler quality, build and
+package verification passed. All three Stage A pins use scanner digest
+`4670e86a2d65ff9e93b8e378639ab53e56bd53f09f33e0f302661a3931178108`. Schema
+inference without explicit tags, application serializer/redactor contracts
+and broad accuracy calibration remain incomplete; #91 remains code incomplete.

@@ -97,7 +97,7 @@ describe('sensitive data flow candidates', () => {
     const project = createAstProjectAnalysis([
       {
         filePath: 'employee.ts',
-        absolutePath: root + '/employee.ts',
+        absolutePath: `${root}/employee.ts`,
         content: code
       }
     ]);
@@ -106,6 +106,41 @@ describe('sensitive data flow candidates', () => {
     );
     expect(findings.map((finding) => finding.location?.line)).toEqual([6]);
     expect(JSON.stringify(findings)).not.toContain('payrollCode');
+  });
+
+  it('recognizes personal-data and protected-health schema annotations', () => {
+    const root = '/toolip-sensitive-schema-tags';
+    const code = [
+      'interface PatientRecord {',
+      '  /** @personalData */ reference: string;',
+      '  /** @phi */ note: string;',
+      '  /** @protectedHealthInformation */ code: string;',
+      '  publicLabel: string;',
+      '}',
+      'function logRecord(record: PatientRecord) {',
+      '  logger.info(record.reference);',
+      '  logger.info(record.note);',
+      '  logger.info(record.code);',
+      '  logger.info(record.publicLabel);',
+      '}'
+    ].join('\n');
+    const project = createAstProjectAnalysis([
+      {
+        filePath: 'patient.ts',
+        absolutePath: `${root}/patient.ts`,
+        content: code
+      }
+    ]);
+    const findings = analyzeAstSource('patient.ts', code, project).filter(
+      (finding) => finding.ruleId === 'TLP-DATA-001'
+    );
+
+    expect(findings.map((finding) => finding.location?.line)).toEqual([
+      8, 9, 10
+    ]);
+    expect(JSON.stringify(findings)).not.toContain('reference');
+    expect(JSON.stringify(findings)).not.toContain('note');
+    expect(JSON.stringify(findings)).not.toContain('publicLabel');
   });
 
   it('tracks credential values through async local parameters and return aliases', () => {

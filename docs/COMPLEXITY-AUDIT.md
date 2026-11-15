@@ -1008,6 +1008,15 @@ and AST suites pass 60 tests with typecheck and targeted lint passing on Linux
 Node 24.22.1. This is a static API model, not runtime client discovery or
 URL/redirect safety proof (#60).
 
+### #91 explicit sensitive-schema tags — 2026-11-15
+
+The checker recognizes a fixed set of seven lowercased JSDoc tags on resolved
+property declarations (`sensitive`, `confidential`, `pii`, `personaldata`,
+`phi`, `protectedhealthinformation`, `toolipsensitive`). Tag checks use a
+module-level `Set`, so each declaration lookup is expected `O(1)` per tag;
+existing checker and source traversal bounds are unchanged. This is explicit
+annotation support, not inferred database schema classification.
+
 ### #56 snapshot discovery-list preflight — 2026-11-15
 
 `createProjectSnapshot()` now checks the caller-provided discovery-list length

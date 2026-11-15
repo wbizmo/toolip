@@ -2356,6 +2356,15 @@ function collectTaintedNames(
 
 const sensitiveName =
   /(?:token|secret|password|passwd|private.?key|api.?key|credential|auth.?key|(?:access|refresh).?token|session.?cookie|email|phone|ssn|social.?security|birth.?date|date.?of.?birth|passport|address)/iu;
+const sensitiveSchemaTags = new Set([
+  'sensitive',
+  'confidential',
+  'pii',
+  'personaldata',
+  'phi',
+  'protectedhealthinformation',
+  'toolipsensitive'
+]);
 const redactionHelpers = new Set([
   'redactSecret',
   'redactSecrets',
@@ -2397,9 +2406,7 @@ function isSensitiveDataSource(
         ts
           .getJSDocTags(declaration)
           .some((tag) =>
-            /^(?:sensitive|confidential|pii|toolipSensitive)$/iu.test(
-              tag.tagName.text
-            )
+            sensitiveSchemaTags.has(tag.tagName.text.toLowerCase())
           )
       )
     )
