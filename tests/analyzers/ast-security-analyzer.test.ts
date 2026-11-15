@@ -328,6 +328,24 @@ function handler(req: RequestLike) {
     expect(JSON.stringify(findings)).not.toContain('tlsHost');
   });
 
+  it('treats request-controlled WebSocket constructors from known modules as SSRF sinks', () => {
+    const findings = analyzeAstSource(
+      'routes.ts',
+      `import WebSocket from 'ws';
+import { WebSocket as UndiciWebSocket } from 'undici';
+function handler(req: RequestLike) {
+  new WebSocket(req.query.destination);
+  new UndiciWebSocket(req.query.backup);
+  new WebSocket('wss://service.example');
+}`
+    );
+
+    expect(
+      findings.filter((finding) => finding.ruleId === 'TLP-AST-006')
+    ).toHaveLength(2);
+    expect(JSON.stringify(findings)).not.toContain('req.query.destination');
+  });
+
   it('recognizes statically required HTTP clients and preserves local shadowing', () => {
     const findings = analyzeAstSource(
       'routes.ts',

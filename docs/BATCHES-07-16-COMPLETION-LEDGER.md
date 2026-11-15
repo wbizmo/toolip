@@ -2152,6 +2152,20 @@ skipped), 85.55% statements, 79.62% branches, 93.16% functions and 88.14%
 lines. Socket instances created by other wrappers, DNS pinning/rebinding and
 cross-project corpus accuracy remain open for #60.
 
+## 2026-11-15 local continuation — WebSocket SSRF constructors for #60
+
+The outbound-request classifier now recognizes constructor calls from the
+`ws` and `undici` packages when request-controlled values reach the WebSocket
+URL. Literal destinations remain clean. Regressions cover default and named
+module exports, redacted evidence, and a literal safe control; the AST security
+suite passes 51 tests with typecheck and targeted lint green. All Stage A pins
+use digest
+`2684dab7aab14db4bc9e0779e29870243b74447cc97a71b1fd0e28c3c2202669`. Full
+verification passed: 1,437 unit tests (4 skipped), 1,435 coverage tests (3
+skipped), 85.55% statements, 79.62% branches, 93.16% functions and 88.14%
+lines. DNS rebinding, broader runtime clients and cross-project corpus accuracy
+remain open for #60.
+
 ## 2026-11-15 local continuation — rename and formatting controls for #95
 
 The fixed benign/suspicious fixture corpus now includes a harmless script

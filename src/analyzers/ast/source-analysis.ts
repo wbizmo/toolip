@@ -999,7 +999,8 @@ const outboundClientModules = new Set([
   'node:tls',
   'superagent',
   'tls',
-  'undici'
+  'undici',
+  'ws'
 ]);
 const outboundClientFunctions = new Set([
   'delete',
@@ -1012,7 +1013,8 @@ const outboundClientFunctions = new Set([
   'post',
   'put',
   'request',
-  'stream'
+  'stream',
+  'websocket'
 ]);
 
 function isOutboundClientModule(name: string): boolean {
@@ -4383,6 +4385,18 @@ function sourceSinkRule(
   callReturns: WeakMap<ts.CallExpression, FlowBinding>,
   hostAllowlistProofBudget: { remaining: number }
 ): AstSecurityRule | undefined {
+  if (ts.isNewExpression(node)) {
+    const target = node.expression;
+    if (
+      ts.isIdentifier(target) &&
+      isKnownOutboundClient(scope, target.text) &&
+      node.arguments?.some((argument) =>
+        isTainted(argument, scope, tainted, callReturns)
+      )
+    )
+      return astSecurityRules.serverSideRequestForgery;
+    return undefined;
+  }
   if (htmlSink(node) && ts.isBinaryExpression(node)) {
     return isTainted(node.right, scope, tainted, callReturns) &&
       !isHtmlEscaped(node.right)

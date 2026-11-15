@@ -1266,6 +1266,12 @@ verification passed with 1,436 unit tests (4 skipped), 1,434 coverage tests
 (3 skipped), 85.55% statements, 79.62% branches, 93.16% functions and 88.14%
 lines.
 
+The same SSRF model now recognizes `new WebSocket(...)` calls imported from
+`ws` or `undici` when a destination is tainted. Literal-only destinations are
+not findings. The focused AST security suite passes 51 tests; full verification
+passed with 1,437 unit tests (4 skipped), 1,435 coverage tests (3 skipped),
+85.55% statements, 79.62% branches, 93.16% functions and 88.14% lines.
+
 ### #95 synthetic benign/suspicious corpus — 2026-11-15
 
 The non-executing malicious-content corpus now contains ten labeled fixtures:
