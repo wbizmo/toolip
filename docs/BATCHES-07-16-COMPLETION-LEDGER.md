@@ -2244,3 +2244,28 @@ tests (3 skipped), 85.71% statements, 79.77% branches, 93.2% functions and
 Live summary evidence is stored in
 `docs/benchmarks/toolip-v3.2.1-package-health-live-2026-11-15-linux-node24.jsonl`
 for source commit `0bf5ec9`.
+
+## 2026-11-15 local continuation — npm lifecycle hook chains for #95
+
+The local static analyzer now traces npm `pre<name>` and `post<name>` scripts
+when a package script is invoked through a nested script call or VS Code npm
+task. Hooks are followed only when the corresponding script is present in the
+same manifest. Regressions cover an automatic `prepare` entrypoint that calls
+`build`, suspicious `prebuild` payload flow, benign `postbuild` work, benign
+pre/post hooks, and an explicit workspace VS Code npm task. The focused
+malicious-content suite passes 82 tests. Stage A's three trusted scanner pins
+are synchronized to digest
+`54ddcb6c15cddab9d0134ffd7d34f120e9c32d4290e4c83c44c923c605722abf`.
+
+Full `npm run verify` passes on Linux Node 24.22.1: 1,460 unit tests (4
+skipped), 1,458 coverage tests (3 skipped), 85.77% statements, 79.84% branches,
+93.2% functions and 88.43% lines; workflow policy, lockfile integrity, npm
+audit, clean build and packed-package verification pass. The isolated general
+scale fixture against source `6b127efacda0c5ea0e9712928d5f26de6cebaad1`
+measured 24.11/72.62/213.46 ms at 1k/10k/50k files, with one finding and a
+complete three-file trace at each size. This fixture measures the general
+malicious-content graph path; the hook-specific behavior is validated by the
+focused regressions. All 70 benchmark JSONL records are preserved in
+`docs/benchmarks/toolip-v3.2.1-issue95-npm-lifecycle-2026-11-15-linux-node24.jsonl`.
+Runtime/reflection wrapper coverage, broader benign/adversarial accuracy,
+cross-platform validation, and independent review remain outstanding for #95.

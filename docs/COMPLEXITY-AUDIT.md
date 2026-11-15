@@ -1341,6 +1341,18 @@ status summaries are in
 Full verification passes with 1,458 unit tests (4 skipped), 1,456 coverage
 tests (3 skipped) and packed-package verification.
 
+### #95 npm lifecycle hook references — 2026-11-15
+
+For each reached npm script, the analyzer checks at most two companion names
+(`pre<name>` and `post<name>`) in the already indexed manifest script map. The
+lookup is O(1) average per hook and the hook references remain inside the
+existing bounded graph traversal, so this adds O(R) expected lookup work for R
+reached script references and no additional unbounded source copy. Missing
+hooks are ignored; only existing hooks enter the queue. An isolated 1k/10k/50k
+general malicious-content graph run measured 24.11/72.62/213.46 ms with
+complete coverage. The full local verification passes at 85.77% statements,
+79.84% branches, 93.2% functions and 88.43% lines.
+
 ### #95 synthetic benign/suspicious corpus — 2026-11-15
 
 The non-executing malicious-content corpus now contains ten labeled fixtures:
