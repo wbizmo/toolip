@@ -2291,3 +2291,89 @@ in AST-worker and staged-Git tests with `EAGAIN`/Git fork errors. The run was
 stopped after those resource failures. No scale measurement was captured for
 this latest source. These changes remain local and unpushed pending a fresh
 runtime and green full verification; #95 remains incomplete.
+
+## 2026-11-15 fresh-runtime continuation — indirect Node execution for #95
+
+Static target tracing now follows a local alias assigned from a recognized
+`child_process` namespace method, such as `const launch = childProcess.spawn`,
+to its literal relative target. The bounded scan accepts the existing
+`fork`/`spawn`/`execFile` forms and their synchronous variants. Child-process
+functions invoked by `Reflect.apply`, `.call`, or `.apply` are now preserved as
+unresolved execution (`TLP-MAL-002`, `completeness: unknown`) rather than being
+missed as clean. Eight wrapper trace forms, including literal `Reflect.apply`,
+`.call`, and `.apply` targets,
+and three dynamic indirect-call forms are covered without executing fixture
+content. PowerShell `Start-Process` now traces literal relative targets after
+normalizing path separators; dynamic targets and root traversal stay unknown
+or incomplete. Positive and traversal regressions pass in the analyzer and
+Stage A suites.
+
+Typecheck, compiler quality, lint, formatting, workflow policy, clean build,
+and packed-package verification pass. The 1k/10k/50k general execution-chain
+fixture measured 25.38/109.90/858.89 ms with complete three-file traces; raw
+measurements are in
+`docs/benchmarks/toolip-v3.2.1-issue95-indirect-runtime-2026-11-15-linux-node24.jsonl`.
+The protected Stage A mirror now treats the same reflective, `.call`, and
+`.apply` forms as unresolved child-process execution. Its focused suite passes
+99 tests, including those new fixtures; Stage A pins match digest
+`7c29e8ae99e8091ce938e3060aec9220afc13bcb558f6f9b7124a9b0ecc1e04d`.
+
+On the fresh runtime, the full default-pool unit suite passed serially with
+1,463 tests passed and 4 skipped before literal `Reflect.apply`, `.call`, and
+`.apply` target tracing was added. A later serial run passed 1,464 tests and
+4 skipped but timed out two unrelated AST/snapshot tests; those two pass in a
+targeted 71-test rerun. Parallel runs hit existing 5-second worker
+contention timeouts in unrelated AST, Git, and Doctor tests; the affected
+shared-slot and Doctor fixtures pass in isolation. Before literal `.call` and
+`.apply` target tracing was added, an initial full coverage attempt hung; its
+retry completed with 1,459 tests passed, 3 skipped and 5
+failed under existing 5-second timeouts in unrelated upgrade-PR and Stage A
+Cargo-artifact tests. The Cargo fixture also reported cleanup `ENOTEMPTY`.
+Latest focused tests pass 86 malicious-content cases and 99 Stage A cases.
+Targeted analyzer coverage passes (84.83% statements, 74.37% branches, 95.34%
+functions, 89.41% lines). Full
+coverage and broader #95 runtime/reflection target tracing, archive,
+accuracy, staged-blob, and independent-review acceptance remain open. The
+changes are local and unpushed; #95 and Batch 7–16 remain incomplete.
+
+## 2026-11-16 local continuation — PowerShell process targets for #95
+
+The local analyzer and Stage A now trace literal relative `Start-Process`
+targets from referenced PowerShell wrappers. Windows separators are normalized
+before root containment; variable-selected and escaping paths remain unknown or
+incomplete. Positive, dynamic-target, and traversal regressions pass. The
+focused malicious-content and Stage A suites pass 86 and 99 tests respectively.
+Typecheck, compiler quality, lint, formatting, workflow policy, build, and
+packed-package verification pass. Focused malicious-content coverage is 84.83%
+statements, 74.37% branches, 95.34% functions, and 89.41% lines. The 1k/10k/
+50k general graph fixture measured 39.60/158.98/651.99 ms with a complete
+three-file trace; raw measurements are in
+`docs/benchmarks/toolip-v3.2.1-issue95-powershell-2026-11-16-linux-node24.jsonl`.
+These are one sample per size, not production accuracy or cross-platform
+qualification. Stage A pins match digest
+`7c29e8ae99e8091ce938e3060aec9220afc13bcb558f6f9b7124a9b0ecc1e04d`.
+The full-suite and coverage limitations recorded above predate this change;
+this is a targeted #95 slice. Broader runtime/command semantics, accuracy,
+archive inspection limits, and the other Batch 7–16 acceptance work remain
+open. The changes are local and unpushed.
+
+## 2026-11-16 local continuation — conservative worker clone accounting for #56
+
+`AnalyzerRunner` previously reserved one unit of worker input for each UTF-8
+source byte even though the worker receives cloned JavaScript text. The
+estimate now reserves 3× recorded file bytes, plus UTF-16 path and fixed record
+overhead, before admission to the process-wide worker pool. This remains an
+estimate rather than a total RSS guarantee. A 120 MiB source-record regression
+confirms that the request fails before any worker starts. Across the focused
+snapshot, scheduler, analyzer-runner, MCP and policy files, 102/102 tests pass.
+The worker-slot test now observes the monotonic peak counter and holds the two
+workers during queue assertions, avoiding a race where a brief concurrent run
+could finish before the old active-count poll observed it. Typecheck, compiler
+quality, lint, touched-file formatting, workflow policy, build and package
+verification pass. The MCP and policy regression suites pass; #54/#57 still
+need organization provisioning, independent review and hosted Node/OS CI.
+Issue #56 remains incomplete pending measured whole-process memory, broader
+cancellation-under-load and cross-platform evidence. Issue #55 remains the
+final release gate with integrated audit, artifact and owner-approval steps.
+No issue is complete or closed by this continuation; changes remain local and
+unpushed.

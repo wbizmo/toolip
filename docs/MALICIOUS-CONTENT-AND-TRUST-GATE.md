@@ -383,13 +383,23 @@ recognize child-process APIs imported from the fixed `child_process` and
 `node:child_process` built-ins. Covered forms include named ESM imports,
 default/namespace imports, CommonJS destructuring and namespace aliases,
 literal dynamic imports, local `const` aliases of imported methods, and
-computed namespace calls. They remain unresolved execution candidates (and
-Stage A returns incomplete) because static analysis does not establish the
-launched program's runtime target. Fixtures are inert and do not invoke these
-APIs. The bounded recognizer does not claim complete support for reflection,
-re-exports, custom wrappers or arbitrary runtime module resolution. A
-nonliteral `import()` or `require()` target inside a recognized entrypoint is
-also retained as an unknown execution reference.
+computed namespace calls. For a bounded set of `Reflect.apply`, `.call`, and
+`.apply` forms, a literal interpreter and relative target are traced into the
+captured project files; dynamic argument values remain unresolved. These
+runtime launches remain unknown execution candidates, and Stage A returns
+incomplete because static analysis does not prove the launched program's
+behavior. Fixtures are inert and do not invoke these APIs. The bounded
+recognizer does not claim complete support for arbitrary reflection,
+re-exports, custom wrappers or runtime module resolution. A nonliteral
+`import()` or `require()` target inside a recognized entrypoint is also
+retained as an unknown execution reference.
+
+PowerShell `Start-Process` calls follow literal relative `-FilePath` or
+positional targets from a referenced script, normalizing Windows separators
+before applying the project-root traversal check. Variable-selected, absolute,
+and escaping targets remain unknown; the protected Stage A gate marks those
+scripts incomplete. A successfully traced launch still has unknown
+completeness because the analyzer does not execute the target.
 
 Archive-chain checks cover bounded command-line forms including `bsdtar`,
 7-Zip, RAR, `jar`, PowerShell `Expand-Archive`, and Python's `zipfile` and

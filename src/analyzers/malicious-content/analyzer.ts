@@ -205,9 +205,25 @@ function hasDynamicExecution(source: string): boolean {
   }
 
   if (functionAliases.size) {
+    const reflectiveCall =
+      /\bReflect\s*\.\s*(?:apply|construct)\s*\(\s*([A-Za-z_$][\w$]*)\s*,/gu;
+    for (const match of source.matchAll(reflectiveCall))
+      if (functionAliases.has(match[1] ?? '')) return true;
+    const indirectCall = /\b([A-Za-z_$][\w$]*)\s*\.\s*(?:apply|call)\s*\(/gu;
+    for (const match of source.matchAll(indirectCall))
+      if (functionAliases.has(match[1] ?? '')) return true;
+  }
+
+  if (functionAliases.size) {
     const call = /\b([A-Za-z_$][\w$]*)\s*\(/gu;
     for (const match of source.matchAll(call))
       if (functionAliases.has(match[1] ?? '')) return true;
+  }
+  if (namespaceAliases.size) {
+    const reflectiveMember =
+      /\bReflect\s*\.\s*(?:apply|construct)\s*\(\s*([A-Za-z_$][\w$]*)\s*\.\s*(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\s*,/gu;
+    for (const match of source.matchAll(reflectiveMember))
+      if (namespaceAliases.has(match[1] ?? '')) return true;
   }
   if (namespaceAliases.size) {
     const memberCall =
@@ -227,27 +243,148 @@ function hasDynamicExecution(source: string): boolean {
 
 /** Resolves literal relative targets from recognized child_process namespaces. */
 function staticChildProcessTargets(source: string): string[] {
-  const aliases = new Set<string>();
+  const namespaceAliases = new Set<string>();
+  const functionAliases = new Map<string, Set<string>>();
   const namespaceRequire =
     /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])(?:node:)?child_process\2\s*\)/gu;
   const namespaceImport =
     /\bimport\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s+from\s*(['"])(?:node:)?child_process\2/gu;
+  const destructuredRequire =
+    /\b(?:const|let|var)\s*\{([^}]*)\}\s*=\s*require\(\s*(['"])(?:node:)?child_process\2\s*\)/gu;
+  const namedImport =
+    /\bimport\s*\{([^}]*)\}\s*from\s*(['"])(?:node:)?child_process\2/gu;
+  const namespaceFunctionAlias =
+    /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*\.\s*(fork|spawn|spawnSync|execFile|execFileSync)\b/gu;
+  const addFunctions = (list: string, esm: boolean): void => {
+    for (const specifier of list.split(',')) {
+      const parts = esm
+        ? specifier.trim().split(/\s+as\s+/u)
+        : specifier.trim().split(/\s*:\s*/u);
+      const method = parts[0]?.trim();
+      const local = parts[1]?.trim() ?? method;
+      if (
+        method &&
+        local &&
+        ['fork', 'spawn', 'spawnSync', 'execFile', 'execFileSync'].includes(
+          method
+        )
+      ) {
+        const methods = functionAliases.get(local) ?? new Set<string>();
+        methods.add(method);
+        functionAliases.set(local, methods);
+      }
+    }
+  };
   for (const match of source.matchAll(namespaceRequire))
-    if (match[1]) aliases.add(match[1]);
+    if (match[1]) namespaceAliases.add(match[1]);
   for (const match of source.matchAll(namespaceImport))
-    if (match[1]) aliases.add(match[1]);
+    if (match[1]) namespaceAliases.add(match[1]);
+  for (const match of source.matchAll(destructuredRequire))
+    if (match[1]) addFunctions(match[1], false);
+  for (const match of source.matchAll(namedImport))
+    if (match[1]) addFunctions(match[1], true);
+  for (const match of source.matchAll(namespaceFunctionAlias)) {
+    const local = match[1];
+    const namespace = match[2];
+    const method = match[3];
+    if (local && namespace && method && namespaceAliases.has(namespace)) {
+      const methods = functionAliases.get(local) ?? new Set<string>();
+      methods.add(method);
+      functionAliases.set(local, methods);
+    }
+  }
 
   const targets = new Set<string>();
-  for (const alias of aliases) {
-    const calls = new RegExp(
-      `\\b${alias}\\s*\\.\\s*(?:spawn|execFile)(?:Sync)?\\s*\\(\\s*(['"])(?:node|bash|sh|python3?|deno|bun)\\1\\s*,\\s*\\[\\s*(['"])(\\.{1,2}\\/[^'"]+)\\2`,
-      'gu'
-    );
-    for (const match of source.matchAll(calls)) {
-      const target = match[3];
-      if (target) targets.add(target);
+  const record = (candidate: string | undefined): void => {
+    if (candidate && targets.size < MAX_CACHED_REFERENCES_PER_CONTENT)
+      targets.add(candidate);
+  };
+  const namespaceExecution =
+    /\b([A-Za-z_$][\w$]*)\s*\.\s*(?:spawn|execFile)(?:Sync)?\s*\(\s*(['"])(?:node|bash|sh|python3?|deno|bun)\2\s*,\s*\[\s*(['"])(\.{1,2}\/[^'"]+)\3/gu;
+  for (const match of source.matchAll(namespaceExecution)) {
+    if (namespaceAliases.has(match[1] ?? '')) record(match[4]);
+    if (targets.size >= MAX_CACHED_REFERENCES_PER_CONTENT) break;
+  }
+  const namespaceFork =
+    /\b([A-Za-z_$][\w$]*)\s*\.\s*fork\s*\(\s*(['"])(\.{1,2}\/[^'"]+)\2/gu;
+  for (const match of source.matchAll(namespaceFork)) {
+    if (namespaceAliases.has(match[1] ?? '')) record(match[3]);
+    if (targets.size >= MAX_CACHED_REFERENCES_PER_CONTENT) break;
+  }
+  const functionExecution =
+    /\b([A-Za-z_$][\w$]*)\s*\(\s*(['"])(?:node|bash|sh|python3?|deno|bun)\2\s*,\s*\[\s*(['"])(\.{1,2}\/[^'"]+)\3/gu;
+  for (const match of source.matchAll(functionExecution)) {
+    if (
+      ['spawn', 'spawnSync', 'execFile', 'execFileSync'].some((method) =>
+        functionAliases.get(match[1] ?? '')?.has(method)
+      )
+    )
+      record(match[4]);
+    if (targets.size >= MAX_CACHED_REFERENCES_PER_CONTENT) break;
+  }
+  const functionFork =
+    /\b([A-Za-z_$][\w$]*)\s*\(\s*(['"])(\.{1,2}\/[^'"]+)\2/gu;
+  for (const match of source.matchAll(functionFork)) {
+    if (functionAliases.get(match[1] ?? '')?.has('fork')) record(match[3]);
+    if (targets.size >= MAX_CACHED_REFERENCES_PER_CONTENT) break;
+  }
+  const reflectiveExecution =
+    /\bReflect\s*\.\s*apply\s*\(\s*(?:([A-Za-z_$][\w$]*)\s*\.\s*(spawn|execFile)(?:Sync)?|([A-Za-z_$][\w$]*))\s*,[\s\S]{0,256}?\[\s*(['"])(?:node|bash|sh|python3?|deno|bun)\4\s*,\s*\[\s*(['"])(\.{1,2}\/[^'"]+)\5/gu;
+  for (const match of source.matchAll(reflectiveExecution)) {
+    const namespace = match[1];
+    const method = match[2];
+    const alias = match[3];
+    const recognizedNamespaceMethod =
+      namespace !== undefined &&
+      namespaceAliases.has(namespace) &&
+      method !== undefined;
+    const recognizedFunctionAlias =
+      alias !== undefined &&
+      ['spawn', 'spawnSync', 'execFile', 'execFileSync'].some((candidate) =>
+        functionAliases.get(alias)?.has(candidate)
+      );
+    if (recognizedNamespaceMethod || recognizedFunctionAlias) record(match[6]);
+    if (targets.size >= MAX_CACHED_REFERENCES_PER_CONTENT) break;
+  }
+  const applyExecution =
+    /\b(?:(?:([A-Za-z_$][\w$]*)\s*\.\s*(spawn|execFile)(?:Sync)?)|([A-Za-z_$][\w$]*))\s*\.\s*apply\s*\(\s*[^,)]{0,128}\s*,[\s\S]{0,128}?\[\s*(['"])(?:node|bash|sh|python3?|deno|bun)\4\s*,\s*\[\s*(['"])(\.{1,2}\/[^'"]+)\5/gu;
+  const callExecution =
+    /\b(?:(?:([A-Za-z_$][\w$]*)\s*\.\s*(spawn|execFile)(?:Sync)?)|([A-Za-z_$][\w$]*))\s*\.\s*call\s*\(\s*[^,)]{0,128}\s*,\s*(['"])(?:node|bash|sh|python3?|deno|bun)\4\s*,\s*\[\s*(['"])(\.{1,2}\/[^'"]+)\5/gu;
+  if (namespaceAliases.size || functionAliases.size) {
+    for (const pattern of [applyExecution, callExecution]) {
+      for (const match of source.matchAll(pattern)) {
+        const namespace = match[1];
+        const method = match[2];
+        const alias = match[3];
+        const recognizedNamespaceMethod =
+          namespace !== undefined &&
+          namespaceAliases.has(namespace) &&
+          method !== undefined;
+        const recognizedFunctionAlias =
+          alias !== undefined &&
+          ['spawn', 'spawnSync', 'execFile', 'execFileSync'].some((candidate) =>
+            functionAliases.get(alias)?.has(candidate)
+          );
+        if (recognizedNamespaceMethod || recognizedFunctionAlias)
+          record(match[6]);
+        if (targets.size >= MAX_CACHED_REFERENCES_PER_CONTENT) break;
+      }
       if (targets.size >= MAX_CACHED_REFERENCES_PER_CONTENT) break;
     }
+  }
+  return [...targets].sort();
+}
+
+/** Resolves literal relative PowerShell Start-Process targets without execution. */
+function staticPowerShellTargets(source: string): string[] {
+  if (!/\bStart-Process\b/iu.test(source)) return [];
+  const targets = new Set<string>();
+  const startProcessTarget =
+    /\bStart-Process\s+(?:-FilePath\s+)?(?:"(\.{1,2}[\\/][^"'\r\n;&|]{1,256})"|'(\.{1,2}[\\/][^"'\r\n;&|]{1,256})'|(\.{1,2}[\\/][^\s;&|]+))/giu;
+  for (const match of source.matchAll(startProcessTarget)) {
+    const target = match[1] ?? match[2] ?? match[3];
+    if (target && targets.size < MAX_CACHED_REFERENCES_PER_CONTENT)
+      targets.add(target.replaceAll('\\', '/'));
     if (targets.size >= MAX_CACHED_REFERENCES_PER_CONTENT) break;
   }
   return [...targets].sort();
@@ -444,6 +581,7 @@ function contentAnalysis(source: string): Readonly<{
   for (const target of shellAnalysis.targets) references.add(target);
   for (const target of staticChildProcessTargets(source))
     references.add(target);
+  for (const target of staticPowerShellTargets(source)) references.add(target);
   const result = Object.freeze({
     ...(references.size <= MAX_CACHED_REFERENCES_PER_CONTENT
       ? { references: Object.freeze([...references].sort()) }
@@ -1217,7 +1355,8 @@ export function analyzeMaliciousContent(
           targetAnalysis.unresolvedShellCommand ||
           targetAnalysis.signals.includes('archive-extraction-and-execution');
         for (const signal of targetAnalysis.signals) signals.add(signal);
-        if (signals.size > 0 || automaticScript.test(targetText)) payload = true;
+        if (signals.size > 0 || automaticScript.test(targetText))
+          payload = true;
         for (const hookName of [`pre${scriptName}`, `post${scriptName}`]) {
           if (
             entryResult.scripts.has(`${targetManifest}\0${hookName}`) &&

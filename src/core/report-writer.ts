@@ -13,7 +13,7 @@ function jsonStringBytes(value: string, maximumBytes: number): number {
   if (value.length + 2 > maximumBytes) return maximumBytes + 1;
   let bytes = 2;
   const chunkUnits = 64 * 1024;
-  for (let offset = 0; offset < value.length; ) {
+  for (let offset = 0; offset < value.length;) {
     let end = Math.min(offset + chunkUnits, value.length);
     if (
       end < value.length &&

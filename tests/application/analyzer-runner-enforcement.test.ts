@@ -81,6 +81,26 @@ describe('AnalyzerRunner deadline enforcement (issue #34)', () => {
     expect(Atomics.load(counters, 0)).toBe(0);
   });
 
+  it('budgets cloned text above its UTF-8 file byte count', async () => {
+    const counters = new Int32Array(
+      new SharedArrayBuffer(3 * Int32Array.BYTES_PER_ELEMENT)
+    );
+    const analyzer = new ConcurrentAnalyzer();
+    const result = await new AnalyzerRunner().run([analyzer], {
+      root: process.cwd(),
+      options: {
+        sharedCounters: counters.buffer,
+        snapshot: {
+          files: [{ path: 'large-ascii.ts', bytes: 120 * 1024 * 1024 }]
+        }
+      }
+    });
+
+    expect(result[0]?.status).toBe('failed');
+    expect(result[0]?.error).toContain('context exceeds its memory budget');
+    expect(Atomics.load(counters, 0)).toBe(0);
+  });
+
   it('bounds isolated workers across simultaneous scan runner instances', async () => {
     const counters = new Int32Array(
       new SharedArrayBuffer(3 * Int32Array.BYTES_PER_ELEMENT)
@@ -192,7 +212,7 @@ describe('AnalyzerRunner deadline enforcement (issue #34)', () => {
     });
     const context = {
       root: process.cwd(),
-      options: { sharedCounters: counters.buffer }
+      options: { sharedCounters: counters.buffer, holdMs: 1_000 }
     };
     const running = new AnalyzerRunner({ concurrency: 2 }).run(
       analyzers.slice(0, 2),
@@ -200,7 +220,7 @@ describe('AnalyzerRunner deadline enforcement (issue #34)', () => {
     );
     const waitUntilWorkersStarted = async (): Promise<void> => {
       const deadline = Date.now() + 10_000;
-      while (Atomics.load(counters, 0) < 2) {
+      while (Atomics.load(counters, 1) < 2) {
         if (Date.now() >= deadline) throw new Error('workers did not start');
         await sleep(5);
       }

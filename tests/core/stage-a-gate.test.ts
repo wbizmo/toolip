@@ -1208,6 +1208,37 @@ describe('trusted Stage A Git-object scanner', () => {
     }
   );
 
+  it('traces literal PowerShell Start-Process targets and keeps dynamic targets incomplete', async () => {
+    const literal = await repo({
+      'package.json': JSON.stringify({
+        scripts: { prepare: 'powershell -File wrapper.ps1' }
+      }),
+      'wrapper.ps1': "Start-Process -FilePath '.\\payload.ps1'",
+      'payload.ps1': 'eval(atob(encoded_source))'
+    });
+    const traced = scanGitTree(literal.root, literal.sha, {
+      changedPaths: ['package.json']
+    });
+    expect(traced.status).toBe('blocked');
+    expect(traced.findings).toContain(
+      'execution-chain:package.json -> wrapper.ps1 -> payload.ps1'
+    );
+
+    const dynamic = await repo({
+      'package.json': JSON.stringify({
+        scripts: { prepare: 'powershell -File wrapper.ps1' }
+      }),
+      'wrapper.ps1': 'Start-Process $env:TOOLIP_TARGET'
+    });
+    const unresolved = scanGitTree(dynamic.root, dynamic.sha, {
+      changedPaths: ['package.json']
+    });
+    expect(unresolved.status).toBe('incomplete');
+    expect(unresolved.incompleteReasons).toContain(
+      'unresolved-powershell-process:wrapper.ps1'
+    );
+  });
+
   it('blocks a wrapper that executes a uniquely assigned local shell variable', async () => {
     const fixture = await repo({
       'package.json': JSON.stringify({
@@ -1467,6 +1498,18 @@ describe('trusted Stage A Git-object scanner', () => {
     [
       'a computed namespace method',
       "import * as cp from 'node:child_process'; cp[method]('node', ['payload.js']);"
+    ],
+    [
+      'a reflective named API invocation',
+      "import { spawn as launch } from 'node:child_process'; Reflect.apply(launch, undefined, ['node', ['payload.js']]);"
+    ],
+    [
+      'a call-method API invocation',
+      "const { spawn: launch } = require('node:child_process'); launch.call(undefined, 'node', ['payload.js']);"
+    ],
+    [
+      'a reflective namespace API invocation',
+      "import * as cp from 'node:child_process'; Reflect.apply(cp.spawn, undefined, ['node', ['payload.js']]);"
     ]
   ])(
     'keeps %s from receiving a clean Stage A result',

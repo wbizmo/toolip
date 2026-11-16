@@ -437,7 +437,11 @@ function estimateIsolatedAnalyzerContextBytes(
     )
       return MAX_ISOLATED_ANALYZER_CONTEXT_BYTES + 1;
     const pathBytes = typeof file.path === 'string' ? file.path.length * 2 : 0;
-    bytes += fileBytes + pathBytes + 256;
+    // Snapshot content is held as JavaScript text and copied into the worker.
+    // UTF-8 byte length therefore understates the clone payload (UTF-16 code
+    // units plus the worker copy). Reserve 3x source bytes, plus path and
+    // record metadata, so ASCII-heavy inputs do not consume the budget at 1x.
+    bytes += fileBytes * 3 + pathBytes + 256;
     if (bytes > MAX_ISOLATED_ANALYZER_CONTEXT_BYTES)
       return MAX_ISOLATED_ANALYZER_CONTEXT_BYTES + 1;
   }

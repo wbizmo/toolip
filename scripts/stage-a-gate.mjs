@@ -302,6 +302,21 @@ function hasUnresolvedChildProcessExecution(source) {
       functionAliases.add(alias);
   }
   if (functionAliases.size) {
+    const reflectiveCalls =
+      /\bReflect\s*\.\s*(?:apply|construct)\s*\(\s*([A-Za-z_$][\w$]*)\s*,/gu;
+    for (const match of source.matchAll(reflectiveCalls))
+      if (functionAliases.has(match[1] ?? '')) return true;
+    const indirectCalls = /\b([A-Za-z_$][\w$]*)\s*\.\s*(?:apply|call)\s*\(/gu;
+    for (const match of source.matchAll(indirectCalls))
+      if (functionAliases.has(match[1] ?? '')) return true;
+  }
+  if (namespaceAliases.size) {
+    const reflectiveMembers =
+      /\bReflect\s*\.\s*(?:apply|construct)\s*\(\s*([A-Za-z_$][\w$]*)\s*\.\s*(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\s*,/gu;
+    for (const match of source.matchAll(reflectiveMembers))
+      if (namespaceAliases.has(match[1] ?? '')) return true;
+  }
+  if (functionAliases.size) {
     const calls = /\b([A-Za-z_$][\w$]*)\s*\(/gu;
     for (const match of source.matchAll(calls))
       if (functionAliases.has(match[1] ?? '')) return true;
@@ -3040,6 +3055,41 @@ function localReferences(source, sourcePath, packagesByName, texts) {
       if (value && !value.startsWith('-') && !value.includes(':'))
         refs.set(`${value}\0source`, { value, rootRelative: false });
     }
+  const startProcessTarget =
+    /\bStart-Process\s+(?:-FilePath\s+)?(?:"([^"\r\n;&|]{1,512})"|'([^'\r\n;&|]{1,512})'|([^\s;&|]+))/giu;
+  let startProcessReferences = 0;
+  for (const match of source.matchAll(startProcessTarget)) {
+    if (startProcessReferences >= MAX_GRAPH_EDGES) {
+      refs.set('powershell-unresolved\0budget', {
+        value: 'powershell-unresolved-budget',
+        rootRelative: true
+      });
+      break;
+    }
+    const index = startProcessReferences++;
+    const rawTarget = match[1] ?? match[2] ?? match[3] ?? '';
+    const target = rawTarget.replaceAll('\\', '/');
+    if (target.startsWith('./') || target.startsWith('../')) {
+      const resolved = path.posix.normalize(
+        path.posix.join(path.posix.dirname(sourcePath), target)
+      );
+      if (resolved !== '..' && !resolved.startsWith('../'))
+        refs.set(`${target}\0powershell`, {
+          value: target,
+          rootRelative: false
+        });
+      else
+        refs.set(`powershell-unresolved\0${index}`, {
+          value: `powershell-unresolved-${index}`,
+          rootRelative: true
+        });
+    } else {
+      refs.set(`powershell-unresolved\0${index}`, {
+        value: `powershell-unresolved-${index}`,
+        rootRelative: true
+      });
+    }
+  }
   const shellAnalysis = staticShellTargets(source);
   for (const target of shellAnalysis.targets)
     refs.set(target + '\\0static-shell', {
@@ -3543,6 +3593,8 @@ function scanText(name, text, incompleteReasons = []) {
     );
   const executableText = sourceCode || shebang || sourceSignature;
   if (shellExecutionSource) {
+    if (/\bStart-Process\b/iu.test(text))
+      incompleteReasons.push(`unresolved-powershell-process:${name}`);
     if (
       requiresUnverifiedNpmResolution(text, {
         cwd: '.',

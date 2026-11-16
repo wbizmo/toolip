@@ -197,32 +197,31 @@ describe('non-executing malicious content chain analysis', () => {
     expect(result.findings).toEqual([]);
   });
 
-  it.each([
-    'npm run-script payload',
-    'pnpm run payload',
-    'yarn run payload'
-  ])('follows package-manager command %s', (command) => {
-    const result = analyzeMaliciousContent([
-      {
-        path: 'package.json',
-        content: JSON.stringify({
-          scripts: { prepare: command, payload: 'node ./loader.js' }
-        })
-      },
-      {
-        path: 'loader.js',
-        content: "const code = atob('ZXZpbA=='); eval(code);"
-      }
-    ]);
+  it.each(['npm run-script payload', 'pnpm run payload', 'yarn run payload'])(
+    'follows package-manager command %s',
+    (command) => {
+      const result = analyzeMaliciousContent([
+        {
+          path: 'package.json',
+          content: JSON.stringify({
+            scripts: { prepare: command, payload: 'node ./loader.js' }
+          })
+        },
+        {
+          path: 'loader.js',
+          content: "const code = atob('ZXZpbA=='); eval(code);"
+        }
+      ]);
 
-    expect(
-      result.findings.some((finding) =>
-        (finding.metadata?.trace as string[] | undefined)?.includes(
-          'package.json#scripts.payload'
+      expect(
+        result.findings.some((finding) =>
+          (finding.metadata?.trace as string[] | undefined)?.includes(
+            'package.json#scripts.payload'
+          )
         )
-      )
-    ).toBe(true);
-  });
+      ).toBe(true);
+    }
+  );
 
   it('bounds cyclic nested package scripts without reporting benign work', () => {
     const result = analyzeMaliciousContent([
@@ -773,8 +772,7 @@ describe('non-executing malicious content chain analysis', () => {
     ]);
 
     const finding = result.findings.find(
-      (candidate) =>
-        candidate.metadata?.entrypointKind === 'npm-script:prepare'
+      (candidate) => candidate.metadata?.entrypointKind === 'npm-script:prepare'
     );
     expect(finding?.ruleId).toBe('TLP-MAL-001');
     expect(finding?.metadata?.trace).toEqual([
@@ -1228,6 +1226,27 @@ describe('non-executing malicious content chain analysis', () => {
         ].join('\n')
       ],
       [
+        'node wrapper.js',
+        [
+          "import { spawn as launch } from 'node:child_process';",
+          "Reflect.apply(launch, undefined, ['node', [process.env.TOOLIP_TARGET]]);"
+        ].join('\n')
+      ],
+      [
+        'node wrapper.js',
+        [
+          "const { spawn: launch } = require('node:child_process');",
+          "launch.call(undefined, 'node', [process.env.TOOLIP_TARGET]);"
+        ].join('\n')
+      ],
+      [
+        'node wrapper.js',
+        [
+          "import * as childProcess from 'node:child_process';",
+          "Reflect.apply(childProcess.spawn, undefined, ['node', [process.env.TOOLIP_TARGET]]);"
+        ].join('\n')
+      ],
+      [
         'python3 wrapper.py',
         [
           'import os',
@@ -1264,6 +1283,89 @@ describe('non-executing malicious content chain analysis', () => {
   });
 
   it('traces a literal child_process target from an intermediate wrapper', () => {
+    for (const [wrapper, target] of [
+      [
+        [
+          "const childProcess = require('node:child_process');",
+          "childProcess.spawn('node', ['./payload.orc']);"
+        ].join('\n'),
+        'payload.orc'
+      ],
+      [
+        [
+          "import * as childProcess from 'node:child_process';",
+          "childProcess.fork('./payload.ts');"
+        ].join('\n'),
+        'payload.ts'
+      ],
+      [
+        [
+          "import { spawn as launch } from 'node:child_process';",
+          "launch('node', ['./payload.mjs']);"
+        ].join('\n'),
+        'payload.mjs'
+      ],
+      [
+        [
+          "const { fork: launch } = require('node:child_process');",
+          "launch('./payload.cjs');"
+        ].join('\n'),
+        'payload.cjs'
+      ],
+      [
+        [
+          "const childProcess = require('node:child_process');",
+          'const launch = childProcess.spawn;',
+          "launch('node', ['./payload-alias.js']);"
+        ].join('\n'),
+        'payload-alias.js'
+      ],
+      [
+        [
+          "import { spawn as launch } from 'node:child_process';",
+          "Reflect.apply(launch, undefined, ['node', ['./payload-reflect.js']]);"
+        ].join('\n'),
+        'payload-reflect.js'
+      ],
+      [
+        [
+          "import { spawn as launch } from 'node:child_process';",
+          "launch.call(undefined, 'node', ['./payload-call.js']);"
+        ].join('\n'),
+        'payload-call.js'
+      ],
+      [
+        [
+          "const { execFile: launch } = require('node:child_process');",
+          "launch.apply(undefined, ['node', ['./payload-apply.js']]);"
+        ].join('\n'),
+        'payload-apply.js'
+      ]
+    ]) {
+      const result = analyzeMaliciousContent([
+        {
+          path: 'package.json',
+          content: JSON.stringify({ scripts: { prepare: 'node wrapper.js' } })
+        },
+        { path: 'wrapper.js', content: wrapper },
+        { path: target, content: 'eval(atob(encoded));' }
+      ]);
+
+      const finding = result.findings.find(
+        (candidate) =>
+          candidate.metadata?.entrypointKind === 'npm-script:prepare'
+      );
+      expect(finding?.ruleId, target).toBe('TLP-MAL-001');
+      expect(finding?.metadata?.completeness).toBe('unknown');
+      expect(finding?.metadata?.trace).toEqual([
+        'package.json',
+        'wrapper.js',
+        target
+      ]);
+    }
+  });
+
+  it('keeps child_process target traversal unresolved outside the project', () => {
     const result = analyzeMaliciousContent([
       {
         path: 'package.json',
@@ -1272,23 +1374,54 @@ describe('non-executing malicious content chain analysis', () => {
       {
         path: 'wrapper.js',
         content: [
-          "const childProcess = require('node:child_process');",
-          "childProcess.spawn('node', ['./payload.orc']);"
+          "const { spawn } = require('node:child_process');",
+          "spawn('node', ['../../outside.orc']);"
         ].join('\n')
       },
-      { path: 'payload.orc', content: 'eval(atob(encoded));' }
+      { path: 'outside.orc', content: 'eval(atob(encoded));' }
     ]);
 
     const finding = result.findings.find(
       (candidate) => candidate.metadata?.entrypointKind === 'npm-script:prepare'
     );
-    expect(finding?.ruleId).toBe('TLP-MAL-001');
+    expect(finding?.ruleId).toBe('TLP-MAL-002');
     expect(finding?.metadata?.completeness).toBe('unknown');
-    expect(finding?.metadata?.trace).toEqual([
-      'package.json',
-      'wrapper.js',
-      'payload.orc'
-    ]);
+    expect(finding?.metadata?.trace).toEqual(['package.json', 'wrapper.js']);
+  });
+
+  it('traces literal PowerShell Start-Process targets and rejects traversal', () => {
+    for (const [command, expectedRule, expectedTrace] of [
+      [
+        "Start-Process -FilePath '.\\payload.ps1'",
+        'TLP-MAL-001',
+        ['package.json', 'wrapper.ps1', 'payload.ps1']
+      ],
+      [
+        "Start-Process -FilePath '..\\..\\outside.ps1'",
+        'TLP-MAL-002',
+        ['package.json', 'wrapper.ps1']
+      ]
+    ] as const) {
+      const result = analyzeMaliciousContent([
+        {
+          path: 'package.json',
+          content: JSON.stringify({
+            scripts: { prepare: 'powershell -File wrapper.ps1' }
+          })
+        },
+        { path: 'wrapper.ps1', content: command },
+        { path: 'payload.ps1', content: 'eval(atob(encoded));' },
+        { path: 'outside.ps1', content: 'eval(atob(encoded));' }
+      ]);
+
+      const finding = result.findings.find(
+        (candidate) =>
+          candidate.metadata?.entrypointKind === 'npm-script:prepare'
+      );
+      expect(finding?.ruleId).toBe(expectedRule);
+      expect(finding?.metadata?.completeness).toBe('unknown');
+      expect(finding?.metadata?.trace).toEqual(expectedTrace);
+    }
   });
 
   it('does not flag ordinary build commands or inert encoded text', () => {

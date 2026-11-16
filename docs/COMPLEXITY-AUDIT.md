@@ -941,6 +941,33 @@ The current 54-row Linux Node 24.22.1 benchmark is recorded in `docs/BENCHMARKS.
 
 `analyzeMaliciousContent()` sorts `F` captured files in `O(F log F)`, indexes paths/content in expected `O(F)`, scans `B` captured text bytes, then traverses a bounded `V` entrypoint/reference graph with `E` edges in `O(V + E)` expected time. Peak retained input/index space is `O(F + B)` plus bounded reference/graph state `O(V + E)`. Per-file content analysis is digest-cached with 1,024 entries and at most 256 cached references per content; the caller caps input at 100,000 files, 2 MiB per file and 256 MiB total, while entrypoint/reference work has explicit limits. Linux Node 24.22.1 isolated 1k/10k/50k synthetic runs took 20.09/119.49/366.75 ms, scanned 32 KB/320 KB/1.6 MB, returned one complete three-file trace, and sampled 230/221/287 MiB peak RSS. This is one sample at each scale, not variance or cross-platform evidence; raw results are in `docs/benchmarks/toolip-v3.2.1-issue95-malicious-content-2026-11-15-linux-node24.jsonl`. Archive extraction chains remain explicitly unknown because extracted contents are unavailable; dynamic runtime construction and accuracy calibration remain incomplete (#95).
 
+### Indirect child-process API aliases — #95 (2026-11-15)
+
+For one bounded source body of `B` bytes, child-process namespace/import
+discovery, destructured method discovery, direct method-alias discovery, and
+target recognition use a fixed number of regex passes. The scans therefore
+remain `O(B)` time with `O(A + R)` temporary alias/target state for `A`
+recognized aliases and `R` literal targets, capped at 256 targets per cached
+content. The implementation does not generate a source scan per alias.
+Reflection and `.call`/`.apply` detection also use fixed `O(B)` passes, only
+after a known child-process function alias has been found. Literal
+`Reflect.apply` argument arrays and `.call`/`.apply` arguments can resolve an
+interpreter plus relative target under a 256-byte lookahead; computed or
+indirect argument values remain unknown. Completeness stays unknown for these
+runtime calls. The protected
+Stage A scanner mirrors the unresolved-call checks with the same linear scan
+bounds. The 1k/10k/50k
+general chain measurements for this revision are recorded in
+`docs/benchmarks/toolip-v3.2.1-issue95-indirect-runtime-2026-11-15-linux-node24.jsonl`.
+
+PowerShell `Start-Process` target extraction uses an `O(B)` keyword precheck
+and one additional bounded extraction pass on matching files. It retains at
+most 256 paths per cached source. Backslashes are normalized before the shared
+project-root containment check; dynamic targets and traversal remain
+unresolved. The 1k/10k/50k process-local measurements are in
+`docs/benchmarks/toolip-v3.2.1-issue95-powershell-2026-11-16-linux-node24.jsonl`;
+one sample per size does not close cross-platform profiling.
+
 ### #56 process-wide isolated-worker budget — 2026-11-15
 
 `AnalyzerRunner` instances share a FIFO worker pool with two active slots and
@@ -1151,11 +1178,12 @@ malicious-content and Stage A suites pass 133 tests; the fixed 4-benign /
 accuracy. Cross-platform profiling and broader adversarial corpora remain open
 for #40/#95/#96.
 
-### #56 estimated worker-context clone budgets — 2026-11-15
+### #56 estimated worker-context clone budgets — 2026-11-16
 
 Before starting an isolated analyzer, `AnalyzerRunner` estimates the snapshot
-clone payload in one pass over `F` file records, adding each recorded byte
-count, path allowance and fixed metadata allowance. This adds `O(F)` time and
+clone payload in one pass over `F` file records, reserving three times each
+recorded UTF-8 byte count for JavaScript text and the worker copy, plus a UTF-16
+path allowance and fixed metadata allowance. This adds `O(F)` time and
 constant loop space, without serializing the snapshot into a temporary buffer.
 Requests above 320 MiB are rejected; the process-wide pool allows at most 640
 MiB of estimated active clone inputs and 512 MiB of queued inputs, in addition
@@ -1163,11 +1191,17 @@ to the two-worker cap. The pool also reserves worker V8 old-generation limits
 under a process-wide 1,024 MiB aggregate ceiling, even when separate runners
 request larger per-worker limits. Regressions verify oversized requests do not
 start and two maximum-heap workers run sequentially. These are clone-payload
-reservations and V8 limits, not a total RSS bound: worker runtime allocations,
-parent snapshot retention, native memory and other concurrent work remain
-outside this estimate. The analyzer-runner enforcement suite passes 16 tests;
-#56 remains incomplete pending measured whole-process memory and cancellation
-under load.
+reservations and V8 limits, not a measured total RSS bound: worker runtime
+allocations, parent snapshot retention, native memory and other concurrent
+work remain outside this estimate. A regression with a 120 MiB UTF-8 source
+record verifies that the conservative estimate rejects the request before a
+worker starts. The shared-worker queue fixture now waits on its monotonic peak
+counter and holds active workers long enough to observe queue timeout
+behavior. The seven focused analyzer-runner, snapshot, scheduler, MCP and
+policy files pass 102/102 tests. Typecheck, compiler quality, lint, formatting
+of touched files, workflow policy and package verification pass. #56 remains
+incomplete pending measured whole-process memory, broader
+cancellation-under-load, and cross-platform evidence.
 
 ### #40 stream-decode tracked Git paths — 2026-11-15
 

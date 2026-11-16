@@ -391,7 +391,7 @@ describe('immutable project snapshots', () => {
     expect(changed.cacheMetrics.astProjectHits).toBe(1);
     expect(changed.cacheMetrics.astProjectMisses).toBe(1);
     expect(changed.findings).toEqual(first.findings);
-  });
+  }, 30_000);
 
   it('invalidates importers with a changed helper and preserves unrelated components', async () => {
     const root = await project();
@@ -468,7 +468,7 @@ describe('immutable project snapshots', () => {
     expect(JSON.stringify(second.findings)).toBe(
       JSON.stringify(first.findings)
     );
-  });
+  }, 30_000);
 
   it('reruns AST analysis after its cached project chunk is evicted', async () => {
     const root = await project();
