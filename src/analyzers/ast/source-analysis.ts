@@ -4477,39 +4477,35 @@ function sourceSinkRule(
       return astSecurityRules.sqlInjection;
     }
   }
-  if (
-    isOutboundRequestCall(node, scope) &&
-    ((first && isTainted(first, scope, tainted, callReturns)) ||
-      hasTaintedOutboundDestinationOption(
-        node,
-        scope,
-        tainted,
-        callReturns
-      ))
-  ) {
-    // Only native global Fetch defines redirect: 'error' semantics. Other
-    // request clients may treat it as an ignored configuration field.
-    const nativeFetch =
-      ts.isIdentifier(target) &&
-      target.text === 'fetch' &&
-      bindingOwner(scope, 'fetch') === undefined;
+  if (isOutboundRequestCall(node, scope)) {
     const taintedDestinationOptions = hasTaintedOutboundDestinationOption(
       node,
       scope,
       tainted,
       callReturns
     );
-    if (
-      !nativeFetch ||
-      taintedDestinationOptions ||
-      !first ||
-      !hasVerifiedFetchHostAllowlist(
-        node,
-        first,
-        hostAllowlistProofBudget
+    const taintedUrl = Boolean(
+      first && isTainted(first, scope, tainted, callReturns)
+    );
+    if (taintedUrl || taintedDestinationOptions) {
+      // Only native global Fetch defines redirect: 'error' semantics. Other
+      // request clients may treat it as an ignored configuration field.
+      const nativeFetch =
+        ts.isIdentifier(target) &&
+        target.text === 'fetch' &&
+        bindingOwner(scope, 'fetch') === undefined;
+      if (
+        !nativeFetch ||
+        taintedDestinationOptions ||
+        !first ||
+        !hasVerifiedFetchHostAllowlist(
+          node,
+          first,
+          hostAllowlistProofBudget
+        )
       )
-    )
-      return astSecurityRules.serverSideRequestForgery;
+        return astSecurityRules.serverSideRequestForgery;
+    }
   }
   if (
     ts.isPropertyAccessExpression(target) &&
