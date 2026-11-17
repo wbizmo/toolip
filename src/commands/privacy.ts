@@ -1,4 +1,5 @@
 import type { Command } from 'commander';
+import { ToolipError } from '../errors/toolip-error.js';
 import { explainScanEgress } from '../core/privacy-egress.js';
 import { serializeJsonOutputBounded } from '../core/report-writer.js';
 
@@ -24,6 +25,16 @@ export function registerPrivacyCommand(program: Command): void {
         allowGoToolExecution?: boolean;
         allowPublicScope?: boolean;
       }) => {
+        if (options.offline && options.allowGoToolExecution)
+          throw new ToolipError(
+            '--allow-go-tool-execution cannot be combined with --offline.',
+            { code: 'OFFLINE_TOOL_EXECUTION_CONFLICT', exitCode: 1 }
+          );
+        if (options.offline && options.npmProvenancePolicy)
+          throw new ToolipError(
+            '--npm-provenance-policy cannot be combined with --offline.',
+            { code: 'OFFLINE_PROVENANCE_CONFLICT', exitCode: 1 }
+          );
         console.log(serializeJsonOutputBounded(explainScanEgress(options)));
       }
     );
