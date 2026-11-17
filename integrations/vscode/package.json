@@ -1,0 +1,42 @@
+{
+  "name": "toolip-vscode",
+  "displayName": "Toolip Security",
+  "description": "Local read-only Toolip diagnostics for trusted workspaces.",
+  "version": "0.0.0",
+  "private": true,
+  "publisher": "zivoralabs",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Linters"
+  ],
+  "activationEvents": [
+    "onLanguage:typescript",
+    "onLanguage:javascript",
+    "onLanguage:typescriptreact",
+    "onLanguage:javascriptreact"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Toolip",
+      "properties": {
+        "toolip.executablePath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to a separately installed and trusted Toolip executable. No automatic download."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/vscode": "^1.96.0",
+    "typescript": "^5.8.2"
+  }
+}
