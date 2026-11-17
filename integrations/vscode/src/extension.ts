@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import path from 'node:path';
+import { mkdirSync } from 'node:fs';
+import { trustedIdeExecutable } from './trusted-executable.js';
 
 type Pending = { uri: vscode.Uri; version: number };
 type RpcResponse = {
@@ -30,18 +32,30 @@ let processInstance: ChildProcessWithoutNullStreams | undefined;
 export function activate(context: vscode.ExtensionContext): void {
   const diagnostics = vscode.languages.createDiagnosticCollection('toolip');
   context.subscriptions.push(diagnostics);
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  if (!folder || !vscode.workspace.isTrusted) return;
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  if (folders.length === 0 || !vscode.workspace.isTrusted) return;
 
-  const executable = vscode.workspace
-    .getConfiguration('toolip')
-    .get<string>('executablePath', '');
-  // Do not resolve a binary from PATH, run npm/npx, or install any dependency.
-  // An operator must select an absolute trusted Toolip executable.
-  if (!executable || !path.isAbsolute(executable)) return;
-
+  const config = vscode.workspace.getConfiguration('toolip');
+  // Workspaces can supply .vscode/settings.json; they MUST NOT control
+  // whether an analyzer launches or which local executable it launches.
+  // Read only explicit USER/global settings, never effective .get values.
+  if (config.inspect<boolean>('enabled')?.globalValue !== true) return;
+  const configured = config.inspect<string>('executablePath')?.globalValue;
+  const executable = trustedIdeExecutable(
+    configured,
+    folders.map((folder) => folder.uri.fsPath)
+  );
+  if (!executable) return;
+  // The source project is always treated as inert input, never the working
+  // directory for a spawned security process.
+  const safeWorkingDirectory = context.globalStorageUri.fsPath;
+  try {
+    mkdirSync(safeWorkingDirectory, { recursive: true, mode: 0o700 });
+  } catch {
+    return;
+  }
   const child = spawn(executable, ['ide', 'serve'], {
-    cwd: folder.uri.fsPath,
+    cwd: safeWorkingDirectory,
     shell: false,
     windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -61,10 +75,22 @@ export function activate(context: vscode.ExtensionContext): void {
   const pending = new Map<number, Pending>();
   const supported = (document: vscode.TextDocument): string | undefined => {
     if (!languages.has(document.languageId)) return undefined;
+    if (document.uri.scheme !== 'file') return undefined;
+    const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+    if (!folder) return undefined;
+    const index = folders.findIndex((item) =>
+      item.uri.toString() === folder.uri.toString()
+    );
+    if (index < 0) return undefined;
     const relative = path.relative(folder.uri.fsPath, document.uri.fsPath);
     if (!relative || path.isAbsolute(relative) || relative === '..' ||
         relative.startsWith(`..${path.sep}`)) return undefined;
-    return relative.replaceAll(path.sep, '/');
+    const normalized = relative.replaceAll(path.sep, '/');
+    // Keep documents from independent workspace roots isolated in the one
+    // local analyzer session even when their relative paths are identical.
+    return folders.length === 1
+      ? normalized
+      : `workspace-${index}/${normalized}`;
   };
 
   const send = (
@@ -77,7 +103,14 @@ export function activate(context: vscode.ExtensionContext): void {
     if (!relative || child.killed || !child.stdin.writable) return;
     const id = nextId++;
     if (expectDiagnostics) {
-      if (pending.size > 256) pending.clear();
+      if (pending.size >= 128) {
+        diagnostics.set(document.uri, [new vscode.Diagnostic(
+          new vscode.Range(0, 0, 0, 1),
+          'Toolip local analysis backlog exceeded; security coverage is incomplete.',
+          vscode.DiagnosticSeverity.Warning
+        )]);
+        return;
+      }
       pending.set(id, { uri: document.uri, version: document.version });
     }
     const payload = JSON.stringify({
@@ -170,9 +203,16 @@ export function activate(context: vscode.ExtensionContext): void {
   child.stderr.on('data', () => {
     // Do not display raw scanner stderr which might contain sensitive paths.
   });
-  child.on('close', () => {
-    for (const { uri } of pending.values()) diagnostics.delete(uri);
+  child.on('error', () => {
+    // Spawn errors are otherwise unhandled EventEmitter errors. Never render
+    // raw filesystem paths or tool output as an IDE diagnostic.
     pending.clear();
+    diagnostics.clear();
+  });
+  child.on('close', () => {
+    pending.clear();
+    // Results from an exited process are stale, not ongoing proof of safety.
+    diagnostics.clear();
     if (processInstance === child) processInstance = undefined;
   });
 
