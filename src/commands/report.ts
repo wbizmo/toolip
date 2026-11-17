@@ -1,3 +1,5 @@
+import { writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import type { Command } from 'commander';
 import { ToolipError } from '../errors/toolip-error.js';
 import { readPemKeyFile } from '../core/secure-key-file.js';
@@ -9,6 +11,8 @@ import {
 } from '../core/evidence-trust-store.js';
 import { readBoundedRegularFile } from '../core/bounded-file.js';
 import { serializeJsonOutputBounded } from '../core/report-writer.js';
+import { createScanBadge, renderScanBadgeSvg } from '../core/scan-badge.js';
+import type { ReportEvidenceVerification } from '../core/report-signature.js';
 
 const maxReportBytes = 8 * 1024 * 1024;
 
@@ -47,6 +51,102 @@ export function registerReportCommand(program: Command): void {
   const report = program
     .command('report')
     .description('Verify signed Toolip scan evidence.');
+
+  report
+    .command('badge <file>')
+    .description(
+      'Create a static, fail-closed scan badge from a bounded report (offline).'
+    )
+    .requiredOption('--output <file>', 'New .svg or .json output path.')
+    .requiredOption(
+      '--expected-revision <sha>',
+      'Exact immutable 40-character Git revision bound to signed scan evidence.'
+    )
+    .option('--trust-store <file>', 'External trusted evidence key store.')
+    .option('--project-root <path>', 'Project root for external trust policy.', process.cwd())
+    .option('--public-key <file>', 'Direct trusted Ed25519 public key PEM.')
+    .option('--key-id <id>', 'Trusted signing key identifier.')
+    .option('--project-id <id>', 'Expected stable project identity for direct-key mode.')
+    .option('--source-tree-sha256 <digest>', 'Required scanned source-tree SHA-256.')
+    .action(
+      async (
+        file: string,
+        options: {
+          output: string;
+          expectedRevision: string;
+          trustStore?: string;
+          projectRoot: string;
+          publicKey?: string;
+          keyId?: string;
+          projectId?: string;
+          sourceTreeSha256?: string;
+        }
+      ) => {
+        if (!/^[a-f0-9]{40}$/u.test(options.expectedRevision))
+          throw new ToolipError('Expected Git revision must be an exact 40-character lowercase SHA.', {
+            code: 'BADGE_REVISION_INVALID',
+            exitCode: 1
+          });
+        const format = path.extname(options.output).toLowerCase();
+        if (format !== '.svg' && format !== '.json')
+          throw new ToolipError('Badge output must be .svg or .json.', {
+            code: 'BADGE_OUTPUT_INVALID',
+            exitCode: 1
+          });
+        if (options.trustStore && (options.publicKey || options.projectId))
+          throw new ToolipError('Trust-store and direct-key options cannot be combined.', {
+            code: 'BADGE_TRUST_OPTIONS_INVALID',
+            exitCode: 1
+          });
+        if ((options.trustStore || options.publicKey || options.projectId || options.keyId) &&
+            (!options.keyId || (!options.trustStore && (!options.publicKey || !options.projectId))))
+          throw new ToolipError('Trusted badge verification requires --key-id and either --trust-store or both --public-key and --project-id.', {
+            code: 'BADGE_TRUST_OPTIONS_INVALID',
+            exitCode: 1
+          });
+        const scanReport = await readReport(file);
+        let verification: ReportEvidenceVerification = {
+          status: 'unsigned',
+          reason: 'signature-missing'
+        };
+        if (options.trustStore && options.keyId) {
+          const store = await readEvidenceTrustStore(
+            options.trustStore,
+            options.projectRoot
+          );
+          const trust = resolveEvidenceTrust(store, options.keyId);
+          verification = verifyReportEvidence(scanReport, {
+            publicKeyPem: trust.publicKeyPem,
+            trustedKeyId: trust.trustedKeyId,
+            expectedProjectId: trust.expectedProjectId,
+            maxAgeMs: trust.maxAgeMs,
+            expectedSourceTreeSha256: options.sourceTreeSha256
+          });
+        } else if (options.publicKey && options.keyId && options.projectId) {
+          verification = verifyReportEvidence(scanReport, {
+            publicKeyPem: await readPemKeyFile(options.publicKey),
+            trustedKeyId: options.keyId,
+            expectedProjectId: options.projectId,
+            expectedSourceTreeSha256: options.sourceTreeSha256
+          });
+        }
+        const badge = createScanBadge(scanReport, verification, {
+          expectedRevision: options.expectedRevision
+        });
+        const output = format === '.svg'
+          ? renderScanBadgeSvg(badge)
+          : `${serializeJsonOutputBounded(badge)}\\n`;
+        // Exclusive creation refuses symlinks and existing files rather than
+        // silently replacing a README or another path selected by the caller.
+        await writeFile(options.output, output, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+        console.log(serializeJsonOutputBounded({
+          status: badge.status,
+          verified: badge.verified,
+          output: options.output
+        }));
+        if (badge.status !== 'policy-passing') process.exitCode = 2;
+      }
+    );
   report
     .command('verify <file>')
     .description(
