@@ -137,8 +137,20 @@ function validateEvent(event: AlertEvent): void {
   if (event.reportUrl !== undefined) {
     if (event.reportUrl.length > 1024) throw new Error('Report URL is too long.');
     const url = new URL(event.reportUrl);
-    if (url.protocol !== 'https:' || url.username || url.password || url.hash)
-      throw new Error('Report link must be credential-free HTTPS.');
+    if (
+      url.protocol !== 'https:' ||
+      url.username || url.password ||
+      url.search || url.hash ||
+      url.port !== '' ||
+      url.hostname === 'localhost' ||
+      url.hostname.endsWith('.localhost') ||
+      url.hostname.endsWith('.local') ||
+      /^[0-9.]+$/u.test(url.hostname) ||
+      url.hostname.includes(':')
+    )
+      throw new Error(
+        'Report link must be public HTTPS without credentials, query strings or fragments.'
+      );
   }
 }
 
