@@ -36,6 +36,7 @@ import {
 } from '../providers/npm/provenance.js';
 import { parsePythonTargetProfileJson } from '../core/dependencies/python-target.js';
 import { parseGoTargetProfileJson } from '../core/dependencies/go-target.js';
+import { enrichCve } from '../providers/advisories/multi-source.js';
 
 export function registerScanCommand(program: Command): void {
   program
@@ -110,6 +111,14 @@ export function registerScanCommand(program: Command): void {
       'Resolve Cargo cfg dependencies and workspace features for one explicit Rust target triple.'
     )
     .option(
+      '--enrich-cve <id>',
+      'Optionally enrich one public CVE using GHSA/NVD without claiming package-version matching.'
+    )
+    .option(
+      '--allow-public-cve-lookup',
+      'Explicitly authorize sending the public CVE identifier to GHSA and NVD.'
+    )
+    .option(
       '--package-health',
       'Opt in to bounded npm maintainer, publisher, release and lifecycle-history signals.'
     )
@@ -180,6 +189,8 @@ export function registerScanCommand(program: Command): void {
         goTarget?: string;
         cargoTarget?: string;
         packageHealth?: boolean;
+        enrichCve?: string;
+        allowPublicCveLookup?: boolean;
         licenses?: boolean;
         allowPublicScope?: boolean;
         npmProvenancePolicy?: string;
@@ -208,6 +219,12 @@ export function registerScanCommand(program: Command): void {
           throw new ToolipError(
             `Invalid --fail-on value "${options.failOn}". Use critical, high, medium, low, info or none.`,
             { code: 'INVALID_FAIL_ON', exitCode: 1 }
+          );
+        }
+        if (options.enrichCve && (!options.allowPublicCveLookup || options.offline)) {
+          throw new ToolipError(
+            'Public CVE enrichment requires explicit --allow-public-cve-lookup without --offline.',
+            { code: 'PUBLIC_CVE_LOOKUP_CONSENT_REQUIRED', exitCode: 1 }
           );
         }
         if (options.offline && options.allowGoToolExecution) {
@@ -445,6 +462,24 @@ export function registerScanCommand(program: Command): void {
         // Only explicitly configured, incomplete-blocking severity gates can
         // be described as a scoped policy result. The default scan does not
         // claim a passing security policy, even with zero reported findings.
+
+        const advisoryEnrichment = options.enrichCve
+          ? await enrichCve(options.enrichCve, {
+              allowPublicCveLookup: options.allowPublicCveLookup === true,
+              offline: options.offline
+            })
+          : undefined;
+        const effectiveAnalysis =
+          advisoryEnrichment && advisoryEnrichment.status !== 'complete'
+            ? {
+                ...scorecard.analysis,
+                state: 'partial' as const,
+                reasons: [
+                  ...scorecard.analysis.reasons,
+                  'Optional public CVE enrichment was not completed.'
+                ]
+              }
+            : scorecard.analysis;
         const badgePolicy =
           options.evidenceSigningKey &&
           options.failOn !== 'none' &&
@@ -453,7 +488,7 @@ export function registerScanCommand(program: Command): void {
           !options.analyzerPlugin
             ? {
                 decision:
-                  scorecard.analysis.state === 'complete' &&
+                  effectiveAnalysis.state === 'complete' &&
                   gatedFindings(scorecard.findings, options.failOn).length === 0
                     ? ('pass' as const)
                     : ('fail' as const),
@@ -475,7 +510,8 @@ export function registerScanCommand(program: Command): void {
           command: 'scan',
           root: context.root,
           findings: scorecard.findings,
-          analysis: { ...scorecard.analysis, coverage: scorecard.coverage },
+          analysis: { ...effectiveAnalysis, coverage: scorecard.coverage },
+          advisoryEnrichment,
           analyzerPlugins: scorecard.analyzerPlugins.map((plugin) => ({
             id: plugin.id,
             sha256: plugin.sha256,
@@ -605,7 +641,7 @@ export function registerScanCommand(program: Command): void {
         }
 
         const code = decideExit({
-          state: scorecard.analysis.state,
+          state: effectiveAnalysis.state,
           gated: gatedFindings(scorecard.findings, options.failOn).length,
           failOnIncomplete: options.failOnIncomplete ?? false
         });
