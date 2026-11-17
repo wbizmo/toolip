@@ -2265,25 +2265,58 @@ async function gradleWorkspaceFiles(
   return collect(files);
 }
 
-function fromGradleLock(text: string, file: string): LockedPackage[] {
+function fromGradleLock(
+  text: string,
+  file: string,
+  warnings: string[]
+): LockedPackage[] {
   const output: LockedPackage[] = [];
+  const byName = new Map<string, string>();
+  const conflicted = new Set<string>();
   const directory = path.posix.dirname(file);
   const module = directory === '.' ? 'root' : directory;
-  for (const line of text.split(/\r?\n/u)) {
-    const match = line
-      .trim()
-      .match(/^([^:#\s]+):([^:#\s]+):([^\s=]+)(?:=[^\s]+)?(?:\s+#.*)?$/u);
-    if (match?.[1] && match[2] && match[3] && exact(match[3]))
-      output.push({
-        name: `${match[1]}:${match[2]}`,
-        version: match[3],
-        ecosystem: 'Maven',
-        source: 'gradle.lockfile',
-        module,
-        installPath: `gradle:${file}:${match[1]}:${match[2]}@${match[3]}`
-      });
+  for (const raw of text.split(/\r?\n/u)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#') || /^empty=[A-Za-z0-9_,.-]*$/u.test(line))
+      continue;
+    const match = line.match(
+      /^([^:#\s=]+):([^:#\s=]+):([^\s=]+)(?:=([A-Za-z0-9_,.-]+))?(?:\s+#.*)?$/u
+    );
+    if (
+      !match?.[1] || !match[2] || !match[3] ||
+      !exact(match[3]) ||
+      // Gradle dynamic selectors and Maven property interpolations are
+      // declarations, not exact resolved artifact versions.
+      /[+*\[\]()${}]/u.test(match[3]) ||
+      (line.includes('=') && match[4] === undefined)
+    ) {
+      warnings.push(`gradle-lockfile-entry-invalid:${file}`);
+      continue;
+    }
+    const name = `${match[1]}:${match[2]}`;
+    const prior = byName.get(name);
+    if (prior !== undefined) {
+      if (prior !== match[3]) {
+        conflicted.add(name);
+        warnings.push(`gradle-lockfile-conflicting-version:${file}:${name}`);
+      }
+      continue;
+    }
+    byName.set(name, match[3]);
+    output.push({
+      name,
+      version: match[3],
+      ecosystem: 'Maven',
+      source: 'gradle.lockfile',
+      module,
+      installPath: `gradle:${file}:${name}@${match[3]}`
+    });
   }
-  return output;
+  // A lockfile that claims two selected versions of the same module cannot
+  // prove either exact selected identity without configuration resolution.
+  return conflicted.size > 0
+    ? output.filter((item) => !conflicted.has(item.name))
+    : output;
 }
 
 function fromMavenDependencyTree(
@@ -5712,7 +5745,7 @@ export async function readOtherEcosystemInventoryDetailed(
       gradleLockBytes += fileBytes;
       gradleLockAvailable = true;
       loadedLockfiles.add(gradleLockPath);
-      const packages = fromGradleLock(gradleText, gradleLockPath);
+      const packages = fromGradleLock(gradleText, gradleLockPath, warnings);
       for (const item of packages) gradleLockPackages.push(item);
       if (packages.length === 0)
         warnings.push(`no-exact-package-records:${gradleLockPath}`);
