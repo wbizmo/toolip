@@ -40,6 +40,8 @@ const contentAnalysisCache = new Map<
     signals: readonly string[];
     unresolvedShellCommand: boolean;
     dynamicExecution: boolean;
+    archiveExtracts: boolean;
+    archiveLaunches: boolean;
   }>
 >();
 const binaryExtensions = new Set([
@@ -411,6 +413,19 @@ const supportedShebang =
 const executableTextSignature =
   /(?:^|\n)\s*(?:import\s|export\s|(?:const|let|var)\s+\w|(?:async\s+)?function\s+\w|(?:curl|wget|eval|exec|source|\.\s+)[^\n]*)/u;
 
+function archiveExtractionPresent(source: string): boolean {
+  archiveExtraction.lastIndex = 0;
+  if (archiveExtraction.test(source)) return true;
+  archiveApiExtraction.lastIndex = 0;
+  return archiveApiExtraction.test(source);
+}
+
+function archiveLaunchPresent(source: string): boolean {
+  // A local command is only a possible execution edge. Without knowing the
+  // extracted archive's output files it cannot establish the actual target.
+  return archiveExecutionTarget.test(source) || archiveApiExecution.test(source);
+}
+
 function hasArchiveExecution(source: string): boolean {
   archiveExtraction.lastIndex = 0;
   for (const match of source.matchAll(archiveExtraction)) {
@@ -545,6 +560,8 @@ function contentAnalysis(source: string): Readonly<{
   signals: readonly string[];
   unresolvedShellCommand: boolean;
   dynamicExecution: boolean;
+  archiveExtracts: boolean;
+  archiveLaunches: boolean;
 }> {
   const digest = createHash('sha256').update(source).digest('hex');
   const cached = contentAnalysisCache.get(digest);
@@ -588,7 +605,9 @@ function contentAnalysis(source: string): Readonly<{
       : {}),
     signals: Object.freeze(behaviorSignals(source)),
     unresolvedShellCommand: shellAnalysis.unresolvedShellCommand,
-    dynamicExecution: hasDynamicExecution(source)
+    dynamicExecution: hasDynamicExecution(source),
+    archiveExtracts: archiveExtractionPresent(source),
+    archiveLaunches: archiveLaunchPresent(source)
   });
   contentAnalysisCache.set(digest, result);
   if (contentAnalysisCache.size > MAX_CACHED_CONTENT_ANALYSES) {
@@ -1302,6 +1321,8 @@ export function analyzeMaliciousContent(
     );
     const entryAnalysis = contentAnalysis(content.get(entry.file) ?? '');
     const signals = new Set([...entry.signals, ...entryAnalysis.signals]);
+    let archiveExtracted = entryAnalysis.archiveExtracts;
+    let archiveLaunched = entryAnalysis.archiveLaunches;
     let dynamicUnknown =
       entry.unknown ||
       entryAnalysis.unresolvedShellCommand ||
@@ -1350,6 +1371,8 @@ export function analyzeMaliciousContent(
         }
         trace.push(`${targetManifest}#scripts.${scriptName}`);
         const targetAnalysis = contentAnalysis(targetText);
+        archiveExtracted ||= targetAnalysis.archiveExtracts;
+        archiveLaunched ||= targetAnalysis.archiveLaunches;
         dynamicUnknown ||=
           targetAnalysis.dynamicExecution ||
           targetAnalysis.unresolvedShellCommand ||
@@ -1395,6 +1418,8 @@ export function analyzeMaliciousContent(
       trace.push(target);
       const targetText = content.get(target) ?? '';
       const targetAnalysis = contentAnalysis(targetText);
+      archiveExtracted ||= targetAnalysis.archiveExtracts;
+      archiveLaunched ||= targetAnalysis.archiveLaunches;
       dynamicUnknown ||=
         targetAnalysis.dynamicExecution ||
         targetAnalysis.unresolvedShellCommand ||
@@ -1441,6 +1466,15 @@ export function analyzeMaliciousContent(
         for (const nested of staticShellTargets(targetText).targets)
           if (!enqueue(target, nested)) break;
       }
+    }
+    // An extractor in one reachable script and an execution command in a
+    // second file form a potential unpack-and-run chain. Without inspecting
+    // the unpacked artifact, its exact runtime target is unknown: preserve
+    // that uncertainty instead of presenting the trace as resolved.
+    if (archiveExtracted && archiveLaunched) {
+      signals.add('archive-extraction-and-execution');
+      payload = true;
+      dynamicUnknown = true;
     }
     // Unknown references stay review leads unless suspicious behavior is also
     // present. Automatic entrypoints or multi-file traces raise a positive
