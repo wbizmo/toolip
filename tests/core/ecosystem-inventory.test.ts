@@ -3982,6 +3982,31 @@ describe('non-npm lockfile inventory', () => {
     expect(graph.edges).toHaveLength(1);
   });
 
+  it('does not attach a valid grandchild to a stale Maven parent after malformed branch content', async () => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'maven-dependency-tree.txt'),
+      [
+        '[INFO] app:service:pom:1.0.0',
+        '[INFO] +- org.example:valid:jar:1.0.0:compile',
+        '[INFO] |  +- org.example:bad:jar:${unresolved}:compile',
+        '[INFO] |  |  \\- org.example:orphan:jar:2.0.0:compile',
+        '[INFO] +- org.example:next:jar:3.0.0:compile'
+      ].join('\\n')
+    );
+    const graph = await (
+      await import('../../src/core/dependencies/ecosystem-inventory.js')
+    ).readOtherEcosystemInventoryDetailed(root);
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain('maven-tree-version-unresolved');
+    expect(graph.warnings).toContain('maven-tree-parent-edge-unresolved');
+    expect(graph.packages.map((item) => item.name)).toEqual([
+      'org.example:valid',
+      'org.example:next'
+    ]);
+    expect(graph.edges).toHaveLength(2);
+  });
+
   it('imports bounded multi-module Java exports with exact scoped instances and classifiers', async () => {
     const root = await fixture();
     await writeFile(
