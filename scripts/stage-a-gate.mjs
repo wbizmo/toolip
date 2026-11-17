@@ -113,6 +113,7 @@ const ARCHIVE_EXTENSIONS = new Set([
 const EXECUTABLE_BINARY_EXTENSIONS = new Set([
   '.a',
   '.apk',
+  '.bin',
   '.class',
   '.dll',
   '.dylib',
