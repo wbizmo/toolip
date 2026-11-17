@@ -581,6 +581,21 @@ describe('route authorization candidates', () => {
     ).toBe('low');
   });
 
+  it.each([
+    'const assertOwner = (_user: unknown, _id: unknown) => true;',
+    'function assertOwner(_user: unknown, _id: unknown) { return true; }'
+  ])('does not trust locally shadowed no-op ownership guard by name alone: %s', (declaration) => {
+    const source = `${declaration}
+router.get('/records/:id', async (req, res) => {
+  await assertOwner(req.user, req.params.id);
+  return records.findById(req.params.id);
+});`;
+    const findings = analyzeAstSource('src/routes/fake-guard.ts', source);
+    expect(findings.some((finding) =>
+      finding.ruleId === 'TLP-AUTH-001'
+    )).toBe(true);
+  });
+
   it('resolves unique const aliases of explicit resource guards but not mutable aliases', () => {
     const immutable = analyzeAstSource(
       'src/routes/aliased-guard.ts',
