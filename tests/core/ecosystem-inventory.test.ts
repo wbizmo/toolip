@@ -4062,6 +4062,27 @@ describe('non-npm lockfile inventory', () => {
     expect(graph.edges).toHaveLength(2);
   });
 
+  it('withholds a Maven conflict-omitted dependency and its orphan descendants', async () => {
+    const root = await fixture();
+    await writeFile(path.join(root, 'maven-dependency-tree.txt'), [
+      '[INFO] app:service:jar:1.0.0',
+      '[INFO] +- org.example:parent:jar:1.0.0:compile',
+      '[INFO] |  +- org.example:omitted:jar:1.0.0:compile (omitted for conflict with 2.0.0)',
+      '[INFO] |  |  \\- org.example:orphan:jar:9.0.0:compile',
+      '[INFO] +- org.example:final:jar:3.0.0:compile'
+    ].join('\n'));
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain(
+      'maven-tree-conflict-resolution-unavailable'
+    );
+    expect(graph.warnings).toContain('maven-tree-parent-edge-unresolved');
+    expect(graph.packages.map((item) => item.name)).toEqual([
+      'org.example:parent',
+      'org.example:final'
+    ]);
+  });
+
   it('imports bounded multi-module Java exports with exact scoped instances and classifiers', async () => {
     const root = await fixture();
     await writeFile(
