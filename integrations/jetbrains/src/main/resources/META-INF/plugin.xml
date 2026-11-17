@@ -1,0 +1,19 @@
+<idea-plugin>
+  <id>xyz.zivoralabs.toolip.jetbrains</id>
+  <name>Toolip Security</name>
+  <vendor url="https://www.zivoralabs.xyz">Zivora Labs</vendor>
+  <description>Opt-in, local, read-only Toolip source diagnostics from an explicitly configured trusted executable.</description>
+  <depends>com.intellij.modules.platform</depends>
+  <depends>JavaScript</depends>
+  <extensions defaultExtensionNs="com.intellij">
+    <applicationConfigurable
+      parentId="tools"
+      id="toolip.settings"
+      displayName="Toolip Security"
+      instance="xyz.zivoralabs.toolip.ToolipSettings"/>
+    <externalAnnotator language="JavaScript"
+      implementationClass="xyz.zivoralabs.toolip.ToolipAnnotator"/>
+    <externalAnnotator language="TypeScript"
+      implementationClass="xyz.zivoralabs.toolip.ToolipAnnotator"/>
+  </extensions>
+</idea-plugin>
