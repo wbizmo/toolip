@@ -1522,11 +1522,18 @@ function parseCargoTargetProfile(
     ...(pointerWidths.has(arch)
       ? { pointerWidth: pointerWidths.get(arch) }
       : {}),
-    ...(knownLittleEndian.has(arch) || rawLittleEndian.has(rawArch)
+    // Some triples normalize to a generic architecture name. Explicit
+    // endian suffixes take precedence: powerpc64le is NOT powerpc64 BE,
+    // and aarch64_be/armv7eb must not inherit generic ARM little-endian.
+    ...(rawLittleEndian.has(rawArch)
       ? { endian: 'little' as const }
-      : knownBigEndian.has(arch) || rawBigEndian.has(rawArch)
+      : rawBigEndian.has(rawArch)
         ? { endian: 'big' as const }
-        : {})
+        : knownLittleEndian.has(arch)
+          ? { endian: 'little' as const }
+          : knownBigEndian.has(arch)
+            ? { endian: 'big' as const }
+            : {})
   };
 }
 
