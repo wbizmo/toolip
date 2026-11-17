@@ -67,14 +67,6 @@ const explicitGuardAliasIndex = new WeakMap<
   ts.SourceFile,
   ReadonlyMap<string, readonly ts.VariableDeclaration[]>
 >();
-const explicitGuardImportAliasIndex = new WeakMap<
-  ts.SourceFile,
-  ReadonlyMap<string, readonly string[]>
->();
-const explicitGuardShadowNames = new WeakMap<
-  ts.SourceFile,
-  ReadonlySet<string>
->();
 const maxExplicitGuardAliasDepth = 16;
 const localGuardDeclarations = new WeakMap<ts.SourceFile, ReadonlySet<string>>();
 
@@ -867,19 +859,7 @@ function resolvedExplicitGuardName(
   let aliases = explicitGuardAliasIndex.get(sourceFile);
   if (!aliases) {
     const collected = new Map<string, ts.VariableDeclaration[]>();
-    const imported = new Map<string, string[]>();
-    const shadowNames = new Set<string>();
     const visit = (node: ts.Node): void => {
-      if (
-        (ts.isVariableDeclaration(node) || ts.isParameter(node)) &&
-        ts.isIdentifier(node.name)
-      )
-        shadowNames.add(node.name.text);
-      if (
-        (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) &&
-        node.name
-      )
-        shadowNames.add(node.name.text);
       if (
         ts.isVariableDeclaration(node) &&
         ts.isIdentifier(node.name) &&
@@ -892,29 +872,14 @@ function resolvedExplicitGuardName(
         declarations.push(node);
         collected.set(node.name.text, declarations);
       }
-      if (
-        ts.isImportDeclaration(node) &&
-        node.importClause?.namedBindings &&
-        ts.isNamedImports(node.importClause.namedBindings)
-      ) {
-        for (const specifier of node.importClause.namedBindings.elements) {
-          const target = specifier.propertyName?.text ?? specifier.name.text;
-          if (!explicitGuards.has(target)) continue;
-          const names = imported.get(specifier.name.text) ?? [];
-          names.push(target);
-          imported.set(specifier.name.text, names);
-        }
-      }
+      // Imported guard aliases are opaque unless their implementation was
+      // separately verified. An import's name alone is not policy evidence.
       ts.forEachChild(node, visit);
     };
     visit(sourceFile);
     aliases = collected;
     explicitGuardAliasIndex.set(sourceFile, aliases);
-    explicitGuardImportAliasIndex.set(sourceFile, imported);
-    explicitGuardShadowNames.set(sourceFile, shadowNames);
   }
-  const importedAliases = explicitGuardImportAliasIndex.get(sourceFile);
-  const shadowNames = explicitGuardShadowNames.get(sourceFile);
 
   const scopes = new Map<ts.Node, number>();
   let scope: ts.Node | undefined = call;
@@ -935,12 +900,7 @@ function resolvedExplicitGuardName(
       if (visited.has(current)) return undefined;
       visited.add(current);
       const declarations = aliases?.get(current);
-      if (declarations === undefined) {
-        const imported = importedAliases?.get(current);
-        return imported?.length === 1 && !shadowNames?.has(current)
-          ? imported[0]
-          : undefined;
-      }
+      if (declarations === undefined) return undefined;
       if (declarations?.length !== 1) return undefined;
       const declaration = declarations[0];
       const initializer = declaration?.initializer;
