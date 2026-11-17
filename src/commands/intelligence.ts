@@ -4,6 +4,7 @@ import { OsvVulnerabilityAnalyzer } from '../analyzers/vulnerability/osv-analyze
 import { AdvisorySnapshotCache } from '../providers/intelligence/snapshot-cache.js';
 import { readPemKeyFile } from '../core/secure-key-file.js';
 import { serializeJsonOutputBounded } from '../core/report-writer.js';
+import { enrichCve } from '../providers/advisories/multi-source.js';
 
 type SnapshotOptions = {
   path: string;
@@ -27,6 +28,19 @@ export function registerIntelligenceCommand(program: Command): void {
   const intelligence = program
     .command('intelligence')
     .description('Manage local vulnerability intelligence snapshots.');
+  intelligence
+    .command('enrich-cve <cve>')
+    .description('Optionally enrich one public CVE with distinct GHSA/NVD assertions.')
+    .option('--online', 'Explicit consent to query GitHub and NVD by public CVE ID.')
+    .action(async (cve: string, options: { online?: boolean }) => {
+      const result = await enrichCve(cve, {
+        offline: options.online !== true,
+        allowPublicCveLookup: options.online === true
+      });
+      console.log(serializeJsonOutputBounded(result));
+      if (result.status !== 'complete') process.exitCode = 3;
+    });
+
   const snapshot = intelligence
     .command('snapshot')
     .description('Refresh or verify a hashed OSV, EPSS and CISA KEV snapshot.');
