@@ -1287,6 +1287,64 @@ describe('non-npm lockfile inventory', () => {
     );
   });
 
+  it('preserves optional Cargo lock candidates when feature resolution cannot be proven', async () => {
+    const root = await fixture();
+    await mkdir(path.join(root, 'optional'), { recursive: true });
+    await writeFile(
+      path.join(root, 'Cargo.toml'),
+      [
+        '[package]',
+        'name = "app"',
+        'version = "0.1.0"',
+        'edition = "2021"',
+        '',
+        '[features]',
+        'default = ["unknown-feature"]',
+        '',
+        '[dependencies]',
+        'optional = { path = "optional", optional = true }'
+      ].join('\n')
+    );
+    await writeFile(
+      path.join(root, 'optional/Cargo.toml'),
+      [
+        '[package]',
+        'name = "optional"',
+        'version = "0.1.0"',
+        'edition = "2021"'
+      ].join('\n')
+    );
+    await writeFile(
+      path.join(root, 'Cargo.lock'),
+      [
+        'version = 4',
+        '',
+        '[[package]]',
+        'name = "app"',
+        'version = "0.1.0"',
+        'dependencies = ["optional"]',
+        '',
+        '[[package]]',
+        'name = "optional"',
+        'version = "0.1.0"'
+      ].join('\n')
+    );
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+    const app = graph.packages.find(
+      (item) => item.ecosystem === 'crates.io' && item.name === 'app'
+    );
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain(
+      'cargo-feature-reference-unresolved:Cargo.toml'
+    );
+    expect(
+      graph.edges.some(
+        (edge) => edge.from === app?.id && edge.name === 'optional'
+      )
+    ).toBe(true);
+  });
+
   it('does not activate unreferenced optional Cargo dependencies in large manifests', async () => {
     const root = await fixture();
     const declarations = Array.from(
