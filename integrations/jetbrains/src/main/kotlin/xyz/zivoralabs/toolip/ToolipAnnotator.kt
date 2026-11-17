@@ -10,7 +10,6 @@ import com.intellij.lang.annotation.HighlightSeverity
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiFile
-import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -77,44 +76,17 @@ class ToolipAnnotator : ExternalAnnotator<ToolipSource, ToolipAnalysis>() {
             )
         ))
 
-    private fun trustedExecutable(source: ToolipSource): Path? {
-        val selected = PropertiesComponent.getInstance()
-            .getValue("toolip.executablePath") ?: return null
-        if (selected.isBlank()) return null
-        val typed = runCatching { Path.of(selected) }.getOrNull() ?: return null
-        if (!typed.isAbsolute) return null
-        // Do not accept an executable stored inside the scanned source tree
-        // or a symlink whose target could be changed by a workspace commit.
-        if (Files.isSymbolicLink(typed)) return null
-        val binary = runCatching { typed.toRealPath() }.getOrNull() ?: return null
-        if (binary.startsWith(source.projectRoot) ||
-            !Files.isRegularFile(binary) || !Files.isExecutable(binary))
-            return null
-        return binary
-    }
-
-    private fun separateWorkingDirectory(root: Path): Path? {
-        val candidates = listOf(
-            System.getProperty("user.home"),
-            System.getProperty("java.io.tmpdir")
-        )
-        for (candidate in candidates) {
-            val resolved = runCatching {
-                Path.of(candidate).toRealPath()
-            }.getOrNull() ?: continue
-            if (Files.isDirectory(resolved) && !resolved.startsWith(root))
-                return resolved
-        }
-        return null
-    }
-
     override fun doAnnotate(collectedInfo: ToolipSource): ToolipAnalysis {
         if (!PropertiesComponent.getInstance().getBoolean("toolip.enabled", false))
             return incomplete(collectedInfo)
-        val binary = trustedExecutable(collectedInfo)
-            ?: return incomplete(collectedInfo)
-        val workingDirectory = separateWorkingDirectory(collectedInfo.projectRoot)
-            ?: return incomplete(collectedInfo)
+        val selected = PropertiesComponent.getInstance()
+            .getValue("toolip.executablePath")
+        val binary = ToolipPathPolicy.trustedExecutable(
+            selected, collectedInfo.projectRoot
+        ) ?: return incomplete(collectedInfo)
+        val workingDirectory = ToolipPathPolicy.separateWorkingDirectory(
+            collectedInfo.projectRoot
+        ) ?: return incomplete(collectedInfo)
         val process = ProcessBuilder(binary.toString(), "ide", "serve")
             .directory(workingDirectory.toFile())
             .redirectErrorStream(false)
