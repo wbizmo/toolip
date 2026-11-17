@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createProgram } from '../../src/cli/program.js';
 
@@ -27,6 +28,18 @@ describe('notification CLI fail-closed opt-in', () => {
       'https://hooks.slack.com/services/test/path';
     await expect(createProgram().parseAsync(args))
       .rejects.toThrow('requires --enable-network');
+  });
+
+  it('refuses a writable delivery ledger beneath the scanned repository', async () => {
+    process.env.TOOLIP_ALERT_WEBHOOK_URL =
+      'https://hooks.slack.com/services/test/path';
+    const unsafe = [...args, '--enable-network'];
+    unsafe[unsafe.indexOf('--ledger-dir') + 1] = path.join(
+      process.cwd(), '.toolip', 'notifications'
+    );
+    await expect(createProgram().parseAsync(unsafe)).rejects.toThrow(
+      'outside the scanned workspace'
+    );
   });
 
   it('never opens a report or contacts a provider when the destination is absent', async () => {
