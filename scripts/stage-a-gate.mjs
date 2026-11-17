@@ -2608,7 +2608,13 @@ export function inspectDependencyChanges(repo, baseSha, headSha, mergeSha) {
       blob.path
     )
   );
-  if (unsupportedEcosystemInputs)
+  const unsupportedAdditionalEcosystemInputs = headTree.blobs.some(
+    (blob) =>
+      /(?:^|\/)(?:Package\.resolved|Package\.swift|Podfile(?:\.lock)?|Cartfile(?:\.resolved)?|pubspec\.(?:yaml|lock)|mix\.(?:exs|lock)|packages\.(?:lock\.json|config)|project\.assets\.json|NuGet\.Config|Directory\.(?:Packages|Build)\.(?:props|targets)|global\.json|[^/]+\.(?:csproj|fsproj|vbproj|sln|slnx))$/iu.test(
+        blob.path
+      )
+  );
+  if (unsupportedEcosystemInputs || unsupportedAdditionalEcosystemInputs)
     reasons.push('unsupported-dependency-ecosystem-provenance');
   const cargoHead = inspectCargoLockfiles(repo, headSha, headTree);
   const cargoMerge = mergeSha
