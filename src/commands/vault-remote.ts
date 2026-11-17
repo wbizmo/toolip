@@ -34,9 +34,9 @@ export function configuredRemoteVault(input: Readonly<{
   operations?: readonly VaultOperation[];
 }>): Readonly<{ provider: VaultProvider; access: VaultAccess }> {
   const { identity, env } = input;
-  const configured =
-    env.TOOLIP_REMOTE_VAULT_ENDPOINT &&
-    env.TOOLIP_REMOTE_VAULT_TOKEN;
+  const endpoint = env.TOOLIP_REMOTE_VAULT_ENDPOINT;
+  const token = env.TOOLIP_REMOTE_VAULT_TOKEN;
+  const configured = Boolean(endpoint && token);
   if (
     !configured ||
     ![identity.project, identity.environment, identity.name]
@@ -57,7 +57,7 @@ export function configuredRemoteVault(input: Readonly<{
         { code: 'REMOTE_VAULT_CONFIGURATION_INVALID', exitCode: 1 }
       );
     provider = hashicorpVaultProvider({
-      endpoint: configured,
+      endpoint: endpoint!,
       token: env.TOOLIP_REMOTE_VAULT_TOKEN!,
       mount: env.TOOLIP_REMOTE_VAULT_MOUNT
     });
@@ -75,7 +75,7 @@ export function configuredRemoteVault(input: Readonly<{
     const identityKey =
       `${identity.project}/${identity.environment}/${identity.name}`;
     provider = onePasswordConnectProvider({
-      endpoint: configured,
+      endpoint: endpoint!,
       token: env.TOOLIP_REMOTE_VAULT_TOKEN!,
       vaultId: env.TOOLIP_REMOTE_VAULT_ID,
       itemIds: { [identityKey]: env.TOOLIP_REMOTE_ITEM_ID }
