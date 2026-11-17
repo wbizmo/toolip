@@ -114,7 +114,7 @@ function zipHeaders(name, size, checksum) {
   central.writeUInt32LE(size, 20);
   central.writeUInt32LE(size, 24);
   central.writeUInt16LE(filename.length, 28);
-  central.writeUInt32LE(0o100755 << 16, 38);
+  central.writeUInt32LE((0o100755 * 0x10000) >>> 0, 38);
   central.writeUInt32LE(0, 42);
 
   const end = Buffer.alloc(22);
