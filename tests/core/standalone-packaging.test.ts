@@ -36,7 +36,7 @@ async function createFixture(target: 'bun-darwin-x64' | 'bun-windows-x64') {
       TOOLIP_DISTRIBUTION_ASSETS_DIR: artifacts
     }
   });
-  return { result, artifacts, version, body };
+  return { result, artifacts, candidates, version, body };
 }
 
 describe('portable standalone candidate archives', () => {
@@ -82,18 +82,36 @@ describe('portable standalone candidate archives', () => {
   it('refuses unsupported targets and cannot overwrite an existing release archive', async () => {
     const fixture = await createFixture('bun-darwin-x64');
     expect(fixture.result.status).toBe(0);
-    const repeated = await createFixture('bun-darwin-x64');
-    // The other fixture uses its own private directory; this tests unknown
-    // target refusal without requiring a real runtime compiler.
+    const output = path.join(
+      fixture.artifacts, 'toolip-3.2.1-darwin-x64.tar.gz'
+    );
+    const original = await readFile(output);
+    const duplicate = spawnSync(process.execPath, [
+      path.resolve('scripts/package-standalone-candidate.mjs')
+    ], {
+      encoding: 'utf8',
+      shell: false,
+      env: {
+        ...process.env,
+        TOOLIP_RELEASE_VERSION: '3.2.1',
+        TOOLIP_STANDALONE_TARGET: 'bun-darwin-x64',
+        TOOLIP_STANDALONE_CANDIDATE_DIR: fixture.candidates,
+        TOOLIP_DISTRIBUTION_ASSETS_DIR: fixture.artifacts
+      }
+    });
+    expect(duplicate.status).not.toBe(0);
+    expect(await readFile(output)).toEqual(original);
+
     const unexpected = spawnSync(process.execPath, [
       path.resolve('scripts/package-standalone-candidate.mjs')
     ], {
       encoding: 'utf8',
+      shell: false,
       env: {
         ...process.env,
         TOOLIP_RELEASE_VERSION: '3.2.1',
         TOOLIP_STANDALONE_TARGET: 'bun-darwin-unknown',
-        TOOLIP_STANDALONE_CANDIDATE_DIR: repeated.artifacts,
+        TOOLIP_STANDALONE_CANDIDATE_DIR: fixture.candidates,
         TOOLIP_DISTRIBUTION_ASSETS_DIR: fixture.artifacts
       }
     });
