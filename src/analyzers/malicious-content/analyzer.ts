@@ -421,9 +421,16 @@ function archiveExtractionPresent(source: string): boolean {
 }
 
 function archiveLaunchPresent(source: string): boolean {
-  // A local command is only a possible execution edge. Without knowing the
-  // extracted archive's output files it cannot establish the actual target.
-  return archiveExecutionTarget.test(source) || archiveApiExecution.test(source);
+  // Starting an extractor with "node ./unpack.js" is NOT proof that the
+  // extracted file is subsequently executed. Require a programmatic process
+  // invocation or an explicit shell execution of a local relative target.
+  // The target may still be unrelated to the archive; report it as unknown.
+  return (
+    archiveApiExecution.test(source) ||
+    /(?:^|[;\n]&?\s*|&&\s*|\|\|\s*)(?:exec\s+|&\s+)?\.{1,2}[\\/]\S+/mu.test(
+      source
+    )
+  );
 }
 
 function hasArchiveExecution(source: string): boolean {
