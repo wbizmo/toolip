@@ -4533,6 +4533,32 @@ describe('non-npm lockfile inventory', () => {
     expect(locked.edges).toEqual([]);
   });
 
+  it('reports malformed Gradle lock entries and conflicting selected versions without pretending completeness', async () => {
+    const root = await fixture();
+    await writeFile(path.join(root, 'gradle.lockfile'), [
+      '# synthetic Gradle dependency lock',
+      'org.example:library:1.0.0=runtimeClasspath',
+      'org.example:library:2.0.0=compileClasspath',
+      'org.example:missing-version=runtimeClasspath',
+      'empty=',
+      'org.example:valid:3.0.0=testRuntimeClasspath'
+    ].join('\n'));
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain(
+      'gradle-lockfile-conflicting-version:gradle.lockfile:org.example:library'
+    );
+    expect(graph.warnings).toContain(
+      'gradle-lockfile-entry-invalid:gradle.lockfile'
+    );
+    expect(graph.packages.some((item) =>
+      item.name === 'org.example:valid' && item.version === '3.0.0'
+    )).toBe(true);
+    expect(graph.packages.some((item) =>
+      item.name === 'org.example:library'
+    )).toBe(false);
+  });
+
   it('keeps Gradle lockfile discovery incomplete when its file budget is exceeded', async () => {
     const root = await fixture();
     const files = [
