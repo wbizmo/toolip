@@ -4083,6 +4083,32 @@ describe('non-npm lockfile inventory', () => {
     ]);
   });
 
+  it('never certifies an exported Java graph when no source manifest exists to bind', async () => {
+    const root = await fixture();
+    await writeFile(path.join(root, 'gradle-dependencies.json'), JSON.stringify({
+      modules: [{
+        group: 'org.example',
+        module: 'app',
+        version: '1.0.0',
+        children: [{
+          group: 'org.example',
+          module: 'library',
+          version: '2.0.0',
+          children: []
+        }]
+      }],
+      toolipSource: { manifestHashes: {} }
+    }));
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain(
+      'java-export-source-manifest-unavailable:gradle-dependencies.json'
+    );
+    expect(graph.packages.every((item) =>
+      item.resolutionConfidence === 'unknown'
+    )).toBe(true);
+  });
+
   it('imports bounded multi-module Java exports with exact scoped instances and classifiers', async () => {
     const root = await fixture();
     await writeFile(
