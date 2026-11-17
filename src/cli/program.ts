@@ -27,6 +27,7 @@ import { registerLicensesCommand } from '../commands/licenses.js';
 import { registerMcpCommand } from '../commands/mcp.js';
 import { registerMonorepoCommand } from '../commands/monorepo.js';
 import { registerNpmAttestationCommand } from '../commands/npm-attestation.js';
+import { registerNotifyCommand } from '../commands/notify.js';
 import { registerPackageHealthCommand } from '../commands/package-health.js';
 import { registerPreCommitCommand } from '../commands/pre-commit.js';
 import { registerPrivacyCommand } from '../commands/privacy.js';
@@ -51,6 +52,7 @@ import { TOOLIP_AUTHOR, TOOLIP_VERSION } from '../config/version.js';
 const registrations: Array<(program: Command) => void> = [
   registerAiCommands,
   registerCiCommand,
+  registerNotifyCommand,
   registerSelfTestCommand,
   registerIdeCommand,
   registerProfileCommand,
