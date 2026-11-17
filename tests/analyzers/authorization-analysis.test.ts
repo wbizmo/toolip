@@ -596,6 +596,17 @@ router.get('/records/:id', async (req, res) => {
     )).toBe(true);
   });
 
+  it('does not infer resource permission from an arbitrary object method named assertOwner', () => {
+    const source = `router.get('/records/:id', async (req, res) => {
+  await opaqueClient.assertOwner(req.user, req.params.id);
+  return records.findById(req.params.id);
+});`;
+    const findings = analyzeAstSource('src/routes/opaque-guard.ts', source);
+    expect(findings.some((finding) =>
+      finding.ruleId === 'TLP-AUTH-001'
+    )).toBe(true);
+  });
+
   it('resolves unique const aliases of explicit resource guards but not mutable aliases', () => {
     const immutable = analyzeAstSource(
       'src/routes/aliased-guard.ts',
