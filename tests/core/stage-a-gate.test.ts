@@ -2292,6 +2292,31 @@ describe('trusted Stage A Git-object scanner', () => {
     }
   });
 
+  it.each([
+    ['Swift package manager', 'Package.resolved'],
+    ['Swift executable manifest', 'Package.swift'],
+    ['CocoaPods', 'Podfile.lock'],
+    ['Dart', 'pubspec.lock'],
+    ['Elixir', 'mix.lock'],
+    ['NuGet resolved package lock', 'packages.lock.json'],
+    ['.NET central package versions', 'Directory.Packages.props'],
+    ['.NET MSBuild project', 'src/App.csproj'],
+    ['.NET solution', 'App.slnx']
+  ])('does not approve unsupported %s artifact provenance', async (_kind, filename) => {
+    const fixture = await repo({
+      'package.json': JSON.stringify({ name: 'root', version: '1.0.0' }),
+      [filename]: 'synthetic untrusted dependency manifest'
+    });
+    const result = inspectDependencyChanges(
+      fixture.root,
+      fixture.sha,
+      fixture.sha
+    );
+    expect(result.reasons).toContain(
+      'unsupported-dependency-ecosystem-provenance'
+    );
+  });
+
   it('marks npm lock overrides and unsupported Python and Ruby build inputs incomplete', async () => {
     const manifest = { name: 'root', version: '1.0.0' };
     const lock = {
