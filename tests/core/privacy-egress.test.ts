@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createProgram } from '../../src/cli/program.js';
-import { explainScanEgress } from '../../src/core/privacy-egress.js';
+import { explainScanEgress, explainNpmAdvisoryEgress } from '../../src/core/privacy-egress.js';
 
 describe('declared scan egress manifest', () => {
   it('describes baseline network and inactive opt-in providers distinctly', () => {
@@ -46,6 +46,37 @@ describe('declared scan egress manifest', () => {
     expect(manifest.surfaces.find((item) => item.capability === 'package-health')?.status)
       .toBe('opt-in');
     expect(JSON.stringify(manifest)).not.toContain('private/project');
+  });
+
+  it('describes the separate GHSA query consent without implying a complete privacy audit', () => {
+    const disabled = explainNpmAdvisoryEgress({ offline: true });
+    expect(disabled.command).toBe('advisories-npm');
+    expect(disabled.surfaces[0]?.status).toBe('disabled');
+    expect(disabled.systemEgressVerified).toBe(false);
+
+    const consented = explainNpmAdvisoryEgress({
+      allowPublicPackageLookup: true
+    });
+    expect(consented.surfaces[0]?.status).toBe('opt-in');
+    expect(consented.surfaces[0]?.destination)
+      .toBe('https://api.github.com/advisories');
+    expect(JSON.stringify(consented)).not.toContain('private/repository');
+  });
+
+  it('can print advisory-only disclosure without making a network request', async () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      await createProgram().parseAsync([
+        'node', 'toolip', 'privacy', 'explain',
+        '--command', 'advisories-npm', '--allow-public-package-lookup'
+      ]);
+      const explanation = JSON.parse(String(spy.mock.lastCall?.[0]));
+      expect(explanation.command).toBe('advisories-npm');
+      expect(explanation.surfaces[0].status).toBe('opt-in');
+      expect(explanation.systemEgressVerified).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('exposes the manifest without loading a scanner or initiating a provider query', async () => {
