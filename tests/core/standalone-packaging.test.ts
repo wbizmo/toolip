@@ -55,6 +55,16 @@ describe('portable standalone candidate archives', () => {
     const tar = gunzipSync(compressed);
     expect(tar.subarray(0, 6).toString('utf8')).toBe('toolip');
     expect(tar[156]).toBe(0x30);
+    const header = Buffer.from(tar.subarray(0, 512));
+    const recorded = Number.parseInt(
+      header.subarray(148, 154).toString('ascii'), 8
+    );
+    expect(header[154]).toBe(0);
+    expect(header[155]).toBe(0x20);
+    header.fill(0x20, 148, 156);
+    expect(recorded).toBe(
+      header.reduce((sum, byte) => sum + byte, 0)
+    );
     const payload = tar.subarray(512, 512 + fixture.body.length);
     expect(payload).toEqual(fixture.body);
     expect(tar.subarray(-1024).every((value) => value === 0)).toBe(true);
