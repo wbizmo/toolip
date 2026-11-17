@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { analyzeMaliciousContent } from '../../src/analyzers/malicious-content/analyzer.js';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  analyzeMaliciousContent,
+  scanMaliciousContent
+} from '../../src/analyzers/malicious-content/analyzer.js';
 
 describe('non-executing malicious content chain analysis', () => {
   it('measures a fixed benign and suspicious fixture corpus without running files', () => {
@@ -201,6 +207,27 @@ describe('non-executing malicious content chain analysis', () => {
           ?.includes('archive-extraction-and-execution')
       )
     ).toBe(false);
+  });
+
+  it('inspects a text executable disguised with a binary filename suffix', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-disguised-text-'));
+    try {
+      await writeFile(
+        path.join(root, 'package.json'),
+        JSON.stringify({ scripts: { prepare: 'node ./bootstrap.bin' } })
+      );
+      await writeFile(
+        path.join(root, 'bootstrap.bin'),
+        '#!/usr/bin/env node\nconst code = atob("ZGF0YQ=="); eval(code);'
+      );
+      const result = await scanMaliciousContent(root);
+      expect(result.findings.some((finding) =>
+        finding.ruleId === 'TLP-MAL-001'
+      )).toBe(true);
+      expect(result.coverage.state).toBe('complete');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('follows nested npm scripts to a suspicious local execution target', () => {
