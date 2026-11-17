@@ -475,6 +475,10 @@ export async function runTaskDag<T>(
 
   const finish = (outcome: TaskOutcome<T>) => {
     outcomes.set(outcome.id, outcome);
+    // Once cancelled, dependent nodes are terminalized in one pass below.
+    // Continuing to traverse dependency edges and fill the heap would spend
+    // work and memory scheduling tasks that must never execute.
+    if (controller.signal.aborted) return;
     for (const id of dependents.get(outcome.id) ?? []) {
       remaining.set(id, (remaining.get(id) ?? 1) - 1);
       if (remaining.get(id) === 0) queuePush(queue, id);
@@ -485,9 +489,13 @@ export async function runTaskDag<T>(
     await new Promise<void>((resolve) => {
       const pump = () => {
         if (controller.signal.aborted) {
+          // No pending dependency needs scheduling after cancellation. Clear
+          // ready work and mark unstarted tasks directly in O(V), rather than
+          // propagating each cancellation through up to E dependent edges.
+          queue.length = 0;
           for (const task of tasks)
             if (!started.has(task.id) && !outcomes.has(task.id))
-              finish({
+              outcomes.set(task.id, {
                 id: task.id,
                 state: 'cancelled',
                 reason: 'analysis cancelled'
