@@ -109,7 +109,9 @@ export class TextFileReader {
   private filesInFlight = 0;
   private activeReads = 0;
   private peakConcurrentReads = 0;
-  private readonly queuedReads: ReadSlotWaiter[] = [];
+  // Ordered Set preserves FIFO permits with amortized O(1) enqueue and deletion,
+  // including cancellation of a queued read without shifting other waiters.
+  private readonly queuedReads = new Set<ReadSlotWaiter>();
   private bytesRead = 0;
   private readonly budget: TextFileBudget;
   private readonly maxConcurrentReads: number;
@@ -160,7 +162,7 @@ export class TextFileReader {
   }
 
   get queuedReadCount(): number {
-    return this.queuedReads.length;
+    return this.queuedReads.size;
   }
 
   get peakConcurrentReadCount(): number {
@@ -180,22 +182,21 @@ export class TextFileReader {
     return new Promise<boolean>((resolve) => {
       const waiter: ReadSlotWaiter = { signal, resolve };
       waiter.abort = () => {
-        const index = this.queuedReads.indexOf(waiter);
-        if (index < 0) return;
-        this.queuedReads.splice(index, 1);
+        if (!this.queuedReads.delete(waiter)) return;
         signal?.removeEventListener('abort', waiter.abort as () => void);
         resolve(false);
       };
-      this.queuedReads.push(waiter);
+      this.queuedReads.add(waiter);
       signal?.addEventListener('abort', waiter.abort, { once: true });
       if (signal?.aborted) waiter.abort();
     });
   }
 
   private releaseReadSlot(): void {
-    while (this.queuedReads.length > 0) {
-      const waiter = this.queuedReads.shift();
-      if (!waiter) continue;
+    while (this.queuedReads.size > 0) {
+      const waiter = this.queuedReads.values().next().value;
+      if (!waiter) break;
+      this.queuedReads.delete(waiter);
       waiter.signal?.removeEventListener('abort', waiter.abort as () => void);
       if (waiter.signal?.aborted) {
         waiter.resolve(false);
