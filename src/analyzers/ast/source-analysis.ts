@@ -2406,16 +2406,6 @@ const sensitiveSchemaDecorators = new Set([
   'protectedhealthinformation',
   'toolipsensitive'
 ]);
-const redactionHelpers = new Set([
-  'redactSecret',
-  'redactSecrets',
-  'redactSensitive',
-  'redactSensitiveData',
-  'maskSecret',
-  'maskToken',
-  'sanitizeSecret'
-]);
-
 function isIdentifierPropertyName(node: ts.Identifier): boolean {
   return (
     (ts.isPropertyAssignment(node.parent) && node.parent.name === node) ||
@@ -2524,40 +2514,10 @@ function isProcessEnvironmentObject(
   );
 }
 
-const locallyBoundRedactionNames = new WeakMap<
-  ts.SourceFile,
-  ReadonlySet<string>
->();
 const verifiedLocalRedactionNames = new WeakMap<
   ts.SourceFile,
   ReadonlySet<string>
 >();
-
-function redactionNamesDefinedInSource(
-  source: ts.SourceFile
-): ReadonlySet<string> {
-  const cached = locallyBoundRedactionNames.get(source);
-  if (cached) return cached;
-  const bound = new Set<string>();
-  const visit = (node: ts.Node): void => {
-    if (
-      (ts.isFunctionDeclaration(node) ||
-        ts.isFunctionExpression(node) ||
-        ts.isVariableDeclaration(node) ||
-        ts.isParameter(node) ||
-        ts.isImportSpecifier(node) ||
-        ts.isImportClause(node)) &&
-      node.name &&
-      ts.isIdentifier(node.name) &&
-      redactionHelpers.has(node.name.text)
-    )
-      bound.add(node.name.text);
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
-  locallyBoundRedactionNames.set(source, bound);
-  return bound;
-}
 
 function hasRedactionContract(node: ts.Node): boolean {
   return ts
@@ -2611,18 +2571,40 @@ function verifiedRedactionNamesInSource(
 ): ReadonlySet<string> {
   const cached = verifiedLocalRedactionNames.get(source);
   if (cached) return cached;
-  const names = new Set<string>();
+  // Only a unique annotated function whose entire returned value is a
+  // static replacement can be proven locally. Duplicate/shadowed bindings
+  // make a familiar name ambiguous, even if one declaration is trusted.
+  const declarations = new Map<string, { count: number; trusted: boolean }>();
   const visit = (node: ts.Node): void => {
     if (
-      (ts.isFunctionDeclaration(node) || ts.isVariableDeclaration(node)) &&
+      (ts.isFunctionDeclaration(node) ||
+        ts.isVariableDeclaration(node) ||
+        ts.isParameter(node) ||
+        ts.isImportSpecifier(node) ||
+        ts.isImportClause(node) ||
+        ts.isFunctionExpression(node)) &&
       node.name &&
-      ts.isIdentifier(node.name) &&
-      verifiedRedactorDeclaration(node)
-    )
-      names.add(node.name.text);
+      ts.isIdentifier(node.name)
+    ) {
+      const name = node.name.text;
+      if (/^(?:redact|mask|sanitize)/iu.test(name)) {
+        const current = declarations.get(name) ?? {
+          count: 0,
+          trusted: false
+        };
+        current.count += 1;
+        current.trusted ||= verifiedRedactorDeclaration(node);
+        declarations.set(name, current);
+      }
+    }
     ts.forEachChild(node, visit);
   };
   visit(source);
+  const names = new Set(
+    [...declarations]
+      .filter(([, item]) => item.count === 1 && item.trusted)
+      .map(([name]) => name)
+  );
   verifiedLocalRedactionNames.set(source, names);
   return names;
 }
@@ -2655,9 +2637,11 @@ function isRedactionCall(
   // keep it as an exposure candidate rather than treating a name as proof.
   if (!ts.isIdentifier(target)) return false;
   const source = expression.getSourceFile();
+  // Unresolved free function names, including redactSensitive/maskSecret,
+  // are NOT evidence of sanitization. Only a unique locally verified static
+  // replacement or an explicitly verified imported declaration can suppress
+  // a sensitive-data flow candidate.
   return (
-    (redactionHelpers.has(target.text) &&
-      !redactionNamesDefinedInSource(source).has(target.text)) ||
     verifiedRedactionNamesInSource(source).has(target.text) ||
     isVerifiedImportedRedactor(target, checker)
   );
