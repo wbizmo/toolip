@@ -633,7 +633,7 @@ router.get('/records/:id', async (req, res) => {
     );
   });
 
-  it('resolves statically renamed named imports of explicit resource guards', () => {
+  it('does not infer authorization from statically renamed but unverified guard imports', () => {
     const findings = analyzeAstSource(
       'src/routes/imported-guard.ts',
       `import { assertOwner as verifyOwner } from './authorization.js';
@@ -653,7 +653,7 @@ router.get('/records/:id', async (req, res) => {
     );
 
     expect(findings.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
-      false
+      true
     );
     expect(shadowed.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
       true
