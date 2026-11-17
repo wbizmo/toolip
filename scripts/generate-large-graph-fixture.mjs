@@ -10,7 +10,7 @@
  */
 import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { mkdir, lstat, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { once } from 'node:events';
 
