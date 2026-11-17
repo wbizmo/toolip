@@ -15,7 +15,7 @@ export type EgressSurface = Readonly<{
 
 export type ScanEgressManifest = Readonly<{
   schema: 'toolip.dev/egress-manifest/v1';
-  command: 'scan';
+  command: 'scan' | 'advisories-npm';
   offlineRequested: boolean;
   systemEgressVerified: false;
   coverage: 'declared-surfaces-only';
@@ -131,6 +131,44 @@ export function explainScanEgress(
       options.allowPublicScope === true
         ? 'Public scoped npm package-name disclosure was explicitly requested.'
         : 'Public scoped npm package-name disclosure was not explicitly requested.'
+    ])
+  });
+}
+
+/**
+ * The package-name query is a distinct manual command from `scan`; it
+ * requires per-invocation consent. Showing this disclosure never makes an
+ * advisory HTTP request or reads a local project manifest.
+ */
+export function explainNpmAdvisoryEgress(
+  options: { offline?: boolean; allowPublicPackageLookup?: boolean } = {}
+): ScanEgressManifest {
+  const online = !options.offline && options.allowPublicPackageLookup === true;
+  return Object.freeze({
+    schema: 'toolip.dev/egress-manifest/v1',
+    command: 'advisories-npm',
+    offlineRequested: options.offline === true,
+    systemEgressVerified: false,
+    coverage: 'declared-surfaces-only',
+    installNetworkSeparate: true,
+    surfaces: Object.freeze([
+      Object.freeze({
+        capability: 'ghsa-exact-npm-instance',
+        status: online ? 'opt-in' as const : 'disabled' as const,
+        destination: 'https://api.github.com/advisories',
+        dataCategories: Object.freeze([
+          'exact explicitly supplied public npm package name',
+          'npm ecosystem identifier'
+        ]),
+        consent: 'Requires advisories npm <name> <version> --allow-public-package-lookup without --offline.'
+      })
+    ]),
+    caveats: Object.freeze([
+      'The package name is disclosed in a query parameter when the operator explicitly opts in.',
+      'The exact local installed version is evaluated after the response and is not included in the GHSA request.',
+      'A single first page is not exhaustive; unsupported ranges and incomplete responses remain unknown.',
+      'npm/npx installation traffic is separate from Toolip advisory query traffic.',
+      'This manifest is not an operating-system-level egress guarantee.'
     ])
   });
 }
