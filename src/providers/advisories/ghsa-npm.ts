@@ -7,7 +7,9 @@ import semver from 'semver';
  * a replacement for OSV or proof of a complete vulnerability inventory.
  * Other ecosystem version-range semantics are intentionally not guessed.
  */
+export type GhsaAdvisoryType = 'reviewed' | 'unreviewed' | 'malware';
 export type GhsaPackageAdvisory = Readonly<{
+  advisoryType: GhsaAdvisoryType;
   id: string;
   aliases: readonly string[];
   severity?: 'critical' | 'high' | 'medium' | 'low';
@@ -25,6 +27,7 @@ export type GhsaPackageLookup = Readonly<{
   schema: 'toolip.dev/ghsa-npm-lookup/v1';
   packageName: string;
   version: string;
+  advisoryType: GhsaAdvisoryType;
   status: 'complete' | 'partial' | 'offline' | 'failed';
   source: 'github-global-advisories';
   sourceUrl: 'https://api.github.com/advisories';
@@ -80,7 +83,8 @@ export function validateGhsaNpmIdentity(
 function matchAdvisory(
   raw: unknown,
   packageName: string,
-  version: string
+  version: string,
+  requestedType: GhsaAdvisoryType
 ): GhsaPackageAdvisory | undefined {
   const value = plainObject(raw);
   if (!value ||
@@ -88,6 +92,7 @@ function matchAdvisory(
       !ghsaIdPattern.test(value.ghsa_id))
     return undefined;
   const id = value.ghsa_id;
+  if (value.type !== requestedType) return undefined;
   const vulnerabilities = value.vulnerabilities;
   if (!Array.isArray(vulnerabilities) ||
       vulnerabilities.length > maxVulnerabilitiesPerAdvisory)
@@ -130,6 +135,7 @@ function matchAdvisory(
   }
   const result: GhsaPackageAdvisory = {
     id,
+    advisoryType: requestedType,
     aliases: Object.freeze([...aliases].sort()),
     ...(severity(value.severity) ? { severity: severity(value.severity) } : {}),
     reviewed: value.type === 'reviewed',
@@ -207,14 +213,18 @@ export async function lookupGhsaNpmPackage(
   options: Readonly<{
     offline?: boolean;
     allowPublicPackageLookup?: boolean;
+    advisoryType?: GhsaAdvisoryType;
     signal?: AbortSignal;
     fetcher?: typeof fetch;
   }> = {}
 ): Promise<GhsaPackageLookup> {
   validateGhsaNpmIdentity(packageName, version);
+  const advisoryType = options.advisoryType ?? 'reviewed';
+  if (!['reviewed', 'unreviewed', 'malware'].includes(advisoryType))
+    throw new TypeError('GHSA advisory type must be reviewed, unreviewed, or malware.');
   const baseline = {
     schema: 'toolip.dev/ghsa-npm-lookup/v1' as const,
-    packageName, version, source: 'github-global-advisories' as const,
+    packageName, version, advisoryType, source: 'github-global-advisories' as const,
     sourceUrl: apiUrl,
     noVulnerabilitiesProven: false as const
   };
@@ -230,6 +240,7 @@ export async function lookupGhsaNpmPackage(
   }
   const url = new URL(apiUrl);
   url.searchParams.set('ecosystem', 'npm');
+  url.searchParams.set('type', advisoryType);
   url.searchParams.set('affects', packageName);
   url.searchParams.set('per_page', String(maxAdvisories));
   let parsed: unknown;
@@ -253,7 +264,7 @@ export async function lookupGhsaNpmPackage(
   const found = new Map<string, GhsaPackageAdvisory>();
   let malformed = false;
   for (const value of parsed) {
-    const item = matchAdvisory(value, packageName, version);
+    const item = matchAdvisory(value, packageName, version, advisoryType);
     if (!item) {
       malformed = true;
       continue;
