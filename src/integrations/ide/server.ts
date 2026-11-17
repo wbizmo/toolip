@@ -1,4 +1,4 @@
-import { createInterface } from 'node:readline';
+import { once } from 'node:events';
 import { analyzeAstSource } from '../../analyzers/ast/source-analysis.js';
 import { redactSensitiveText } from '../../core/safe-output.js';
 import { serializeJsonOutputWithinBudget } from '../../core/report-writer.js';
@@ -41,6 +41,7 @@ function permittedPath(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 1024 &&
     !value.includes('\\') && !value.includes('\0') &&
     !value.startsWith('/') && !value.endsWith('/') &&
+    !/^[A-Za-z]:/u.test(value) &&
     !value.split('/').some((part) => part === '..' || part === '.' || !part) &&
     supported.test(value);
 }
@@ -134,29 +135,65 @@ export async function serveIdeJsonRpc(
   output: NodeJS.WritableStream = process.stdout
 ): Promise<void> {
   const session = new IdeAnalyzerSession();
-  const lines = createInterface({ input, crlfDelay: Infinity });
-  for await (const line of lines) {
-    let response: IdeResponse;
-    if (Buffer.byteLength(line, 'utf8') > maximumRequestBytes) {
-      response = { jsonrpc: '2.0', id: null, error: {
+  const send = async (response: IdeResponse): Promise<void> => {
+    let serialized: string;
+    try {
+      serialized = serializeJsonOutputWithinBudget(
+        response, maximumResponseBytes
+      ) + '\n';
+    } catch {
+      serialized = '{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"Response budget exceeded."}}\n';
+    }
+    if (!output.write(serialized)) await once(output, 'drain');
+  };
+  const consumeLine = async (fragments: Buffer[], bytes: number, tooLong: boolean) => {
+    if (tooLong) {
+      await send({ jsonrpc: '2.0', id: null, error: {
         code: -32600, message: 'IDE request exceeds maximum size.'
-      } };
-    } else {
-      try {
-        const parsed = JSON.parse(line) as unknown;
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
-          throw new TypeError('Invalid request.');
-        response = await session.handle(parsed as IdeRequest);
-      } catch {
-        response = { jsonrpc: '2.0', id: null, error: {
-          code: -32700, message: 'IDE request is malformed.'
-        } };
-      }
+      } });
+      return;
     }
     try {
-      output.write(serializeJsonOutputWithinBudget(response, maximumResponseBytes) + '\n');
+      const raw = new TextDecoder('utf-8', { fatal: true }).decode(
+        Buffer.concat(fragments, bytes)
+      );
+      const parsed = JSON.parse(raw) as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+        throw new TypeError('Invalid request.');
+      await send(await session.handle(parsed as IdeRequest));
     } catch {
-      output.write('{"jsonrpc":"2.0","id":null,"error":{"code":-32000,"message":"Response budget exceeded."}}\n');
+      await send({ jsonrpc: '2.0', id: null, error: {
+        code: -32700, message: 'IDE request is malformed.'
+      } });
+    }
+  };
+  let fragments: Buffer[] = [];
+  let currentBytes = 0;
+  let tooLong = false;
+  for await (const value of input) {
+    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    let offset = 0;
+    while (offset < chunk.length) {
+      const delimiter = chunk.indexOf(10, offset);
+      const end = delimiter < 0 ? chunk.length : delimiter;
+      const piece = chunk.subarray(offset, end);
+      if (!tooLong) {
+        if (currentBytes + piece.length > maximumRequestBytes) {
+          tooLong = true;
+          currentBytes = 0;
+          fragments = [];
+        } else {
+          currentBytes += piece.length;
+          if (piece.length > 0) fragments.push(piece);
+        }
+      }
+      if (delimiter >= 0) {
+        await consumeLine(fragments, currentBytes, tooLong);
+        fragments = [];
+        currentBytes = 0;
+        tooLong = false;
+      }
+      offset = end + 1;
     }
   }
 }
