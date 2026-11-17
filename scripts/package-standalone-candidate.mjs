@@ -5,7 +5,7 @@
  * manifest and the optional installers. No source execution or publication.
  */
 import { createHash } from 'node:crypto';
-import { constants, createWriteStream } from 'node:fs';
+import { constants } from 'node:fs';
 import { lstat, open, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -179,16 +179,26 @@ try {
     }
   };
 
-  const stream = createWriteStream(artifactPath, {
-    flags: 'wx', mode: 0o600
-  });
-  created = true;
-  if (windows) await pipeline(Readable.from(payload()), stream);
-  else await pipeline(
-    Readable.from(payload()),
-    createGzip({ level: 9, mtime: 0 }),
-    stream
+  // Acquire the output path exclusively *before* recording ownership.
+  // A previously existing release archive must never be removed as cleanup
+  // if opening with O_EXCL fails.
+  const outputHandle = await open(
+    artifactPath,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+    0o600
   );
+  created = true;
+  try {
+    const stream = outputHandle.createWriteStream({ autoClose: false });
+    if (windows) await pipeline(Readable.from(payload()), stream);
+    else await pipeline(
+      Readable.from(payload()),
+      createGzip({ level: 9, mtime: 0 }),
+      stream
+    );
+  } finally {
+    await outputHandle.close();
+  }
   if (bodyBytes !== size)
     throw new Error('Packaged executable content length is inconsistent.');
   const after = await descriptor.stat({ bigint: true });
