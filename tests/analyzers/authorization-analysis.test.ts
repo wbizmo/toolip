@@ -133,6 +133,39 @@ describe('route authorization candidates', () => {
     );
   });
 
+  it('does not treat attacker-controlled currentUser or currentTenant variable names as authorization proof', () => {
+    const queryControlled = analyzeAstSource(
+      'src/routes/named-principals.ts',
+      [
+        "router.get('/documents/:id', async (req, res) => {",
+        '  const currentUser = req.query.owner;',
+        '  const currentTenant = req.params.tenantId;',
+        '  return db.document.findFirst({',
+        '    where: { id: req.params.id, ownerId: currentUser, tenantId: currentTenant }',
+        '  });',
+        '});'
+      ].join('\n')
+    );
+    expect(
+      queryControlled.some((finding) => finding.ruleId === 'TLP-AUTH-001')
+    ).toBe(true);
+
+    const provenRequestPrincipal = analyzeAstSource(
+      'src/routes/proven-principal.ts',
+      [
+        "router.get('/documents/:id', async (req, res) => {",
+        '  const currentUser = req.user.id;',
+        '  return db.document.findFirst({',
+        '    where: { id: req.params.id, ownerId: currentUser }',
+        '  });',
+        '});'
+      ].join('\n')
+    );
+    expect(
+      provenRequestPrincipal.some((finding) => finding.ruleId === 'TLP-AUTH-001')
+    ).toBe(false);
+  });
+
   it('recognizes nested tenant memberships but rejects request-controlled membership identities', () => {
     const scoped = analyzeAstSource(
       'src/routes/tenant-documents.ts',
