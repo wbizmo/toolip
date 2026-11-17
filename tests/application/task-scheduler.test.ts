@@ -156,6 +156,45 @@ describe('analysis DAG scheduler', () => {
     expect(result[0]?.state).toBe('cancelled');
   });
 
+  it('terminalizes large cancelled fan-out graphs without executing dependents', async () => {
+    const controller = new AbortController();
+    const nodes = Array.from({ length: 2_000 }, (_, index) => ({
+      id: `dependent-${index}`,
+      dependsOn: ['root'],
+      run: async () => {
+        throw new Error('cancelled task must not execute');
+      }
+    }));
+    controller.abort();
+    const result = await runTaskDag(
+      [
+        {
+          id: 'root',
+          run: async () => {
+            throw new Error('cancelled root must not execute');
+          }
+        },
+        ...nodes
+      ],
+      { signal: controller.signal, concurrency: 32 }
+    );
+    expect(result).toHaveLength(2_001);
+    expect(result.every((item) => item.state === 'cancelled')).toBe(true);
+  });
+
+  it('terminalizes a cycle and its descendants without executing tasks', async () => {
+    const result = await runTaskDag([
+      { id: 'a', dependsOn: ['b'], run: async () => 1 },
+      { id: 'b', dependsOn: ['a'], run: async () => 2 },
+      { id: 'c', dependsOn: ['a'], run: async () => 3 }
+    ]);
+    expect(result.map((item) => item.state)).toEqual([
+      'blocked',
+      'blocked',
+      'blocked'
+    ]);
+  });
+
   it('removes the caller cancellation listener after a completed graph', async () => {
     const controller = new AbortController();
     const addListener = vi.spyOn(controller.signal, 'addEventListener');
