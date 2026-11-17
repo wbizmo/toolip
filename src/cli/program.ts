@@ -1,6 +1,7 @@
 import chalk from 'chalk';
 import { Command } from 'commander';
 import { registerAiCommands } from '../commands/ai.js';
+import { registerAdvisoriesCommand } from '../commands/advisories.js';
 import { registerAlternativesCommand } from '../commands/alternatives.js';
 import { registerAnnounceCommand } from '../commands/announce.js';
 import { registerAstScanCommand } from '../commands/ast-scan.js';
@@ -51,6 +52,7 @@ import { registerWatchCommand } from '../commands/watch.js';
 import { TOOLIP_AUTHOR, TOOLIP_VERSION } from '../config/version.js';
 
 const registrations: Array<(program: Command) => void> = [
+  registerAdvisoriesCommand,
   registerAiCommands,
   registerCiCommand,
   registerNotifyCommand,
