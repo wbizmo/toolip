@@ -28,6 +28,7 @@ import { registerMcpCommand } from '../commands/mcp.js';
 import { registerMonorepoCommand } from '../commands/monorepo.js';
 import { registerNpmAttestationCommand } from '../commands/npm-attestation.js';
 import { registerNotifyCommand } from '../commands/notify.js';
+import { registerOnboardCommand } from '../commands/onboard.js';
 import { registerPackageHealthCommand } from '../commands/package-health.js';
 import { registerPreCommitCommand } from '../commands/pre-commit.js';
 import { registerPrivacyCommand } from '../commands/privacy.js';
@@ -53,6 +54,7 @@ const registrations: Array<(program: Command) => void> = [
   registerAiCommands,
   registerCiCommand,
   registerNotifyCommand,
+  registerOnboardCommand,
   registerSelfTestCommand,
   registerIdeCommand,
   registerProfileCommand,
