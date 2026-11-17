@@ -47,7 +47,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: toolip-policy-\\${{ github.ref }}
+  group: toolip-policy-\${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
