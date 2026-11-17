@@ -14,6 +14,7 @@ import { registerDoctorCommand } from '../commands/doctor.js';
 import { registerGitAuditCommand } from '../commands/git-audit.js';
 import { registerGitHistoryCommand } from '../commands/git-history.js';
 import { registerGitHubAppCommand } from '../commands/github-app.js';
+import { registerIdeCommand } from '../commands/ide.js';
 import { registerHistoryCommand } from '../commands/history.js';
 import { registerHookCommand } from '../commands/hook.js';
 import { registerInspectCommand } from '../commands/inspect.js';
@@ -48,6 +49,7 @@ import { TOOLIP_AUTHOR, TOOLIP_VERSION } from '../config/version.js';
 const registrations: Array<(program: Command) => void> = [
   registerAiCommands,
   registerSelfTestCommand,
+  registerIdeCommand,
   registerProfileCommand,
   registerScanCommand,
   registerDoctorCommand,
