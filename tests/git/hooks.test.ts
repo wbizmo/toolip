@@ -12,7 +12,8 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   installPreCommitHook,
-  installPreCommitHookDetailed
+  installPreCommitHookDetailed,
+  uninstallPreCommitHookDetailed
 } from '../../src/core/hooks.js';
 import {
   cleanupRepos,
@@ -343,4 +344,32 @@ describe('hook installation (issue #41)', () => {
       expect(calls).not.toContain('npx');
     }
   );
+});
+
+describe('non-destructive Toolip managed hook removal (issue #106)', () => {
+  it('removes only the managed block and keeps an unrelated user hook intact', async () => {
+    const root = makeRepo();
+    const hook = path.join(root, '.git', 'hooks', 'pre-commit');
+    mkdirSync(path.dirname(hook), { recursive: true });
+    writeFileSync(hook, '#!/bin/sh\necho user hook\n', { mode: 0o755 });
+    await installPreCommitHookDetailed(root);
+    const first = await uninstallPreCommitHookDetailed(root);
+    expect(first.removed).toBe(true);
+    const result = readFileSync(hook, 'utf8');
+    expect(result).toContain('echo user hook');
+    expect(result).not.toContain(BLOCK_START);
+    const again = await uninstallPreCommitHookDetailed(root);
+    expect(again.removed).toBe(false);
+  }, 30_000);
+
+  it('does not touch user files when Toolip was never installed', async () => {
+    const root = makeRepo();
+    const hook = path.join(root, '.git', 'hooks', 'pre-commit');
+    mkdirSync(path.dirname(hook), { recursive: true });
+    const existing = '#!/bin/sh\necho unrelated\n';
+    writeFileSync(hook, existing, { mode: 0o755 });
+    const result = await uninstallPreCommitHookDetailed(root);
+    expect(result.removed).toBe(false);
+    expect(readFileSync(hook, 'utf8')).toBe(existing);
+  }, 30_000);
 });
