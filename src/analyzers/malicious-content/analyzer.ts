@@ -28,6 +28,7 @@ type Entry = {
 const MAX_ANALYSIS_FILES = 100_000;
 const MAX_ANALYSIS_BYTES = 256 * 1024 * 1024;
 const MAX_ANALYSIS_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_BINARY_NAMED_TEXT_PROBES = 256;
 const MAX_ENTRYPOINTS = 10_000;
 const MAX_REFERENCES_PER_ENTRY = 10_000;
 const MAX_REFERENCE_WORK = 100_000;
@@ -79,15 +80,12 @@ const binaryExtensions = new Set([
   'xz'
 ]);
 
-/** Candidate classification ignores extension claims but excludes known binaries. */
+/** A filename extension is not content proof. Confirm binary status from bytes. */
 export function shouldInspectMaliciousContent(
   relativePath: string,
-  extension: string
+  _extension: string
 ): boolean {
-  return (
-    !binaryExtensions.has(extension.toLowerCase()) &&
-    !relativePath.endsWith('.map')
-  );
+  return !relativePath.endsWith('.map');
 }
 const executableReference =
   /(?:\bnode(?:\.exe)?\s+|\b(?:bash|sh|zsh|pwsh|powershell)(?:\.exe)?\s+(?:-File\s+)?|\bpython(?:3)?\s+|\bdeno\s+run\s+|\b(?:bun|ruby|perl|php)(?:\.exe)?\s+(?:run\s+)?|\bcmd(?:\.exe)?\s+\/(?:c|k)\s+)(["']?)([^\s"';&|]+)\1/giu;
@@ -1556,6 +1554,7 @@ export async function scanMaliciousContent(
   let failed = 0;
   let eligible = 0;
   let bytesScanned = 0;
+  let binaryNamedTextProbes = 0;
   for (const file of files) {
     if (!shouldInspectMaliciousContent(file.relativePath, file.extension))
       continue;
@@ -1584,9 +1583,17 @@ export async function scanMaliciousContent(
       skipped++;
       continue;
     }
+    const binaryNamed = binaryExtensions.has(file.extension.toLowerCase());
+    if (binaryNamed && ++binaryNamedTextProbes > MAX_BINARY_NAMED_TEXT_PROBES) {
+      // Do not report a clean scan when a binary-looking name was never
+      // inspected as text. A malicious script can carry a misleading suffix.
+      skipped++;
+      continue;
+    }
     const result = await reader.read(file.absolutePath, signal, file.snapshot);
     if (result.status === 'binary') {
-      skipped++;
+      if (binaryNamed) eligible--;
+      else skipped++;
       continue;
     }
     if (result.status !== 'ok') {
