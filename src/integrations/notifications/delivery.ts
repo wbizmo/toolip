@@ -1,6 +1,5 @@
-import { createHmac, randomBytes } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { redactSensitiveText } from '../../core/safe-output.js';
 
 export type AlertKind =
   | 'critical-introduced'
@@ -235,8 +234,9 @@ export async function deliverAlert(
         if (response.status !== 429 && response.status < 500) break;
         if (attempt < attemptsLimit) {
           const backoff = Math.min(
-            1_500, 200 * 2 ** (attempt - 1),
-            Math.max(0, (response.retryAfterSeconds ?? 0) * 1000)
+            1_500,
+            Math.max(200 * 2 ** (attempt - 1),
+              Math.max(0, (response.retryAfterSeconds ?? 0) * 1000))
           );
           await sleep(backoff, undefined, { signal: dependencies.signal });
         }
