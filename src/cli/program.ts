@@ -25,6 +25,7 @@ import { registerMonorepoCommand } from '../commands/monorepo.js';
 import { registerNpmAttestationCommand } from '../commands/npm-attestation.js';
 import { registerPackageHealthCommand } from '../commands/package-health.js';
 import { registerPreCommitCommand } from '../commands/pre-commit.js';
+import { registerPrivacyCommand } from '../commands/privacy.js';
 import { registerPolicyCommand } from '../commands/policy.js';
 import { registerPrScanCommand } from '../commands/pr-scan.js';
 import { registerProfileCommand } from '../commands/profile.js';
@@ -58,6 +59,7 @@ const registrations: Array<(program: Command) => void> = [
   registerVaultCommand,
   registerGitAuditCommand,
   registerPreCommitCommand,
+  registerPrivacyCommand,
   registerHookCommand,
   registerLearnCommand,
   registerVulnerabilitiesCommand,
