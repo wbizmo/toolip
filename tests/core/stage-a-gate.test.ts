@@ -2318,6 +2318,41 @@ describe('trusted Stage A Git-object scanner', () => {
     )).toBe(true);
   });
 
+  it('inspects an unchanged binary-named text payload reached by a changed build entrypoint', async () => {
+    const fixture = await repo({
+      'package.json': JSON.stringify({
+        name: 'synthetic', version: '1.0.0',
+        scripts: { prepare: 'node ./bootstrap.bin' }
+      }),
+      'bootstrap.bin':
+        "const encoded = atob('ZGF0YQ=='); eval(encoded);"
+    });
+    const result = scanGitTree(fixture.root, fixture.sha, {
+      changedPaths: ['package.json']
+    });
+    expect(result.status).toBe('blocked');
+    expect(result.findings.some((finding) =>
+      finding.includes('bootstrap.bin')
+    )).toBe(true);
+  });
+
+  it('preserves unknown coverage for a referenced binary object instead of approving it', async () => {
+    const fixture = await repo({
+      'package.json': JSON.stringify({
+        name: 'synthetic', version: '1.0.0',
+        scripts: { prepare: 'node ./payload.bin' }
+      }),
+      'payload.bin': Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 1, 2, 3])
+    });
+    const result = scanGitTree(fixture.root, fixture.sha, {
+      changedPaths: ['package.json']
+    });
+    expect(result.status).not.toBe('approved');
+    expect(result.incompleteReasons.some((reason) =>
+      reason.startsWith('referenced-binary-content-uninspected:')
+    )).toBe(true);
+  });
+
   it('reports unsupported nested and alternate lockfiles even when unchanged', async () => {
     const fixtures = await Promise.all([
       repo({
