@@ -58,10 +58,17 @@ export function registerNotifyCommand(program: Command): void {
           code: 'NOTIFICATION_INPUT_INVALID',
           exitCode: 1
         });
-      if (!path.isAbsolute(options.ledgerDir))
-        throw new ToolipError('Notification ledger directory must be absolute.', {
-          code: 'NOTIFICATION_LEDGER_INVALID', exitCode: 1
-        });
+      const workspace = path.resolve(process.cwd());
+      const ledger = path.resolve(options.ledgerDir);
+      if (
+        !path.isAbsolute(options.ledgerDir) ||
+        ledger === workspace ||
+        ledger.startsWith(workspace + path.sep)
+      )
+        throw new ToolipError(
+          'Notification ledger must be an absolute private directory outside the scanned workspace.',
+          { code: 'NOTIFICATION_LEDGER_INVALID', exitCode: 1 }
+        );
       // Webhook endpoint and HMAC secret are never accepted as argv values,
       // interpolated into messages, or read from the untrusted scanned repo.
       const endpoint = process.env.TOOLIP_ALERT_WEBHOOK_URL;
