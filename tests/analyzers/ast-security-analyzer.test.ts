@@ -535,6 +535,21 @@ async function shadowed(require: (id: string) => any, req: RequestLike) {
     ).toHaveLength(2);
   });
 
+  it('recognizes untrusted outbound destination configuration without mistaking request bodies for URLs', () => {
+    const findings = analyzeAstSource(
+      'src/routes/http-config.ts',
+      `async function handler(req: RequestLike) {
+  await axios.get('/items', { baseURL: req.query.base });
+  await axios.post('/items', req.body, { proxy: req.query.proxy });
+  await axios.get('/items', { hostname: req.query.host });
+  await axios.post('/items', req.body, { headers: { 'X-Custom': req.body.value } });
+}`
+    );
+    expect(
+      findings.filter((finding) => finding.ruleId === 'TLP-AST-006')
+    ).toHaveLength(3);
+  });
+
   it('keeps large literal host lists unverified instead of traversing them repeatedly', () => {
     const hosts = Array.from(
       { length: 257 },
