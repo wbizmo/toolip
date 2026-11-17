@@ -4445,11 +4445,24 @@ function sourceSinkRule(
     ) {
       return astSecurityRules.sqlInjection;
     }
-    if (
-      isOutboundRequestCall(node, scope) &&
-      !hasVerifiedFetchHostAllowlist(node, first, hostAllowlistProofBudget)
-    ) {
-      return astSecurityRules.serverSideRequestForgery;
+    if (isOutboundRequestCall(node, scope)) {
+      // The redirect: 'error' option has defined host-containment meaning
+      // only for the native Fetch API. axios/got/custom request clients can
+      // ignore this field entirely; accepting it as proof would hide SSRF
+      // when a request-derived host is otherwise allowlisted.
+      const nativeFetch =
+        ts.isIdentifier(target) &&
+        target.text === 'fetch' &&
+        bindingOwner(scope, 'fetch') === undefined;
+      if (
+        !nativeFetch ||
+        !hasVerifiedFetchHostAllowlist(
+          node,
+          first,
+          hostAllowlistProofBudget
+        )
+      )
+        return astSecurityRules.serverSideRequestForgery;
     }
   }
   if (
