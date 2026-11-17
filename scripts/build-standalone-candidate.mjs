@@ -1,94 +1,166 @@
 #!/usr/bin/env node
-/*
- * Feasibility-only runtime-embedded standalone candidate builder (#111).
- * It requires a separately provisioned, exact-version Bun executable and
- * does not download Bun, publish assets or assert cross-platform parity.
+/**
+ * Local, UNSIGNED Bun standalone feasibility candidate builder (#111).
+ * No toolchain download, release publication, artifact signing, or assertion
+ * of cross-platform runtime compatibility. A separately owned trusted
+ * release gate must verify and publish any final executable.
  */
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { createReadStream, readFileSync, statSync, mkdirSync } from 'node:fs';
+import {
+  constants, closeSync, linkSync, lstatSync, mkdtempSync, openSync,
+  readFileSync, readSync, realpathSync, rmSync, statSync
+} from 'node:fs';
 import path from 'node:path';
 
-const repo = path.resolve(import.meta.dirname, '..');
+const repository = realpathSync(path.resolve(import.meta.dirname, '..'));
+const validSha = /^[a-f0-9]{40}$/u;
+const validDigest = /^[a-f0-9]{64}$/u;
+const validVersion = /^[0-9]+\.[0-9]+\.[0-9]+$/u;
 const targets = new Set([
-  'bun-linux-x64',
-  'bun-linux-arm64',
-  'bun-linux-x64-musl',
-  'bun-linux-arm64-musl',
-  'bun-darwin-x64',
-  'bun-darwin-arm64',
+  'bun-linux-x64', 'bun-linux-arm64',
+  'bun-linux-x64-musl', 'bun-linux-arm64-musl',
+  'bun-darwin-x64', 'bun-darwin-arm64',
   'bun-windows-x64'
 ]);
+const maxBunBytes = 512 * 1024 * 1024;
+const maxCandidateBytes = 2 * 1024 * 1024 * 1024;
 
 function required(name) {
   const value = process.env[name];
-  if (!value) throw new Error(`${name} is required for a local candidate.`);
+  if (!value) throw new Error(`Standalone candidate requires ${name}.`);
   return value;
 }
 
-const bunBinary = path.resolve(required('TOOLIP_BUN_BINARY'));
-const pinnedVersion = required('TOOLIP_BUN_VERSION');
-const target = required('TOOLIP_STANDALONE_TARGET');
+/** Hash a single unchanging regular inode; reject filename swaps. */
+function digestRegularFile(filePath, maxBytes) {
+  const before = lstatSync(filePath, { bigint: true });
+  if (before.isSymbolicLink() || !before.isFile() ||
+      before.size <= 0n || before.size > BigInt(maxBytes))
+    throw new Error('The candidate or toolchain is not a bounded regular file.');
+  const fd = openSync(filePath, constants.O_RDONLY |
+    (process.platform === 'win32' ? 0 : (constants.O_NOFOLLOW ?? 0)));
+  try {
+    const opened = statSync(fd, { bigint: true });
+    if (!opened.isFile() || opened.dev !== before.dev ||
+        opened.ino !== before.ino || opened.size !== before.size ||
+        opened.mtimeNs !== before.mtimeNs || opened.ctimeNs !== before.ctimeNs)
+      throw new Error('File changed while opening its content.');
+    const hash = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let position = 0;
+    const size = Number(opened.size);
+    while (position < size) {
+      const bytes = readSync(fd, buffer, 0,
+        Math.min(buffer.length, size - position), position);
+      if (bytes === 0) throw new Error('File was truncated during digest verification.');
+      hash.update(buffer.subarray(0, bytes));
+      position += bytes;
+    }
+    const finished = statSync(fd, { bigint: true });
+    const named = lstatSync(filePath, { bigint: true });
+    if (finished.dev !== opened.dev || finished.ino !== opened.ino ||
+        finished.size !== opened.size || finished.mtimeNs !== opened.mtimeNs ||
+        finished.ctimeNs !== opened.ctimeNs ||
+        named.isSymbolicLink() || named.dev !== opened.dev ||
+        named.ino !== opened.ino || named.size !== opened.size ||
+        named.mtimeNs !== opened.mtimeNs || named.ctimeNs !== opened.ctimeNs)
+      throw new Error('File changed during digest verification.');
+    return { sha256: hash.digest('hex'), bytes: size };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+const rawBun = required('TOOLIP_BUN_BINARY');
+const bunSha256 = required('TOOLIP_BUN_SHA256');
+const bunVersion = required('TOOLIP_BUN_VERSION');
 const sourceSha = required('TOOLIP_RELEASE_GIT_SHA');
-if (!targets.has(target))
-  throw new Error('Standalone candidate target is not supported.');
-if (!/^\d+\.\d+\.\d+$/.test(pinnedVersion) ||
-    !/^[a-f0-9]{40}$/u.test(sourceSha))
-  throw new Error('Bun toolchain version or source SHA is invalid.');
-if (!path.isAbsolute(required('TOOLIP_BUN_BINARY')) ||
-    !statSync(bunBinary).isFile())
-  throw new Error('An operator-provisioned absolute Bun executable is required.');
-const actualBun = execFileSync(bunBinary, ['--version'], {
+const version = required('TOOLIP_RELEASE_VERSION');
+const target = required('TOOLIP_STANDALONE_TARGET');
+const rawDestination = required('TOOLIP_STANDALONE_CANDIDATE_DIR');
+if (
+  !path.isAbsolute(rawBun) ||
+  !path.isAbsolute(rawDestination) ||
+  !validDigest.test(bunSha256) ||
+  !validSha.test(sourceSha) ||
+  !validVersion.test(bunVersion) ||
+  !validVersion.test(version) ||
+  !targets.has(target)
+) throw new Error('Immutable toolchain/release identity or target is invalid.');
+
+const directory = realpathSync(rawDestination);
+const info = lstatSync(rawDestination);
+if (!info.isDirectory() || info.isSymbolicLink())
+  throw new Error('Candidate output must be an existing real directory.');
+const relativeToRepo = path.relative(repository, directory);
+if (
+  relativeToRepo === '' ||
+  (!relativeToRepo.startsWith('..' + path.sep) &&
+    relativeToRepo !== '..' && !path.isAbsolute(relativeToRepo))
+) throw new Error('Candidate output must be outside the source checkout.');
+
+const bunPath = realpathSync(rawBun);
+if (bunPath !== rawBun)
+  throw new Error('Toolchain path must not contain symlinked components.');
+const bun = digestRegularFile(bunPath, maxBunBytes);
+if (bun.sha256 !== bunSha256)
+  throw new Error('Bun executable does not match the independently pinned SHA-256.');
+const actualBun = execFileSync(bunPath, ['--version'], {
   encoding: 'utf8', timeout: 5_000
 }).trim();
-if (actualBun !== pinnedVersion)
-  throw new Error('Installed Bun executable version does not match pinned build requirement.');
+if (actualBun !== bunVersion)
+  throw new Error('Bun runtime version differs from the pinned version.');
+
 const actualSha = execFileSync('git', ['rev-parse', 'HEAD'], {
-  cwd: repo, encoding: 'utf8', timeout: 5_000
+  cwd: repository, encoding: 'utf8', timeout: 5_000
 }).trim();
 if (actualSha !== sourceSha)
-  throw new Error('Standalone source revision differs from the expected Git SHA.');
-const status = execFileSync('git', ['status', '--porcelain'], {
-  cwd: repo, encoding: 'utf8', timeout: 10_000
-}).trim();
-if (status) throw new Error('Standalone candidate requires a clean source tree.');
-const pkg = JSON.parse(readFileSync(path.join(repo, 'package.json'), 'utf8'));
-const input = path.join(repo, 'dist/src/index.js');
-if (!statSync(input).isFile())
-  throw new Error('Build the verified Toolip CLI before the standalone feasibility spike.');
-const directory = path.join(repo, 'standalone-candidates');
-mkdirSync(directory, { recursive: true, mode: 0o700 });
-const filename = `toolip-${pkg.version}-${target}${target.startsWith('bun-windows') ? '.exe' : ''}`;
-const output = path.join(directory, filename);
-const result = spawnSync(bunBinary, [
-  'build', input,
-  '--compile', '--target', target,
-  '--outfile', output
-], {
-  cwd: repo, timeout: 10 * 60 * 1000,
-  shell: false, stdio: 'inherit'
-});
-if (result.error || result.status !== 0)
-  throw new Error('Standalone candidate compilation failed.');
-const hash = createHash('sha256');
-const stream = createReadStream(output);
-let totalBytes = 0;
-for await (const chunk of stream) {
-  totalBytes += chunk.length;
-  hash.update(chunk);
+  throw new Error('Candidate source Git SHA differs from exact expected revision.');
+if (execFileSync('git', ['status', '--porcelain'], {
+  cwd: repository, encoding: 'utf8', timeout: 10_000
+}).trim()) throw new Error('Standalone candidate requires a clean source tree.');
+const pkg = JSON.parse(readFileSync(path.join(repository, 'package.json'), 'utf8'));
+if (pkg.name !== 'toolip' || pkg.version !== version)
+  throw new Error('Requested release version differs from the source package.');
+
+const input = path.join(repository, 'dist', 'src', 'index.js');
+if (!lstatSync(input).isFile())
+  throw new Error('Build the trusted Toolip CLI before the standalone feasibility spike.');
+
+const filename =
+  `toolip-${version}-${target}${target.startsWith('bun-windows') ? '.exe' : ''}`;
+const destination = path.join(directory, filename);
+const temporaryDirectory = mkdtempSync(path.join(directory, '.toolip-build-'));
+try {
+  const candidate = path.join(temporaryDirectory, filename);
+  const result = spawnSync(bunPath, [
+    'build', input, '--compile', '--target', target, '--outfile', candidate
+  ], {
+    cwd: repository, timeout: 10 * 60 * 1000,
+    shell: false, stdio: 'inherit'
+  });
+  if (result.error || result.status !== 0)
+    throw new Error('Bun standalone feasibility compilation failed.');
+  const generated = digestRegularFile(candidate, maxCandidateBytes);
+  // Hard-link on the same output volume with fail-if-exists semantics. Do not
+  // overwrite a previously produced candidate or silently change its digest.
+  linkSync(candidate, destination);
+  console.log(JSON.stringify({
+    schema: 'toolip.dev/standalone-candidate/v1',
+    verified: false,
+    signed: false,
+    releaseApproved: false,
+    sourceSha,
+    packageVersion: version,
+    bunVersion: actualBun,
+    bunSha256,
+    target, filename,
+    bytes: generated.bytes,
+    sha256: generated.sha256,
+    runtimeParityTested: false,
+    published: false
+  }, null, 2));
+} finally {
+  rmSync(temporaryDirectory, { recursive: true, force: true });
 }
-if (!totalBytes || totalBytes > 2 * 1024 * 1024 * 1024)
-  throw new Error('Standalone candidate output size is invalid.');
-console.log(JSON.stringify({
-  schema: 'toolip.dev/standalone-candidate/v1',
-  verified: false,
-  signed: false,
-  releaseApproved: false,
-  sourceSha,
-  packageVersion: pkg.version,
-  bunVersion: actualBun,
-  target,
-  filename,
-  bytes: totalBytes,
-  sha256: hash.digest('hex')
-}, null, 2));
