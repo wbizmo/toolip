@@ -5794,6 +5794,16 @@ export async function readOtherEcosystemInventoryDetailed(
       loadedLockfiles.add('maven-dependency-tree.txt');
       mavenTreeAvailable = true;
       const graph = fromMavenDependencyTree(mavenTree, warnings);
+      // A plain-text Maven tree contains resolved coordinates but cannot
+      // bind them to the captured source revision, parent POM or BOM state.
+      // Retain observed candidates for investigation, never promote them to
+      // an authoritative exact graph merely because the version is literal.
+      if (graph.length > 0) {
+        warnings.push(
+          'java-export-source-provenance-unverified:maven-dependency-tree.txt'
+        );
+        for (const item of graph) item.resolutionConfidence = 'unknown';
+      }
       for (const item of graph) output.push(item);
       if (graph.length === 0)
         warnings.push('no-exact-package-records:maven-dependency-tree.txt');
