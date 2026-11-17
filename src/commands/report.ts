@@ -17,7 +17,7 @@ import type { ReportEvidenceVerification } from '../core/report-signature.js';
 
 const maxReportBytes = 8 * 1024 * 1024;
 
-async function readReport(filePath: string): Promise<ToolipReport> {
+export async function readReport(filePath: string): Promise<ToolipReport> {
   try {
     const bytes = await readBoundedRegularFile(filePath, maxReportBytes);
     const report = JSON.parse(
