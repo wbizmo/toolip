@@ -35,7 +35,6 @@ if (-not $IsWindows) {
 }
 $arch = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()) {
   'X64' { 'x64' }
-  'Arm64' { 'arm64' }
   default { throw 'Unsupported Windows architecture.' }
 }
 $target = "windows-$arch"
@@ -137,14 +136,14 @@ try {
     throw 'Archive SHA-256 differs from the signed manifest.'
   }
 
-  $members = @(& tar.exe -tzf $archivePath)
+  $members = @(& tar.exe -tf $archivePath)
   if ($LASTEXITCODE -ne 0 -or $members.Count -ne 1 -or
       $members[0] -cne 'toolip.exe') {
     throw 'Release archive has an unsupported or unsafe layout.'
   }
   $extracted = Join-Path $temporary 'extracted'
   [System.IO.Directory]::CreateDirectory($extracted) | Out-Null
-  & tar.exe -xzf $archivePath -C $extracted toolip.exe
+  & tar.exe -xf $archivePath -C $extracted toolip.exe
   if ($LASTEXITCODE -ne 0) { throw 'Safe archive extraction failed.' }
   $binary = Join-Path $extracted 'toolip.exe'
   if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
