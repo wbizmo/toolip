@@ -2,6 +2,7 @@ import type { Command } from 'commander';
 import { writeFile } from 'node:fs/promises';
 import { renderGitHubPolicyWorkflow } from '../integrations/github/workflow-template.js';
 import { renderGitlabSecurityPipeline } from '../integrations/gitlab/ci-template.js';
+import { renderEnterpriseSecurityPipeline } from '../integrations/ci/templates.js';
 import { serializeJsonOutputBounded } from '../core/report-writer.js';
 
 export function registerCiCommand(program: Command): void {
@@ -56,4 +57,27 @@ export function registerCiCommand(program: Command): void {
         output: options.output
       }));
     });
+
+  for (const provider of ['azure-devops', 'bitbucket'] as const) {
+    ci.command(provider === 'azure-devops' ? 'azure-workflow' : 'bitbucket-workflow')
+      .description('Generate a review-only offline security pipeline from a trusted OCI digest.')
+      .requiredOption('--image <digest>', 'Exact operator-approved Toolip OCI digest.')
+      .requiredOption('--output <file>', 'New platform pipeline YAML file.')
+      .action(async (options: { image: string; output: string }) => {
+        if (!/\.ya?ml$/u.test(options.output))
+          throw new TypeError('CI pipeline candidate must use a YAML filename.');
+        const result = renderEnterpriseSecurityPipeline(provider, options.image);
+        await writeFile(options.output, result.yaml, {
+          encoding: 'utf8', flag: 'wx', mode: 0o600
+        });
+        console.log(serializeJsonOutputBounded({
+          schema: result.schema,
+          provider: result.provider,
+          status: result.status,
+          releaseApproved: result.releaseApproved,
+          uploadedFindings: result.uploadedFindings,
+          output: options.output
+        }));
+      });
+  }
 }
