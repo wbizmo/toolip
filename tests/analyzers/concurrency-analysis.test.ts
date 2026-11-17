@@ -396,6 +396,42 @@ function mutableAlias() {
     ).toBe('low');
   });
 
+  it('traces same-function immutable aliases of an unbounded side-effecting map', () => {
+    const unbounded = analyzeAstSource(
+      'src/batch-alias.ts',
+      `async function updateAll(ids: string[]) {
+  const jobs = ids.map(async (id) => db.item.update({ where: { id }, data: { active: true } }));
+  await Promise.all(jobs);
+}`
+    );
+    expect(
+      unbounded.filter((finding) => finding.ruleId === 'TLP-RACE-003')
+    ).toHaveLength(1);
+
+    const bounded = analyzeAstSource(
+      'src/batch-alias.ts',
+      `async function updateAll(ids: string[]) {
+  const jobs = ids.slice(0, 8).map(async (id) => db.item.update({ where: { id }, data: { active: true } }));
+  await Promise.all(jobs);
+}`
+    );
+    expect(
+      bounded.filter((finding) => finding.ruleId === 'TLP-RACE-003')
+    ).toHaveLength(0);
+
+    const dynamic = analyzeAstSource(
+      'src/batch-alias.ts',
+      `async function updateAll(ids: string[]) {
+  let jobs = ids.map(async (id) => db.item.update({ where: { id }, data: { active: true } }));
+  jobs = [];
+  await Promise.all(jobs);
+}`
+    );
+    expect(
+      dynamic.filter((finding) => finding.ruleId === 'TLP-RACE-003')
+    ).toHaveLength(0);
+  });
+
   it('flags side-effect fan-out through allSettled, race and any combinators', () => {
     for (const combinator of ['allSettled', 'race', 'any']) {
       const findings = analyzeAstSource(
