@@ -410,6 +410,23 @@ export function registerScanCommand(program: Command): void {
           }
         );
         await snapshot?.flush();
+        const advisoryEnrichment = options.enrichCve
+          ? await enrichCve(options.enrichCve, {
+              allowPublicCveLookup: options.allowPublicCveLookup === true,
+              offline: options.offline
+            })
+          : undefined;
+        const effectiveAnalysis =
+          advisoryEnrichment && advisoryEnrichment.status !== 'complete'
+            ? {
+                ...scorecard.analysis,
+                state: 'partial' as const,
+                reasons: [
+                  ...scorecard.analysis.reasons,
+                  'Optional public CVE enrichment was not completed.'
+                ]
+              }
+            : scorecard.analysis;
         let historyWarning: string | undefined;
         if (options.history !== false) {
           try {
@@ -447,7 +464,7 @@ export function registerScanCommand(program: Command): void {
                   findingRecords: records,
                   coverage: scorecard.coverage,
                   metadata: {
-                    analysisState: scorecard.analysis.state,
+                    analysisState: effectiveAnalysis.state,
                     scoreComplete: scorecard.score.complete
                   }
                 };
@@ -463,23 +480,6 @@ export function registerScanCommand(program: Command): void {
         // be described as a scoped policy result. The default scan does not
         // claim a passing security policy, even with zero reported findings.
 
-        const advisoryEnrichment = options.enrichCve
-          ? await enrichCve(options.enrichCve, {
-              allowPublicCveLookup: options.allowPublicCveLookup === true,
-              offline: options.offline
-            })
-          : undefined;
-        const effectiveAnalysis =
-          advisoryEnrichment && advisoryEnrichment.status !== 'complete'
-            ? {
-                ...scorecard.analysis,
-                state: 'partial' as const,
-                reasons: [
-                  ...scorecard.analysis.reasons,
-                  'Optional public CVE enrichment was not completed.'
-                ]
-              }
-            : scorecard.analysis;
         const badgePolicy =
           options.evidenceSigningKey &&
           options.failOn !== 'none' &&
