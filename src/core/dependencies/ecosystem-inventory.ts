@@ -2354,6 +2354,14 @@ function fromMavenDependencyTree(
       stack.length = Math.min(stack.length, depth);
     };
     let coordinateText = info.slice(marker + 2).trim();
+    if (/\bomitted for conflict\b/iu.test(coordinateText)) {
+      // A displayed loser is not the selected resolved version. The
+      // winner must be proven by the authoritative graph export; never
+      // create edges under an omitted branch or trust its old coordinate.
+      warnings.push('maven-tree-conflict-resolution-unavailable');
+      invalidateBranch();
+      continue;
+    }
     let optional = false;
     const annotations: string[] = [];
     while (coordinateText.endsWith(')')) {
