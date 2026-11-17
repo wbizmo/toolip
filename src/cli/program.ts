@@ -9,6 +9,7 @@ import { registerCompareCommand } from '../commands/compare.js';
 import { registerConfigCommand } from '../commands/config.js';
 import { registerDependencyConfusionCommand } from '../commands/dependency-confusion.js';
 import { registerDiffCommand } from '../commands/diff.js';
+import { registerDistributionCommand } from '../commands/distribution.js';
 import { registerDockerScanCommand } from '../commands/docker-scan.js';
 import { registerDoctorCommand } from '../commands/doctor.js';
 import { registerGitAuditCommand } from '../commands/git-audit.js';
@@ -80,6 +81,7 @@ const registrations: Array<(program: Command) => void> = [
   registerGitHistoryCommand,
   registerGitHubAppCommand,
   registerDockerScanCommand,
+  registerDistributionCommand,
   registerMonorepoCommand,
   registerAuditRepoCommand,
   registerUpgradePrCommand,
