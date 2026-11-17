@@ -135,7 +135,7 @@ export function registerReportCommand(program: Command): void {
         });
         const output = format === '.svg'
           ? renderScanBadgeSvg(badge)
-          : `${serializeJsonOutputBounded(badge)}\\n`;
+          : `${serializeJsonOutputBounded(badge)}\n`;
         // Exclusive creation refuses symlinks and existing files rather than
         // silently replacing a README or another path selected by the caller.
         await writeFile(options.output, output, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
