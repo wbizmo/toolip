@@ -13,6 +13,7 @@ import { readBoundedRegularFile } from '../core/bounded-file.js';
 import { serializeJsonOutputBounded } from '../core/report-writer.js';
 import { createScanBadge, renderScanBadgeSvg } from '../core/scan-badge.js';
 import { toGitLabSastReport } from '../integrations/gitlab/report.js';
+import { toAzureLoggingCommands, toBitbucketAnnotations } from '../integrations/ci/annotations.js';
 import type { ReportEvidenceVerification } from '../core/report-signature.js';
 
 const maxReportBytes = 8 * 1024 * 1024;
@@ -148,6 +149,28 @@ export function registerReportCommand(program: Command): void {
         if (badge.status !== 'policy-passing') process.exitCode = 2;
       }
     );
+  report
+    .command('azure-annotations <file>')
+    .description('Render escaped Azure Pipeline log issues; incomplete coverage is an error.')
+    .action(async (file: string) => {
+      const result = toAzureLoggingCommands(await readReport(file));
+      for (const line of result) console.log(line);
+      if (result.some((line) => line.includes('TOOLIP_INCOMPLETE')))
+        process.exitCode = 3;
+    });
+
+  report
+    .command('bitbucket-annotations <file>')
+    .description('Generate bounded Bitbucket Code Insights annotations offline.')
+    .requiredOption('--output <file>', 'New annotations JSON file.')
+    .action(async (file: string, options: { output: string }) => {
+      const result = toBitbucketAnnotations(await readReport(file));
+      await writeFile(options.output, serializeJsonOutputBounded(result) + '\n', {
+        encoding: 'utf8', flag: 'wx', mode: 0o600
+      });
+      if (result.result !== 'complete') process.exitCode = 3;
+    });
+
   report
     .command('gitlab-sast <file>')
     .description('Convert Toolip JSON report to GitLab SAST format without inventing missing source locations.')
