@@ -486,20 +486,23 @@ export async function runTaskDag<T>(
   };
   try {
     let active = 0;
+    let cancellationRecorded = false;
     await new Promise<void>((resolve) => {
       const pump = () => {
         if (controller.signal.aborted) {
-          // No pending dependency needs scheduling after cancellation. Clear
-          // ready work and mark unstarted tasks directly in O(V), rather than
-          // propagating each cancellation through up to E dependent edges.
-          queue.length = 0;
-          for (const task of tasks)
-            if (!started.has(task.id) && !outcomes.has(task.id))
-              outcomes.set(task.id, {
-                id: task.id,
-                state: 'cancelled',
-                reason: 'analysis cancelled'
-              });
+          if (!cancellationRecorded) {
+            cancellationRecorded = true;
+            // Clear the ready queue and terminalize pending work only once,
+            // even if all active workers complete after cancellation.
+            queue.length = 0;
+            for (const task of tasks)
+              if (!started.has(task.id) && !outcomes.has(task.id))
+                outcomes.set(task.id, {
+                  id: task.id,
+                  state: 'cancelled',
+                  reason: 'analysis cancelled'
+                });
+          }
           // Running tasks receive the abort signal, but may need to clean up
           // before the scheduler can safely return. Wait for every worker.
           if (active === 0) resolve();
