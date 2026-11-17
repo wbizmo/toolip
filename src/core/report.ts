@@ -3,6 +3,7 @@ import type { Finding, FindingSeverity } from '../contracts/finding.js';
 import { redactSensitiveText, sanitizeOutput } from './safe-output.js';
 import type { ReportEvidenceSignature } from './report-signature.js';
 import type { NpmProvenanceVerification } from '../providers/npm/provenance.js';
+import type { CveEnrichment } from '../providers/advisories/multi-source.js';
 
 export type SerializedFinding = {
   id: string;
@@ -61,6 +62,7 @@ export type ToolipReport = {
   }>;
   /** Exact npm provenance results when verification was explicitly configured. */
   npmProvenance?: NpmProvenanceVerification[];
+  advisoryEnrichment?: CveEnrichment;
   /** An explicit severity gate evaluated for this scan; verified only with the whole signed report. */
   badgePolicy?: BadgePolicyDecision;
   /** Present only when this exact report has a verifiable signed attestation. */
@@ -103,6 +105,7 @@ export function createReport(input: {
     findings: number;
   }>;
   npmProvenance?: NpmProvenanceVerification[];
+  advisoryEnrichment?: CveEnrichment;
   badgePolicy?: BadgePolicyDecision;
 }): ToolipReport {
   return sanitizeOutput({
@@ -118,6 +121,9 @@ export function createReport(input: {
       ? { analyzerPlugins: input.analyzerPlugins }
       : {}),
     ...(input.npmProvenance ? { npmProvenance: input.npmProvenance } : {}),
+    ...(input.advisoryEnrichment
+      ? { advisoryEnrichment: input.advisoryEnrichment }
+      : {}),
     ...(input.badgePolicy ? { badgePolicy: input.badgePolicy } : {})
   });
 }
