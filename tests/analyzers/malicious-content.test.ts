@@ -154,6 +154,55 @@ describe('non-executing malicious content chain analysis', () => {
     });
   });
 
+  it('traces a possible unpack-and-run chain split across separate JavaScript files', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({
+          scripts: { prepare: 'node ./unpack.js && node ./launch.js' }
+        })
+      },
+      {
+        path: 'unpack.js',
+        content: "const zip = require('unzipper'); zip.Extract({ path: './out' });"
+      },
+      {
+        path: 'launch.js',
+        content: "const { spawn } = require('node:child_process'); spawn('./out/start');"
+      }
+    ]);
+    const chain = result.findings.find(
+      (finding) => finding.ruleId === 'TLP-MAL-001'
+    );
+    expect(chain).toBeDefined();
+    expect(chain?.metadata?.behaviorSignals).toContain(
+      'archive-extraction-and-execution'
+    );
+    expect(chain?.metadata?.completeness).toBe('unknown');
+    expect(chain?.evidence?.[0]?.summary).not.toContain('unzipper.Extract');
+  });
+
+  it('does not equate invoking a benign unpacking helper with running its output', () => {
+    const result = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({
+          scripts: { prepare: 'node ./unpack.js' }
+        })
+      },
+      {
+        path: 'unpack.js',
+        content: "const zip = require('unzipper'); zip.Extract({ path: './out' });"
+      }
+    ]);
+    expect(
+      result.findings.some((finding) =>
+        (finding.metadata?.behaviorSignals as string[] | undefined)
+          ?.includes('archive-extraction-and-execution')
+      )
+    ).toBe(false);
+  });
+
   it('follows nested npm scripts to a suspicious local execution target', () => {
     const result = analyzeMaliciousContent([
       {
