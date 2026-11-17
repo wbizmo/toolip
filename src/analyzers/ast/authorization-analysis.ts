@@ -76,6 +76,37 @@ const explicitGuardShadowNames = new WeakMap<
   ReadonlySet<string>
 >();
 const maxExplicitGuardAliasDepth = 16;
+const localGuardDeclarations = new WeakMap<ts.SourceFile, ReadonlySet<string>>();
+
+/**
+ * A project-owned function named assertOwner can be a no-op. An opaque local
+ * implementation is not ownership evidence merely because its spelling
+ * matches a known guard. Cache the source-wide declaration census once
+ * rather than performing an O(AST) lookup for each route call.
+ */
+function locallyDeclaredGuards(source: ts.SourceFile): ReadonlySet<string> {
+  const cached = localGuardDeclarations.get(source);
+  if (cached) return cached;
+  const declarations = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (
+      (ts.isFunctionDeclaration(node) ||
+        ts.isVariableDeclaration(node) ||
+        ts.isParameter(node) ||
+        ts.isImportSpecifier(node) ||
+        ts.isImportClause(node) ||
+        ts.isClassDeclaration(node)) &&
+      node.name &&
+      ts.isIdentifier(node.name) &&
+      explicitGuards.has(node.name.text)
+    ) declarations.add(node.name.text);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  localGuardDeclarations.set(source, declarations);
+  return declarations;
+}
+
 
 function callName(call: ts.CallExpression): string | undefined {
   const target = call.expression;
@@ -823,8 +854,16 @@ function resolvedExplicitGuardName(
 ): string | undefined {
   const direct = callName(call);
   if (!direct) return undefined;
-  if (explicitGuards.has(direct)) return direct;
   const sourceFile = call.getSourceFile();
+  const localShadows = locallyDeclaredGuards(sourceFile);
+  if (explicitGuards.has(direct)) {
+    // Object methods (policy.assertOwner, helper.assertOwner, ...) are not
+    // intrinsically trusted APIs. A locally defined/imported no-op function
+    // is likewise an opaque implementation, not an authorization proof.
+    return ts.isIdentifier(call.expression) && !localShadows.has(direct)
+      ? direct
+      : undefined;
+  }
   let aliases = explicitGuardAliasIndex.get(sourceFile);
   if (!aliases) {
     const collected = new Map<string, ts.VariableDeclaration[]>();
@@ -891,7 +930,8 @@ function resolvedExplicitGuardName(
     let current = alias;
     const visited = new Set<string>();
     for (let depth = 0; depth < maxExplicitGuardAliasDepth; depth += 1) {
-      if (explicitGuards.has(current)) return current;
+      if (explicitGuards.has(current))
+        return localShadows.has(current) ? undefined : current;
       if (visited.has(current)) return undefined;
       visited.add(current);
       const declarations = aliases?.get(current);
