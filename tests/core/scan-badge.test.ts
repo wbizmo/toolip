@@ -73,7 +73,7 @@ function report(
           badgePolicy: {
             decision: options.policy,
             policySha256: 'f'.repeat(64),
-            scope: 'scan'
+            scope: 'scan' as const
           }
         }
       : {})
