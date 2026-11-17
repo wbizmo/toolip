@@ -18,6 +18,12 @@ export type SerializedFinding = {
 /** @deprecated Use Finding internally. This alias exists only for report-shape compatibility. */
 export type ToolipFinding = SerializedFinding;
 
+export type BadgePolicyDecision = Readonly<{
+  decision: 'pass' | 'fail';
+  policySha256: string;
+  scope: 'scan';
+}>;
+
 export type ToolipReport = {
   tool: 'toolip';
   version: string;
@@ -53,6 +59,8 @@ export type ToolipReport = {
   }>;
   /** Exact npm provenance results when verification was explicitly configured. */
   npmProvenance?: NpmProvenanceVerification[];
+  /** An explicit severity gate evaluated for this scan; verified only with the whole signed report. */
+  badgePolicy?: BadgePolicyDecision;
   /** Present only when this exact report has a verifiable signed attestation. */
   evidenceSignature?: ReportEvidenceSignature;
 };
@@ -91,6 +99,7 @@ export function createReport(input: {
     findings: number;
   }>;
   npmProvenance?: NpmProvenanceVerification[];
+  badgePolicy?: BadgePolicyDecision;
 }): ToolipReport {
   return sanitizeOutput({
     tool: 'toolip',
@@ -104,7 +113,8 @@ export function createReport(input: {
     ...(input.analyzerPlugins
       ? { analyzerPlugins: input.analyzerPlugins }
       : {}),
-    ...(input.npmProvenance ? { npmProvenance: input.npmProvenance } : {})
+    ...(input.npmProvenance ? { npmProvenance: input.npmProvenance } : {}),
+    ...(input.badgePolicy ? { badgePolicy: input.badgePolicy } : {})
   });
 }
 
