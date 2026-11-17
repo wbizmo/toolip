@@ -83,8 +83,11 @@ function matchAdvisory(
   version: string
 ): GhsaPackageAdvisory | undefined {
   const value = plainObject(raw);
-  const id = value?.ghsa_id;
-  if (typeof id !== 'string' || !ghsaIdPattern.test(id)) return undefined;
+  if (!value ||
+      typeof value.ghsa_id !== 'string' ||
+      !ghsaIdPattern.test(value.ghsa_id))
+    return undefined;
+  const id = value.ghsa_id;
   const vulnerabilities = value.vulnerabilities;
   if (!Array.isArray(vulnerabilities) ||
       vulnerabilities.length > maxVulnerabilitiesPerAdvisory)
