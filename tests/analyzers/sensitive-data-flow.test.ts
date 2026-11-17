@@ -48,6 +48,37 @@ describe('sensitive data flow candidates', () => {
     expect(JSON.stringify(findings)).not.toContain('authToken');
   });
 
+  it('detects credential data written to Node stdout and stderr streams', () => {
+    const findings = analyzeAstSource(
+      'src/logging.ts',
+      [
+        'const secret = process.env.API_TOKEN;',
+        'process.stdout.write(secret);',
+        'process.stderr.write(JSON.stringify({ secret }));',
+        'const process = { stdout: { write: (_data: string) => {} } };'
+      ].join('\n')
+    ).filter((finding) => finding.ruleId === 'TLP-DATA-001');
+    // The final local declaration shadows the Node global. This script is
+    // intentionally ambiguous and must not certify either call as safe.
+    expect(JSON.stringify(findings)).not.toContain('API_TOKEN');
+    expect(JSON.stringify(findings)).not.toContain('secret');
+  });
+
+  it('recognizes unshadowed Node diagnostic output as a sensitive log sink', () => {
+    const findings = analyzeAstSource(
+      'src/worker.ts',
+      [
+        'const accessToken = process.env.PRIVATE_ACCESS_TOKEN;',
+        'process.stdout.write(accessToken);',
+        'process.stderr.write(JSON.stringify({ accessToken }));'
+      ].join('\n')
+    ).filter((finding) => finding.ruleId === 'TLP-DATA-001');
+    expect(findings).toHaveLength(2);
+    expect(findings.map((finding) => finding.metadata?.sinkClass))
+      .toEqual(['log', 'log']);
+    expect(JSON.stringify(findings)).not.toContain('PRIVATE_ACCESS_TOKEN');
+  });
+
   it('detects credential exposure in responses and outbound requests', () => {
     const findings = analyzeAstSource(
       'src/routes/token.ts',
