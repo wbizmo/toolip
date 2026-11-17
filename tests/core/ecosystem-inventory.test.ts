@@ -4661,6 +4661,46 @@ describe('non-npm lockfile inventory', () => {
     )).toBe(false);
   });
 
+  it('withholds Gradle exported-graph confidence when nested dependency locks were not signed into source hashes', async () => {
+    const root = await fixture();
+    const settings = "include 'api'\n";
+    await writeFile(path.join(root, 'settings.gradle'), settings);
+    await mkdir(path.join(root, 'api'), { recursive: true });
+    await writeFile(path.join(root, 'api', 'gradle.lockfile'),
+      'org.example:service:2.0.0=runtimeClasspath\nempty=\n'
+    );
+    await writeFile(path.join(root, 'gradle-dependencies.json'),
+      JSON.stringify({
+        modules: [{
+          group: 'org.example',
+          module: 'app',
+          version: '1.0.0',
+          children: [{
+            group: 'org.example',
+            module: 'service',
+            version: '2.0.0',
+            children: []
+          }]
+        }],
+        toolipSource: {
+          manifestHashes: {
+            'settings.gradle': createHash('sha256')
+              .update(settings).digest('hex')
+          }
+        }
+      })
+    );
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain(
+      'java-export-source-provenance-unverified:gradle-dependencies.json'
+    );
+    expect(graph.packages.some((item) =>
+      item.name === 'org.example:service' &&
+      item.resolutionConfidence === 'unknown'
+    )).toBe(true);
+  });
+
   it('keeps Gradle lockfile discovery incomplete when its file budget is exceeded', async () => {
     const root = await fixture();
     const files = [
