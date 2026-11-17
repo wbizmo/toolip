@@ -3589,6 +3589,17 @@ function sensitiveOutputSink(
     isKnownOutboundClient(scope, receiverExpression.text);
   const importedDirectClient =
     ts.isIdentifier(target) && isKnownOutboundClient(scope, target.text);
+  // Direct stdout/stderr writes bypass recognized logging libraries. Only
+  // model the unshadowed Node global: a locally bound "process" object has
+  // arbitrary semantics and should not be treated as a proven log receiver.
+  if (
+    (method === 'write' || method === 'end') &&
+    receiverPath.length === 2 &&
+    receiverPath[0] === 'process' &&
+    (receiverPath[1] === 'stdout' || receiverPath[1] === 'stderr') &&
+    bindingOwner(scope, 'process') === undefined
+  )
+    return 'log';
   if (
     (['log', 'info', 'warn', 'error', 'debug', 'trace'].includes(method) &&
       (receiver === 'console' ||
