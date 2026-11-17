@@ -155,10 +155,41 @@ tar -xzf "$TMP/$ASSET" -C "$TMP/extracted" toolip
 }
 chmod 700 "$TMP/extracted/toolip"
 
-# Refuse existing symlinked destination or an existing binary overwrite.
-[ ! -L "$PREFIX" ] || { printf 'Install prefix is a symlink.\n' >&2; exit 1; }
-if [ ! -d "$PREFIX" ]; then mkdir -p -m 700 "$PREFIX"; fi
-[ -d "$PREFIX" ] && [ ! -L "$PREFIX" ] || exit 1
+# Reject symlink/junction-like traversal at *every* intermediate home
+# directory, not only the final prefix. This prevents a pre-existing
+# "$HOME/tools -> /system" alias from redirecting an installation elsewhere.
+# Pure POSIX sh cannot provide a race-free openat2/no-follow directory walk;
+# the installation therefore remains operator-reviewed and restricted to HOME.
+[ -d "$HOME" ] && [ ! -L "$HOME" ] || {
+  printf 'HOME must be a real directory.\n' >&2; exit 1
+}
+RELATIVE_PREFIX=${PREFIX#"$HOME"/}
+set -f
+OLD_IFS=$IFS
+IFS=/
+set -- $RELATIVE_PREFIX
+IFS=$OLD_IFS
+CURRENT_PREFIX=$HOME
+for COMPONENT do
+  case "$COMPONENT" in
+    ''|'.'|'..')
+      printf 'Unsafe installation path segment.\n' >&2; exit 1 ;;
+  esac
+  CURRENT_PREFIX="$CURRENT_PREFIX/$COMPONENT"
+  if [ -L "$CURRENT_PREFIX" ]; then
+    printf 'Install path contains a symlink.\n' >&2; exit 1
+  fi
+  if [ -e "$CURRENT_PREFIX" ]; then
+    [ -d "$CURRENT_PREFIX" ] || {
+      printf 'Install path contains a non-directory.\n' >&2; exit 1
+    }
+  else
+    mkdir -m 700 "$CURRENT_PREFIX"
+  fi
+done
+[ "$CURRENT_PREFIX" = "$PREFIX" ] || {
+  printf 'Install path was not resolved exactly.\n' >&2; exit 1
+}
 [ ! -e "$PREFIX/toolip" ] && [ ! -L "$PREFIX/toolip" ] || {
   printf 'Toolip already exists at the installation target.\n' >&2; exit 1
 }
