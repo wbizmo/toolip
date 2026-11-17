@@ -98,6 +98,49 @@ export async function installPreCommitHookDetailed(
   return { hookPath, hooksDir, source, warnings };
 }
 
+export type HookUninstallResult = Readonly<{
+  hookPath: string;
+  removed: boolean;
+}>;
+
+/** Remove only Toolip's managed block, preserving all other hook commands.
+ * This does not change core.hooksPath, Husky, the index or package scripts.
+ */
+export async function uninstallPreCommitHookDetailed(
+  root: string
+): Promise<HookUninstallResult> {
+  const resolved = await resolveHooksDir(root);
+  let directory = resolved.hooksDir;
+  if (
+    path.basename(directory) === '_' &&
+    path.basename(path.dirname(directory)) === '.husky'
+  ) directory = path.dirname(directory);
+  const hookPath = path.join(directory, 'pre-commit');
+  let current: string;
+  try {
+    current = await readBoundedUtf8File(hookPath, maximumHookBytes);
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return { hookPath, removed: false };
+    throw error;
+  }
+  // Reject a malformed or duplicated managed block before making changes.
+  const updated = removeManagedBlock(current);
+  if (updated === current) return { hookPath, removed: false };
+  const mode = ((await stat(hookPath)).mode & 0o777) | 0o111;
+  const temporary = `${hookPath}.toolip-remove-${process.pid}.tmp`;
+  try {
+    await writeFile(temporary, updated, {
+      encoding: 'utf8', mode, flag: 'wx'
+    });
+    await chmod(temporary, mode);
+    await rename(temporary, hookPath);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
+  }
+  return { hookPath, removed: true };
+}
+
 /**
  * Husky v9 points core.hooksPath at generated files in `.husky/_`; its
  * dispatcher there runs the user-editable `.husky/<hook>`. Installing into the
