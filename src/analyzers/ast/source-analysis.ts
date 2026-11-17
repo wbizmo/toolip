@@ -4362,6 +4362,37 @@ function isDynamicOutboundModuleExpression(
   );
 }
 
+const outboundDestinationOptionKeys = new Set([
+  'baseURL', 'url', 'host', 'hostname', 'socketPath', 'proxy'
+]);
+
+function hasTaintedOutboundDestinationOption(
+  call: ts.CallExpression,
+  scope: Scope,
+  tainted: TaintedNames,
+  callReturns: WeakMap<ts.CallExpression, FlowBinding>
+): boolean {
+  // Node and HTTP client APIs accept URL control in configuration arguments
+  // as well as positional URL arguments. Only explicit destination-bearing
+  // keys are classified here: request body or headers alone are not SSRF
+  // destinations.
+  for (const argument of call.arguments.slice(0, 3)) {
+    const value = unwrapExpression(argument);
+    if (!ts.isObjectLiteralExpression(value)) continue;
+    for (const property of value.properties) {
+      if (!ts.isPropertyAssignment(property)) continue;
+      const name = propertyName(property.name);
+      if (
+        name &&
+        outboundDestinationOptionKeys.has(name) &&
+        isTainted(property.initializer, scope, tainted, callReturns)
+      )
+        return true;
+    }
+  }
+  return false;
+}
+
 function sourceSinkRule(
   node: ts.Node,
   scope: Scope,
@@ -4445,25 +4476,40 @@ function sourceSinkRule(
     ) {
       return astSecurityRules.sqlInjection;
     }
-    if (isOutboundRequestCall(node, scope)) {
-      // The redirect: 'error' option has defined host-containment meaning
-      // only for the native Fetch API. axios/got/custom request clients can
-      // ignore this field entirely; accepting it as proof would hide SSRF
-      // when a request-derived host is otherwise allowlisted.
-      const nativeFetch =
-        ts.isIdentifier(target) &&
-        target.text === 'fetch' &&
-        bindingOwner(scope, 'fetch') === undefined;
-      if (
-        !nativeFetch ||
-        !hasVerifiedFetchHostAllowlist(
-          node,
-          first,
-          hostAllowlistProofBudget
-        )
+  }
+  if (
+    isOutboundRequestCall(node, scope) &&
+    ((first && isTainted(first, scope, tainted, callReturns)) ||
+      hasTaintedOutboundDestinationOption(
+        node,
+        scope,
+        tainted,
+        callReturns
+      ))
+  ) {
+    // Only native global Fetch defines redirect: 'error' semantics. Other
+    // request clients may treat it as an ignored configuration field.
+    const nativeFetch =
+      ts.isIdentifier(target) &&
+      target.text === 'fetch' &&
+      bindingOwner(scope, 'fetch') === undefined;
+    const taintedDestinationOptions = hasTaintedOutboundDestinationOption(
+      node,
+      scope,
+      tainted,
+      callReturns
+    );
+    if (
+      !nativeFetch ||
+      taintedDestinationOptions ||
+      !first ||
+      !hasVerifiedFetchHostAllowlist(
+        node,
+        first,
+        hostAllowlistProofBudget
       )
-        return astSecurityRules.serverSideRequestForgery;
-    }
+    )
+      return astSecurityRules.serverSideRequestForgery;
   }
   if (
     ts.isPropertyAccessExpression(target) &&
