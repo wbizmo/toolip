@@ -2271,6 +2271,31 @@ describe('trusted Stage A Git-object scanner', () => {
     );
   });
 
+  it('marks reachable cross-file archive extraction and process execution incomplete before Stage B', async () => {
+    const fixture = await repo({
+      'package.json': JSON.stringify({
+        name: 'synthetic',
+        version: '1.0.0',
+        scripts: {
+          prepare: 'node ./unpack.js && node ./launch.js'
+        }
+      }),
+      'unpack.js':
+        "const unzipper = require('unzipper'); unzipper.Extract({ path: './out' });",
+      'launch.js':
+        "const { spawn } = require('node:child_process'); spawn('./out/start');"
+    });
+    const result = scanGitTree(
+      fixture.root,
+      fixture.sha,
+      { changedPaths: ['package.json'] }
+    );
+    expect(result.status).not.toBe('approved');
+    expect(result.incompleteReasons).toContain(
+      'execution-reference-coverage-incomplete'
+    );
+  });
+
   it('reports unsupported nested and alternate lockfiles even when unchanged', async () => {
     const fixtures = await Promise.all([
       repo({
