@@ -3853,6 +3853,15 @@ describe('non-npm lockfile inventory', () => {
     expect(graph.edges.some((edge) => edge.name === 'org.example:helper')).toBe(
       true
     );
+    expect(graph.complete).toBe(false);
+    expect(graph.warnings).toContain(
+      'java-export-source-provenance-unverified:maven-dependency-tree.txt'
+    );
+    expect(
+      graph.packages
+        .filter((item) => item.ecosystem === 'Maven')
+        .every((item) => item.resolutionConfidence === 'unknown')
+    ).toBe(true);
   });
 
   it('parses Maven classifier coordinates and pipe-free nested branches exactly', async () => {
