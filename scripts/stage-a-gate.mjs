@@ -34,6 +34,8 @@ const MAX_CAT_FILE_OUTPUT = MAX_TOTAL_BYTES + MAX_FILES * 128;
 const MAX_GRAPH_EDGES = 200_000;
 const MAX_TRACE_WORK = 1_000_000;
 const MAX_TRACE_COUNT = 1_000;
+const MAX_REFERENCED_BINARY_CANDIDATES = 256;
+const MAX_REFERENCED_BINARY_GRAPH_DEPTH = 16;
 const MAX_TRACE_BYTES = 1024 * 1024;
 const MAX_ARTIFACT_COUNT = 500;
 const MAX_ARTIFACT_BYTES = 32 * 1024 * 1024;
@@ -3915,6 +3917,122 @@ export function scanGitTree(repo, expectedSha, { changedPaths = [] } = {}) {
       workflowReviewReasons.push(...workflow.incompleteReasons);
     }
   }
+  // A changed script can reach an UNCHANGED executable disguised as .bin or
+  // another known-binary suffix. Initial candidate filtering must not make
+  // such an execution-chain target invisible. Inspect referenced, immutable
+  // Git object bytes as inert data, never execute or unpack the object.
+  const withheldBinaryPaths = new Map(
+    blobs
+      .filter((blob) =>
+        BINARY_EXTENSIONS.has(path.posix.extname(blob.path).toLowerCase()) &&
+        !texts.has(blob.path)
+      )
+      .map((blob) => [blob.path, blob])
+  );
+  const withheldBinaryStems = new Map();
+  for (const name of withheldBinaryPaths.keys()) {
+    const extension = path.posix.extname(name);
+    if (!extension) continue;
+    const stem = name.slice(0, -extension.length);
+    const paths = withheldBinaryStems.get(stem) ?? [];
+    paths.push(name);
+    withheldBinaryStems.set(stem, paths);
+  }
+  const seenReferences = new Set(
+    changedPaths.filter((name) => texts.has(name))
+  );
+  const packageNamesForReferences = packageManifestNames(texts);
+  let frontier = [...seenReferences];
+  let additionalCandidates = 0;
+  let traversalWork = 0;
+  for (
+    let depth = 0;
+    depth < MAX_REFERENCED_BINARY_GRAPH_DEPTH && frontier.length > 0;
+    depth++
+  ) {
+    const next = [];
+    const missing = new Map();
+    for (const sourcePath of frontier) {
+      if (++traversalWork > MAX_TRACE_WORK) {
+        incompleteReasons.push('referenced-executable-graph-budget-exceeded');
+        break;
+      }
+      const source = texts.get(sourcePath);
+      if (source === undefined) continue;
+      for (const reference of localReferences(
+        source, sourcePath, packageNamesForReferences, texts
+      )) {
+        if (++traversalWork > MAX_TRACE_WORK) {
+          incompleteReasons.push('referenced-executable-graph-budget-exceeded');
+          break;
+        }
+        const resolved = resolveReference(
+          sourcePath, reference.value, reference.rootRelative
+        );
+        if (!resolved) continue;
+        let target = resolved;
+        if (!texts.has(target) && !withheldBinaryPaths.has(target)) {
+          const aliases = withheldBinaryStems.get(resolved) ?? [];
+          if (aliases.length > 1) {
+            incompleteReasons.push('ambiguous-disguised-reference:' + resolved);
+            continue;
+          }
+          if (aliases.length !== 1) continue;
+          target = aliases[0];
+        }
+        if (seenReferences.has(target)) continue;
+        seenReferences.add(target);
+        if (texts.has(target)) {
+          next.push(target);
+          continue;
+        }
+        const blob = withheldBinaryPaths.get(target);
+        if (!blob) continue;
+        if (++additionalCandidates > MAX_REFERENCED_BINARY_CANDIDATES) {
+          incompleteReasons.push('referenced-binary-file-budget-exceeded');
+          continue;
+        }
+        missing.set(target, blob);
+      }
+    }
+    if (traversalWork > MAX_TRACE_WORK) break;
+    if (missing.size > 0) {
+      // Batch Git reads by object SHA instead of starting a process per
+      // reference. This is O(reachable edges + bytes), bounded by 256 probes,
+      // 16 layers, and the shared Stage A total-byte budget.
+      const rawByOid = catFileBatch(repo, [
+        ...new Set([...missing.values()].map((blob) => blob.oid))
+      ]);
+      for (const [target, blob] of missing) {
+        const bytes = rawByOid.get(blob.oid);
+        if (!bytes || bytes.length > MAX_FILE_BYTES) {
+          incompleteReasons.push('referenced-binary-content-uninspected:' + target);
+          continue;
+        }
+        totalBytes += bytes.length;
+        if (totalBytes > MAX_TOTAL_BYTES)
+          throw new Error('Referenced Git objects exceed Stage A byte budget');
+        if (bytes.includes(0)) {
+          incompleteReasons.push('referenced-binary-content-uninspected:' + target);
+          continue;
+        }
+        let text;
+        try {
+          text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        } catch {
+          incompleteReasons.push('referenced-binary-content-uninspected:' + target);
+          continue;
+        }
+        texts.set(target, text);
+        scanned++;
+        findings.push(...scanText(target, text, incompleteReasons));
+        next.push(target);
+      }
+    }
+    frontier = next;
+  }
+  if (frontier.length > 0)
+    incompleteReasons.push('referenced-executable-graph-depth-exceeded');
   const findingPaths = new Set(
     findings.map((finding) => finding.split('#', 1)[0] ?? finding)
   );
