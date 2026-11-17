@@ -68,7 +68,7 @@ if [ "$DRY_RUN" = true ]; then
   exit 0
 fi
 
-for program in curl jq openssl tar mktemp chmod mv; do
+for program in curl jq openssl tar mktemp chmod ln cp; do
   command -v "$program" >/dev/null 2>&1 || {
     printf 'Required verification tool unavailable: %s\n' "$program" >&2
     exit 2
@@ -83,14 +83,23 @@ else
   exit 2
 fi
 
-# Insist on a user-owned installation directory; no sudo or system locations.
+# Restrict installation to the user's home instead of allowing a
+# root/system-owned target or an unexpected absolute path.
 case "$PREFIX" in
-  /usr/*|/bin|/bin/*|/sbin|/sbin/*|/etc/*|/opt/*|/System/*)
-    printf 'A user-owned prefix is required.\n' >&2; exit 2 ;;
+  "$HOME"/*) ;;
+  *) printf 'Install prefix must be inside HOME.\n' >&2; exit 2 ;;
+esac
+case "$PREFIX" in
+  */../*|*/./*|*/..|*/.)
+    printf 'Install prefix must not contain traversal segments.\n' >&2; exit 2 ;;
 esac
 umask 077
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/toolip-install.XXXXXXXX")
-cleanup() { rm -rf -- "$TMP"; }
+STAGING=''
+cleanup() {
+  if [ -n "$STAGING" ]; then rm -rf -- "$STAGING"; fi
+  rm -rf -- "$TMP"
+}
 trap cleanup EXIT HUP INT TERM
 download() {
   curl --fail --silent --show-error --location \
@@ -153,8 +162,15 @@ if [ ! -d "$PREFIX" ]; then mkdir -p -m 700 "$PREFIX"; fi
 [ ! -e "$PREFIX/toolip" ] && [ ! -L "$PREFIX/toolip" ] || {
   printf 'Toolip already exists at the installation target.\n' >&2; exit 1
 }
-# The executable was verified before any install action, and no sudo is used.
-mv -n "$TMP/extracted/toolip" "$PREFIX/toolip"
-[ -f "$PREFIX/toolip" ] || { printf 'Installation did not complete.\n' >&2; exit 1; }
+# Stage on the destination filesystem; a hard-link create is atomic and
+# refuses an existing destination, unlike mv -n which can silently succeed
+# without writing after a race. Never overwrite a pre-existing executable.
+STAGING=$(mktemp -d "$PREFIX/.toolip-stage.XXXXXXXX")
+cp "$TMP/extracted/toolip" "$STAGING/toolip"
+chmod 700 "$STAGING/toolip"
+ln "$STAGING/toolip" "$PREFIX/toolip"
+[ -f "$PREFIX/toolip" ] && [ ! -L "$PREFIX/toolip" ] || {
+  printf 'Installation did not complete.\n' >&2; exit 1
+}
 printf 'Installed signed Toolip candidate version %s to %s/toolip\n' "$VERSION" "$PREFIX"
 printf 'Review PATH configuration manually; nothing was added to shell profiles.\n'
