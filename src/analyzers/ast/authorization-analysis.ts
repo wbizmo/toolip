@@ -410,11 +410,11 @@ function authIdentity(
     !ts.isElementAccessExpression(value)
   )
     return false;
-  if (
-    ts.isIdentifier(value) &&
-    /^(?:currentUser|currentTenant)$/iu.test(value.text)
-  )
-    return true;
+  // Names such as currentUser/currentTenant are not proof of identity:
+  // a handler can bind them to req.params or another attacker-controlled
+  // value. Only identifiers independently established by a recognized
+  // framework decorator or authenticated request claim may scope ownership.
+  if (ts.isIdentifier(value)) return identityParameters.has(value.text);
   let base: ts.Expression = value;
   const properties: string[] = [];
   while (
