@@ -11,7 +11,7 @@ import { createHash, createPrivateKey, sign } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import {
   lstatSync, openSync, readFileSync, readSync, readdirSync,
-  closeSync, writeFileSync
+  closeSync, writeFileSync, unlinkSync
 } from 'node:fs';
 import path from 'node:path';
 
@@ -128,8 +128,25 @@ if (!existing.isDirectory() || existing.isSymbolicLink())
   throw new Error('Output directory must be a real pre-existing directory.');
 const manifestFile = path.join(outputDir, 'release-manifest.json');
 const signatureFile = path.join(outputDir, 'release-manifest.sig');
-writeFileSync(manifestFile, bytes, { mode: 0o600, flag: 'wx' });
-writeFileSync(signatureFile, signature, { mode: 0o600, flag: 'wx' });
+for (const target of [manifestFile, signatureFile]) {
+  try {
+    lstatSync(target);
+    throw new Error('Distribution output already exists; refusing overwrite.');
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+}
+let manifestCreated = false;
+try {
+  writeFileSync(manifestFile, bytes, { mode: 0o600, flag: 'wx' });
+  manifestCreated = true;
+  writeFileSync(signatureFile, signature, { mode: 0o600, flag: 'wx' });
+} catch (error) {
+  // Do not leave a deceptively unsigned manifest if signature publication
+  // fails. Never touch a pre-existing signature or another release output.
+  if (manifestCreated) unlinkSync(manifestFile);
+  throw error;
+}
 console.log(JSON.stringify({
   manifestFile, signatureFile, sourceGitSha, version,
   artifactCount: assets.length,
