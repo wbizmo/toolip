@@ -32,6 +32,7 @@ const MAX_BINARY_NAMED_TEXT_PROBES = 256;
 const MAX_ENTRYPOINTS = 10_000;
 const MAX_REFERENCES_PER_ENTRY = 10_000;
 const MAX_REFERENCE_WORK = 100_000;
+const MAX_REPORTED_TRACE_PATHS = 64;
 const MAX_CACHED_CONTENT_ANALYSES = 1_024;
 const MAX_CACHED_REFERENCES_PER_CONTENT = 256;
 const contentAnalysisCache = new Map<
@@ -1321,6 +1322,16 @@ export function analyzeMaliciousContent(
   for (const entry of entryResult.entries) {
     if (workExhausted) break;
     const trace = [entry.file];
+    const traceHash = createHash('sha256')
+      .update('toolip-malicious-trace-v2\0')
+      .update(entry.file)
+      .update('\0');
+    let tracedPaths = 1;
+    const recordTrace = (location: string): void => {
+      traceHash.update(location).update('\0');
+      tracedPaths++;
+      if (trace.length < MAX_REPORTED_TRACE_PATHS) trace.push(location);
+    };
     const queue = [...entry.references].map(
       (reference) => [entry.referenceBase, reference] as const
     );
@@ -1374,7 +1385,7 @@ export function analyzeMaliciousContent(
           dynamicUnknown = true;
           continue;
         }
-        trace.push(`${targetManifest}#scripts.${scriptName}`);
+        recordTrace(`${targetManifest}#scripts.${scriptName}`);
         const targetAnalysis = contentAnalysis(targetText);
         archiveExtracted ||= targetAnalysis.archiveExtracts;
         archiveLaunched ||= targetAnalysis.archiveLaunches;
@@ -1420,7 +1431,7 @@ export function analyzeMaliciousContent(
         dynamicUnknown = true;
         continue;
       }
-      trace.push(target);
+      recordTrace(target);
       const targetText = content.get(target) ?? '';
       const targetAnalysis = contentAnalysis(targetText);
       archiveExtracted ||= targetAnalysis.archiveExtracts;
@@ -1484,13 +1495,19 @@ export function analyzeMaliciousContent(
     // Unknown references stay review leads unless suspicious behavior is also
     // present. Automatic entrypoints or multi-file traces raise a positive
     // payload signal; automation alone is not a malicious-content indicator.
-    const elevated = payload && (entry.automatic || trace.length > 1);
+    const elevated = payload && (entry.automatic || tracedPaths > 1);
     if (!payload && !dynamicUnknown) continue;
     const confidence = elevated ? 'high' : 'low';
     const ruleId = payload ? 'TLP-MAL-001' : 'TLP-MAL-002';
     const traceDisplay = trace.map(safeDisplayPath);
+    // Preserve existing stable finding IDs for ordinary traces. On a very
+    // large graph, cap report metadata and derive its identity from the
+    // complete path stream rather than sorting and retaining 100k strings.
+    const traceId = tracedPaths > MAX_REPORTED_TRACE_PATHS
+      ? stableId([ruleId, entry.file, entry.kind, traceHash.digest('hex')])
+      : stableId([ruleId, entry.file, entry.kind, ...[...trace].sort()]);
     findings.push({
-      id: stableId([ruleId, entry.file, entry.kind, ...[...trace].sort()]),
+      id: traceId,
       ruleId,
       title: payload
         ? 'Suspicious automatic execution chain'
@@ -1505,13 +1522,15 @@ export function analyzeMaliciousContent(
       location: { file: safeDisplayPath(entry.file) },
       evidence: [
         {
-          summary: `Static trace: ${traceDisplay.slice(0, 20).join(' -> ')}${trace.length > 20 ? ' -> …' : ''}`
+          summary: `Static trace: ${traceDisplay.slice(0, 20).join(' -> ')}${tracedPaths > 20 ? ' -> …' : ''}`
         }
       ],
       metadata: {
         entrypointKind: safeDisplayPath(entry.kind),
         automatic: entry.automatic,
         trace: traceDisplay,
+        tracePathCount: tracedPaths,
+        traceTruncated: tracedPaths > MAX_REPORTED_TRACE_PATHS,
         behaviorSignals: [...signals].sort(),
         completeness: dynamicUnknown ? 'unknown' : 'analyzed'
       }
