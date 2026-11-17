@@ -12,6 +12,8 @@ export type SerializedFinding = {
   message: string;
   recommendation: string;
   file?: string;
+  line?: number;
+  endLine?: number;
   evidence?: string;
 };
 
@@ -78,6 +80,8 @@ export function serializeFinding(finding: Finding): SerializedFinding {
         'Review this finding and apply an appropriate mitigation.'
     ),
     file: finding.location?.file,
+    line: finding.location?.line,
+    endLine: finding.location?.endLine,
     evidence: finding.evidence?.[0]?.summary
       ? redactSensitiveText(finding.evidence[0].summary)
       : undefined
