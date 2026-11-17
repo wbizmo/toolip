@@ -73,6 +73,14 @@ export function registerNotifyCommand(program: Command): void {
         throw new ToolipError('An exact --allowed-host is required.', {
           code: 'NOTIFICATION_HOST_APPROVAL_REQUIRED', exitCode: 1
         });
+      if (
+        options.sendReportLink &&
+        !process.env.TOOLIP_ALERT_REPORT_URL
+      )
+        throw new ToolipError(
+          'Explicit report-link delivery requires TOOLIP_ALERT_REPORT_URL.',
+          { code: 'NOTIFICATION_REPORT_LINK_MISSING', exitCode: 1 }
+        );
       const report = await readReport(file);
       if (options.kind === 'critical-introduced' &&
           report.summary.critical <= 0)
