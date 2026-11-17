@@ -2482,7 +2482,13 @@ async function verifyJavaExportSource(
   expectedRevision?: string,
   signal?: AbortSignal
 ): Promise<boolean> {
-  if (manifests.length === 0) return expectedRevision === undefined;
+  if (manifests.length === 0) {
+    // An export's self-declared manifestHashes cannot bind a graph to this
+    // checkout if no corresponding project build manifests were discovered.
+    // In particular, absence of a requested revision is not trust evidence.
+    warnings.push(`java-export-source-manifest-unavailable:${source}`);
+    return false;
+  }
   const manifestPaths = [...new Set(manifests)].sort();
   if (manifestPaths.length > maximumGradleWorkspaceManifests) {
     warnings.push(`java-export-source-manifest-budget-exceeded:${source}`);
