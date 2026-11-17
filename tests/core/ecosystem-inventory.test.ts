@@ -1287,6 +1287,61 @@ describe('non-npm lockfile inventory', () => {
     );
   });
 
+  it.each([
+    ['powerpc64le-unknown-linux-gnu', 'little'],
+    ['aarch64_be-unknown-linux-gnu', 'big']
+  ])('honors explicit endianness in Cargo target %s', async (triple, selected) => {
+    const root = await fixture();
+    await writeFile(
+      path.join(root, 'Cargo.toml'),
+      [
+        '[package]',
+        'name = "app"',
+        'version = "0.1.0"',
+        'edition = "2021"',
+        '[workspace]',
+        'members = ["little", "big"]',
+        '[target.\'cfg(target_endian = "little")\'.dependencies]',
+        'little = { path = "little" }',
+        '[target.\'cfg(target_endian = "big")\'.dependencies]',
+        'big = { path = "big" }'
+      ].join('\n')
+    );
+    for (const member of ['little', 'big']) {
+      await mkdir(path.join(root, member), { recursive: true });
+      await writeFile(path.join(root, member, 'Cargo.toml'),
+        `[package]\nname = "${member}"\nversion = "0.1.0"\n`
+      );
+    }
+    await writeFile(path.join(root, 'Cargo.lock'), [
+      'version = 4',
+      '[[package]]',
+      'name = "app"',
+      'version = "0.1.0"',
+      'dependencies = ["little", "big"]',
+      '[[package]]',
+      'name = "little"',
+      'version = "0.1.0"',
+      '[[package]]',
+      'name = "big"',
+      'version = "0.1.0"'
+    ].join('\n'));
+    const graph = await readOtherEcosystemInventoryDetailed(root, undefined, {
+      cargoTarget: triple
+    });
+    const app = graph.packages.find((item) => item.name === 'app');
+    const selectedEdges = graph.edges
+      .filter((edge) => edge.from === app?.id)
+      .map((edge) => edge.name);
+    expect(selectedEdges).toContain(selected);
+    expect(selectedEdges).not.toContain(
+      selected === 'little' ? 'big' : 'little'
+    );
+    expect(graph.warnings).not.toContain(
+      'cargo-target-context-unverified:Cargo.toml'
+    );
+  });
+
   it('preserves optional Cargo lock candidates when feature resolution cannot be proven', async () => {
     const root = await fixture();
     await mkdir(path.join(root, 'optional'), { recursive: true });
