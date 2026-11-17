@@ -12,7 +12,6 @@ import { readSecretInputs } from '../utils/secret-input.js';
 import { serializeJsonOutputBounded } from '../core/report-writer.js';
 
 const segment = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
-type RemoteVaultProviderName = 'hashicorp-vault' | '1password-connect';
 type RemoteOptions = {
   provider: string;
   project: string;
