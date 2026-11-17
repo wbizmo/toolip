@@ -1,6 +1,7 @@
 import type { Command } from 'commander';
 import { writeFile } from 'node:fs/promises';
 import { renderGitHubPolicyWorkflow } from '../integrations/github/workflow-template.js';
+import { renderGitlabSecurityPipeline } from '../integrations/gitlab/ci-template.js';
 import { serializeJsonOutputBounded } from '../core/report-writer.js';
 
 export function registerCiCommand(program: Command): void {
@@ -31,6 +32,28 @@ export function registerCiCommand(program: Command): void {
       console.log(serializeJsonOutputBounded({
         status: template.status,
         privilegedStageA: template.privilegedStageA,
+        output: options.output
+      }));
+    });
+
+  program.commands
+    .find((command) => command.name() === 'ci')
+    ?.command('gitlab-workflow')
+    .description('Create a non-executing, review-only GitLab SAST pipeline with an exact OCI digest.')
+    .requiredOption('--image <digest>', 'Operator-trusted immutable ghcr.io/wbizmo/toolip@sha256 digest.')
+    .requiredOption('--output <file>', 'New GitLab pipeline YAML file.')
+    .action(async (options: { image: string; output: string }) => {
+      const result = renderGitlabSecurityPipeline(options.image);
+      if (!/\.ya?ml$/u.test(options.output))
+        throw new TypeError('GitLab pipeline output must have a YAML extension.');
+      await writeFile(options.output, result.yaml, {
+        encoding: 'utf8', flag: 'wx', mode: 0o600
+      });
+      console.log(serializeJsonOutputBounded({
+        schema: result.schema,
+        status: result.status,
+        stageAApproved: result.stageAApproved,
+        published: result.publishes,
         output: options.output
       }));
     });
