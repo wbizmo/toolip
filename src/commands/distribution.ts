@@ -1,3 +1,4 @@
+import { writeFile } from 'node:fs/promises';
 import type { Command } from 'commander';
 import { ToolipError } from '../errors/toolip-error.js';
 import {
@@ -5,11 +6,55 @@ import {
   verifyDistributionManifest
 } from '../core/distribution/manifest.js';
 import { serializeJsonOutputBounded } from '../core/report-writer.js';
+import { renderHomebrewCandidate } from '../core/distribution/homebrew.js';
 
 /** Only verifies local files. Does not install, download or publish assets. */
 export function registerDistributionCommand(program: Command): void {
   const dist = program.command('distribution')
     .description('Offline checks for immutable standalone distribution artifacts.');
+  dist
+    .command('homebrew-candidate <manifest>')
+    .description('Render an unpublished Homebrew formula candidate from a verified signed manifest.')
+    .requiredOption('--signature <file>', 'Detached manifest Ed25519 signature.')
+    .requiredOption('--public-key <file>', 'Separately trusted operator key.')
+    .requiredOption('--version <version>', 'Expected exact release version.')
+    .requiredOption('--git-sha <sha>', 'Expected exact source revision.')
+    .requiredOption('--output <file>', 'New local Toolip formula .rb file.')
+    .action(async (
+      manifestFile: string,
+      options: {
+        signature: string;
+        publicKey: string;
+        version: string;
+        gitSha: string;
+        output: string;
+      }
+    ) => {
+      if (!options.output.endsWith('.rb'))
+        throw new ToolipError('Homebrew candidate output must be a Ruby formula file.', {
+          code: 'HOMEBREW_OUTPUT_INVALID', exitCode: 1
+        });
+      const manifest = await verifyDistributionManifest({
+        manifestFile,
+        signatureFile: options.signature,
+        trustedPublicKeyFile: options.publicKey,
+        expectedVersion: options.version,
+        expectedGitSha: options.gitSha
+      });
+      const candidate = renderHomebrewCandidate(manifest);
+      // No cross-repo write, version tag, release, or formula publication.
+      await writeFile(options.output, candidate.formula, {
+        encoding: 'utf8', flag: 'wx', mode: 0o600
+      });
+      console.log(serializeJsonOutputBounded({
+        schema: candidate.schema,
+        status: candidate.status,
+        published: candidate.published,
+        tapRepository: candidate.tapRepository,
+        output: options.output
+      }));
+    });
+
   dist
     .command('verify-asset <manifest>')
     .description('Verify a signed manifest and the selected local artifact digest.')
