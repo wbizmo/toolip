@@ -4558,6 +4558,16 @@ describe('non-npm lockfile inventory', () => {
           manifestHashes: {
             'settings.gradle': createHash('sha256')
               .update(settingsSource)
+              .digest('hex'),
+            'api/gradle.lockfile': createHash('sha256')
+              .update(await readFile(
+                new URL('../fixtures/java/gradle/api/gradle.lockfile', import.meta.url)
+              ))
+              .digest('hex'),
+            'service/gradle.lockfile': createHash('sha256')
+              .update(await readFile(
+                new URL('../fixtures/java/gradle/service/gradle.lockfile', import.meta.url)
+              ))
               .digest('hex')
           }
         }
