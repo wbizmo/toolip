@@ -12,6 +12,7 @@ import {
 import { readBoundedRegularFile } from '../core/bounded-file.js';
 import { serializeJsonOutputBounded } from '../core/report-writer.js';
 import { createScanBadge, renderScanBadgeSvg } from '../core/scan-badge.js';
+import { toGitLabSastReport } from '../integrations/gitlab/report.js';
 import type { ReportEvidenceVerification } from '../core/report-signature.js';
 
 const maxReportBytes = 8 * 1024 * 1024;
@@ -147,6 +148,23 @@ export function registerReportCommand(program: Command): void {
         if (badge.status !== 'policy-passing') process.exitCode = 2;
       }
     );
+  report
+    .command('gitlab-sast <file>')
+    .description('Convert Toolip JSON report to GitLab SAST format without inventing missing source locations.')
+    .requiredOption('--output <file>', 'New gl-sast-report.json path.')
+    .action(async (file: string, options: { output: string }) => {
+      if (!options.output.toLowerCase().endsWith('.json'))
+        throw new ToolipError('GitLab SAST report requires a JSON output path.', {
+          code: 'GITLAB_REPORT_OUTPUT_INVALID', exitCode: 1
+        });
+      const report = await readReport(file);
+      const result = toGitLabSastReport(report);
+      await writeFile(options.output, serializeJsonOutputBounded(result) + '\n', {
+        encoding: 'utf8', flag: 'wx', mode: 0o600
+      });
+      if (result.scan.status !== 'success') process.exitCode = 3;
+    });
+
   report
     .command('verify <file>')
     .description(
