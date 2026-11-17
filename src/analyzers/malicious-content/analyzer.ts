@@ -106,6 +106,8 @@ const workspaceScriptReference =
   /\b(?:npm\s+(?:--workspace(?:=|\s+)|--prefix(?:=|\s+)|-w\s+)([^\s]+)\s+(?:run|run-script)\s+([^\s;&|]+)|npm\s+(?:run|run-script)\s+([^\s;&|]+)\s+--(?:workspace|prefix)(?:=|\s+)([^\s;&|]+)|pnpm\s+--filter(?:=|\s+)([^\s]+)\s+(?:run\s+)?([^\s;&|]+)|yarn\s+workspace\s+([^\s]+)\s+([^\s;&|]+))/giu;
 const suspiciousPayload =
   /(?:\beval\s*\(\s*(?:atob|Buffer\.from|decodeURIComponent)|new\s+Function\s*\(\s*(?:atob|Buffer\.from)|\b(?:atob|Buffer\.from)\s*\([^;\n]{0,200}[\s\S]{0,240}\b(?:eval|new\s+Function)\s*\(|\b(?:curl|wget)\b[^\n|]{0,240}\|\s*(?:sh|bash)|\b(?:Invoke-Expression|IEX)\s*\(?\s*(?:\(Invoke-WebRequest|\$env:))/iu;
+const encodedInterpreterLoader =
+  /(?:\b(?:bash|sh|zsh)\s+<\(\s*(?:curl|wget)\b|\b(?:pwsh|powershell)(?:\.exe)?\b[^\r\n]{0,128}\s-(?:enc|encodedcommand)\s+[A-Za-z0-9+\/=]{20,}|\b(?:node|deno|bun)\s+(?:-e|--eval)\s+['"][^\r\n]{0,128}\b(?:atob|Buffer\.from)\s*\()/iu;
 const dynamicExecution =
   /(?:\beval\s*\(|\bnew\s+Function\s*\(|\b(?:node:)?child_process\.(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\s*\()/u;
 const childProcessFunctions = new Set([
@@ -458,8 +460,10 @@ function hasArchiveExecution(source: string): boolean {
 /** Returns behavior labels without retaining or reporting matching source text. */
 function behaviorSignals(source: string): string[] {
   const signals: string[] = [];
-  if (suspiciousPayload.test(source))
-    signals.push('encoded-or-download-execution');
+  if (
+    suspiciousPayload.test(source) ||
+    encodedInterpreterLoader.test(source)
+  ) signals.push('encoded-or-download-execution');
   if (hasArchiveExecution(source))
     signals.push('archive-extraction-and-execution');
   if (credentialStoreAccess.test(source) && outboundTransfer.test(source))
