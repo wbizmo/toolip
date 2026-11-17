@@ -65,6 +65,25 @@ describe('exact npm GHSA provider claims', () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
+  it.each(['reviewed', 'unreviewed', 'malware'] as const)(
+    'keeps %s advisory classifications distinct in GHSA evidence',
+    async (kind) => {
+      const fetcher = vi.fn(async (url: URL) => {
+        expect(url.searchParams.get('type')).toBe(kind);
+        return json([{ ...advisory, type: kind }]);
+      });
+      const result = await lookupGhsaNpmPackage('@public/example', '1.2.3', {
+        advisoryType: kind,
+        allowPublicPackageLookup: true,
+        fetcher: fetcher as typeof fetch
+      });
+      expect(result.advisoryType).toBe(kind);
+      expect(result.advisories[0]?.advisoryType).toBe(kind);
+      expect(result.advisories[0]?.reviewed).toBe(kind === 'reviewed');
+      expect(result.status).toBe('complete');
+    }
+  );
+
   it('refuses to silently declare malformed provider ranges safe', async () => {
     const fetcher = vi.fn(async () => json([{
       ...advisory,
