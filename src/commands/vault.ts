@@ -11,11 +11,14 @@ import {
 } from '../core/vault.js';
 import { ToolipError } from '../errors/toolip-error.js';
 import { readSecretInputs } from '../utils/secret-input.js';
+import { registerVaultRemoteCommands } from './vault-remote.js';
 
 export function registerVaultCommand(program: Command): void {
   const vault = program
     .command('vault')
-    .description('Manage encrypted local secrets with Toolip Vault. Secrets are read from hidden prompts or stdin, never argv.');
+    .description('Manage encrypted local secrets with Toolip Vault. Remote access is a separate explicit opt-in.');
+
+  registerVaultRemoteCommands(vault);
 
   vault
     .command('init')
