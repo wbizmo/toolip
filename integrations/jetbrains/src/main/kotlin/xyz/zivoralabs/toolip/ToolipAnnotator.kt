@@ -1,69 +1,136 @@
 package xyz.zivoralabs.toolip
 
 import com.google.gson.Gson
-import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.intellij.ide.impl.TrustedProjects
+import com.intellij.ide.util.PropertiesComponent
 import com.intellij.lang.annotation.AnnotationHolder
 import com.intellij.lang.annotation.ExternalAnnotator
 import com.intellij.lang.annotation.HighlightSeverity
-import com.intellij.ide.impl.TrustedProjects
-import com.intellij.openapi.editor.Document
 import com.intellij.openapi.util.TextRange
-import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiFile
-import com.intellij.ide.util.PropertiesComponent
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
-data class ToolipSource(val relativePath: String, val content: String)
-data class ToolipIssue(val line: Int, val column: Int, val message: String, val severity: String)
+data class ToolipSource(
+    val relativePath: String,
+    val content: String,
+    val projectRoot: Path,
+    val modificationStamp: Long
+)
 
-class ToolipAnnotator : ExternalAnnotator<ToolipSource, List<ToolipIssue>>() {
+data class ToolipIssue(
+    val line: Int,
+    val column: Int,
+    val message: String,
+    val severity: String
+)
+
+data class ToolipAnalysis(
+    val modificationStamp: Long,
+    val issues: List<ToolipIssue>
+)
+
+/**
+ * IDE buffers are passed as inert bounded text to the separately trusted
+ * Toolip stdio protocol. No workspace scripts, environment secrets, network
+ * providers or auto-fix operations are invoked by this plugin.
+ */
+class ToolipAnnotator : ExternalAnnotator<ToolipSource, ToolipAnalysis>() {
     override fun collectInformation(file: PsiFile): ToolipSource? {
-        val project = file.project
-        if (!TrustedProjects.isTrusted(project)) return null
-        val executable = PropertiesComponent.getInstance()
-            .getValue("toolip.executablePath") ?: return null
-        if (executable.isBlank()) return null
-
-        val root = project.basePath ?: return null
+        if (!TrustedProjects.isTrusted(file.project)) return null
+        val settings = PropertiesComponent.getInstance()
+        if (!settings.getBoolean("toolip.enabled", false)) return null
+        if (settings.getValue("toolip.executablePath").isNullOrBlank()) return null
+        val root = file.project.basePath ?: return null
         val physical = file.virtualFile?.path ?: return null
-        val source = file.text
-        if (source.toByteArray(Charsets.UTF_8).size > 512 * 1024) return null
-        val rootPath = Path.of(root).toAbsolutePath().normalize()
+        val rootPath = runCatching { Path.of(root).toRealPath() }.getOrNull()
+            ?: return null
+        val absoluteFile = runCatching { Path.of(physical).toRealPath() }.getOrNull()
+            ?: return null
+        if (!absoluteFile.startsWith(rootPath)) return null
         val relative = runCatching {
-            rootPath.relativize(Path.of(physical).toAbsolutePath().normalize())
+            rootPath.relativize(absoluteFile).toString().replace('\\', '/')
         }.getOrNull() ?: return null
-        val candidate = relative.toString().replace('\\', '/')
-        if (candidate == ".." || candidate.startsWith("../") ||
-            candidate.startsWith("/") ||
-            !Regex(".*\\.(?:[cm]?[jt]s|[jt]sx)$", RegexOption.IGNORE_CASE).matches(candidate)
+        if (
+            relative.isEmpty() || relative.startsWith("../") ||
+            relative.contains("/../") ||
+            !Regex(".*\\.(?:[cm]?[jt]s|[jt]sx)$", RegexOption.IGNORE_CASE)
+                .matches(relative)
         ) return null
-        return ToolipSource(candidate, source)
+        val beforeRevision = file.modificationStamp
+        val text = file.text
+        if (file.modificationStamp != beforeRevision ||
+            text.toByteArray(Charsets.UTF_8).size > 512 * 1024)
+            return null
+        return ToolipSource(relative, text, rootPath, beforeRevision)
     }
 
-    override fun doAnnotate(collectedInfo: ToolipSource): List<ToolipIssue> {
-        val executable = PropertiesComponent.getInstance()
-            .getValue("toolip.executablePath") ?: return emptyList()
-        val binary = runCatching { Path.of(executable).toAbsolutePath().normalize() }
-            .getOrNull() ?: return emptyList()
-        if (!binary.isAbsolute || !Files.isRegularFile(binary) || !Files.isExecutable(binary))
-            return emptyList()
+    private fun incomplete(source: ToolipSource): ToolipAnalysis =
+        ToolipAnalysis(source.modificationStamp, listOf(
+            ToolipIssue(
+                line = 1, column = 1, severity = "warning",
+                message = "Toolip local analysis incomplete; no security all-clear."
+            )
+        ))
 
+    private fun trustedExecutable(source: ToolipSource): Path? {
+        val selected = PropertiesComponent.getInstance()
+            .getValue("toolip.executablePath") ?: return null
+        if (selected.isBlank()) return null
+        val typed = runCatching { Path.of(selected) }.getOrNull() ?: return null
+        if (!typed.isAbsolute) return null
+        // Do not accept an executable stored inside the scanned source tree
+        // or a symlink whose target could be changed by a workspace commit.
+        if (Files.isSymbolicLink(typed)) return null
+        val binary = runCatching { typed.toRealPath() }.getOrNull() ?: return null
+        if (binary.startsWith(source.projectRoot) ||
+            !Files.isRegularFile(binary) || !Files.isExecutable(binary))
+            return null
+        return binary
+    }
+
+    private fun separateWorkingDirectory(root: Path): Path? {
+        val candidates = listOf(
+            System.getProperty("user.home"),
+            System.getProperty("java.io.tmpdir")
+        )
+        for (candidate in candidates) {
+            val resolved = runCatching {
+                Path.of(candidate).toRealPath()
+            }.getOrNull() ?: continue
+            if (Files.isDirectory(resolved) && !resolved.startsWith(root))
+                return resolved
+        }
+        return null
+    }
+
+    override fun doAnnotate(collectedInfo: ToolipSource): ToolipAnalysis {
+        if (!PropertiesComponent.getInstance().getBoolean("toolip.enabled", false))
+            return incomplete(collectedInfo)
+        val binary = trustedExecutable(collectedInfo)
+            ?: return incomplete(collectedInfo)
+        val workingDirectory = separateWorkingDirectory(collectedInfo.projectRoot)
+            ?: return incomplete(collectedInfo)
         val process = ProcessBuilder(binary.toString(), "ide", "serve")
+            .directory(workingDirectory.toFile())
             .redirectErrorStream(false)
         val environment = process.environment()
         val inherited = System.getenv()
         environment.clear()
-        for (key in listOf("PATH", "HOME", "USERPROFILE", "SystemRoot", "TMPDIR", "TEMP")) {
-            inherited[key]?.let { environment[key] = it }
-        }
-        val child = runCatching { process.start() }.getOrNull() ?: return emptyList()
+        for (name in listOf(
+            "PATH", "HOME", "USERPROFILE", "SystemRoot", "TMPDIR", "TEMP"
+        )) inherited[name]?.let { environment[name] = it }
+
+        val child = runCatching { process.start() }.getOrNull()
+            ?: return incomplete(collectedInfo)
         val gson = Gson()
-        val worker = Executors.newSingleThreadExecutor()
+        val worker = Executors.newSingleThreadExecutor { task ->
+            Thread(task, "toolip-ide-analyzer").apply { isDaemon = true }
+        }
         try {
             child.outputStream.bufferedWriter(Charsets.UTF_8).use { writer ->
                 writer.write(gson.toJson(mapOf(
@@ -84,35 +151,53 @@ class ToolipAnnotator : ExternalAnnotator<ToolipSource, List<ToolipIssue>>() {
                 writer.newLine()
                 writer.flush()
             }
-            val read = worker.submit<List<ToolipIssue>> {
+            val read = worker.submit<ToolipAnalysis> {
                 child.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
-                    reader.readLine() ?: return@submit emptyList()
-                    val line = reader.readLine() ?: return@submit emptyList()
-                    if (line.length > 512 * 1024) return@submit emptyList()
+                    // Both JSON-RPC requests have bounded response lines.
+                    val opened = reader.readLine() ?: return@submit incomplete(collectedInfo)
+                    if (opened.length > 512 * 1024)
+                        return@submit incomplete(collectedInfo)
+                    val line = reader.readLine() ?: return@submit incomplete(collectedInfo)
+                    if (line.length > 512 * 1024)
+                        return@submit incomplete(collectedInfo)
                     val result = runCatching {
                         JsonParser.parseString(line).asJsonObject
-                    }.getOrNull() ?: return@submit emptyList()
-                    if (result.has("error")) return@submit emptyList()
-                    val diagnostics = result.getAsJsonObject("result")
-                        ?.getAsJsonArray("findings") ?: return@submit emptyList()
-                    diagnostics.take(500).mapNotNull { element ->
+                    }.getOrNull() ?: return@submit incomplete(collectedInfo)
+                    if (result.has("error") ||
+                        result.get("id")?.asInt != 2)
+                        return@submit incomplete(collectedInfo)
+                    val payload = result.getAsJsonObject("result")
+                        ?: return@submit incomplete(collectedInfo)
+                    if (payload.get("version")?.asInt != 1 ||
+                        payload.get("state")?.asString != "partial")
+                        return@submit incomplete(collectedInfo)
+                    val findings = payload.getAsJsonArray("findings")
+                        ?: return@submit incomplete(collectedInfo)
+                    val issues = findings.take(500).mapNotNull { element ->
                         val item = runCatching { element.asJsonObject }.getOrNull()
                             ?: return@mapNotNull null
                         val message = item.get("message")?.asString
                             ?.take(1024) ?: return@mapNotNull null
-                        val lineNo = item.get("line")?.asInt ?: return@mapNotNull null
-                        val columnNo = item.get("column")?.asInt ?: 1
+                        val lineNumber = item.get("line")?.asInt
+                            ?: return@mapNotNull null
+                        val column = item.get("column")?.asInt ?: 1
                         ToolipIssue(
-                            line = lineNo, column = columnNo,
+                            line = lineNumber, column = column,
                             message = message,
                             severity = item.get("severity")?.asString ?: "medium"
                         )
-                    }
+                    }.toMutableList()
+                    if (payload.get("findingsTruncated")?.asBoolean == true)
+                        issues.add(ToolipIssue(
+                            line = 1, column = 1, severity = "warning",
+                            message = "Toolip findings exceeded the diagnostic budget; scan incomplete."
+                        ))
+                    ToolipAnalysis(collectedInfo.modificationStamp, issues)
                 }
             }
             return read.get(8, TimeUnit.SECONDS)
         } catch (_: Exception) {
-            return emptyList()
+            return incomplete(collectedInfo)
         } finally {
             child.destroyForcibly()
             worker.shutdownNow()
@@ -121,20 +206,26 @@ class ToolipAnnotator : ExternalAnnotator<ToolipSource, List<ToolipIssue>>() {
 
     override fun apply(
         file: PsiFile,
-        annotationResult: List<ToolipIssue>,
+        annotationResult: ToolipAnalysis,
         holder: AnnotationHolder
     ) {
+        if (!TrustedProjects.isTrusted(file.project) ||
+            file.modificationStamp != annotationResult.modificationStamp)
+            return
         val document = PsiDocumentManager.getInstance(file.project)
             .getDocument(file) ?: return
-        for (issue in annotationResult) {
+        for (issue in annotationResult.issues) {
             if (issue.line < 1 || issue.line > document.lineCount) continue
-            val line = issue.line - 1
-            val start = document.getLineStartOffset(line)
-            val end = document.getLineEndOffset(line)
-            val location = (start + (issue.column - 1).coerceAtLeast(0))
+            val lineIndex = issue.line - 1
+            val start = document.getLineStartOffset(lineIndex)
+            val end = document.getLineEndOffset(lineIndex)
+            val position = (start + (issue.column - 1).coerceAtLeast(0))
                 .coerceIn(start, end)
-            val range = TextRange(location, (location + 1).coerceAtMost(document.textLength))
-            val severity = if (issue.severity == "critical" || issue.severity == "high")
+            val range = TextRange(
+                position, (position + 1).coerceAtMost(document.textLength)
+            )
+            val severity = if (issue.severity == "critical" ||
+                issue.severity == "high")
                 HighlightSeverity.ERROR else HighlightSeverity.WARNING
             holder.newAnnotation(severity, issue.message)
                 .range(range)
