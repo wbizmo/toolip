@@ -5271,8 +5271,13 @@ export async function readOtherEcosystemInventoryDetailed(
     ).filter((dependency) => {
       if (cargoTargetConditionMatches(dependency.target, cargoTarget) === false)
         return false;
+      if (dependency.section !== 'optionalDependency') return true;
+      // When feature propagation was incomplete, Cargo may have enabled an
+      // optional edge that this static analysis did not resolve. Preserve
+      // captured lockfile candidates (with incomplete coverage warnings)
+      // rather than silently deleting potentially vulnerable dependencies.
+      if (cargoFeatureResolution.unresolvedModules.has(module)) return true;
       return (
-        dependency.section !== 'optionalDependency' ||
         cargoFeatureResolution.enabledDependencies
           .get(module)
           ?.has(dependency.alias ?? dependency.name) === true
