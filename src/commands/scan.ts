@@ -591,9 +591,9 @@ export function registerScanCommand(program: Command): void {
         );
 
         console.log(
-          `${chalk.dim('Analysis:')} ${scorecard.analysis.state === 'complete' ? chalk.green('COMPLETE') : chalk.yellow(scorecard.analysis.state.toUpperCase())}`
+          `${chalk.dim('Analysis:')} ${effectiveAnalysis.state === 'complete' ? chalk.green('COMPLETE') : chalk.yellow(effectiveAnalysis.state.toUpperCase())}`
         );
-        for (const reason of scorecard.analysis.reasons) {
+        for (const reason of effectiveAnalysis.reasons) {
           console.log(`  ${chalk.yellow('!')} ${reason}`);
         }
         const coverage = scorecard.coverage;
@@ -602,7 +602,7 @@ export function registerScanCommand(program: Command): void {
             `${coverage.skipped} skipped, ${coverage.failed} failed, ` +
             `${coverage.excluded ?? 0} excluded`
         );
-        if (scorecard.analysis.state !== 'complete') {
+        if (effectiveAnalysis.state !== 'complete') {
           console.log(
             chalk.yellow(
               'Not an all-clear: unmeasured dimensions may hide findings.'
@@ -632,7 +632,7 @@ export function registerScanCommand(program: Command): void {
         if (options.sarif) {
           await writeSarifReport(options.sarif, {
             findings: scorecard.findings,
-            analysisState: scorecard.analysis.state,
+            analysisState: effectiveAnalysis.state,
             toolVersion: TOOLIP_VERSION
           });
           console.log(
@@ -646,7 +646,7 @@ export function registerScanCommand(program: Command): void {
           failOnIncomplete: options.failOnIncomplete ?? false
         });
         if (code !== 0) {
-          console.error(`Exit ${code}: analysis ${scorecard.analysis.state}.`);
+          console.error(`Exit ${code}: analysis ${effectiveAnalysis.state}.`);
           process.exitCode = code;
         }
       }
