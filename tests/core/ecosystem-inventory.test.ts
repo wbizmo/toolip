@@ -3992,7 +3992,7 @@ describe('non-npm lockfile inventory', () => {
         '[INFO] |  +- org.example:bad:jar:${unresolved}:compile',
         '[INFO] |  |  \\- org.example:orphan:jar:2.0.0:compile',
         '[INFO] +- org.example:next:jar:3.0.0:compile'
-      ].join('\\n')
+      ].join('\n')
     );
     const graph = await (
       await import('../../src/core/dependencies/ecosystem-inventory.js')
