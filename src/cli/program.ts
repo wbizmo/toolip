@@ -5,6 +5,7 @@ import { registerAlternativesCommand } from '../commands/alternatives.js';
 import { registerAnnounceCommand } from '../commands/announce.js';
 import { registerAstScanCommand } from '../commands/ast-scan.js';
 import { registerAuditRepoCommand } from '../commands/audit-repo.js';
+import { registerCiCommand } from '../commands/ci.js';
 import { registerCompareCommand } from '../commands/compare.js';
 import { registerConfigCommand } from '../commands/config.js';
 import { registerDependencyConfusionCommand } from '../commands/dependency-confusion.js';
@@ -49,6 +50,7 @@ import { TOOLIP_AUTHOR, TOOLIP_VERSION } from '../config/version.js';
 
 const registrations: Array<(program: Command) => void> = [
   registerAiCommands,
+  registerCiCommand,
   registerSelfTestCommand,
   registerIdeCommand,
   registerProfileCommand,
