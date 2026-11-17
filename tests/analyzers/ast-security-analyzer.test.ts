@@ -516,6 +516,25 @@ async function shadowed(require: (id: string) => any, req: RequestLike) {
     );
   });
 
+  it('does not mistake a Fetch-only redirect option for an axios or shadowed-client SSRF defense', () => {
+    const findings = analyzeAstSource(
+      'src/routes/request.ts',
+      `async function handler(req: RequestLike) {
+  const axiosUrl = new URL(req.query.destination);
+  if (!['8.8.8.8'].includes(axiosUrl.hostname)) throw new Error('blocked');
+  await axios.get(axiosUrl, { redirect: 'error' });
+
+  const customUrl = new URL(req.query.other);
+  if (!['8.8.8.8'].includes(customUrl.hostname)) throw new Error('blocked');
+  const fetch = (url: URL, options: unknown) => client.post(url, options);
+  await fetch(customUrl, { redirect: 'error' });
+}`
+    );
+    expect(
+      findings.filter((finding) => finding.ruleId === 'TLP-AST-006')
+    ).toHaveLength(2);
+  });
+
   it('keeps large literal host lists unverified instead of traversing them repeatedly', () => {
     const hosts = Array.from(
       { length: 257 },
