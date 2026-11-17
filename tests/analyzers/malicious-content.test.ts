@@ -230,6 +230,37 @@ describe('non-executing malicious content chain analysis', () => {
     }
   });
 
+  it('caps returned trace metadata while analyzing long execution chains', () => {
+    const depth = 96;
+    const files = [
+      {
+        path: 'package.json',
+        content: JSON.stringify({ scripts: { prepare: 'node ./step-0.js' } })
+      },
+      ...Array.from({ length: depth }, (_, index) => ({
+        path: `step-${index}.js`,
+        content: index === depth - 1
+          ? 'const code = atob(value); eval(code);'
+          : `require('./step-${index + 1}.js');`
+      }))
+    ];
+    const result = analyzeMaliciousContent(files);
+    const finding = result.findings.find((entry) =>
+      entry.ruleId === 'TLP-MAL-001'
+    );
+    expect(finding).toBeDefined();
+    expect((finding?.metadata?.trace as string[]).length).toBeLessThanOrEqual(64);
+    expect(finding?.metadata?.traceTruncated).toBe(true);
+    expect(finding?.metadata?.tracePathCount).toBeGreaterThan(64);
+    expect(finding?.metadata?.behaviorSignals).toContain(
+      'encoded-or-download-execution'
+    );
+    // Truncated metadata must still produce a stable trace identity.
+    expect(analyzeMaliciousContent([...files].reverse()).findings).toEqual(
+      result.findings
+    );
+  });
+
   it('follows nested npm scripts to a suspicious local execution target', () => {
     const result = analyzeMaliciousContent([
       {
