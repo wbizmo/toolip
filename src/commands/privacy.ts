@@ -16,6 +16,7 @@ export function registerPrivacyCommand(program: Command): void {
     .option('--npm-provenance-policy', 'Include opt-in npm attestation requests.')
     .option('--allow-go-tool-execution', 'Include opt-in Go module proxy/sumdb commands.')
     .option('--allow-public-scope', 'Declare consent for public scoped npm lookups.')
+    .option('--allow-public-cve-lookup', 'Describe optional GHSA and NVD CVE lookups.')
     .action(
       (options: {
         offline?: boolean;
@@ -24,6 +25,7 @@ export function registerPrivacyCommand(program: Command): void {
         npmProvenancePolicy?: boolean;
         allowGoToolExecution?: boolean;
         allowPublicScope?: boolean;
+        allowPublicCveLookup?: boolean;
       }) => {
         if (options.offline && options.allowGoToolExecution)
           throw new ToolipError(
