@@ -141,6 +141,8 @@ const dangerous = [
   /\beval\s*\(/iu,
   /\bnew\s+Function\s*\(/iu,
   /\b(?:curl|wget)\b[^\r\n;&|]{0,300}(?:\||&&|;)[ \t]*(?:sh|bash|zsh)\b/iu,
+  /\b(?:bash|sh|zsh)\s+<\(\s*(?:curl|wget)\b/iu,
+  /\b(?:pwsh|powershell)(?:\.exe)?\b[^\r\n]{0,128}\s-(?:enc|encodedcommand)\s+[A-Za-z0-9+\/=]{20,}/iu,
   /\b(?:eval|Function)\s*\(\s*(?:atob|Buffer\.from|decodeURIComponent|[a-z_$][\w$]*)/iu,
   /\b(?:exec|execSync|spawn|spawnSync)\s*\([^\r\n]{0,300}(?:curl|wget|https?:\/\/|process\.env)/iu,
   /\b(?:Invoke-Expression|IEX)\b[^\r\n]{0,300}(?:DownloadString|FromBase64String|https?:\/\/)/iu,
