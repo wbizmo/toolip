@@ -37,13 +37,20 @@ export function explainScanEgress(
   const offline = options.offline === true;
   const surface = (
     capability: string,
-    active: boolean,
+    mode: 'baseline' | 'opt-in',
+    enabled: boolean,
     destination: string,
     dataCategories: readonly string[],
     consent: string
   ): EgressSurface => ({
     capability,
-    status: offline ? 'disabled' : active ? 'opt-in' : 'possible',
+    status: offline
+      ? 'disabled'
+      : mode === 'baseline'
+        ? 'possible'
+        : enabled
+          ? 'opt-in'
+          : 'disabled',
     destination,
     dataCategories,
     consent
@@ -52,20 +59,23 @@ export function explainScanEgress(
   const surfaces: EgressSurface[] = [
     surface(
       'osv-advisories',
-      false,
+      'baseline',
+      true,
       'https://api.osv.dev/v1/querybatch',
       ['public ecosystem', 'exact package name', 'exact installed version'],
       'Baseline online vulnerability lookup; use --offline to request zero registry/advisory egress.'
     ),
     surface(
       'exploit-intelligence',
-      false,
+      'baseline',
+      true,
       'https://api.first.org/data/v1/epss and https://www.cisa.gov',
       ['public CVE identifiers'],
       'Conditional public EPSS/CISA KEV enrichment in online mode.'
     ),
     surface(
       'license-metadata',
+      'opt-in',
       options.licenses === true,
       'https://api.deps.dev/v3',
       ['exact public package identity', 'version'],
@@ -73,6 +83,7 @@ export function explainScanEgress(
     ),
     surface(
       'package-health',
+      'opt-in',
       options.packageHealth === true,
       'https://registry.npmjs.org',
       ['public npm package name', 'version'],
@@ -80,6 +91,7 @@ export function explainScanEgress(
     ),
     surface(
       'npm-provenance',
+      'opt-in',
       options.npmProvenancePolicy === true,
       'https://registry.npmjs.org',
       ['trusted public npm package identity', 'artifact integrity metadata'],
@@ -87,6 +99,7 @@ export function explainScanEgress(
     ),
     surface(
       'go-module-resolution',
+      'opt-in',
       options.allowGoToolExecution === true,
       'https://proxy.golang.org and https://sum.golang.org',
       ['Go module path', 'resolved module version'],
