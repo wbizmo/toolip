@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
-  constants, closeSync, fstatSync, linkSync, lstatSync, mkdtempSync, openSync,
+  constants, chmodSync, closeSync, copyFileSync, fstatSync, linkSync, lstatSync, mkdtempSync, openSync,
   readFileSync, readSync, realpathSync, rmSync
 } from 'node:fs';
 import path from 'node:path';
@@ -106,13 +106,7 @@ if (bunPath !== rawBun)
 const bun = digestRegularFile(bunPath, maxBunBytes);
 if (bun.sha256 !== bunSha256)
   throw new Error('Bun executable does not match the independently pinned SHA-256.');
-const actualBun = execFileSync(bunPath, ['--version'], {
-  encoding: 'utf8', timeout: 5_000
-}).trim();
-if (actualBun !== bunVersion)
-  throw new Error('Bun runtime version differs from the pinned version.');
-
-const actualSha = execFileSync('git', ['rev-parse', 'HEAD'], {
+ const actualSha = execFileSync('git', ['rev-parse', 'HEAD'], {
   cwd: repository, encoding: 'utf8', timeout: 5_000
 }).trim();
 if (actualSha !== sourceSha)
@@ -133,8 +127,24 @@ const filename =
 const destination = path.join(directory, filename);
 const temporaryDirectory = mkdtempSync(path.join(directory, '.toolip-build-'));
 try {
+  // Execute only a private copy whose bytes are independently re-hashed.
+  // A concurrent replacement of the original toolchain path cannot affect
+  // which executable is invoked after this point.
+  const verifiedBun = path.join(
+    temporaryDirectory, process.platform === 'win32' ? 'bun-tool.exe' : 'bun-tool'
+  );
+  copyFileSync(bunPath, verifiedBun, constants.COPYFILE_EXCL);
+  chmodSync(verifiedBun, 0o700);
+  const copied = digestRegularFile(verifiedBun, maxBunBytes);
+  if (copied.sha256 !== bunSha256)
+    throw new Error('Private Bun toolchain copy differs from the pinned digest.');
+  const actualBun = execFileSync(verifiedBun, ['--version'], {
+    encoding: 'utf8', timeout: 5_000
+  }).trim();
+  if (actualBun !== bunVersion)
+    throw new Error('Verified Bun version differs from the pinned toolchain.');
   const candidate = path.join(temporaryDirectory, filename);
-  const result = spawnSync(bunPath, [
+  const result = spawnSync(verifiedBun, [
     'build', input, '--compile', '--target', target, '--outfile', candidate
   ], {
     cwd: repository, timeout: 10 * 60 * 1000,
