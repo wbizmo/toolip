@@ -236,10 +236,14 @@ export async function handler() {
     expect(JSON.stringify(findings)).not.toContain('API_TOKEN');
   });
 
-  it('does not report values passed through recognized redaction helpers', () => {
+  it('accepts only locally proven static redaction helpers', () => {
     const findings = analyzeAstSource(
       'src/logging.ts',
       [
+        '/** @toolipRedactsSensitive */',
+        'function redactSensitive(_value: unknown) { return "[redacted]"; }',
+        '/** @toolipRedactsSensitive */',
+        'function maskSecret(_value: unknown) { return "[masked]"; }',
         'const token = process.env.API_TOKEN;',
         'logger.info({ token: redactSensitive(token) });',
         'console.error(maskSecret(token));'
@@ -248,10 +252,25 @@ export async function handler() {
     expect(findings.some((item) => item.ruleId === 'TLP-DATA-001')).toBe(false);
   });
 
+  it('never trusts unbound familiar redaction names as a safe serializer contract', () => {
+    const findings = analyzeAstSource(
+      'src/logging.ts',
+      [
+        'const token = process.env.API_TOKEN;',
+        'logger.info({ token: redactSensitive(token) });',
+        'console.error(maskSecret(token));'
+      ].join('\n')
+    ).filter((item) => item.ruleId === 'TLP-DATA-001');
+    expect(findings).toHaveLength(2);
+    expect(JSON.stringify(findings)).not.toContain('API_TOKEN');
+  });
+
   it('tracks sensitive object fields without exposing their values and honors redaction', () => {
     const findings = analyzeAstSource(
       'src/profile.ts',
       [
+        '/** @toolipRedactsSensitive */',
+        'function redactSensitive(_value: unknown) { return "[redacted]"; }',
         'async function handler(req: RequestLike, profile: Profile) {',
         '  const password = req.body.password;',
         '  const email = profile.email;',
