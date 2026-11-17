@@ -15,6 +15,9 @@ COPY tsconfig.json tsconfig.quality.json ./
 COPY src ./src
 RUN npm run build
 RUN npm prune --omit=dev --ignore-scripts --no-audit --no-fund
+# The trusted CLI is exposed as an ordinary executable for CI scripts.
+# Never use npm install or project-provided shell hooks at container startup.
+RUN printf '#!/bin/sh\\nexec node /app/dist/src/index.js "$@"\\n' > /toolip/toolip && chmod 0755 /toolip/toolip
 
 FROM ${RUNTIME_IMAGE} AS runtime
 ARG SOURCE_GIT_SHA
@@ -26,6 +29,7 @@ WORKDIR /app
 COPY --from=builder --chown=65532:65532 /toolip/package.json ./package.json
 COPY --from=builder --chown=65532:65532 /toolip/node_modules ./node_modules
 COPY --from=builder --chown=65532:65532 /toolip/dist ./dist
+COPY --from=builder --chown=0:0 /toolip/toolip /usr/local/bin/toolip
 USER 65532:65532
 ENV NODE_ENV=production
 ENTRYPOINT ["node", "/app/dist/src/index.js"]
