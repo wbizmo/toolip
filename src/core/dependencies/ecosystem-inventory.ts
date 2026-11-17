@@ -2302,8 +2302,17 @@ function fromMavenDependencyTree(
     const depth = mavenTreeDepth(prefix);
     if (depth === undefined) {
       warnings.push('maven-tree-layout-unresolved');
+      // An unparseable indentation destroys knowledge of the active branch:
+      // never attach later grandchildren to a stale ancestor.
+      stack.length = 0;
       continue;
     }
+    const invalidateBranch = (): void => {
+      // Keep only *strict* ancestors. If this branch's coordinate was
+      // malformed, its children have no proven parent until the next valid
+      // branch at that depth or higher.
+      stack.length = Math.min(stack.length, depth);
+    };
     let coordinateText = info.slice(marker + 2).trim();
     let optional = false;
     const annotations: string[] = [];
@@ -2329,10 +2338,12 @@ function fromMavenDependencyTree(
       !parts[3]
     ) {
       warnings.push('maven-tree-coordinate-unresolved');
+      invalidateBranch();
       continue;
     }
     if (/\bomitted for conflict\b/iu.test(coordinateText)) {
       warnings.push('maven-tree-conflict-resolution-unavailable');
+      invalidateBranch();
       continue;
     }
     const hasClassifier = parts.length === 6;
@@ -2353,6 +2364,7 @@ function fromMavenDependencyTree(
       )
     ) {
       warnings.push('maven-tree-version-unresolved');
+      invalidateBranch();
       continue;
     }
     const section: DependencyEdge['section'] = optional
@@ -2375,6 +2387,7 @@ function fromMavenDependencyTree(
     const parent = depth === 1 ? undefined : stack[depth - 1];
     if (depth > 1 && !parent) {
       warnings.push('maven-tree-parent-edge-unresolved');
+      invalidateBranch();
       continue;
     }
     const mavenPathComponent = `${item.name}@${item.version}:${packageType}:${classifier ?? ''}`;
