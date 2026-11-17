@@ -69,7 +69,10 @@ function tarHeader(name, size) {
   putString(header, 257, 6, 'ustar');
   putString(header, 263, 2, '00');
   const checksum = header.reduce((sum, byte) => sum + byte, 0);
-  putOctal(header, 148, 8, checksum);
+  const octal = checksum.toString(8).padStart(6, '0');
+  if (octal.length !== 6)
+    throw new Error('Tar checksum exceeds the USTAR header field.');
+  putString(header, 148, 8, octal + '\0 ');
   return header;
 }
 
