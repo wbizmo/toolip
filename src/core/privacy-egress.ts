@@ -32,6 +32,7 @@ export function explainScanEgress(
     allowGoToolExecution?: boolean;
     npmProvenancePolicy?: boolean;
     allowPublicScope?: boolean;
+    allowPublicCveLookup?: boolean;
   }> = {}
 ): ScanEgressManifest {
   const offline = options.offline === true;
@@ -72,6 +73,14 @@ export function explainScanEgress(
       'https://api.first.org/data/v1/epss and https://www.cisa.gov',
       ['public CVE identifiers'],
       'Conditional public EPSS/CISA KEV enrichment in online mode.'
+    ),
+    surface(
+      'public-cve-enrichment',
+      'opt-in',
+      options.allowPublicCveLookup === true,
+      'https://api.github.com/advisories and https://services.nvd.nist.gov/rest/json/cves/2.0',
+      ['public CVE identifier'],
+      'Requires explicit --enrich-cve and --allow-public-cve-lookup in the scan command.'
     ),
     surface(
       'license-metadata',
