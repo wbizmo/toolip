@@ -17,7 +17,7 @@ RUN npm run build
 RUN npm prune --omit=dev --ignore-scripts --no-audit --no-fund
 # The trusted CLI is exposed as an ordinary executable for CI scripts.
 # Never use npm install or project-provided shell hooks at container startup.
-RUN printf '#!/bin/sh\\nexec node /app/dist/src/index.js "$@"\\n' > /toolip/toolip && chmod 0755 /toolip/toolip
+RUN printf '#!/bin/sh\nexec node /app/dist/src/index.js "$@"\n' > /toolip/toolip && chmod 0755 /toolip/toolip
 
 FROM ${RUNTIME_IMAGE} AS runtime
 ARG SOURCE_GIT_SHA
