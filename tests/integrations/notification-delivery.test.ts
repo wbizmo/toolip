@@ -67,6 +67,26 @@ describe('opt-in notification delivery boundaries', () => {
     expect(payloads[0]).not.toContain('reports.example.test');
   });
 
+  it('rejects signed report URLs with tokens, fragments or local destinations', async () => {
+    const ledger = new MemoryDeliveryLedger();
+    const transport: AlertTransport = {
+      send: vi.fn(async () => ({ status: 204 }))
+    };
+    for (const reportUrl of [
+      'https://reports.example.test/report?token=secret',
+      'https://reports.example.test/report#private',
+      'http://reports.example.test/report',
+      'https://127.0.0.1/admin'
+    ]) {
+      await expect(deliverAlert(
+        { ...event, reportUrl },
+        { ...destination, sendReportLink: true },
+        { ledger, transport }
+      )).rejects.toThrow();
+    }
+    expect(transport.send).not.toHaveBeenCalled();
+  });
+
   it('requires HMAC and exact operator host approval for generic webhooks', async () => {
     const outbound: Array<{ body: string; headers: Readonly<Record<string, string>> }> = [];
     const transport: AlertTransport = {
