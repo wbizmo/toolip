@@ -8,8 +8,8 @@
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
-  constants, closeSync, linkSync, lstatSync, mkdtempSync, openSync,
-  readFileSync, readSync, realpathSync, rmSync, statSync
+  constants, closeSync, fstatSync, linkSync, lstatSync, mkdtempSync, openSync,
+  readFileSync, readSync, realpathSync, rmSync
 } from 'node:fs';
 import path from 'node:path';
 
@@ -41,7 +41,7 @@ function digestRegularFile(filePath, maxBytes) {
   const fd = openSync(filePath, constants.O_RDONLY |
     (process.platform === 'win32' ? 0 : (constants.O_NOFOLLOW ?? 0)));
   try {
-    const opened = statSync(fd, { bigint: true });
+    const opened = fstatSync(fd, { bigint: true });
     if (!opened.isFile() || opened.dev !== before.dev ||
         opened.ino !== before.ino || opened.size !== before.size ||
         opened.mtimeNs !== before.mtimeNs || opened.ctimeNs !== before.ctimeNs)
@@ -57,7 +57,7 @@ function digestRegularFile(filePath, maxBytes) {
       hash.update(buffer.subarray(0, bytes));
       position += bytes;
     }
-    const finished = statSync(fd, { bigint: true });
+    const finished = fstatSync(fd, { bigint: true });
     const named = lstatSync(filePath, { bigint: true });
     if (finished.dev !== opened.dev || finished.ino !== opened.ino ||
         finished.size !== opened.size || finished.mtimeNs !== opened.mtimeNs ||
