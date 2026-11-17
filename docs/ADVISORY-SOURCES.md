@@ -18,6 +18,8 @@ Toolip preserves conflicting source assertions and does not automatically collap
 
 `toolip advisories npm @public/example 1.2.3 --allow-public-package-lookup`
 
+Use `--type reviewed` (default), `--type unreviewed`, or `--type malware` to request one explicit GHSA advisory category. Results retain their type and are not silently combined across categories.
+
 - The package name is sent in an explicit `ecosystem=npm&affects=...` GitHub API query. Toolip evaluates the supplied exact semver **locally** against the version ranges reported for that same package identity.
 - Unsupported ranges, prerelease nonmatches, malformed provider data, duplicate advisory identities and a full first page are reported as **partial** or **unknown**, not as verified clean.
 - A record may report `affected: yes`, `no`, or `unknown`. `no` means only that the record's parseable GHSA range did not match; it does not certify the package safe.
