@@ -88,13 +88,7 @@ function matchAdvisory(
   const vulnerabilities = value.vulnerabilities;
   if (!Array.isArray(vulnerabilities) ||
       vulnerabilities.length > maxVulnerabilitiesPerAdvisory)
-    return {
-      id, aliases: Object.freeze([]),
-      reviewed: value.type === 'reviewed',
-      withdrawn: Boolean(value.withdrawn_at),
-      affected: 'unknown', source: 'github-global-advisories',
-      exactPackageEvidence: true
-    };
+    return undefined; // No proven exact package identity for this record.
   let sawPackage = false;
   let sawUnknown = false;
   let sawAffected = false;
@@ -114,6 +108,9 @@ function matchAdvisory(
       sawAffected = true;
       break;
     }
+    // Prerelease range matching varies by provider. A negative result for a
+    // prerelease is only sound when the source expressly models that policy.
+    if (semver.prerelease(version) !== null) sawUnknown = true;
   }
   // The global-advisory "affects" filter may include alias packages. A
   // record without this exact package identity cannot assert any result.
