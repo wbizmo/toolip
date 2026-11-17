@@ -1,6 +1,6 @@
 import type { Command } from 'commander';
 import chalk from 'chalk';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   decideExit,
   gatedFindings,
@@ -442,6 +442,34 @@ export function registerScanCommand(program: Command): void {
             historyWarning = 'Local scan history could not be updated.';
           }
         }
+        // Only explicitly configured, incomplete-blocking severity gates can
+        // be described as a scoped policy result. The default scan does not
+        // claim a passing security policy, even with zero reported findings.
+        const badgePolicy =
+          options.evidenceSigningKey &&
+          options.failOn !== 'none' &&
+          options.failOnIncomplete === true &&
+          !options.rulePack &&
+          !options.analyzerPlugin
+            ? {
+                decision:
+                  scorecard.analysis.state === 'complete' &&
+                  gatedFindings(scorecard.findings, options.failOn).length === 0
+                    ? ('pass' as const)
+                    : ('fail' as const),
+                policySha256: createHash('sha256')
+                  .update(
+                    JSON.stringify({
+                      schema: 'toolip.dev/cli-threshold/v1',
+                      version: TOOLIP_VERSION,
+                      failOn: options.failOn,
+                      failOnIncomplete: true
+                    })
+                  )
+                  .digest('hex'),
+                scope: 'scan' as const
+              }
+            : undefined;
         let report = createReport({
           version: TOOLIP_VERSION,
           command: 'scan',
@@ -455,7 +483,8 @@ export function registerScanCommand(program: Command): void {
             state: plugin.coverage.state,
             findings: plugin.findings
           })),
-          npmProvenance: scorecard.npmProvenance
+          npmProvenance: scorecard.npmProvenance,
+          badgePolicy
         });
         if (options.evidenceSigningKey) {
           const privateKeyPem = await readPemKeyFile(
