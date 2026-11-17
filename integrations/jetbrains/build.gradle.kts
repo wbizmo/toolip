@@ -12,6 +12,11 @@ dependencies {
     intellijPlatform {
         intellijIdeaUltimate("2026.2.3")
     }
+    testImplementation(kotlin("test"))
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
 
 intellijPlatform {
