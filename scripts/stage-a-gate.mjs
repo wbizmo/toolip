@@ -3377,9 +3377,28 @@ function traceChangedEntrypoints(changedPaths, texts, findingPaths) {
       return { traces, incomplete: true };
     const queue = [entrypoint];
     const parents = new Map([[entrypoint, undefined]]);
+    let archiveExtractorReached = false;
+    let archiveLauncherReached = false;
     for (let cursor = 0; cursor < queue.length; cursor++) {
       if (++work > MAX_TRACE_WORK) return { traces, incomplete: true };
       const current = queue[cursor] ?? '';
+      const currentSource = texts.get(current) ?? '';
+      // A changed entrypoint may reach an unchanged extractor and another
+      // unchanged file that launches a process. The exact extracted target
+      // cannot be established without executing or unpacking the archive;
+      // prevent Stage A from approving such a chain as fully inspected.
+      archiveExtraction.lastIndex = 0;
+      archiveApiExtraction.lastIndex = 0;
+      if (
+        archiveExtraction.test(currentSource) ||
+        archiveApiExtraction.test(currentSource)
+      ) archiveExtractorReached = true;
+      if (
+        archiveApiExecution.test(currentSource) ||
+        /(?:^|[;\n]|&&|\|\|)\s*(?:exec\s+|&\s+)?\.{1,2}[\\/]\S+/mu.test(currentSource)
+      ) archiveLauncherReached = true;
+      if (archiveExtractorReached && archiveLauncherReached)
+        return { traces, incomplete: true };
       if (current !== entrypoint && findingPaths.has(current)) {
         const chain = [];
         let node = current;
