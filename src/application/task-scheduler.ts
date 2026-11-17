@@ -565,10 +565,12 @@ export async function runTaskDag<T>(
           return;
         }
         if (active === 0 && queue.length === 0) {
-          // Any remaining nodes imply a cycle; report it explicitly.
+          // The pending subgraph contains a cycle or a dependency on one.
+          // No runnable task remains. Terminalize it directly instead of
+          // decrementing dependency counts and populating an unused heap.
           for (const task of tasks)
             if (!outcomes.has(task.id))
-              finish({
+              outcomes.set(task.id, {
                 id: task.id,
                 state: 'blocked',
                 reason: 'dependency cycle'
