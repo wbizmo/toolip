@@ -717,7 +717,8 @@ function findUnboundedPromiseAll(
   findings: Finding[],
   functions: FunctionIndex,
   pools: BoundedPools,
-  memo: SideEffectMemo
+  memo: SideEffectMemo,
+  mapAliases: ReadonlyMap<string, readonly ts.VariableDeclaration[]>
 ): void {
   if (!ts.isCallExpression(node)) return;
   const target = node.expression;
@@ -728,9 +729,23 @@ function findUnboundedPromiseAll(
     target.expression.text !== 'Promise'
   )
     return;
-  const mapped = callArgument(node);
-  if (!mapped || !ts.isCallExpression(mapped) || methodName(mapped) !== 'map')
-    return;
+  const argument = callArgument(node);
+  if (!argument) return;
+  let mapped = ts.isCallExpression(argument) ? argument : undefined;
+  if (ts.isIdentifier(argument)) {
+    // Resolve one immutable lexical alias, without following dynamic values
+    // or guessing that the name of a promise array is meaningful.
+    const visible = (mapAliases.get(argument.text) ?? []).filter(
+      (declaration) =>
+        declaration.initializer &&
+        ts.isVariableDeclarationList(declaration.parent) &&
+        (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+        isWithinDeclarationScope(declaration, node)
+    );
+    if (visible.length !== 1) return;
+    mapped = unwrapCall(visible[0]?.initializer);
+  }
+  if (!mapped || methodName(mapped) !== 'map') return;
   if (hasStaticArrayBound(mapped)) return;
   const callback = mapped.arguments[0];
   if (!callback || !hasSideEffectingCallback(callback, functions, pools, memo))
@@ -1144,7 +1159,19 @@ export function analyzeConcurrencySource(
   const factsByFunction = new Map<ts.Node, FunctionFacts>();
   const topLevelFacts = emptyFacts();
   const functionsByName = new Map<string, ts.FunctionLikeDeclaration[]>();
+  const immutableMapAliases = new Map<string, ts.VariableDeclaration[]>();
   const collectFunctions = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer &&
+      ts.isCallExpression(node.initializer) &&
+      methodName(node.initializer) === 'map'
+    ) {
+      const declarations = immutableMapAliases.get(node.name.text) ?? [];
+      declarations.push(node);
+      immutableMapAliases.set(node.name.text, declarations);
+    }
     if (ts.isFunctionDeclaration(node) && node.name && node.body) {
       const declarations = functionsByName.get(node.name.text) ?? [];
       declarations.push(node);
@@ -1186,7 +1213,8 @@ export function analyzeConcurrencySource(
         findings,
         functions,
         limiters,
-        sideEffectMemo
+        sideEffectMemo,
+        immutableMapAliases
       );
     }
     if (ts.isVariableDeclaration(node)) facts.declarations.push(node);
