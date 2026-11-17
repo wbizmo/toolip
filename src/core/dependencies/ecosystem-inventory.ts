@@ -5790,7 +5790,14 @@ export async function readOtherEcosystemInventoryDetailed(
         'gradle-dependencies.json',
         root,
         fileSource,
-        gradleWorkspace.manifests,
+        // Exact exported Gradle dependency graph identity also depends on
+        // the selected lock graph. A changed nested gradle.lockfile without
+        // a correspondingly refreshed source-proof hash invalidates export
+        // provenance even when settings.gradle/build.gradle are unchanged.
+        [...new Set([
+          ...gradleWorkspace.manifests,
+          ...gradleWorkspace.lockfiles
+        ])].sort(),
         warnings,
         options.sourceRevision ?? fileSource?.sourceRevision,
         options.signal
