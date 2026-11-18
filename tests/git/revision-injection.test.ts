@@ -16,6 +16,8 @@ afterEach(cleanupRepos);
 // Issue #45: `${base}..${head}` was one git argument, so a value beginning with
 // `-` such as `--output=/path` was parsed as an option and wrote a file.
 describe('Git revision option injection (issue #45)', () => {
+  // Windows runs multiple hostile-input cases and real Git subprocesses under CI load.
+  // Use the same per-test allowance as the other Git integration scenarios.
   it('rejects option-like and expression-like revisions without side effects', async () => {
     const root = makeRepo();
     const outside = tempDir('toolip-canary-');
@@ -62,7 +64,7 @@ describe('Git revision option injection (issue #45)', () => {
     expect(existsSync(path.join(root, 'PWNED'))).toBe(false);
     expect(readdirSync(outside)).toEqual([]);
     expect(git(root, 'status', '--porcelain')).toBe('');
-  });
+  }, 30_000);
 
   it('accepts branches, tags, HEAD and full or short commit IDs', async () => {
     const root = makeRepo();
