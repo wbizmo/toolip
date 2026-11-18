@@ -1,6 +1,6 @@
 # Zivora Labs OpenChain programme — Toolip
 
-> **Implementation proposal, not a conformance assertion.** This document establishes documented procedures for an intended self-certification programme. Controls involving real participants, approved budgets, continuously archived evidence, tested reporting channels and operational execution remain unverified until the evidence register is completed. 
+> **Implementation proposal, not a conformance assertion.** This document establishes documented procedures for an intended self-certification programme. Controls involving real participants, approved budgets, continuously archived evidence, tested reporting channels and operational execution remain unverified until the evidence register is completed.
 
 ## Standards and programme scope
 
@@ -17,14 +17,14 @@ The programme owner records the products, shipped distribution formats, active s
 
 ## Organizational accountabilities (positions, not invented appointments)
 
-| Function | Required duties | Competence to assess | Assignment |
-| --- | --- | --- | --- |
-| Executive sponsor | Authorize programme, resources, scope and final self-declaration | Authority and ability to allocate time and funds | **Not confirmed** |
-| Open-source programme owner | Coordinate policy, records, reviews, metrics and corrective actions | Supply-chain processes and ISO checklist interpretation | **Not confirmed** |
-| License-compliance lead | Review component provenance, obligations, notices, exceptions and inbound/outbound contributions | SPDX, permissive/weak-copyleft license duties and escalation criteria | **Not confirmed** |
-| Security-assurance lead | Threat analysis, advisory triage, risk acceptance and public reporting | CVE/OSV/OSV-like feeds, SCA, secure build/release and incident response | **Not confirmed** |
-| Maintainer / release approver | Inventory shipped artifacts, enforce gates, archive evidence and verify release | Packaging, source control, CI and actual project dependency graph | **Not confirmed** |
-| Legal escalation resource | Decide difficult license conflicts, modifications and customer agreements | Qualified open-source licensing advice | **Not confirmed** |
+| Function                      | Required duties                                                                                  | Competence to assess                                                    | Assignment        |
+| ----------------------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- | ----------------- |
+| Executive sponsor             | Authorize programme, resources, scope and final self-declaration                                 | Authority and ability to allocate time and funds                        | **Not confirmed** |
+| Open-source programme owner   | Coordinate policy, records, reviews, metrics and corrective actions                              | Supply-chain processes and ISO checklist interpretation                 | **Not confirmed** |
+| License-compliance lead       | Review component provenance, obligations, notices, exceptions and inbound/outbound contributions | SPDX, permissive/weak-copyleft license duties and escalation criteria   | **Not confirmed** |
+| Security-assurance lead       | Threat analysis, advisory triage, risk acceptance and public reporting                           | CVE/OSV/OSV-like feeds, SCA, secure build/release and incident response | **Not confirmed** |
+| Maintainer / release approver | Inventory shipped artifacts, enforce gates, archive evidence and verify release                  | Packaging, source control, CI and actual project dependency graph       | **Not confirmed** |
+| Legal escalation resource     | Decide difficult license conflicts, modifications and customer agreements                        | Qualified open-source licensing advice                                  | **Not confirmed** |
 
 Roles may be held by the same qualified person when separation of review and approval remains credible; document who actually fills each role. Do not assert competence, staffing or funding without evidence. A resource review must document assigned time, training, tooling, budget and specialist availability.
 

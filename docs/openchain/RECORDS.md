@@ -17,17 +17,17 @@
 
 ## Component and license review (one row per shipped component)
 
-| Release + hash | Component, origin and PURL | Actual shipped version | License and copyright | Obligations and incompatibilities | Review outcome / responsible approver | Evidence |
-| --- | --- | --- | --- | --- | --- | --- |
-| (new record) | (required) | (required) | (verified) | (source, notices, modifications, etc.) | OPEN until reviewed | (immutable reference) |
+| Release + hash | Component, origin and PURL | Actual shipped version | License and copyright | Obligations and incompatibilities      | Review outcome / responsible approver | Evidence              |
+| -------------- | -------------------------- | ---------------------- | --------------------- | -------------------------------------- | ------------------------------------- | --------------------- |
+| (new record)   | (required)                 | (required)             | (verified)            | (source, notices, modifications, etc.) | OPEN until reviewed                   | (immutable reference) |
 
 Maintain separate inventories where the CLI and shipped generated template carry distinct dependencies or artifacts.
 
 ## Vulnerability disposition (including NO-ACTION)
 
-| Release + component PURL | Check date/source | Advisory or recorded no-known-findings result | Risk, reachability and impact | Fix/mitigation/no-action decision | Owner and approval | Evidence |
-| --- | --- | --- | --- | --- | --- | --- |
-| (new record) | (required) | (required) | (required for findings) | OPEN until reviewed | (required) | (immutable reference) |
+| Release + component PURL | Check date/source | Advisory or recorded no-known-findings result | Risk, reachability and impact | Fix/mitigation/no-action decision | Owner and approval | Evidence              |
+| ------------------------ | ----------------- | --------------------------------------------- | ----------------------------- | --------------------------------- | ------------------ | --------------------- |
+| (new record)             | (required)        | (required)                                    | (required for findings)       | OPEN until reviewed               | (required)         | (immutable reference) |
 
 Keep a record even when a release scan finds no known vulnerabilities, and distinguish feed unavailable or scanner failure from no findings.
 
