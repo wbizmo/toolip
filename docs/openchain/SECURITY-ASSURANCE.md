@@ -10,6 +10,12 @@
 4. Record each finding's affected version, exploitability, reachability where determinable, severity and business/use-case impact; assign accountable remediation. Use documented justification for “not affected” or no action (VEX-style disposition where relevant); do not mask findings by increasing audit thresholds.
 5. Classify risk and decide if a release is blocked, fixed, replaced, isolated, mitigated or accepted by the authorized person. Customer agreement is required where applicable under the standard or contractual commitments. Keep the signed go/no-go result and residual risk register.
 
+## Open-source lifecycle recording and comprehensive component archive
+
+Before each release, the responsible maintainer must implement and execute a **continuous lifecycle recording procedure** that captures **all open-source software used in the supplied software**, including source code and transitive dependencies not bundled in the npm tarball, separately installed runtimes, build-time components that affect supplied artifacts, generated-template dependencies and any external open-source content incorporated in delivered binaries or files. Records must link each component to its provenance, verified source/archive copy or retrievable source snapshot, original license, version/commit, integrity hashes, usage and the affected release.
+
+Maintain and verify a durable archive of the **open-source software itself**, not only a component list, SBOM, npm package or metadata. Reconcile the complete archive to each shipped release and retain dated collection, modification and removal records throughout component intake, updates, release, post-release monitoring and end-of-support. An auditor must be able to retrieve the complete component sources and prove the record corresponds to the released software. Missing sources, integrity mismatches, untracked separately installed components or incomplete lifecycle history are release-blocking exceptions and do **not** satisfy ISO/IEC 18974 §4.3.1.
+
 ## Post-release security monitoring
 
 - Maintain the exact component inventories of **each supported released version** and re-evaluate against newly disclosed advisories on a documented recurring schedule (weekly is a proposed initial cadence).

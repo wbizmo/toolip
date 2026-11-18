@@ -143,10 +143,10 @@ Status policy: **OPEN** until an accountable reviewer confirms both design and p
 
 ### 18974 checklist section 4.3.1
 
-| ID             | Objective in original checklist order           | State | Evidence needed to answer Yes                                     |
-| -------------- | ----------------------------------------------- | ----- | ----------------------------------------------------------------- |
-| 18974-4.3.1-01 | Continuous inventory and archive of open source | OPEN  | SBOM procedure plus time-stamped release archive                  |
-| 18974-4.3.1-02 | Demonstrable records of shipped components      | OPEN  | Per-release component inventory including templates if applicable |
+| ID             | Objective in original checklist order           | State | Evidence needed to answer Yes                                                                                                                                                                                                                                                                        |
+| -------------- | ----------------------------------------------- | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 18974-4.3.1-01 | Continuous inventory and archive of open source | OPEN  | Dated lifecycle-recording procedure and verified complete source/archive copies of ALL open-source components used in each supplied release (including separately installed, transitive, build-time or generated-template components), reconciled to inventories with original provenance and hashes |
+| 18974-4.3.1-02 | Demonstrable records of shipped components      | OPEN  | Per-release component inventory including templates if applicable                                                                                                                                                                                                                                    |
 
 ### 18974 checklist section 4.3.2
 

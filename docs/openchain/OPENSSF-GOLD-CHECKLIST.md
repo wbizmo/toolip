@@ -12,7 +12,7 @@ Evidence includes an actual URI, version, reviewer and date, not merely an unexe
 
 ## GitHub reviews: policy versus achieved outcome
 
-LaunchStack [main branch rules](https://github.com/wbizmo/launchstack-cli/rules/21824160)
+Toolip [main branch rules](https://github.com/wbizmo/toolip/rules/21824146)
 require two approvals, code-owner review, last-push approval and resolved threads.
 Administrator bypass remains possible, so this is **configured-policy evidence only**.
 Gold two_person_review requires at least 50% of actual proposed modifications
