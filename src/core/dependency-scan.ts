@@ -331,6 +331,16 @@ export async function scanDependencies(
               }
             : {})
         };
+        if (options.offline) {
+          return {
+            identityDigest: npmProvenanceIdentityDigest(identity),
+            name: identity.name,
+            version: identity.version,
+            status: 'unavailable',
+            reason: 'registry_metadata_unavailable',
+            artifactIntegrity: 'declared-not-verified'
+          };
+        }
         return verifier(identity, verifierOptions);
       }
     );

@@ -182,8 +182,7 @@ export function exportCycloneDxVex(
         affects: [] as Array<Record<string, unknown>>,
         ratings: [
           {
-            severity:
-              finding.severity === 'info' ? 'informational' : finding.severity
+            severity: finding.severity
           }
         ],
         recommendation: finding.remediation?.summary,

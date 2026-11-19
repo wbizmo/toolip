@@ -266,7 +266,6 @@ describe('scanDependencies', () => {
         artifactIntegrity: 'declared-not-verified' as const
       }));
       const result = await scanDependencies(root, {
-        offline: true,
         npmProvenancePolicy: policy,
         npmProvenanceVerifier: verifier
       });
@@ -287,6 +286,58 @@ describe('scanDependencies', () => {
           severity: 'info'
         })
       );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not query npm provenance providers in offline mode', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-deps-provenance-offline-')
+    );
+    try {
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': { name: 'fixture', version: '1.0.0' },
+            'node_modules/example': {
+              version: '1.2.3',
+              ...publicNpmSource('example', '1.2.3'),
+              integrity: `sha512-${Buffer.alloc(64, 0x41).toString('base64')}`
+            }
+          }
+        })
+      );
+      const { scanDependencies } =
+        await import('../src/core/dependency-scan.js');
+      const policy = parseNpmProvenancePolicy({
+        version: 1,
+        packages: {
+          example: {
+            certificateIssuer: 'https://token.actions.githubusercontent.com',
+            certificateIdentity:
+              'https://github.com/acme/example/.github/workflows/release.yml@refs/tags/v1.2.3',
+            sourceRepository: 'https://github.com/acme/example'
+          }
+        }
+      });
+      const verifier = vi.fn();
+      const result = await scanDependencies(root, {
+        offline: true,
+        npmProvenancePolicy: policy,
+        npmProvenanceVerifier: verifier
+      });
+      expect(verifier).not.toHaveBeenCalled();
+      expect(result.npmProvenance).toMatchObject([
+        {
+          name: 'example',
+          status: 'unavailable',
+          reason: 'registry_metadata_unavailable',
+          artifactIntegrity: 'declared-not-verified'
+        }
+      ]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

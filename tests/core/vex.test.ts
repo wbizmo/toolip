@@ -101,6 +101,20 @@ describe('CycloneDX and OpenVEX integration', () => {
     ).toBe(true);
   });
 
+  it('exports informational findings with CycloneDX severity info', () => {
+    const finding = vulnerabilityFinding();
+    finding.severity = 'info';
+    const document = exportCycloneDxVex([finding], {
+      author: 'Toolip test authority',
+      timestamp: '2026-11-06T12:00:00.000Z'
+    });
+    expect(document.vulnerabilities).toEqual([
+      expect.objectContaining({
+        ratings: [expect.objectContaining({ severity: 'info' })]
+      })
+    ]);
+  });
+
   it('rejects impossible timestamps and ambiguous CycloneDX component identities', () => {
     const impossibleTimestamp = exportOpenVex([vulnerabilityFinding()], {
       author: 'Toolip test authority',
