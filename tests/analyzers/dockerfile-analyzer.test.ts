@@ -82,7 +82,7 @@ describe('DockerfileAnalyzer', () => {
     for (const imageLine of [
       'FROM $IMAGE',
       'FROM $' + '{IMAGE}',
-      'FROM ${IMAGE:-node:20@sha256:' + 'a'.repeat(64) + '}'
+      `FROM \${IMAGE:-node:20@sha256:${'a'.repeat(64)}}`
     ]) {
       const root = await mkdtemp(
         path.join(os.tmpdir(), 'toolip-arg-override-')
@@ -91,7 +91,7 @@ describe('DockerfileAnalyzer', () => {
         await writeFile(
           path.join(root, 'Dockerfile'),
           [
-            'ARG IMAGE=node:20@sha256:' + 'a'.repeat(64),
+            `ARG IMAGE=node:20@sha256:${'a'.repeat(64)}`,
             imageLine,
             'USER 1000',
             'HEALTHCHECK CMD true'
@@ -169,7 +169,7 @@ describe('DockerfileAnalyzer', () => {
       await writeFile(
         path.join(root, 'Dockerfile'),
         [
-          'ARG IMAGE=node:20@sha256:' + 'a'.repeat(64),
+          `ARG IMAGE=node:20@sha256:${'a'.repeat(64)}`,
           'FROM \\$IMAGE',
           'USER 1000',
           'HEALTHCHECK CMD true'
@@ -520,7 +520,7 @@ describe('DockerfileAnalyzer', () => {
     try {
       const source = [
         'FROM scratch',
-        'RUN ' + Array.from({ length: 2_000 }, () => 'echo x \\').join('\n'),
+        `RUN ${Array.from({ length: 2_000 }, () => 'echo x \\').join('\n')}`,
         '  true',
         'USER 1000',
         'HEALTHCHECK CMD true'
@@ -673,7 +673,7 @@ describe('DockerfileAnalyzer', () => {
       await writeFile(
         path.join(root, 'Dockerfile'),
         [
-          'ARG IMAGE node:20@sha256:' + 'a'.repeat(64),
+          `ARG IMAGE node:20@sha256:${'a'.repeat(64)}`,
           'FROM $IMAGE',
           'USER 1000',
           'HEALTHCHECK CMD true'

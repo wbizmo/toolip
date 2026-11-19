@@ -1290,57 +1290,64 @@ describe('non-npm lockfile inventory', () => {
   it.each([
     ['powerpc64le-unknown-linux-gnu', 'little'],
     ['aarch64_be-unknown-linux-gnu', 'big']
-  ])('honors explicit endianness in Cargo target %s', async (triple, selected) => {
-    const root = await fixture();
-    await writeFile(
-      path.join(root, 'Cargo.toml'),
-      [
-        '[package]',
-        'name = "app"',
-        'version = "0.1.0"',
-        'edition = "2021"',
-        '[workspace]',
-        'members = ["little", "big"]',
-        '[target.\'cfg(target_endian = "little")\'.dependencies]',
-        'little = { path = "little" }',
-        '[target.\'cfg(target_endian = "big")\'.dependencies]',
-        'big = { path = "big" }'
-      ].join('\n')
-    );
-    for (const member of ['little', 'big']) {
-      await mkdir(path.join(root, member), { recursive: true });
-      await writeFile(path.join(root, member, 'Cargo.toml'),
-        `[package]\nname = "${member}"\nversion = "0.1.0"\n`
+  ])(
+    'honors explicit endianness in Cargo target %s',
+    async (triple, selected) => {
+      const root = await fixture();
+      await writeFile(
+        path.join(root, 'Cargo.toml'),
+        [
+          '[package]',
+          'name = "app"',
+          'version = "0.1.0"',
+          'edition = "2021"',
+          '[workspace]',
+          'members = ["little", "big"]',
+          '[target.\'cfg(target_endian = "little")\'.dependencies]',
+          'little = { path = "little" }',
+          '[target.\'cfg(target_endian = "big")\'.dependencies]',
+          'big = { path = "big" }'
+        ].join('\n')
+      );
+      for (const member of ['little', 'big']) {
+        await mkdir(path.join(root, member), { recursive: true });
+        await writeFile(
+          path.join(root, member, 'Cargo.toml'),
+          `[package]\nname = "${member}"\nversion = "0.1.0"\n`
+        );
+      }
+      await writeFile(
+        path.join(root, 'Cargo.lock'),
+        [
+          'version = 4',
+          '[[package]]',
+          'name = "app"',
+          'version = "0.1.0"',
+          'dependencies = ["little", "big"]',
+          '[[package]]',
+          'name = "little"',
+          'version = "0.1.0"',
+          '[[package]]',
+          'name = "big"',
+          'version = "0.1.0"'
+        ].join('\n')
+      );
+      const graph = await readOtherEcosystemInventoryDetailed(root, undefined, {
+        cargoTarget: triple
+      });
+      const app = graph.packages.find((item) => item.name === 'app');
+      const selectedEdges = graph.edges
+        .filter((edge) => edge.from === app?.id)
+        .map((edge) => edge.name);
+      expect(selectedEdges).toContain(selected);
+      expect(selectedEdges).not.toContain(
+        selected === 'little' ? 'big' : 'little'
+      );
+      expect(graph.warnings).not.toContain(
+        'cargo-target-context-unverified:Cargo.toml'
       );
     }
-    await writeFile(path.join(root, 'Cargo.lock'), [
-      'version = 4',
-      '[[package]]',
-      'name = "app"',
-      'version = "0.1.0"',
-      'dependencies = ["little", "big"]',
-      '[[package]]',
-      'name = "little"',
-      'version = "0.1.0"',
-      '[[package]]',
-      'name = "big"',
-      'version = "0.1.0"'
-    ].join('\n'));
-    const graph = await readOtherEcosystemInventoryDetailed(root, undefined, {
-      cargoTarget: triple
-    });
-    const app = graph.packages.find((item) => item.name === 'app');
-    const selectedEdges = graph.edges
-      .filter((edge) => edge.from === app?.id)
-      .map((edge) => edge.name);
-    expect(selectedEdges).toContain(selected);
-    expect(selectedEdges).not.toContain(
-      selected === 'little' ? 'big' : 'little'
-    );
-    expect(graph.warnings).not.toContain(
-      'cargo-target-context-unverified:Cargo.toml'
-    );
-  });
+  );
 
   it('preserves optional Cargo lock candidates when feature resolution cannot be proven', async () => {
     const root = await fixture();
@@ -3293,8 +3300,8 @@ describe('non-npm lockfile inventory', () => {
 
   it('reports conflicting Go module-manifest checksums even when the module archive hash matches', async () => {
     const root = await fixture();
-    const h1 = 'h1:' + Buffer.alloc(32, 1).toString('base64');
-    const h2 = 'h1:' + Buffer.alloc(32, 2).toString('base64');
+    const h1 = `h1:${Buffer.alloc(32, 1).toString('base64')}`;
+    const h2 = `h1:${Buffer.alloc(32, 2).toString('base64')}`;
     await writeFile(
       path.join(root, 'go.mod'),
       'module example.test/app\nrequire example.test/lib v1.2.3\n'
@@ -3302,9 +3309,9 @@ describe('non-npm lockfile inventory', () => {
     await writeFile(
       path.join(root, 'go.sum'),
       [
-        'example.test/lib v1.2.3/go.mod ' + h1,
-        'example.test/lib v1.2.3/go.mod ' + h2,
-        'example.test/lib v1.2.3 ' + h1
+        `example.test/lib v1.2.3/go.mod ${h1}`,
+        `example.test/lib v1.2.3/go.mod ${h2}`,
+        `example.test/lib v1.2.3 ${h1}`
       ].join('\n')
     );
     const inventory = await readOtherEcosystemInventoryDetailed(root);
@@ -4044,7 +4051,7 @@ describe('non-npm lockfile inventory', () => {
       [
         '[INFO] app:service:pom:1.0.0',
         '[INFO] +- org.example:valid:jar:1.0.0:compile',
-        '[INFO] |  +- org.example:bad:jar:${unresolved}:compile',
+        `[INFO] |  +- org.example:bad:jar:\${unresolved}:compile`,
         '[INFO] |  |  \\- org.example:orphan:jar:2.0.0:compile',
         '[INFO] +- org.example:next:jar:3.0.0:compile'
       ].join('\n')
@@ -4055,58 +4062,68 @@ describe('non-npm lockfile inventory', () => {
     expect(graph.complete).toBe(false);
     expect(graph.warnings).toContain('maven-tree-version-unresolved');
     expect(graph.warnings).toContain('maven-tree-parent-edge-unresolved');
-    expect(graph.packages.map((item) => item.name)).toEqual([
-      'org.example:valid',
-      'org.example:next'
+    expect(graph.packages.map((item) => item.name).sort()).toEqual([
+      'org.example:next',
+      'org.example:valid'
     ]);
     expect(graph.edges).toHaveLength(2);
   });
 
   it('withholds a Maven conflict-omitted dependency and its orphan descendants', async () => {
     const root = await fixture();
-    await writeFile(path.join(root, 'maven-dependency-tree.txt'), [
-      '[INFO] app:service:jar:1.0.0',
-      '[INFO] +- org.example:parent:jar:1.0.0:compile',
-      '[INFO] |  +- org.example:omitted:jar:1.0.0:compile (omitted for conflict with 2.0.0)',
-      '[INFO] |  |  \\- org.example:orphan:jar:9.0.0:compile',
-      '[INFO] +- org.example:final:jar:3.0.0:compile'
-    ].join('\n'));
+    await writeFile(
+      path.join(root, 'maven-dependency-tree.txt'),
+      [
+        '[INFO] app:service:jar:1.0.0',
+        '[INFO] +- org.example:parent:jar:1.0.0:compile',
+        '[INFO] |  +- org.example:omitted:jar:1.0.0:compile (omitted for conflict with 2.0.0)',
+        '[INFO] |  |  \\- org.example:orphan:jar:9.0.0:compile',
+        '[INFO] +- org.example:final:jar:3.0.0:compile'
+      ].join('\n')
+    );
     const graph = await readOtherEcosystemInventoryDetailed(root);
     expect(graph.complete).toBe(false);
     expect(graph.warnings).toContain(
       'maven-tree-conflict-resolution-unavailable'
     );
     expect(graph.warnings).toContain('maven-tree-parent-edge-unresolved');
-    expect(graph.packages.map((item) => item.name)).toEqual([
-      'org.example:parent',
-      'org.example:final'
+    expect(graph.packages.map((item) => item.name).sort()).toEqual([
+      'org.example:final',
+      'org.example:parent'
     ]);
   });
 
   it('never certifies an exported Java graph when no source manifest exists to bind', async () => {
     const root = await fixture();
-    await writeFile(path.join(root, 'gradle-dependencies.json'), JSON.stringify({
-      modules: [{
-        group: 'org.example',
-        module: 'app',
-        version: '1.0.0',
-        children: [{
-          group: 'org.example',
-          module: 'library',
-          version: '2.0.0',
-          children: []
-        }]
-      }],
-      toolipSource: { manifestHashes: {} }
-    }));
+    await writeFile(
+      path.join(root, 'gradle-dependencies.json'),
+      JSON.stringify({
+        modules: [
+          {
+            group: 'org.example',
+            module: 'app',
+            version: '1.0.0',
+            children: [
+              {
+                group: 'org.example',
+                module: 'library',
+                version: '2.0.0',
+                children: []
+              }
+            ]
+          }
+        ],
+        toolipSource: { manifestHashes: {} }
+      })
+    );
     const graph = await readOtherEcosystemInventoryDetailed(root);
     expect(graph.complete).toBe(false);
     expect(graph.warnings).toContain(
       'java-export-source-manifest-unavailable:gradle-dependencies.json'
     );
-    expect(graph.packages.every((item) =>
-      item.resolutionConfidence === 'unknown'
-    )).toBe(true);
+    expect(
+      graph.packages.every((item) => item.resolutionConfidence === 'unknown')
+    ).toBe(true);
   });
 
   it('imports bounded multi-module Java exports with exact scoped instances and classifiers', async () => {
@@ -4213,6 +4230,8 @@ describe('non-npm lockfile inventory', () => {
 
   it('keeps Java module identities stable when export roots are reordered', async () => {
     const root = await fixture();
+    const pom = '<project><modelVersion>4.0.0</modelVersion></project>';
+    await writeFile(path.join(root, 'pom.xml'), pom);
     const modules = [
       {
         groupId: 'org.example',
@@ -4245,11 +4264,21 @@ describe('non-npm lockfile inventory', () => {
     const readModuleIdentities = async (
       roots: typeof modules
     ): Promise<Array<[string, string | undefined]>> => {
-      await writeFile(exportPath, JSON.stringify({ modules: roots }));
+      await writeFile(
+        exportPath,
+        JSON.stringify({
+          modules: roots,
+          toolipSource: {
+            manifestHashes: {
+              'pom.xml': createHash('sha256').update(pom).digest('hex')
+            }
+          }
+        })
+      );
       const graph = await (
         await import('../../src/core/dependencies/ecosystem-inventory.js')
       ).readOtherEcosystemInventoryDetailed(root);
-      expect(graph.complete).toBe(true);
+      expect(graph.complete, graph.warnings.join('\n')).toBe(true);
       return graph.packages
         .map(
           (item) => [item.name, item.workspace] as [string, string | undefined]
@@ -4296,6 +4325,8 @@ describe('non-npm lockfile inventory', () => {
 
   it('uses explicit project paths to distinguish equal-coordinate Gradle modules', async () => {
     const root = await fixture();
+    const settings = "include 'api', 'service'\n";
+    await writeFile(path.join(root, 'settings.gradle'), settings);
     await writeFile(
       path.join(root, 'gradle-dependencies.json'),
       JSON.stringify({
@@ -4328,7 +4359,14 @@ describe('non-npm lockfile inventory', () => {
               }
             ]
           }
-        ]
+        ],
+        toolipSource: {
+          manifestHashes: {
+            'settings.gradle': createHash('sha256')
+              .update(settings)
+              .digest('hex')
+          }
+        }
       })
     );
 
@@ -4469,11 +4507,23 @@ describe('non-npm lockfile inventory', () => {
 
   it('imports the Maven dependency plugin JSON with managed exact versions', async () => {
     const root = await fixture();
+    const pom = '<project><modelVersion>4.0.0</modelVersion></project>';
+    await writeFile(path.join(root, 'pom.xml'), pom);
     const captured = await readFile(
       new URL('../fixtures/java/maven-parent-bom-tree.json', import.meta.url),
       'utf8'
     );
-    await writeFile(path.join(root, 'maven-dependency-tree.json'), captured);
+    await writeFile(
+      path.join(root, 'maven-dependency-tree.json'),
+      JSON.stringify({
+        modules: JSON.parse(captured),
+        toolipSource: {
+          manifestHashes: {
+            'pom.xml': createHash('sha256').update(pom).digest('hex')
+          }
+        }
+      })
+    );
 
     const graph = await readOtherEcosystemInventoryDetailed(root);
     const commons = graph.packages.filter(
@@ -4560,14 +4610,24 @@ describe('non-npm lockfile inventory', () => {
               .update(settingsSource)
               .digest('hex'),
             'api/gradle.lockfile': createHash('sha256')
-              .update(await readFile(
-                new URL('../fixtures/java/gradle/api/gradle.lockfile', import.meta.url)
-              ))
+              .update(
+                await readFile(
+                  new URL(
+                    '../fixtures/java/gradle/api/gradle.lockfile',
+                    import.meta.url
+                  )
+                )
+              )
               .digest('hex'),
             'service/gradle.lockfile': createHash('sha256')
-              .update(await readFile(
-                new URL('../fixtures/java/gradle/service/gradle.lockfile', import.meta.url)
-              ))
+              .update(
+                await readFile(
+                  new URL(
+                    '../fixtures/java/gradle/service/gradle.lockfile',
+                    import.meta.url
+                  )
+                )
+              )
               .digest('hex')
           }
         }
@@ -4647,14 +4707,17 @@ describe('non-npm lockfile inventory', () => {
 
   it('reports malformed Gradle lock entries and conflicting selected versions without pretending completeness', async () => {
     const root = await fixture();
-    await writeFile(path.join(root, 'gradle.lockfile'), [
-      '# synthetic Gradle dependency lock',
-      'org.example:library:1.0.0=runtimeClasspath',
-      'org.example:library:2.0.0=compileClasspath',
-      'org.example:missing-version=runtimeClasspath',
-      'empty=',
-      'org.example:valid:3.0.0=testRuntimeClasspath'
-    ].join('\n'));
+    await writeFile(
+      path.join(root, 'gradle.lockfile'),
+      [
+        '# synthetic Gradle dependency lock',
+        'org.example:library:1.0.0=runtimeClasspath',
+        'org.example:library:2.0.0=compileClasspath',
+        'org.example:missing-version=runtimeClasspath',
+        'empty=',
+        'org.example:valid:3.0.0=testRuntimeClasspath'
+      ].join('\n')
+    );
     const graph = await readOtherEcosystemInventoryDetailed(root);
     expect(graph.complete).toBe(false);
     expect(graph.warnings).toContain(
@@ -4663,12 +4726,14 @@ describe('non-npm lockfile inventory', () => {
     expect(graph.warnings).toContain(
       'gradle-lockfile-entry-invalid:gradle.lockfile'
     );
-    expect(graph.packages.some((item) =>
-      item.name === 'org.example:valid' && item.version === '3.0.0'
-    )).toBe(true);
-    expect(graph.packages.some((item) =>
-      item.name === 'org.example:library'
-    )).toBe(false);
+    expect(
+      graph.packages.some(
+        (item) => item.name === 'org.example:valid' && item.version === '3.0.0'
+      )
+    ).toBe(true);
+    expect(
+      graph.packages.some((item) => item.name === 'org.example:library')
+    ).toBe(false);
   });
 
   it('withholds Gradle exported-graph confidence when nested dependency locks were not signed into source hashes', async () => {
@@ -4676,26 +4741,33 @@ describe('non-npm lockfile inventory', () => {
     const settings = "include 'api'\n";
     await writeFile(path.join(root, 'settings.gradle'), settings);
     await mkdir(path.join(root, 'api'), { recursive: true });
-    await writeFile(path.join(root, 'api', 'gradle.lockfile'),
+    await writeFile(
+      path.join(root, 'api', 'gradle.lockfile'),
       'org.example:service:2.0.0=runtimeClasspath\nempty=\n'
     );
-    await writeFile(path.join(root, 'gradle-dependencies.json'),
+    await writeFile(
+      path.join(root, 'gradle-dependencies.json'),
       JSON.stringify({
-        modules: [{
-          group: 'org.example',
-          module: 'app',
-          version: '1.0.0',
-          children: [{
+        modules: [
+          {
             group: 'org.example',
-            module: 'service',
-            version: '2.0.0',
-            children: []
-          }]
-        }],
+            module: 'app',
+            version: '1.0.0',
+            children: [
+              {
+                group: 'org.example',
+                module: 'service',
+                version: '2.0.0',
+                children: []
+              }
+            ]
+          }
+        ],
         toolipSource: {
           manifestHashes: {
             'settings.gradle': createHash('sha256')
-              .update(settings).digest('hex')
+              .update(settings)
+              .digest('hex')
           }
         }
       })
@@ -4705,10 +4777,13 @@ describe('non-npm lockfile inventory', () => {
     expect(graph.warnings).toContain(
       'java-export-source-provenance-unverified:gradle-dependencies.json'
     );
-    expect(graph.packages.some((item) =>
-      item.name === 'org.example:service' &&
-      item.resolutionConfidence === 'unknown'
-    )).toBe(true);
+    expect(
+      graph.packages.some(
+        (item) =>
+          item.name === 'org.example:service' &&
+          item.resolutionConfidence === 'unknown'
+      )
+    ).toBe(true);
   });
 
   it('keeps Gradle lockfile discovery incomplete when its file budget is exceeded', async () => {

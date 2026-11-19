@@ -81,6 +81,10 @@ const binaryExtensions = new Set([
   'xz'
 ]);
 
+export function isKnownMaliciousBinaryExtension(extension: string): boolean {
+  return binaryExtensions.has(extension.toLowerCase());
+}
+
 /** A filename extension is not content proof. Confirm binary status from bytes. */
 export function shouldInspectMaliciousContent(
   relativePath: string,
@@ -107,7 +111,7 @@ const workspaceScriptReference =
 const suspiciousPayload =
   /(?:\beval\s*\(\s*(?:atob|Buffer\.from|decodeURIComponent)|new\s+Function\s*\(\s*(?:atob|Buffer\.from)|\b(?:atob|Buffer\.from)\s*\([^;\n]{0,200}[\s\S]{0,240}\b(?:eval|new\s+Function)\s*\(|\b(?:curl|wget)\b[^\n|]{0,240}\|\s*(?:sh|bash)|\b(?:Invoke-Expression|IEX)\s*\(?\s*(?:\(Invoke-WebRequest|\$env:))/iu;
 const encodedInterpreterLoader =
-  /(?:\b(?:bash|sh|zsh)\s+<\(\s*(?:curl|wget)\b|\b(?:pwsh|powershell)(?:\.exe)?\b[^\r\n]{0,128}\s-(?:enc|encodedcommand)\s+[A-Za-z0-9+\/=]{20,}|\b(?:node|deno|bun)\s+(?:-e|--eval)\s+['"][^\r\n]{0,128}\b(?:atob|Buffer\.from)\s*\()/iu;
+  /(?:\b(?:bash|sh|zsh)\s+<\(\s*(?:curl|wget)\b|\b(?:pwsh|powershell)(?:\.exe)?\b[^\r\n]{0,128}\s-(?:enc|encodedcommand)\s+[A-Za-z0-9+/=]{20,}|\b(?:node|deno|bun)\s+(?:-e|--eval)\s+['"][^\r\n]{0,128}\b(?:atob|Buffer\.from)\s*\()/iu;
 const dynamicExecution =
   /(?:\beval\s*\(|\bnew\s+Function\s*\(|\b(?:node:)?child_process\.(?:exec|execSync|execFile|execFileSync|spawn|spawnSync|fork)\s*\()/u;
 const childProcessFunctions = new Set([
@@ -460,10 +464,8 @@ function hasArchiveExecution(source: string): boolean {
 /** Returns behavior labels without retaining or reporting matching source text. */
 function behaviorSignals(source: string): string[] {
   const signals: string[] = [];
-  if (
-    suspiciousPayload.test(source) ||
-    encodedInterpreterLoader.test(source)
-  ) signals.push('encoded-or-download-execution');
+  if (suspiciousPayload.test(source) || encodedInterpreterLoader.test(source))
+    signals.push('encoded-or-download-execution');
   if (hasArchiveExecution(source))
     signals.push('archive-extraction-and-execution');
   if (credentialStoreAccess.test(source) && outboundTransfer.test(source))
@@ -1336,6 +1338,10 @@ export function analyzeMaliciousContent(
       tracedPaths++;
       if (trace.length < MAX_REPORTED_TRACE_PATHS) trace.push(location);
     };
+    const preserveTraceEndpoint = (location: string): void => {
+      if (trace.length >= MAX_REPORTED_TRACE_PATHS && !trace.includes(location))
+        trace[trace.length - 1] = location;
+    };
     const queue = [...entry.references].map(
       (reference) => [entry.referenceBase, reference] as const
     );
@@ -1398,8 +1404,13 @@ export function analyzeMaliciousContent(
           targetAnalysis.unresolvedShellCommand ||
           targetAnalysis.signals.includes('archive-extraction-and-execution');
         for (const signal of targetAnalysis.signals) signals.add(signal);
-        if (signals.size > 0 || automaticScript.test(targetText))
+        if (
+          targetAnalysis.signals.length > 0 ||
+          automaticScript.test(targetText)
+        ) {
           payload = true;
+          preserveTraceEndpoint(`${targetManifest}#scripts.${scriptName}`);
+        }
         for (const hookName of [`pre${scriptName}`, `post${scriptName}`]) {
           if (
             entryResult.scripts.has(`${targetManifest}\0${hookName}`) &&
@@ -1445,7 +1456,13 @@ export function analyzeMaliciousContent(
         targetAnalysis.unresolvedShellCommand ||
         targetAnalysis.signals.includes('archive-extraction-and-execution');
       for (const signal of targetAnalysis.signals) signals.add(signal);
-      if (signals.size > 0 || automaticScript.test(targetText)) payload = true;
+      if (
+        targetAnalysis.signals.length > 0 ||
+        automaticScript.test(targetText)
+      ) {
+        payload = true;
+        preserveTraceEndpoint(target);
+      }
       const nestedReferences = targetAnalysis.references;
       if (nestedReferences) {
         for (const nested of nestedReferences)
@@ -1507,9 +1524,10 @@ export function analyzeMaliciousContent(
     // Preserve existing stable finding IDs for ordinary traces. On a very
     // large graph, cap report metadata and derive its identity from the
     // complete path stream rather than sorting and retaining 100k strings.
-    const traceId = tracedPaths > MAX_REPORTED_TRACE_PATHS
-      ? stableId([ruleId, entry.file, entry.kind, traceHash.digest('hex')])
-      : stableId([ruleId, entry.file, entry.kind, ...[...trace].sort()]);
+    const traceId =
+      tracedPaths > MAX_REPORTED_TRACE_PATHS
+        ? stableId([ruleId, entry.file, entry.kind, traceHash.digest('hex')])
+        : stableId([ruleId, entry.file, entry.kind, ...[...trace].sort()]);
     findings.push({
       id: traceId,
       ruleId,

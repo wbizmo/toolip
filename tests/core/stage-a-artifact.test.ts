@@ -56,8 +56,6 @@ const record = {
     nonNpmDependencyArtifactCount: 0,
     cargoDependencyArtifactCount: 0,
     goDependencyArtifactCount: 0,
-    cargoDependencyArtifactCount: 0,
-    goDependencyArtifactCount: 0,
     nonNpmDependencyArtifactFiles: 0,
     nonNpmDependencyArtifactBytes: 0,
     nonNpmDependencyArtifactNetworkBytes: 0,

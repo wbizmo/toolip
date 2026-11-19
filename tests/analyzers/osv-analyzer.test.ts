@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { generateKeyPairSync } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { OsvVulnerabilityAnalyzer } from '../../src/analyzers/vulnerability/osv-analyzer.js';
 import { OsvClient } from '../../src/providers/osv/client.js';
@@ -1518,9 +1518,33 @@ describe('OsvVulnerabilityAnalyzer', () => {
         path.join(root, 'Cargo.lock'),
         `version = 3\n\n[[package]]\nname = "serde"\nversion = "1.0.188"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "${'a'.repeat(64)}"\n`
       );
+      const pom = '<project><modelVersion>4.0.0</modelVersion></project>';
+      await writeFile(path.join(root, 'pom.xml'), pom);
       await writeFile(
-        path.join(root, 'maven-dependency-tree.txt'),
-        '[INFO] app:service:jar:1.0.0\n[INFO] +- org.example:core:jar:tests:4.2.0:compile\n'
+        path.join(root, 'maven-dependency-tree.json'),
+        JSON.stringify({
+          modules: [
+            {
+              groupId: 'app',
+              artifactId: 'service',
+              version: '1.0.0',
+              children: [
+                {
+                  groupId: 'org.example',
+                  artifactId: 'core',
+                  version: '4.2.0',
+                  classifier: 'tests',
+                  children: []
+                }
+              ]
+            }
+          ],
+          toolipSource: {
+            manifestHashes: {
+              'pom.xml': createHash('sha256').update(pom).digest('hex')
+            }
+          }
+        })
       );
       await writeFile(
         path.join(root, 'composer.lock'),
@@ -1602,7 +1626,9 @@ describe('OsvVulnerabilityAnalyzer', () => {
         queried.get('Go')?.includes('example.test/lib@v1.2.3') ?? false
       ).toBe(false);
       expect(queried.get('crates.io')).toContain('serde@1.0.188');
-      expect(queried.get('Maven')).toContain('org.example:core@4.2.0');
+      expect(queried.get('Maven'), result.warnings.join('\n')).toContain(
+        'org.example:core@4.2.0'
+      );
       expect(queried.get('Packagist')).toContain('vendor/library@1.2.0');
       expect(queried.get('Packagist')).not.toContain('vendor/branch@dev-main');
       expect(queried.get('Packagist')).not.toContain('vendor/local@1.0.0');
@@ -1641,7 +1667,19 @@ describe('OsvVulnerabilityAnalyzer', () => {
         new URL('../fixtures/java/maven-parent-bom-tree.json', import.meta.url),
         'utf8'
       );
-      await writeFile(path.join(root, 'maven-dependency-tree.json'), captured);
+      const pom = '<project><modelVersion>4.0.0</modelVersion></project>';
+      await writeFile(path.join(root, 'pom.xml'), pom);
+      await writeFile(
+        path.join(root, 'maven-dependency-tree.json'),
+        JSON.stringify({
+          modules: JSON.parse(captured),
+          toolipSource: {
+            manifestHashes: {
+              'pom.xml': createHash('sha256').update(pom).digest('hex')
+            }
+          }
+        })
+      );
       const client = new OsvClient({
         fetchImplementation: async (_input, init) => {
           const body = JSON.parse(String(init?.body)) as {
@@ -1724,7 +1762,19 @@ describe('OsvVulnerabilityAnalyzer', () => {
         new URL('../fixtures/java/maven-conflict-tree.json', import.meta.url),
         'utf8'
       );
-      await writeFile(path.join(root, 'maven-dependency-tree.json'), captured);
+      const pom = '<project><modelVersion>4.0.0</modelVersion></project>';
+      await writeFile(path.join(root, 'pom.xml'), pom);
+      await writeFile(
+        path.join(root, 'maven-dependency-tree.json'),
+        JSON.stringify({
+          modules: [JSON.parse(captured)],
+          toolipSource: {
+            manifestHashes: {
+              'pom.xml': createHash('sha256').update(pom).digest('hex')
+            }
+          }
+        })
+      );
       const client = new OsvClient({
         fetchImplementation: async (_input, init) => {
           const body = JSON.parse(String(init?.body)) as {
@@ -1753,7 +1803,9 @@ describe('OsvVulnerabilityAnalyzer', () => {
 
       expect(queried).not.toContain('org.apache.commons:commons-lang3@3.14.0');
       expect(queried).not.toContain('org.apache.commons:commons-lang3@3.15.0');
-      expect(result.coverage?.state).toBe('partial');
+      expect(result.coverage?.state, result.warnings.join('\n')).toBe(
+        'partial'
+      );
       expect(
         result.warnings.some((warning) =>
           warning.includes('java-export-version-conflict-unresolved')

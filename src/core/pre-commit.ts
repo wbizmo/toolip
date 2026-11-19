@@ -16,7 +16,10 @@ import {
   type ScannerContext
 } from './scanner-context.js';
 import { runSecurityDoctor, shouldScanSecrets } from './security-doctor.js';
-import { shouldInspectMaliciousContent } from '../analyzers/malicious-content/analyzer.js';
+import {
+  isKnownMaliciousBinaryExtension,
+  shouldInspectMaliciousContent
+} from '../analyzers/malicious-content/analyzer.js';
 import {
   defaultTextFileBudget,
   type TextFileReadResult
@@ -88,12 +91,13 @@ export async function runPreCommit(
   );
   const stagedPaths = new Set(entries.map((entry) => entry.path));
   const maliciousContentFiles: ProjectFile[] = index.entries
-    .filter((entry) =>
-      shouldInspectMaliciousContent(
-        entry.path,
-        path.extname(entry.path).replace('.', '').toLowerCase()
-      )
-    )
+    .filter((entry) => {
+      const extension = path.extname(entry.path).replace('.', '').toLowerCase();
+      return (
+        shouldInspectMaliciousContent(entry.path, extension) &&
+        !isKnownMaliciousBinaryExtension(extension)
+      );
+    })
     .map((entry) => ({
       absolutePath: path.join(absoluteRoot, entry.path),
       relativePath: entry.path,
@@ -113,7 +117,8 @@ export async function runPreCommit(
         return (
           (stagedPaths.has(entry.path) &&
             shouldScanSecrets(entry.path, extension)) ||
-          shouldInspectMaliciousContent(entry.path, extension)
+          (shouldInspectMaliciousContent(entry.path, extension) &&
+            !isKnownMaliciousBinaryExtension(extension))
         );
       })
       .map((entry) => entry.oid),

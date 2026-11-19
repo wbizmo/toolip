@@ -146,7 +146,7 @@ const dangerous = [
   /\bnew\s+Function\s*\(/iu,
   /\b(?:curl|wget)\b[^\r\n;&|]{0,300}(?:\||&&|;)[ \t]*(?:sh|bash|zsh)\b/iu,
   /\b(?:bash|sh|zsh)\s+<\(\s*(?:curl|wget)\b/iu,
-  /\b(?:pwsh|powershell)(?:\.exe)?\b[^\r\n]{0,128}\s-(?:enc|encodedcommand)\s+[A-Za-z0-9+\/=]{20,}/iu,
+  /\b(?:pwsh|powershell)(?:\.exe)?\b[^\r\n]{0,128}\s-(?:enc|encodedcommand)\s+[A-Za-z0-9+/=]{20,}/iu,
   /\b(?:eval|Function)\s*\(\s*(?:atob|Buffer\.from|decodeURIComponent|[a-z_$][\w$]*)/iu,
   /\b(?:exec|execSync|spawn|spawnSync)\s*\([^\r\n]{0,300}(?:curl|wget|https?:\/\/|process\.env)/iu,
   /\b(?:Invoke-Expression|IEX)\b[^\r\n]{0,300}(?:DownloadString|FromBase64String|https?:\/\/)/iu,
@@ -3644,7 +3644,7 @@ function localReferences(source, sourcePath, packagesByName, texts) {
   }
   const shellAnalysis = staticShellTargets(source);
   for (const target of shellAnalysis.targets)
-    refs.set(target + '\\0static-shell', {
+    refs.set(`${target}\\0static-shell`, {
       value: target,
       rootRelative: false
     });
@@ -4526,7 +4526,7 @@ export function scanGitTree(repo, expectedSha, { changedPaths = [] } = {}) {
         if (!texts.has(target) && !withheldBinaryPaths.has(target)) {
           const aliases = withheldBinaryStems.get(resolved) ?? [];
           if (aliases.length > 1) {
-            incompleteReasons.push('ambiguous-disguised-reference:' + resolved);
+            incompleteReasons.push(`ambiguous-disguised-reference:${resolved}`);
             continue;
           }
           if (aliases.length !== 1) continue;
@@ -4559,7 +4559,7 @@ export function scanGitTree(repo, expectedSha, { changedPaths = [] } = {}) {
         const bytes = rawByOid.get(blob.oid);
         if (!bytes || bytes.length > MAX_FILE_BYTES) {
           incompleteReasons.push(
-            'referenced-binary-content-uninspected:' + target
+            `referenced-binary-content-uninspected:${target}`
           );
           continue;
         }
@@ -4568,7 +4568,7 @@ export function scanGitTree(repo, expectedSha, { changedPaths = [] } = {}) {
           throw new Error('Referenced Git objects exceed Stage A byte budget');
         if (bytes.includes(0)) {
           incompleteReasons.push(
-            'referenced-binary-content-uninspected:' + target
+            `referenced-binary-content-uninspected:${target}`
           );
           continue;
         }
@@ -4577,7 +4577,7 @@ export function scanGitTree(repo, expectedSha, { changedPaths = [] } = {}) {
           text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
         } catch {
           incompleteReasons.push(
-            'referenced-binary-content-uninspected:' + target
+            `referenced-binary-content-uninspected:${target}`
           );
           continue;
         }

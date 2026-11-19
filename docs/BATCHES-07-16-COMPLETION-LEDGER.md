@@ -2424,7 +2424,42 @@ counts so Cargo's operator policy is required only for Cargo. The focused
 Stage A and approval-artifact suites pass 126 tests, including the restored
 fail-closed `.bin` reference fixture; typecheck passes. The current protected
 scanner digest is
-`677a03218c1bf2691c67ec1ee3305657cbef808117339020a5a667170da0c0d8` at
+`c801f3a4bc5042805ac475c5a39af197adb178e0dcfc335e5259ed21e676293b` at
 all three pins. Go workspaces, vendoring, replacements and private proxies
 remain explicit unsupported/incomplete boundaries rather than receiving
 approval.
+
+## 2026-11-19 requested-set code and local-gate reconciliation
+
+The requested implementation set — **#28, #36–#40, #43, #54, #56–#70,
+#77, #79–#86, #89–#91 and #95–#96** — is code-complete for the bounded
+capabilities supported by this branch. Unsupported dynamic resolution,
+unavailable authoritative exports, private registries, runtime-only policy
+engines, uninspectable binary artifacts and platform/provider behavior remain
+explicit `unknown`/`incomplete`; none is silently reported clean.
+
+The final combined Linux/Node 24 local gate passed at scanner digest
+`c801f3a4bc5042805ac475c5a39af197adb178e0dcfc335e5259ed21e676293b`:
+
+- 1,519 unit tests passed / 4 skipped across 128 files;
+- coverage passed 1,517 / 3 skipped at 86.13% statements, 79.54% branches,
+  93.42% functions and 88.88% lines;
+- changelog, zero-warning lint, formatting, workflow policy, 355-package
+  lockfile integrity, zero-vulnerability npm audit, typecheck and compiler
+  quality passed;
+- clean TypeScript build and built-package verification passed.
+
+The run also corrected the gate failures it exposed: known staged binary
+assets are excluded before immutable blob reads; bounded malicious traces
+retain the suspicious endpoint when report metadata truncates; Java/OSV
+fixtures bind exports to captured source-manifest hashes; Maven order checks
+are semantic rather than hash-order dependent; and exact Gradle versions are
+not confused with dynamic selectors.
+
+This is **code and applicable local-verification completion**, not GitHub
+issue closure or release acceptance. Hosted CI/CodeQL, native supported-OS
+matrices, live provider/registry/App interoperability, independent security
+review, protected-main Stage A bootstrap/ruleset enforcement and the
+explicitly post-merge/final large benchmark campaigns remain external or
+later-phase acceptance gates. PR #104 stays draft; no issue is closed, no
+merge/tag/package/release is performed by this checkpoint.

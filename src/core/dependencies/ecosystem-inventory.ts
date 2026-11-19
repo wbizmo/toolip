@@ -1176,10 +1176,10 @@ function fromTomlLock(
         previous.dependencies = [];
       }
       warnings.push(
-        'cargo-lock-duplicate-identity:' + normalizedName + '@' + version
+        `cargo-lock-duplicate-identity:${normalizedName}@${version}`
       );
       warnings.push(
-        'ecosystem-lock-identity-conflict:crates.io:' + normalizedName
+        `ecosystem-lock-identity-conflict:crates.io:${normalizedName}`
       );
       continue;
     }
@@ -2290,11 +2290,13 @@ function fromGradleLock(
       /^([^:#\s=]+):([^:#\s=]+):([^\s=]+)(?:=([A-Za-z0-9_,.-]+))?(?:\s+#.*)?$/u
     );
     if (
-      !match?.[1] || !match[2] || !match[3] ||
+      !match?.[1] ||
+      !match[2] ||
+      !match[3] ||
       !exact(match[3]) ||
       // Gradle dynamic selectors and Maven property interpolations are
       // declarations, not exact resolved artifact versions.
-      /[+*\[\]()${}]/u.test(match[3]) ||
+      /[+*()[\]${}]/u.test(match[3]) ||
       (line.includes('=') && match[4] === undefined)
     ) {
       warnings.push(`gradle-lockfile-entry-invalid:${file}`);
@@ -5794,10 +5796,12 @@ export async function readOtherEcosystemInventoryDetailed(
         // the selected lock graph. A changed nested gradle.lockfile without
         // a correspondingly refreshed source-proof hash invalidates export
         // provenance even when settings.gradle/build.gradle are unchanged.
-        [...new Set([
-          ...gradleWorkspace.manifests,
-          ...gradleWorkspace.lockfiles
-        ])].sort(),
+        [
+          ...new Set([
+            ...gradleWorkspace.manifests,
+            ...gradleWorkspace.lockfiles
+          ])
+        ].sort(),
         warnings,
         options.sourceRevision ?? fileSource?.sourceRevision,
         options.signal

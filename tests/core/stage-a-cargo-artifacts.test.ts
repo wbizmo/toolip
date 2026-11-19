@@ -352,7 +352,7 @@ describe('Stage A Cargo archive verification', () => {
         unsupported.sha,
         unsupported.sha
       ).reasons
-    ).toContain('unsupported-dependency-ecosystem-provenance');
+    ).toContain('go-sum-missing:go.mod');
   });
 
   it('binds workspace-local lock identities to exact tracked member manifests', async () => {

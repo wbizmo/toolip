@@ -999,7 +999,7 @@ function buildDockerStageGraph(
       if (alias !== undefined && alias < index) continue;
       if (alias !== undefined || ambiguousAliases.has(from.toLowerCase())) {
         warnings.push(
-          instruction.line + ': COPY --from stage alias is future or ambiguous'
+          `${instruction.line}: COPY --from stage alias is future or ambiguous`
         );
         continue;
       }

