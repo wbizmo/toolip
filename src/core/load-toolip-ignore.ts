@@ -1,6 +1,6 @@
-import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import ignore from 'ignore';
+import { TextFileReader } from './text-file-reader.js';
 
 export type ToolipIgnore = {
   ignores(filePath: string, isDirectory?: boolean): boolean;
@@ -15,19 +15,26 @@ const defaultPatterns = [
   '.git',
   '.toolip-vault.json'
 ];
+const maximumIgnoreFileBytes = 1024 * 1024;
 
 export async function loadToolipIgnore(root: string): Promise<ToolipIgnore> {
   const ignoreFile = path.join(root, '.toolipignore');
   let customPatterns: string[] = [];
 
-  try {
-    const raw = await readFile(ignoreFile, 'utf8');
+  const read = await new TextFileReader(
+    {
+      maxFiles: 1,
+      maxFileBytes: maximumIgnoreFileBytes,
+      maxTotalBytes: maximumIgnoreFileBytes
+    },
+    { root }
+  ).read(ignoreFile);
+  if (read.status === 'ok') {
+    const raw = read.content;
     customPatterns = raw
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => line.length > 0 && !line.startsWith('#'));
-  } catch {
-    customPatterns = [];
   }
 
   const patterns = [...defaultPatterns, ...customPatterns];

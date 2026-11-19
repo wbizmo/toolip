@@ -5,7 +5,11 @@ import type {
   AnalyzerContext,
   AnalyzerResult
 } from '../contracts/analyzer.js';
-import { mapConcurrent } from './concurrency.js';
+import { mapConcurrent, MAX_CONCURRENT_OPERATIONS } from './concurrency.js';
+import {
+  acquireIsolatedAnalyzerWorkerSlot,
+  MAX_ISOLATED_ANALYZER_CONTEXT_BYTES
+} from './isolated-worker-pool.js';
 import { sanitizeOutput } from '../core/safe-output.js';
 
 export type AnalyzerRunnerOptions = {
@@ -68,13 +72,42 @@ export class AnalyzerRunner {
   private peakActive = 0;
 
   constructor(options: AnalyzerRunnerOptions = {}) {
-    this.concurrency = Math.max(1, options.concurrency ?? 4);
-    this.timeoutMs = Math.max(1, options.timeoutMs ?? 30_000);
-    this.graceMs = Math.max(0, options.graceMs ?? 100);
-    this.workerMaxOldGenerationMb = Math.max(
-      16,
-      options.workerMaxOldGenerationMb ?? 512
-    );
+    this.concurrency = options.concurrency ?? 4;
+    if (
+      !Number.isSafeInteger(this.concurrency) ||
+      this.concurrency < 1 ||
+      this.concurrency > MAX_CONCURRENT_OPERATIONS
+    )
+      throw new RangeError(
+        `analyzer concurrency must be an integer from 1 to ${MAX_CONCURRENT_OPERATIONS}`
+      );
+    this.timeoutMs = options.timeoutMs ?? 30_000;
+    if (
+      !Number.isSafeInteger(this.timeoutMs) ||
+      this.timeoutMs < 1 ||
+      this.timeoutMs > 600_000
+    )
+      throw new RangeError(
+        'analyzer timeout must be an integer from 1 to 600000'
+      );
+    this.graceMs = options.graceMs ?? 100;
+    if (
+      !Number.isSafeInteger(this.graceMs) ||
+      this.graceMs < 0 ||
+      this.graceMs > 10_000
+    )
+      throw new RangeError(
+        'analyzer grace period must be an integer from 0 to 10000'
+      );
+    this.workerMaxOldGenerationMb = options.workerMaxOldGenerationMb ?? 512;
+    if (
+      !Number.isSafeInteger(this.workerMaxOldGenerationMb) ||
+      this.workerMaxOldGenerationMb < 16 ||
+      this.workerMaxOldGenerationMb > 1_024
+    )
+      throw new RangeError(
+        'analyzer worker heap must be an integer from 16 to 1024 MiB'
+      );
   }
 
   get stats(): AnalyzerRunnerStats {
@@ -187,6 +220,36 @@ export class AnalyzerRunner {
     const { entry, execArgv } = workerEntry();
     let timeout: NodeJS.Timeout | undefined;
     let cancel: (() => void) | undefined;
+    const workerDeadline = Date.now() + this.timeoutMs;
+
+    let releaseWorkerSlot: (() => void) | undefined;
+    try {
+      releaseWorkerSlot = await acquireIsolatedAnalyzerWorkerSlot(
+        context.signal,
+        this.timeoutMs,
+        estimateIsolatedAnalyzerContextBytes(context),
+        this.workerMaxOldGenerationMb
+      );
+    } catch (error) {
+      return {
+        outcome:
+          error instanceof Error && error.name === 'TimeoutError'
+            ? { kind: 'timed_out' }
+            : context.signal?.aborted
+              ? { kind: 'cancelled' }
+              : { kind: 'failed', error },
+        unresponsive: false
+      };
+    }
+    if (context.signal?.aborted) {
+      releaseWorkerSlot();
+      return { outcome: { kind: 'cancelled' }, unresponsive: false };
+    }
+    const remainingTimeoutMs = workerDeadline - Date.now();
+    if (remainingTimeoutMs <= 0) {
+      releaseWorkerSlot();
+      return { outcome: { kind: 'timed_out' }, unresponsive: false };
+    }
 
     let worker: Worker;
     try {
@@ -205,6 +268,7 @@ export class AnalyzerRunner {
       });
     } catch (error) {
       // e.g. DataCloneError for non-cloneable options: a failed outcome, not a rejected run().
+      releaseWorkerSlot();
       return { outcome: { kind: 'failed', error }, unresponsive: false };
     }
 
@@ -234,7 +298,7 @@ export class AnalyzerRunner {
 
       timeout = setTimeout(
         () => resolve({ kind: 'timed_out' }),
-        this.timeoutMs
+        remainingTimeoutMs
       );
 
       if (context.signal) {
@@ -251,7 +315,11 @@ export class AnalyzerRunner {
 
     // Enforceable stop: terminate() halts even a synchronous CPU loop and
     // resolves only after the thread has exited, so the slot is not freed early.
-    await worker.terminate();
+    try {
+      await worker.terminate();
+    } finally {
+      releaseWorkerSlot();
+    }
 
     return { outcome, unresponsive: false };
   }
@@ -339,4 +407,43 @@ function workerEntry(): { entry: URL; execArgv: string[] } {
         entry: new URL('./analyzer-worker.js', import.meta.url),
         execArgv: []
       };
+}
+
+/**
+ * Estimate the structured-clone footprint of a worker context without
+ * serializing it or creating another snapshot-sized temporary buffer.
+ */
+function estimateIsolatedAnalyzerContextBytes(
+  context: AnalyzerContext
+): number {
+  const snapshot = context.options?.snapshot as
+    | {
+        files?: readonly { bytes?: unknown; path?: unknown }[];
+      }
+    | undefined;
+  if (!snapshot?.files) return 1024 * 1024;
+  if (!Array.isArray(snapshot.files))
+    return MAX_ISOLATED_ANALYZER_CONTEXT_BYTES + 1;
+
+  let bytes = 1024 * 1024;
+  for (const file of snapshot.files) {
+    if (!file || typeof file !== 'object')
+      return MAX_ISOLATED_ANALYZER_CONTEXT_BYTES + 1;
+    const fileBytes = file.bytes;
+    if (
+      typeof fileBytes !== 'number' ||
+      !Number.isSafeInteger(fileBytes) ||
+      fileBytes < 0
+    )
+      return MAX_ISOLATED_ANALYZER_CONTEXT_BYTES + 1;
+    const pathBytes = typeof file.path === 'string' ? file.path.length * 2 : 0;
+    // Snapshot content is held as JavaScript text and copied into the worker.
+    // UTF-8 byte length therefore understates the clone payload (UTF-16 code
+    // units plus the worker copy). Reserve 3x source bytes, plus path and
+    // record metadata, so ASCII-heavy inputs do not consume the budget at 1x.
+    bytes += fileBytes * 3 + pathBytes + 256;
+    if (bytes > MAX_ISOLATED_ANALYZER_CONTEXT_BYTES)
+      return MAX_ISOLATED_ANALYZER_CONTEXT_BYTES + 1;
+  }
+  return bytes;
 }

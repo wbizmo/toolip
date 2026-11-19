@@ -1,5 +1,5 @@
 import {
-  readdirSync,
+  opendirSync,
   realpathSync,
   statSync,
   watch,
@@ -9,6 +9,8 @@ import path from 'node:path';
 
 export type WatchOptions = {
   debounceMs?: number;
+  /** Maximum active directory watches on platforms without native recursion. */
+  maxDirectories?: number;
   ignored?: RegExp[];
   onError?: (error: unknown) => void;
 };
@@ -21,6 +23,13 @@ export function watchProject(
 ): () => void {
   const absoluteRoot = canonicalWatchPath(root);
   const debounceMs = options.debounceMs ?? 500;
+  const maximumWatchDirectories = options.maxDirectories ?? 50_000;
+  if (
+    !Number.isSafeInteger(maximumWatchDirectories) ||
+    maximumWatchDirectories < 1 ||
+    maximumWatchDirectories > 50_000
+  )
+    throw new RangeError('Watch directory limit must be from 1 to 50,000.');
   const ignored = options.ignored ?? [
     /(^|\/)node_modules(\/|$)/,
     /(^|\/)\.git(\/|$)/,
@@ -82,7 +91,13 @@ export function watchProject(
   const closeWatcher =
     process.platform === 'linux'
       ? watchRecursively(absoluteRoot, schedule, reportError)
-      : watchDirectoryTree(absoluteRoot, schedule, ignored, reportError);
+      : watchDirectoryTree(
+          absoluteRoot,
+          schedule,
+          ignored,
+          reportError,
+          maximumWatchDirectories
+        );
 
   return () => {
     closed = true;
@@ -111,7 +126,8 @@ function watchDirectoryTree(
   root: string,
   onChange: (relativePath: string) => void,
   ignored: readonly RegExp[],
-  onError: (error: unknown) => void
+  onError: (error: unknown) => void,
+  maximumWatchDirectories: number
 ): () => void {
   const watchers = new Map<
     string,
@@ -122,6 +138,7 @@ function watchDirectoryTree(
   let rootRecoveryTimer: NodeJS.Timeout | undefined;
   let reconciliationQueued = false;
   let closed = false;
+  let directoryLimitReported = false;
 
   /** Retries root registration while a temporarily moved root is unavailable. */
   function scheduleRootRecovery(): void {
@@ -135,90 +152,117 @@ function watchDirectoryTree(
     rootRecoveryTimer.unref();
   }
 
-  /** Registers a directory watcher and recursively discovers its children. */
+  /** Registers directory watchers with bounded, iterative subtree discovery. */
   const addDirectory = (directory: string): void => {
     if (closed) return;
-
-    const canonicalDirectory = canonicalWatchPath(directory);
-    const key = canonicalDirectoryKey(canonicalDirectory);
-    let identity: { dev: bigint; ino: bigint };
-    try {
-      const stat = statSync(canonicalDirectory, { bigint: true });
-      if (!stat.isDirectory()) return;
-      identity = { dev: stat.dev, ino: stat.ino };
-    } catch {
-      removeWatchTree(key);
-      if (key === rootKey) scheduleRootRecovery();
-      return;
-    }
-
-    const existing = watchers.get(key);
-    if (existing?.dev === identity.dev && existing.ino === identity.ino) return;
-    existing?.watcher.close();
-    watchers.delete(key);
-
-    const relativeDirectory = normalizeRelativePath(
-      path.relative(root, canonicalDirectory)
-    );
-    if (
-      relativeDirectory &&
-      ignored.some((pattern) => pattern.test(relativeDirectory))
-    ) {
-      return;
-    }
-
-    let watcher: FSWatcher;
-    try {
-      watcher = watch(
-        canonicalDirectory,
-        { recursive: false },
-        (event, filename) => {
-          if (closed || watchers.get(key)?.watcher !== watcher) return;
-          if (!filename) {
-            queueReconciliation(canonicalDirectory);
-            onChange('');
-            return;
-          }
-
-          const absolutePath = path.join(
-            canonicalDirectory,
-            filename.toString()
-          );
-          const relativePath = path.relative(root, absolutePath);
-          onChange(relativePath);
-
-          if (event === 'rename') queueReconciliation(canonicalDirectory);
-        }
-      );
-    } catch (error) {
-      onError(error);
-      if (key === rootKey) scheduleRootRecovery();
-      return;
-    }
-
-    watchers.set(key, { watcher, ...identity });
-    if (key === rootKey && rootRecoveryTimer) {
-      clearTimeout(rootRecoveryTimer);
-      rootRecoveryTimer = undefined;
-    }
-    watcher.on('error', (error) => {
-      onError(error);
-      watcher.close();
-      if (watchers.get(key)?.watcher === watcher) {
-        watchers.delete(key);
+    const pendingDirectories = [directory];
+    while (pendingDirectories.length > 0 && !closed) {
+      const candidate = pendingDirectories.pop();
+      if (!candidate) continue;
+      const canonicalDirectory = canonicalWatchPath(candidate);
+      const key = canonicalDirectoryKey(canonicalDirectory);
+      let identity: { dev: bigint; ino: bigint };
+      try {
+        const stat = statSync(canonicalDirectory, { bigint: true });
+        if (!stat.isDirectory()) continue;
+        identity = { dev: stat.dev, ino: stat.ino };
+      } catch {
+        removeWatchTree(key);
         if (key === rootKey) scheduleRootRecovery();
+        continue;
       }
-    });
 
-    try {
-      for (const entry of readdirSync(canonicalDirectory, {
-        withFileTypes: true
-      })) {
-        if (!entry.isDirectory()) continue;
-        addDirectory(path.join(canonicalDirectory, entry.name));
+      const existing = watchers.get(key);
+      if (existing?.dev === identity.dev && existing.ino === identity.ino)
+        continue;
+      if (existing) removeWatchTree(key);
+
+      const relativeDirectory = normalizeRelativePath(
+        path.relative(root, canonicalDirectory)
+      );
+      if (
+        relativeDirectory &&
+        ignored.some((pattern) => pattern.test(relativeDirectory))
+      )
+        continue;
+
+      if (watchers.size >= maximumWatchDirectories) {
+        if (!directoryLimitReported) {
+          directoryLimitReported = true;
+          onError(
+            new Error(
+              `Project watch directory limit reached (${maximumWatchDirectories}); deeper paths are not monitored.`
+            )
+          );
+        }
+        continue;
       }
-    } catch (error) {
-      onError(error);
+
+      let watcher: FSWatcher;
+      try {
+        watcher = watch(
+          canonicalDirectory,
+          { recursive: false },
+          (event, filename) => {
+            if (closed || watchers.get(key)?.watcher !== watcher) return;
+            if (!filename) {
+              queueReconciliation(canonicalDirectory);
+              onChange('');
+              return;
+            }
+
+            const absolutePath = path.join(
+              canonicalDirectory,
+              filename.toString()
+            );
+            const relativePath = path.relative(root, absolutePath);
+            onChange(relativePath);
+
+            if (event === 'rename') queueReconciliation(canonicalDirectory);
+          }
+        );
+      } catch (error) {
+        onError(error);
+        if (key === rootKey) scheduleRootRecovery();
+        continue;
+      }
+
+      watchers.set(key, { watcher, ...identity });
+      if (key === rootKey && rootRecoveryTimer) {
+        clearTimeout(rootRecoveryTimer);
+        rootRecoveryTimer = undefined;
+      }
+      watcher.on('error', (error) => {
+        onError(error);
+        watcher.close();
+        if (watchers.get(key)?.watcher === watcher) {
+          removeWatchTree(key);
+          if (key === rootKey) scheduleRootRecovery();
+        }
+      });
+
+      visitChildDirectories(
+        canonicalDirectory,
+        (childDirectory) => {
+          if (
+            watchers.size + pendingDirectories.length >=
+            maximumWatchDirectories
+          ) {
+            if (!directoryLimitReported) {
+              directoryLimitReported = true;
+              onError(
+                new Error(
+                  `Project watch directory limit reached (${maximumWatchDirectories}); deeper paths are not monitored.`
+                )
+              );
+            }
+            return false;
+          }
+          pendingDirectories.push(childDirectory);
+          return true;
+        },
+        onError
+      );
     }
   };
 
@@ -242,16 +286,28 @@ function watchDirectoryTree(
   function reconcileDirectory(directory: string): void {
     if (closed) return;
     const directoryKey = canonicalDirectoryKey(canonicalWatchPath(directory));
-    try {
-      for (const entry of readdirSync(directoryKey, { withFileTypes: true })) {
-        if (entry.isDirectory()) {
-          addDirectory(path.join(directoryKey, entry.name));
+    visitChildDirectories(
+      directoryKey,
+      (childDirectory) => {
+        if (watchers.size >= maximumWatchDirectories) {
+          if (!directoryLimitReported) {
+            directoryLimitReported = true;
+            onError(
+              new Error(
+                `Project watch directory limit reached (${maximumWatchDirectories}); deeper paths are not monitored.`
+              )
+            );
+          }
+          return false;
         }
+        addDirectory(childDirectory);
+        return true;
+      },
+      (error) => {
+        onError(error);
+        if (directoryKey === rootKey) scheduleRootRecovery();
       }
-    } catch (error) {
-      onError(error);
-      if (directoryKey === rootKey) scheduleRootRecovery();
-    }
+    );
     for (const [key, entry] of watchers) {
       if (key !== directoryKey && path.dirname(key) !== directoryKey) continue;
       try {
@@ -314,4 +370,34 @@ function canonicalDirectoryKey(directory: string): string {
 /** Normalizes native separators for ignore rules and scan notifications. */
 function normalizeRelativePath(value: string): string {
   return value.replaceAll('\\', '/');
+}
+
+/** Iterates child directories without materializing a full directory listing. */
+function visitChildDirectories(
+  directory: string,
+  visit: (childDirectory: string) => boolean,
+  onError: (error: unknown) => void
+): void {
+  let handle: ReturnType<typeof opendirSync> | undefined;
+  let exhausted = false;
+  try {
+    handle = opendirSync(directory);
+    let entry = handle.readSync();
+    while (entry) {
+      if (entry.isDirectory() && !visit(path.join(directory, entry.name)))
+        break;
+      entry = handle.readSync();
+    }
+    exhausted = entry === null;
+  } catch (error) {
+    onError(error);
+  } finally {
+    if (!exhausted) {
+      try {
+        handle?.closeSync();
+      } catch (error) {
+        onError(error);
+      }
+    }
+  }
 }

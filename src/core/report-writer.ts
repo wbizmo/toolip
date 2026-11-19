@@ -1,6 +1,142 @@
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { ToolipReport } from './report.js';
+import { createSarifReport } from './sarif.js';
+import type { Finding } from '../contracts/finding.js';
+import type { AnalysisState } from '../contracts/analysis.js';
+
+const maximumReportBytes = 64 * 1024 * 1024 - 1;
+const maximumReportNodes = 1_000_000;
+const maximumReportFragments = 1_000_000;
+
+function jsonStringBytes(value: string, maximumBytes: number): number {
+  if (value.length + 2 > maximumBytes) return maximumBytes + 1;
+  let bytes = 2;
+  const chunkUnits = 64 * 1024;
+  for (let offset = 0; offset < value.length;) {
+    let end = Math.min(offset + chunkUnits, value.length);
+    if (
+      end < value.length &&
+      value.charCodeAt(end - 1) >= 0xd800 &&
+      value.charCodeAt(end - 1) <= 0xdbff &&
+      value.charCodeAt(end) >= 0xdc00 &&
+      value.charCodeAt(end) <= 0xdfff
+    )
+      end -= 1;
+    const encodedChunk = JSON.stringify(value.slice(offset, end));
+    bytes += Buffer.byteLength(encodedChunk, 'utf8') - 2;
+    if (bytes > maximumBytes) return bytes;
+    offset = end;
+  }
+  return bytes;
+}
+
+/** Serialize ordinary JSON data with bounded output and traversal work. */
+export function serializeJsonOutputBounded(value: unknown): string {
+  return serializeJsonOutputWithinBudget(value, maximumReportBytes);
+}
+
+/** Serializes JSON with an explicit output ceiling for generated artifacts. */
+export function serializeJsonOutputWithinBudget(
+  value: unknown,
+  maximumBytes: number
+): string {
+  if (
+    !Number.isSafeInteger(maximumBytes) ||
+    maximumBytes < 1 ||
+    maximumBytes > maximumReportBytes
+  )
+    throw new RangeError('JSON output budget must be from 1 byte to 64 MiB.');
+  let nodes = 0;
+  let bytes = 0;
+  const ancestors = new WeakSet<object>();
+  const append = (part: string, chunks: string[]): void => {
+    bytes += Buffer.byteLength(part, 'utf8');
+    if (bytes > maximumBytes || chunks.length >= maximumReportFragments)
+      throw new RangeError('JSON output exceeds its configured budget.');
+    chunks.push(part);
+  };
+  function* serialize(item: unknown, depth: number): Generator<string> {
+    if (depth > 256 || ++nodes > maximumReportNodes)
+      throw new RangeError('JSON output exceeds its traversal budget.');
+    if (item === null) {
+      yield 'null';
+    } else if (typeof item === 'string') {
+      if (jsonStringBytes(item, maximumBytes) > maximumBytes)
+        throw new RangeError('JSON output exceeds its configured budget.');
+      yield JSON.stringify(item);
+    } else if (typeof item === 'number') {
+      const encoded = Number.isFinite(item) ? JSON.stringify(item) : 'null';
+      yield encoded ?? 'null';
+    } else if (typeof item === 'boolean') {
+      yield item ? 'true' : 'false';
+    } else if (
+      item === undefined ||
+      typeof item === 'function' ||
+      typeof item === 'symbol'
+    ) {
+      yield 'null';
+    } else if (typeof item === 'bigint') {
+      throw new TypeError('JSON output contains a BigInt value.');
+    } else if (Array.isArray(item)) {
+      if (ancestors.has(item))
+        throw new TypeError('JSON output contains a cycle.');
+      ancestors.add(item);
+      try {
+        yield '[';
+        for (let index = 0; index < item.length; index += 1) {
+          if (index > 0) yield ',';
+          const descriptor = Object.getOwnPropertyDescriptor(
+            item,
+            String(index)
+          );
+          yield* serialize(
+            descriptor && 'value' in descriptor ? descriptor.value : null,
+            depth + 1
+          );
+        }
+        yield ']';
+      } finally {
+        ancestors.delete(item);
+      }
+    } else if (typeof item === 'object') {
+      if (ancestors.has(item))
+        throw new TypeError('JSON output contains a cycle.');
+      ancestors.add(item);
+      try {
+        yield '{';
+        let first = true;
+        for (const key in item) {
+          if (!Object.hasOwn(item, key)) continue;
+          if (nodes >= maximumReportNodes)
+            throw new RangeError('JSON output exceeds its traversal budget.');
+          const descriptor = Object.getOwnPropertyDescriptor(item, key);
+          if (!descriptor?.enumerable || !('value' in descriptor))
+            throw new TypeError('JSON output contains an accessor property.');
+          const property = descriptor.value;
+          if (
+            property === undefined ||
+            typeof property === 'function' ||
+            typeof property === 'symbol'
+          )
+            continue;
+          if (!first) yield ',';
+          first = false;
+          yield* serialize(key, depth + 1);
+          yield ':';
+          yield* serialize(property, depth + 1);
+        }
+        yield '}';
+      } finally {
+        ancestors.delete(item);
+      }
+    }
+  }
+
+  const chunks: string[] = [];
+  for (const part of serialize(value, 0)) append(part, chunks);
+  return chunks.join('');
+}
 
 export type ReportFormat = 'json' | 'md';
 
@@ -21,11 +157,38 @@ export async function writeReport(
   const format = detectReportFormat(outputPath);
 
   if (format === 'md') {
-    await writeFile(outputPath, renderMarkdownReport(report), 'utf8');
+    // Preflight the complete report before markdown rendering duplicates text.
+    serializeJsonOutputBounded(report);
+    const markdown = renderMarkdownReport(report);
+    if (Buffer.byteLength(markdown, 'utf8') > maximumReportBytes)
+      throw new RangeError('Markdown report exceeds its configured budget.');
+    await writeFile(outputPath, markdown, 'utf8');
     return;
   }
 
-  await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+  await writeFile(
+    outputPath,
+    `${serializeJsonOutputBounded(report)}\n`,
+    'utf8'
+  );
+}
+
+/** Writes a SARIF 2.1.0 view of the same sanitized findings and coverage state. */
+export async function writeSarifReport(
+  outputPath: string,
+  input: {
+    findings: readonly Finding[];
+    analysisState: AnalysisState;
+    toolVersion: string;
+    policy?: {
+      decision: string;
+      policySha256: string;
+      reasons?: readonly string[];
+    };
+  }
+): Promise<void> {
+  const sarif = createSarifReport(input);
+  await writeFile(outputPath, `${serializeJsonOutputBounded(sarif)}\n`, 'utf8');
 }
 
 export function renderMarkdownReport(report: ToolipReport): string {

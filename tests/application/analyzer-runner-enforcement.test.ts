@@ -12,9 +12,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AnalyzerRunner } from '../../src/application/analyzer-runner.js';
+import { MAX_ISOLATED_ANALYZER_CONTEXT_BYTES } from '../../src/application/isolated-worker-pool.js';
 import type { Analyzer } from '../../src/contracts/analyzer.js';
 import { AstSecurityAnalyzer } from '../../src/analyzers/ast/ast-security-analyzer.js';
 import {
+  ConcurrentAnalyzer,
   EchoAnalyzer,
   SpinAnalyzer,
   ThrowingAnalyzer
@@ -54,6 +56,188 @@ function inProcess(id: string, analyze: Analyzer['analyze']): Analyzer {
 // Issue #34: a non-cooperative analyzer used to keep running after the runner
 // returned and freed its slot.
 describe('AnalyzerRunner deadline enforcement (issue #34)', () => {
+  it('rejects a worker context above the structured-clone memory budget', async () => {
+    const counters = new Int32Array(
+      new SharedArrayBuffer(3 * Int32Array.BYTES_PER_ELEMENT)
+    );
+    const analyzer = new ConcurrentAnalyzer();
+    const result = await new AnalyzerRunner().run([analyzer], {
+      root: process.cwd(),
+      options: {
+        sharedCounters: counters.buffer,
+        snapshot: {
+          files: [
+            {
+              path: 'oversized.ts',
+              bytes: MAX_ISOLATED_ANALYZER_CONTEXT_BYTES + 1
+            }
+          ]
+        }
+      }
+    });
+
+    expect(result[0]?.status).toBe('failed');
+    expect(result[0]?.error).toContain('context exceeds its memory budget');
+    expect(Atomics.load(counters, 0)).toBe(0);
+  });
+
+  it('budgets cloned text above its UTF-8 file byte count', async () => {
+    const counters = new Int32Array(
+      new SharedArrayBuffer(3 * Int32Array.BYTES_PER_ELEMENT)
+    );
+    const analyzer = new ConcurrentAnalyzer();
+    const result = await new AnalyzerRunner().run([analyzer], {
+      root: process.cwd(),
+      options: {
+        sharedCounters: counters.buffer,
+        snapshot: {
+          files: [{ path: 'large-ascii.ts', bytes: 120 * 1024 * 1024 }]
+        }
+      }
+    });
+
+    expect(result[0]?.status).toBe('failed');
+    expect(result[0]?.error).toContain('context exceeds its memory budget');
+    expect(Atomics.load(counters, 0)).toBe(0);
+  });
+
+  it('bounds isolated workers across simultaneous scan runner instances', async () => {
+    const counters = new Int32Array(
+      new SharedArrayBuffer(3 * Int32Array.BYTES_PER_ELEMENT)
+    );
+    const analyzers = Array.from({ length: 6 }, (_, index) => {
+      const analyzer = new ConcurrentAnalyzer();
+      return Object.assign(Object.create(analyzer), {
+        id: `concurrent-${index}`,
+        isolation: analyzer.isolation
+      }) as Analyzer;
+    });
+    const context = {
+      root: process.cwd(),
+      options: { sharedCounters: counters.buffer }
+    };
+
+    const results = await Promise.all([
+      new AnalyzerRunner({ concurrency: 4 }).run(
+        analyzers.slice(0, 3),
+        context
+      ),
+      new AnalyzerRunner({ concurrency: 4 }).run(analyzers.slice(3), context)
+    ]);
+
+    expect(
+      results.flat().map(({ status, error }) => ({ status, error }))
+    ).toEqual(
+      Array.from({ length: 6 }, () => ({ status: 'ok', error: undefined }))
+    );
+    expect(Atomics.load(counters, 1)).toBeLessThanOrEqual(2);
+    expect(Atomics.load(counters, 1)).toBeGreaterThan(0);
+  }, 30_000);
+
+  it('caps aggregate worker heap even when separate runners request the maximum', async () => {
+    const counters = new Int32Array(
+      new SharedArrayBuffer(3 * Int32Array.BYTES_PER_ELEMENT)
+    );
+    const context = {
+      root: process.cwd(),
+      options: { sharedCounters: counters.buffer }
+    };
+    const results = await Promise.all(
+      Array.from({ length: 2 }, async (_, index) => {
+        const analyzer = new ConcurrentAnalyzer();
+        return new AnalyzerRunner({ workerMaxOldGenerationMb: 1_024 }).run(
+          [Object.assign(Object.create(analyzer), { id: `heap-cap-${index}` })],
+          context
+        );
+      })
+    );
+
+    expect(results.flat()[0]?.status).toBe('ok');
+    expect(results.flat()[1]?.status).toBe('ok');
+    expect(Atomics.load(counters, 1)).toBe(1);
+    expect(Atomics.load(counters, 2)).toBe(2);
+  }, 30_000);
+
+  it('cancels a worker waiting for a shared slot without starting it', async () => {
+    const counters = new Int32Array(
+      new SharedArrayBuffer(3 * Int32Array.BYTES_PER_ELEMENT)
+    );
+    const analyzers = Array.from({ length: 3 }, (_, index) => {
+      const analyzer = new ConcurrentAnalyzer();
+      return Object.assign(Object.create(analyzer), {
+        id: `queued-${index}`,
+        isolation: analyzer.isolation
+      }) as Analyzer;
+    });
+    const context = {
+      root: process.cwd(),
+      options: { sharedCounters: counters.buffer, holdMs: 1_000 }
+    };
+    const running = new AnalyzerRunner({ workerMaxOldGenerationMb: 1_024 }).run(
+      analyzers.slice(0, 1),
+      context
+    );
+    const controller = new AbortController();
+    const queued = new AnalyzerRunner({ workerMaxOldGenerationMb: 512 }).run(
+      analyzers.slice(1, 2),
+      { ...context, signal: controller.signal }
+    );
+    const waitUntilWorkerStarted = async (): Promise<void> => {
+      const deadline = Date.now() + 20_000;
+      while (Atomics.load(counters, 0) < 1) {
+        if (Date.now() >= deadline) throw new Error('worker did not start');
+        await sleep(5);
+      }
+    };
+    await waitUntilWorkerStarted();
+    controller.abort();
+
+    const [activeResults, queuedResults] = await Promise.all([running, queued]);
+
+    expect(activeResults.every((result) => result.status === 'ok')).toBe(true);
+    expect(queuedResults[0]?.status).toBe('cancelled');
+    expect(Atomics.load(counters, 2)).toBe(1);
+  }, 40_000);
+
+  it('applies the analyzer deadline while waiting for a shared slot', async () => {
+    const counters = new Int32Array(
+      new SharedArrayBuffer(3 * Int32Array.BYTES_PER_ELEMENT)
+    );
+    const analyzers = Array.from({ length: 3 }, (_, index) => {
+      const analyzer = new ConcurrentAnalyzer();
+      return Object.assign(Object.create(analyzer), {
+        id: `deadline-queued-${index}`,
+        isolation: analyzer.isolation
+      }) as Analyzer;
+    });
+    const context = {
+      root: process.cwd(),
+      options: { sharedCounters: counters.buffer, holdMs: 1_000 }
+    };
+    const running = new AnalyzerRunner({ concurrency: 2 }).run(
+      analyzers.slice(0, 2),
+      context
+    );
+    const waitUntilWorkersStarted = async (): Promise<void> => {
+      const deadline = Date.now() + 10_000;
+      while (Atomics.load(counters, 1) < 2) {
+        if (Date.now() >= deadline) throw new Error('workers did not start');
+        await sleep(5);
+      }
+    };
+    await waitUntilWorkersStarted();
+
+    const [timedOut] = await new AnalyzerRunner({
+      concurrency: 1,
+      timeoutMs: 20
+    }).run(analyzers.slice(2), context);
+    const activeResults = await running;
+
+    expect(timedOut?.status).toBe('timed_out');
+    expect(activeResults.every((result) => result.status === 'ok')).toBe(true);
+    expect(Atomics.load(counters, 2)).toBe(2);
+  }, 30_000);
+
   it('terminates a synchronous CPU-bound analyzer within the deadline without stalling the parent', async () => {
     const dir = tmp();
     const file = path.join(dir, 'side-effect.txt');
