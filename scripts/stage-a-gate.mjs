@@ -1768,6 +1768,141 @@ function cargoLockRecordKey(record) {
   return `${record.name}\0${record.version}\0${record.source}`;
 }
 
+function goModuleRecordKey(record) {
+  return `${record.module}\0${record.version}`;
+}
+
+/** Parse exact public module identities without invoking the Go toolchain. */
+export function parseGoModuleArtifactInventory(
+  moduleText,
+  sumText,
+  { modulePath = 'go.mod', sumPath = 'go.sum' } = {}
+) {
+  const reasons = [];
+  if (
+    typeof moduleText !== 'string' ||
+    typeof sumText !== 'string' ||
+    Buffer.byteLength(moduleText, 'utf8') > MAX_FILE_BYTES ||
+    Buffer.byteLength(sumText, 'utf8') > MAX_FILE_BYTES ||
+    !/(?:^|\/)go\.mod$/u.test(modulePath) ||
+    !/(?:^|\/)go\.sum$/u.test(sumPath)
+  )
+    return Object.freeze({
+      artifactRecords: Object.freeze([]),
+      packageCount: 0,
+      reasons: Object.freeze(['go-module-budget-or-path-invalid'])
+    });
+
+  // Replacements can select local trees or alternate module identities. They
+  // need a different provenance proof and therefore remain explicitly
+  // unsupported rather than being silently mapped to the public proxy.
+  if (/^\s*replace\s+/mu.test(moduleText))
+    reasons.push(`go-module-replacement-unverified:${modulePath}`);
+
+  const required = new Map();
+  let inRequireBlock = false;
+  let invalidManifest = false;
+  for (const originalLine of moduleText.split(/\r?\n/u)) {
+    const line = originalLine.replace(/\/\/.*$/u, '').trim();
+    if (!line) continue;
+    if (/^require\s*\($/u.test(line)) {
+      if (inRequireBlock) invalidManifest = true;
+      inRequireBlock = true;
+      continue;
+    }
+    if (line === ')') {
+      if (!inRequireBlock) invalidManifest = true;
+      inRequireBlock = false;
+      continue;
+    }
+    const match = inRequireBlock
+      ? /^(\S+)\s+(v\S+)$/u.exec(line)
+      : /^require\s+(\S+)\s+(v\S+)$/u.exec(line);
+    if (!match) continue;
+    const [, module, version] = match;
+    if (
+      !module ||
+      !version ||
+      module.length > 512 ||
+      version.length > 256 ||
+      module.startsWith('.') ||
+      module.includes('\\') ||
+      module.includes('\0') ||
+      version.includes('\0')
+    ) {
+      invalidManifest = true;
+      continue;
+    }
+    required.set(`${module}\0${version}`, { module, version });
+    if (required.size > MAX_ARTIFACT_COUNT) invalidManifest = true;
+  }
+  if (inRequireBlock || invalidManifest)
+    reasons.push(`go-module-manifest-invalid:${modulePath}`);
+
+  const sums = new Map();
+  let invalidSum = false;
+  for (const line of sumText.split(/\r?\n/u)) {
+    if (!line.trim()) continue;
+    const match = /^(\S+)\s+(v\S+)\s+h1:([A-Za-z0-9+/]+={0,2})$/u.exec(
+      line.trim()
+    );
+    if (!match) {
+      invalidSum = true;
+      continue;
+    }
+    const [, module, rawVersion, checksum] = match;
+    if (!module || !rawVersion || !checksum) {
+      invalidSum = true;
+      continue;
+    }
+    if (rawVersion.endsWith('/go.mod')) continue;
+    let digest;
+    try {
+      digest = Buffer.from(checksum, 'base64');
+    } catch {
+      invalidSum = true;
+      continue;
+    }
+    if (digest.length !== 32 || digest.toString('base64') !== checksum) {
+      invalidSum = true;
+      continue;
+    }
+    const key = `${module}\0${rawVersion}`;
+    const prior = sums.get(key);
+    if (prior && prior !== checksum) {
+      sums.delete(key);
+      reasons.push(`go-module-checksum-conflict:${sumPath}`);
+    } else if (!prior) sums.set(key, checksum);
+  }
+  if (invalidSum) reasons.push(`go-sum-invalid:${sumPath}`);
+
+  const records = new Map();
+  for (const item of required.values()) {
+    const key = `${item.module}\0${item.version}`;
+    const checksum = sums.get(key);
+    if (!checksum) {
+      reasons.push(`go-module-checksum-missing:${modulePath}`);
+      continue;
+    }
+    const record = Object.freeze({
+      location: `go-module/${Buffer.from(modulePath).toString('base64url')}/${Buffer.from(item.module).toString('base64url')}@${Buffer.from(item.version).toString('base64url')}#${Buffer.from(checksum, 'base64').toString('hex')}`,
+      module: item.module,
+      version: item.version,
+      checksum
+    });
+    records.set(goModuleRecordKey(record), record);
+  }
+  return Object.freeze({
+    artifactRecords: Object.freeze(
+      [...records.values()].sort((left, right) =>
+        left.location.localeCompare(right.location)
+      )
+    ),
+    packageCount: required.size,
+    reasons: Object.freeze([...new Set(reasons)].sort())
+  });
+}
+
 /** Parse only exact crates.io package identities from a bounded Cargo.lock. */
 export function parseCargoLockArtifactInventory(
   lockText,
@@ -2590,6 +2725,63 @@ function inspectCargoLockfiles(repo, commit, tree) {
   });
 }
 
+function inspectGoModuleFiles(repo, commit, tree) {
+  const moduleFiles = tree.blobs.filter((blob) =>
+    /(?:^|\/)go\.mod$/u.test(blob.path)
+  );
+  const sums = new Set(
+    tree.blobs
+      .map((blob) => blob.path)
+      .filter((blobPath) => /(?:^|\/)go\.sum$/u.test(blobPath))
+  );
+  const reasons = [];
+  const records = new Map();
+  let packageCount = 0;
+  if (moduleFiles.length > 32)
+    return Object.freeze({
+      artifactRecords: Object.freeze([]),
+      packageCount: 0,
+      reasons: Object.freeze(['go-module-file-count-budget-exceeded'])
+    });
+  for (const moduleFile of moduleFiles) {
+    const directory = path.posix.dirname(moduleFile.path);
+    const sumPath = directory === '.' ? 'go.sum' : `${directory}/go.sum`;
+    if (!sums.has(sumPath)) {
+      reasons.push(`go-sum-missing:${moduleFile.path}`);
+      continue;
+    }
+    const moduleText = readCommitBlob(repo, commit, moduleFile.path);
+    const sumText = readCommitBlob(repo, commit, sumPath);
+    if (moduleText === undefined || sumText === undefined) {
+      reasons.push(`go-module-input-unavailable:${moduleFile.path}`);
+      continue;
+    }
+    const inventory = parseGoModuleArtifactInventory(moduleText, sumText, {
+      modulePath: moduleFile.path,
+      sumPath
+    });
+    packageCount += inventory.packageCount;
+    reasons.push(...inventory.reasons);
+    for (const record of inventory.artifactRecords) {
+      const key = goModuleRecordKey(record);
+      const prior = records.get(key);
+      if (prior && prior.checksum !== record.checksum) {
+        records.delete(key);
+        reasons.push(`go-module-checksum-conflict:${sumPath}`);
+      } else if (!prior) records.set(key, record);
+    }
+  }
+  return Object.freeze({
+    artifactRecords: Object.freeze(
+      [...records.values()].sort((left, right) =>
+        left.location.localeCompare(right.location)
+      )
+    ),
+    packageCount,
+    reasons: Object.freeze([...new Set(reasons)].sort())
+  });
+}
+
 export function inspectDependencyChanges(repo, baseSha, headSha, mergeSha) {
   const reasons = [];
   const headTree = parseTree(
@@ -2609,15 +2801,14 @@ export function inspectDependencyChanges(repo, baseSha, headSha, mergeSha) {
   if (unsupportedLockfiles.length > 0)
     reasons.push('unsupported-lockfile-format');
   const unsupportedEcosystemInputs = headTree.blobs.some((blob) =>
-    /(?:^|\/)(?:go\.mod|go\.sum|go\.work|go\.work\.sum|vendor\/modules\.txt|\.cargo\/config(?:\.toml)?|uv\.(?:lock|toml)|pdm\.(?:lock|toml)|pixi\.(?:lock|toml)|conda-lock\.ya?ml|environment\.ya?ml|deno\.(?:jsonc?|lock)|poetry\.lock|Pipfile(?:\.lock)?|pyproject\.toml|setup\.(?:py|cfg)|requirements(?:-[^/]+)?\.(?:txt|in)|constraints(?:-[^/]+)?\.txt|Gemfile(?:\.lock)?|[^/]+\.gemspec|\.bundle\/config|composer\.json|composer\.lock|pom\.xml|\.mvn\/(?:extensions\.xml|maven\.config|wrapper\/maven-wrapper\.properties)|gradle\.lockfile|gradle\.properties|libs\.versions\.toml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?)$/iu.test(
+    /(?:^|\/)(?:go\.work|go\.work\.sum|vendor\/modules\.txt|\.cargo\/config(?:\.toml)?|uv\.(?:lock|toml)|pdm\.(?:lock|toml)|pixi\.(?:lock|toml)|conda-lock\.ya?ml|environment\.ya?ml|deno\.(?:jsonc?|lock)|poetry\.lock|Pipfile(?:\.lock)?|pyproject\.toml|setup\.(?:py|cfg)|requirements(?:-[^/]+)?\.(?:txt|in)|constraints(?:-[^/]+)?\.txt|Gemfile(?:\.lock)?|[^/]+\.gemspec|\.bundle\/config|composer\.json|composer\.lock|pom\.xml|\.mvn\/(?:extensions\.xml|maven\.config|wrapper\/maven-wrapper\.properties)|gradle\.lockfile|gradle\.properties|libs\.versions\.toml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?)$/iu.test(
       blob.path
     )
   );
-  const unsupportedAdditionalEcosystemInputs = headTree.blobs.some(
-    (blob) =>
-      /(?:^|\/)(?:Package\.resolved|Package\.swift|Podfile(?:\.lock)?|Cartfile(?:\.resolved)?|pubspec\.(?:yaml|lock)|mix\.(?:exs|lock)|packages\.(?:lock\.json|config)|project\.assets\.json|NuGet\.Config|Directory\.(?:Packages|Build)\.(?:props|targets)|global\.json|[^/]+\.(?:csproj|fsproj|vbproj|sln|slnx))$/iu.test(
-        blob.path
-      )
+  const unsupportedAdditionalEcosystemInputs = headTree.blobs.some((blob) =>
+    /(?:^|\/)(?:Package\.resolved|Package\.swift|Podfile(?:\.lock)?|Cartfile(?:\.resolved)?|pubspec\.(?:yaml|lock)|mix\.(?:exs|lock)|packages\.(?:lock\.json|config)|project\.assets\.json|NuGet\.Config|Directory\.(?:Packages|Build)\.(?:props|targets)|global\.json|[^/]+\.(?:csproj|fsproj|vbproj|sln|slnx))$/iu.test(
+      blob.path
+    )
   );
   if (unsupportedEcosystemInputs || unsupportedAdditionalEcosystemInputs)
     reasons.push('unsupported-dependency-ecosystem-provenance');
@@ -2625,6 +2816,8 @@ export function inspectDependencyChanges(repo, baseSha, headSha, mergeSha) {
   const cargoMerge = mergeSha
     ? inspectCargoLockfiles(repo, mergeSha)
     : cargoHead;
+  const goHead = inspectGoModuleFiles(repo, headSha, headTree);
+  const goMerge = mergeSha ? inspectGoModuleFiles(repo, mergeSha) : goHead;
   const cargoArtifactRecordsByLocation = new Map();
   for (const artifact of [
     ...cargoHead.artifactRecords,
@@ -2632,6 +2825,13 @@ export function inspectDependencyChanges(repo, baseSha, headSha, mergeSha) {
   ])
     cargoArtifactRecordsByLocation.set(artifact.location, artifact);
   reasons.push(...cargoHead.reasons, ...cargoMerge.reasons);
+  const goArtifactRecordsByLocation = new Map();
+  for (const artifact of [
+    ...goHead.artifactRecords,
+    ...goMerge.artifactRecords
+  ])
+    goArtifactRecordsByLocation.set(artifact.location, artifact);
+  reasons.push(...goHead.reasons, ...goMerge.reasons);
   const baseLock = readCommitBlob(repo, baseSha, 'package-lock.json');
   const headLock = readCommitBlob(repo, headSha, 'package-lock.json');
   const headManifest = readCommitBlob(repo, headSha, 'package.json');
@@ -2691,6 +2891,13 @@ export function inspectDependencyChanges(repo, baseSha, headSha, mergeSha) {
       cargoHead.packageCount,
       cargoMerge.packageCount
     ),
+    goArtifactRecords: Object.freeze(
+      [...goArtifactRecordsByLocation.values()].sort((left, right) =>
+        left.location.localeCompare(right.location)
+      )
+    ),
+    goArtifactCount: goArtifactRecordsByLocation.size,
+    goPackageCount: Math.max(goHead.packageCount, goMerge.packageCount),
     scopedPackages: Object.freeze(scopedPackages)
   });
 }
@@ -3397,11 +3604,15 @@ function traceChangedEntrypoints(changedPaths, texts, findingPaths) {
       if (
         archiveExtraction.test(currentSource) ||
         archiveApiExtraction.test(currentSource)
-      ) archiveExtractorReached = true;
+      )
+        archiveExtractorReached = true;
       if (
         archiveApiExecution.test(currentSource) ||
-        /(?:^|[;\n]|&&|\|\|)\s*(?:exec\s+|&\s+)?\.{1,2}[\\/]\S+/mu.test(currentSource)
-      ) archiveLauncherReached = true;
+        /(?:^|[;\n]|&&|\|\|)\s*(?:exec\s+|&\s+)?\.{1,2}[\\/]\S+/mu.test(
+          currentSource
+        )
+      )
+        archiveLauncherReached = true;
       if (archiveExtractorReached && archiveLauncherReached)
         return { traces, incomplete: true };
       if (current !== entrypoint && findingPaths.has(current)) {
@@ -3924,9 +4135,10 @@ export function scanGitTree(repo, expectedSha, { changedPaths = [] } = {}) {
   // Git object bytes as inert data, never execute or unpack the object.
   const withheldBinaryPaths = new Map(
     blobs
-      .filter((blob) =>
-        BINARY_EXTENSIONS.has(path.posix.extname(blob.path).toLowerCase()) &&
-        !texts.has(blob.path)
+      .filter(
+        (blob) =>
+          BINARY_EXTENSIONS.has(path.posix.extname(blob.path).toLowerCase()) &&
+          !texts.has(blob.path)
       )
       .map((blob) => [blob.path, blob])
   );
@@ -3961,14 +4173,19 @@ export function scanGitTree(repo, expectedSha, { changedPaths = [] } = {}) {
       const source = texts.get(sourcePath);
       if (source === undefined) continue;
       for (const reference of localReferences(
-        source, sourcePath, packageNamesForReferences, texts
+        source,
+        sourcePath,
+        packageNamesForReferences,
+        texts
       )) {
         if (++traversalWork > MAX_TRACE_WORK) {
           incompleteReasons.push('referenced-executable-graph-budget-exceeded');
           break;
         }
         const resolved = resolveReference(
-          sourcePath, reference.value, reference.rootRelative
+          sourcePath,
+          reference.value,
+          reference.rootRelative
         );
         if (!resolved) continue;
         let target = resolved;
@@ -4007,21 +4224,27 @@ export function scanGitTree(repo, expectedSha, { changedPaths = [] } = {}) {
       for (const [target, blob] of missing) {
         const bytes = rawByOid.get(blob.oid);
         if (!bytes || bytes.length > MAX_FILE_BYTES) {
-          incompleteReasons.push('referenced-binary-content-uninspected:' + target);
+          incompleteReasons.push(
+            'referenced-binary-content-uninspected:' + target
+          );
           continue;
         }
         totalBytes += bytes.length;
         if (totalBytes > MAX_TOTAL_BYTES)
           throw new Error('Referenced Git objects exceed Stage A byte budget');
         if (bytes.includes(0)) {
-          incompleteReasons.push('referenced-binary-content-uninspected:' + target);
+          incompleteReasons.push(
+            'referenced-binary-content-uninspected:' + target
+          );
           continue;
         }
         let text;
         try {
           text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
         } catch {
-          incompleteReasons.push('referenced-binary-content-uninspected:' + target);
+          incompleteReasons.push(
+            'referenced-binary-content-uninspected:' + target
+          );
           continue;
         }
         texts.set(target, text);

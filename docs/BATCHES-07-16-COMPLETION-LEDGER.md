@@ -2396,3 +2396,18 @@ Stage A source digest is
 `b197daa12e7b3f26c718edff089f0cc0901c7d04a2152af52e8743f07834cb91`.
 This is an implementation checkpoint with validation pending; PR #104 remains
 draft and the issues remain open.
+
+## 2026-11-19 implementation continuation — bounded Go module inventory for #96
+
+Stage A now parses exact direct and indirect Go module identities from bounded
+`go.mod`/`go.sum` Git blobs without invoking a Go toolchain or project code.
+The inventory accepts canonical 32-byte `h1` module hashes and deterministic
+module/version identities. Missing sums, malformed or conflicting hashes,
+module replacements, excessive module files and unsupported `go.work` or
+vendored resolution remain explicit fail-closed conditions. Three focused
+regressions and TypeScript typecheck pass. This checkpoint establishes the
+artifact inventory only: Go ZIP retrieval, directory-hash verification and
+bounded content inspection must be implemented before these identities can
+contribute to Stage A approval. The trusted scanner digest is
+`10f049c8d4222e735873513b02f5f8364ab84a9488cac6ecebf48f393550c159` at
+all three workflow pins. PR #104 remains draft and #96 remains open.

