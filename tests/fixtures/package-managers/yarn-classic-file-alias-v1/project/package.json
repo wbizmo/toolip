@@ -1,0 +1,9 @@
+{
+  "name": "generated-yarn-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "foo18": "file:vendor/foo18",
+    "foo19": "file:vendor/foo19"
+  }
+}
