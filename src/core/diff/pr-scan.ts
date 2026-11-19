@@ -182,7 +182,7 @@ export function parseChangedLineRanges(
   let currentPath: string | undefined;
   for (const line of text.split(/\r?\n/u)) {
     if (line.startsWith('+++ ')) {
-      const value = line.slice(4);
+      const value = line.slice(4).replace(/\t.*$/u, '');
       if (value.startsWith('"'))
         throw new Error(
           'Quoted Git paths cannot be mapped to changed lines safely.'

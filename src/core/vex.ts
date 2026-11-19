@@ -25,6 +25,7 @@ const validJustifications = new Set([
   'component_not_present',
   'inline_mitigations_already_exist',
   'vulnerable_code_not_in_execute_path',
+  'vulnerable_code_not_present',
   'vulnerable_code_cannot_be_controlled_by_adversary',
   'protected_by_compiler_or_runtime',
   'protected_at_runtime',

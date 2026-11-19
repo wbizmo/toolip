@@ -45,6 +45,14 @@ async function createRepo(): Promise<string> {
 }
 
 describe('pull request changed-file security scan', () => {
+  it('ignores tab-separated Git diff label metadata in changed paths', () => {
+    const result = parseChangedLineRanges(
+      Buffer.from('+++ b/src/app.ts\t2026-11-19 23:00:00 +0000\n@@ -1 +1 @@\n')
+    );
+    expect(result['src/app.ts']).toEqual([{ start: 1, end: 1 }]);
+    expect(Object.keys(result)).toEqual(['src/app.ts']);
+  });
+
   it('binds a GitHub pull request event to exact base and head commits', async () => {
     const root = await createRepo();
     const base = git(root, 'rev-parse', 'HEAD');
