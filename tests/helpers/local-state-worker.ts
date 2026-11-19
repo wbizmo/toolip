@@ -1,6 +1,10 @@
 import { writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
-import { appendHistory, clearHistory } from '../../src/core/history/store.js';
+import {
+  appendHistory,
+  clearHistory,
+  type HistoryIntegrityOptions
+} from '../../src/core/history/store.js';
 import { withLocalStateLock } from '../../src/core/local-lock.js';
 import { setSecret } from '../../src/core/vault.js';
 
@@ -18,6 +22,13 @@ if (mode === 'vault') {
 } else if (mode === 'history') {
   if (!location || !id) throw new Error('Invalid worker arguments.');
   await appendHistory(location, historyEntry(id));
+} else if (mode === 'history-signed') {
+  if (!location || !id) throw new Error('Invalid worker arguments.');
+  const integrity: HistoryIntegrityOptions = {
+    key: Buffer.alloc(32, 41),
+    keyId: 'multiprocess-test-key'
+  };
+  await appendHistory(location, historyEntry(id), 500, integrity);
 } else if (mode === 'history-clear') {
   if (!location) throw new Error('Invalid worker arguments.');
   await clearHistory(location);

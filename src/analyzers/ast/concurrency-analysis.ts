@@ -1,0 +1,1318 @@
+import ts from 'typescript';
+import type { Finding } from '../../contracts/finding.js';
+
+const fileCheckMethods = new Set([
+  'access',
+  'accessSync',
+  'existsSync',
+  'stat',
+  'statSync',
+  'lstat',
+  'lstatSync',
+  'realpath',
+  'realpathSync'
+]);
+const fileUseMethods = new Set([
+  'open',
+  'openSync',
+  'createReadStream',
+  'createWriteStream',
+  'openAsBlob',
+  'opendir',
+  'opendirSync',
+  'readFile',
+  'readFileSync',
+  'writeFile',
+  'writeFileSync',
+  'appendFile',
+  'appendFileSync',
+  'unlink',
+  'unlinkSync',
+  'mkdir',
+  'mkdirSync',
+  'rm',
+  'rmSync',
+  'rmdir',
+  'rmdirSync',
+  'truncate',
+  'truncateSync',
+  'chmod',
+  'chmodSync',
+  'chown',
+  'chownSync',
+  'utimes',
+  'utimesSync',
+  'rename',
+  'renameSync',
+  'copyFile',
+  'copyFileSync',
+  'cp',
+  'cpSync',
+  'link',
+  'linkSync',
+  'symlink',
+  'symlinkSync'
+]);
+const fileUseDestinationMethods = new Set([
+  'rename',
+  'renameSync',
+  'copyFile',
+  'copyFileSync',
+  'cp',
+  'cpSync',
+  'link',
+  'linkSync',
+  'symlink',
+  'symlinkSync'
+]);
+const objectReadMethods = new Set([
+  'findUnique',
+  'findUniqueOrThrow',
+  'findFirst',
+  'findFirstOrThrow',
+  'findOne',
+  'findById',
+  'getById'
+]);
+const objectWriteMethods = new Set([
+  'update',
+  'updateMany',
+  'increment',
+  'decrement',
+  'save',
+  'replace'
+]);
+const databaseReceivers = new Set([
+  'client',
+  'connection',
+  'dataSource',
+  'database',
+  'db',
+  'knex',
+  'manager',
+  'prisma',
+  'sequelize'
+]);
+
+type FindingKind =
+  | 'filesystem-check-then-use'
+  | 'non-atomic-read-check-write'
+  | 'unbounded-concurrent-mutation';
+
+function methodName(call: ts.CallExpression): string | undefined {
+  const target = call.expression;
+  if (ts.isPropertyAccessExpression(target)) return target.name.text;
+  if (ts.isIdentifier(target)) return target.text;
+  if (
+    ts.isElementAccessExpression(target) &&
+    target.argumentExpression &&
+    (ts.isStringLiteral(target.argumentExpression) ||
+      ts.isNoSubstitutionTemplateLiteral(target.argumentExpression))
+  )
+    return target.argumentExpression.text;
+  return undefined;
+}
+
+function isDiscardedDatabaseTransaction(
+  call: ts.CallExpression,
+  aliases: ReadonlyMap<string, ts.VariableDeclaration | null>
+): boolean {
+  const target = call.expression;
+  const method = methodName(call);
+  if (!method || !['$transaction', 'transaction'].includes(method))
+    return false;
+  if (
+    !ts.isPropertyAccessExpression(target) &&
+    !ts.isElementAccessExpression(target)
+  )
+    return false;
+  if (!isDiscardedPromiseCall(call)) return false;
+  return isRecognizedReceiver(call, aliases, databaseReceivers);
+}
+
+function isDiscardedPromiseCall(call: ts.CallExpression): boolean {
+  let current: ts.Node = call;
+  let discarded = false;
+  while (true) {
+    const parent = current.parent;
+    if (!parent) break;
+    if (
+      ts.isAwaitExpression(parent) ||
+      (ts.isReturnStatement(parent) && parent.expression === current)
+    )
+      return false;
+    if (ts.isVoidExpression(parent) && parent.expression === current) {
+      current = parent;
+      continue;
+    }
+    if (
+      ts.isPropertyAccessExpression(parent) &&
+      parent.expression === current &&
+      ['then', 'catch', 'finally'].includes(parent.name.text)
+    ) {
+      current = parent;
+      continue;
+    }
+    if (ts.isCallExpression(parent) && parent.expression === current) {
+      current = parent;
+      continue;
+    }
+    discarded =
+      ts.isExpressionStatement(parent) && parent.expression === current;
+    break;
+  }
+  return discarded;
+}
+
+function createDiscardedTransactionFinding(
+  sourceFile: ts.SourceFile,
+  call: ts.CallExpression
+): Finding {
+  const start = sourceFile.getLineAndCharacterOfPosition(
+    call.getStart(sourceFile)
+  );
+  const location = {
+    file: sourceFile.fileName,
+    line: start.line + 1,
+    column: start.character + 1
+  };
+  const fingerprint = `TLP-RACE-004:${location.file}:${location.line}:${location.column}`;
+  return {
+    id: fingerprint,
+    ruleId: 'TLP-RACE-004',
+    title: 'Database transaction promise is discarded',
+    category: 'concurrency',
+    severity: 'medium',
+    confidence: 'low',
+    message:
+      'A recognized database transaction call is used as a statement without awaiting or returning its completion. The surrounding operation may proceed before transactional work commits or errors are observed.',
+    source: 'typescript-ast-concurrency-heuristic',
+    location,
+    evidence: [
+      {
+        summary:
+          '[discarded database transaction result; query and values omitted]',
+        fingerprint
+      }
+    ],
+    remediation: {
+      summary:
+        'Await the transaction or return its promise so callers observe commit and failure before continuing.'
+    },
+    metadata: {
+      analysisModel: 'discarded-database-transaction',
+      cwe: 'CWE-362',
+      limitation:
+        'Recognizes direct discarded transaction calls on common database client names; it does not model custom clients, promise ownership, or transaction isolation.'
+    }
+  };
+}
+
+function createDiscardedRedisLockFinding(
+  sourceFile: ts.SourceFile,
+  call: ts.CallExpression
+): Finding {
+  const start = sourceFile.getLineAndCharacterOfPosition(
+    call.getStart(sourceFile)
+  );
+  const location = {
+    file: sourceFile.fileName,
+    line: start.line + 1,
+    column: start.character + 1
+  };
+  const fingerprint = `TLP-RACE-005:${location.file}:${location.line}:${location.column}`;
+  return {
+    id: fingerprint,
+    ruleId: 'TLP-RACE-005',
+    title: 'Redis lock acquisition result is discarded',
+    category: 'concurrency',
+    severity: 'medium',
+    confidence: 'low',
+    message:
+      'A recognized Redis atomic-set or Redlock acquisition is used without awaiting or returning its result. The protected operation may continue before ownership is established or after acquisition fails.',
+    source: 'typescript-ast-concurrency-heuristic',
+    location,
+    evidence: [
+      {
+        summary: '[discarded Redis lock result; key and value omitted]',
+        fingerprint
+      }
+    ],
+    remediation: {
+      summary:
+        'Await or return the lock acquisition, verify that ownership was obtained, and release it with an owner token in a finally block.'
+    },
+    metadata: {
+      analysisModel: 'discarded-redis-lock-result',
+      cwe: 'CWE-362',
+      limitation:
+        'Recognizes Redis SET NX, SETNX and Redlock acquire calls on common receiver names; custom lock clients and ownership/release semantics remain unknown.'
+    }
+  };
+}
+
+function propertyName(name: ts.PropertyName): string | undefined {
+  return ts.isIdentifier(name) || ts.isStringLiteral(name)
+    ? name.text
+    : undefined;
+}
+
+function isDeclarationIdentifier(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  return (
+    (ts.isVariableDeclaration(parent) && parent.name === node) ||
+    (ts.isParameter(parent) && parent.name === node) ||
+    (ts.isFunctionDeclaration(parent) && parent.name === node) ||
+    (ts.isFunctionExpression(parent) && parent.name === node) ||
+    (ts.isClassDeclaration(parent) && parent.name === node) ||
+    (ts.isClassExpression(parent) && parent.name === node) ||
+    (ts.isTypeParameterDeclaration(parent) && parent.name === node) ||
+    (ts.isImportClause(parent) && parent.name === node) ||
+    (ts.isImportSpecifier(parent) && parent.name === node) ||
+    (ts.isNamespaceImport(parent) && parent.name === node) ||
+    (ts.isImportEqualsDeclaration(parent) && parent.name === node) ||
+    (ts.isEnumDeclaration(parent) && parent.name === node) ||
+    (ts.isModuleDeclaration(parent) && parent.name === node) ||
+    (ts.isCatchClause(parent) && parent.variableDeclaration?.name === node)
+  );
+}
+
+function callArgument(call: ts.CallExpression): ts.Expression | undefined {
+  return call.arguments[0];
+}
+
+function unwrapCall(
+  expression: ts.Expression | undefined
+): ts.CallExpression | undefined {
+  let current = expression;
+  while (
+    current &&
+    (ts.isAwaitExpression(current) || ts.isParenthesizedExpression(current))
+  ) {
+    current = ts.isAwaitExpression(current)
+      ? current.expression
+      : current.expression;
+  }
+  return current && ts.isCallExpression(current) ? current : undefined;
+}
+
+function pathKey(expression: ts.Expression | undefined): string | undefined {
+  if (!expression) return undefined;
+  return expression
+    .getText()
+    .replace(/\s+/gu, '')
+    .replace(/^\((.*)\)$/u, '$1');
+}
+
+function declarationScope(
+  declaration: ts.VariableDeclaration
+): ts.Node | undefined {
+  let current: ts.Node | undefined = declaration.parent.parent;
+  while (
+    current &&
+    !ts.isBlock(current) &&
+    !ts.isSourceFile(current) &&
+    !ts.isForStatement(current) &&
+    !ts.isForInStatement(current) &&
+    !ts.isForOfStatement(current)
+  ) {
+    current = current.parent;
+  }
+  return current;
+}
+
+function visiblePathKey(
+  expression: ts.Expression | undefined,
+  usePosition: number,
+  visibleNodes: ReadonlySet<ts.Node>,
+  aliases: ReadonlyMap<string, ts.VariableDeclaration | null>,
+  depth = 0,
+  seen = new Set<string>()
+): string | undefined {
+  const direct = pathKey(expression);
+  if (!expression || !ts.isIdentifier(expression) || depth >= 16) return direct;
+  if (seen.has(expression.text)) return direct;
+  const alias = aliases.get(expression.text);
+  if (
+    !alias?.initializer ||
+    ts.isFunctionLike(alias.initializer) ||
+    alias.getStart() >= usePosition ||
+    !ts.isVariableDeclarationList(alias.parent) ||
+    (alias.parent.flags & ts.NodeFlags.Const) === 0 ||
+    !visibleNodes.has(declarationScope(alias) as ts.Node)
+  )
+    return direct;
+  const nextSeen = new Set(seen);
+  nextSeen.add(expression.text);
+  const initializerCall = unwrapCall(alias.initializer);
+  if (
+    initializerCall &&
+    ['realpath', 'realpathSync'].includes(methodName(initializerCall) ?? '') &&
+    initializerCall.arguments[0]
+  )
+    return visiblePathKey(
+      initializerCall.arguments[0],
+      usePosition,
+      visibleNodes,
+      aliases,
+      depth + 1,
+      nextSeen
+    );
+  return visiblePathKey(
+    alias.initializer,
+    usePosition,
+    visibleNodes,
+    aliases,
+    depth + 1,
+    nextSeen
+  );
+}
+
+function mentionsIdentifier(node: ts.Node, name: string): boolean {
+  let found = false;
+  const walk = (child: ts.Node): void => {
+    if (found || (child !== node && ts.isFunctionLike(child))) return;
+    if (
+      ts.isIdentifier(child) &&
+      child.text === name &&
+      !(
+        (ts.isPropertyAccessExpression(child.parent) &&
+          child.parent.name === child) ||
+        (ts.isPropertyAssignment(child.parent) && child.parent.name === child)
+      )
+    ) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(child, walk);
+  };
+  walk(node);
+  return found;
+}
+
+function containsVersionPredicate(node: ts.Node, entityName: string): boolean {
+  let found = false;
+  const walk = (child: ts.Node): void => {
+    if (found) return;
+    if (
+      ts.isPropertyAssignment(child) &&
+      propertyName(child.name) === 'where'
+    ) {
+      const where = child.initializer;
+      if (ts.isObjectLiteralExpression(where)) {
+        for (const predicate of where.properties) {
+          if (!ts.isPropertyAssignment(predicate)) continue;
+          const key = propertyName(predicate.name);
+          if (
+            key &&
+            /^(?:version|revision|etag|updatedAt|rowVersion)$/iu.test(key) &&
+            ts.isPropertyAccessExpression(predicate.initializer) &&
+            predicate.initializer.name.text === key &&
+            ts.isIdentifier(predicate.initializer.expression) &&
+            predicate.initializer.expression.text === entityName
+          ) {
+            found = true;
+            return;
+          }
+        }
+      }
+    }
+    if (child !== node && ts.isFunctionLike(child)) return;
+    ts.forEachChild(child, walk);
+  };
+  walk(node);
+  return found;
+}
+
+function callRootReceiver(call: ts.CallExpression): string | undefined {
+  let receiver: ts.Expression = call.expression;
+  while (
+    ts.isPropertyAccessExpression(receiver) ||
+    ts.isElementAccessExpression(receiver)
+  )
+    receiver = receiver.expression;
+  return ts.isIdentifier(receiver) ? receiver.text : undefined;
+}
+
+function isSerializableTransaction(
+  read: ts.CallExpression,
+  write: ts.CallExpression
+): boolean {
+  for (
+    let current: ts.Node | undefined = write;
+    current;
+    current = current.parent
+  ) {
+    if (!ts.isFunctionLike(current) || !('body' in current) || !current.body)
+      continue;
+    const call = current.parent;
+    if (
+      !ts.isCallExpression(call) ||
+      !call.arguments.includes(current as ts.Expression) ||
+      !ts.isPropertyAccessExpression(call.expression)
+    )
+      continue;
+    const method = call.expression.name.text;
+    const receiver = callRootReceiver(call);
+    if (!(
+      (method === '$transaction' &&
+        ['db', 'prisma', 'database', 'client'].includes(receiver ?? '')) ||
+      (method === 'transaction' &&
+        ['dataSource', 'entityManager', 'sequelize'].includes(receiver ?? ''))
+    ))
+      continue;
+    // An isolation option on a helper method says nothing about the
+    // isolation of database reads/writes. Even for a supported client, both
+    // calls must use its callback-scoped transaction handle.
+    const handle = current.parameters[0]?.name;
+    if (
+      !handle ||
+      !ts.isIdentifier(handle) ||
+      callRootReceiver(read) !== handle.text ||
+      callRootReceiver(write) !== handle.text
+    )
+      continue;
+    const options = [call.arguments[1], call.arguments[0]].find(
+      (argument): argument is ts.ObjectLiteralExpression =>
+        argument !== undefined && ts.isObjectLiteralExpression(argument)
+    );
+    if (!options) continue;
+    return options.properties.some((property) => {
+      if (
+        !ts.isPropertyAssignment(property) ||
+        propertyName(property.name) !== 'isolationLevel'
+      )
+        return false;
+      const value = property.initializer;
+      if (ts.isStringLiteral(value))
+        return value.text.toLowerCase() === 'serializable';
+      return (
+        ts.isPropertyAccessExpression(value) &&
+        value.name.text.toLowerCase() === 'serializable'
+      );
+    });
+  }
+  return false;
+}
+
+const concurrentSideEffectMethods = new Set([
+  'appendFile',
+  'delete',
+  'decrement',
+  'execute',
+  'increment',
+  'insert',
+  'patch',
+  'post',
+  'put',
+  'remove',
+  'rename',
+  'save',
+  'send',
+  'set',
+  'unlink',
+  'update',
+  'write',
+  'writeFile'
+]);
+const MAX_RECOGNIZED_POOL_CONCURRENCY = 32;
+
+function hasStaticArrayBound(mapCall: ts.CallExpression): boolean {
+  const receiver = ts.isPropertyAccessExpression(mapCall.expression)
+    ? mapCall.expression.expression
+    : undefined;
+  if (
+    !receiver ||
+    !ts.isCallExpression(receiver) ||
+    methodName(receiver) !== 'slice'
+  )
+    return false;
+  const start = receiver.arguments[0];
+  const end = receiver.arguments[1];
+  return Boolean(
+    (!start || (ts.isNumericLiteral(start) && Number(start.text) === 0)) &&
+    end &&
+    ts.isNumericLiteral(end) &&
+    Number.isSafeInteger(Number(end.text)) &&
+    Number(end.text) >= 0
+  );
+}
+
+type FunctionIndex = ReadonlyMap<string, readonly ts.FunctionLikeDeclaration[]>;
+type BoundedPools = ReadonlyMap<string, ts.VariableDeclaration>;
+type SideEffectMemo = Map<ts.FunctionLikeDeclaration, boolean>;
+
+function callbackFunction(
+  callback: ts.Expression,
+  functions: FunctionIndex
+): ts.FunctionLikeDeclaration | undefined {
+  if (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))
+    return callback;
+  if (ts.isIdentifier(callback)) {
+    const declarations = functions.get(callback.text);
+    if (declarations?.length === 1) return declarations[0];
+  }
+  return undefined;
+}
+
+function numericConcurrency(expression: ts.Expression | undefined): boolean {
+  return Boolean(
+    expression &&
+    ts.isNumericLiteral(expression) &&
+    Number.isSafeInteger(Number(expression.text)) &&
+    Number(expression.text) > 0 &&
+    Number(expression.text) <= MAX_RECOGNIZED_POOL_CONCURRENCY
+  );
+}
+
+function collectBoundedPools(
+  sourceFile: ts.SourceFile
+): Map<string, ts.VariableDeclaration> {
+  const pLimitFactories = new Set<string>();
+  const trustedFactoryBindings = new Set<ts.Identifier>();
+  for (const statement of sourceFile.statements) {
+    if (
+      !ts.isImportDeclaration(statement) ||
+      !ts.isStringLiteral(statement.moduleSpecifier) ||
+      !statement.importClause
+    )
+      continue;
+    const module = statement.moduleSpecifier.text;
+    if (module === 'p-limit' && statement.importClause.name) {
+      pLimitFactories.add(statement.importClause.name.text);
+      trustedFactoryBindings.add(statement.importClause.name);
+    }
+    const bindings = statement.importClause.namedBindings;
+    if (!bindings || !ts.isNamedImports(bindings)) continue;
+    for (const binding of bindings.elements) {
+      if (binding.isTypeOnly) continue;
+      const imported = binding.propertyName?.text ?? binding.name.text;
+      if (module === 'p-limit' && ['default', 'pLimit'].includes(imported)) {
+        pLimitFactories.add(binding.name.text);
+        trustedFactoryBindings.add(binding.name);
+      }
+    }
+  }
+
+  const declarations = new Map<string, ts.VariableDeclaration[]>();
+  const unsafeUses = new Set<string>();
+  const shadowedFactories = new Set<string>();
+  const collect = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+      const values = declarations.get(node.name.text) ?? [];
+      values.push(node);
+      declarations.set(node.name.text, values);
+    }
+    if (ts.isIdentifier(node)) {
+      const parent = node.parent;
+      const declarationName =
+        ts.isVariableDeclaration(parent) && parent.name === node;
+      const directCall =
+        ts.isCallExpression(parent) && parent.expression === node;
+      if (!declarationName && !directCall) unsafeUses.add(node.text);
+      if (
+        isDeclarationIdentifier(node) &&
+        pLimitFactories.has(node.text) &&
+        !trustedFactoryBindings.has(node)
+      )
+        shadowedFactories.add(node.text);
+    }
+    ts.forEachChild(node, collect);
+  };
+  collect(sourceFile);
+
+  const limiters = new Map<string, ts.VariableDeclaration>();
+  for (const [name, values] of declarations) {
+    const declaration = values[0];
+    const initializer = declaration?.initializer;
+    const declarationList = declaration?.parent;
+    if (
+      values.length !== 1 ||
+      !declaration ||
+      !initializer ||
+      !ts.isCallExpression(initializer) ||
+      !ts.isIdentifier(initializer.expression) ||
+      !pLimitFactories.has(initializer.expression.text) ||
+      shadowedFactories.has(initializer.expression.text) ||
+      !numericConcurrency(initializer.arguments[0]) ||
+      !declarationList ||
+      !ts.isVariableDeclarationList(declarationList) ||
+      (declarationList.flags & ts.NodeFlags.Const) === 0
+    )
+      continue;
+    if (!unsafeUses.has(name)) limiters.set(name, declaration);
+  }
+  return limiters;
+}
+
+function isWithinDeclarationScope(
+  declaration: ts.VariableDeclaration,
+  use: ts.Node
+): boolean {
+  let scope: ts.Node | undefined = declaration.parent;
+  while (
+    scope &&
+    !ts.isSourceFile(scope) &&
+    !ts.isBlock(scope) &&
+    !ts.isFunctionLike(scope)
+  )
+    scope = scope.parent;
+  if (!scope || declaration.getStart() >= use.getStart()) return false;
+  for (
+    let current: ts.Node | undefined = use;
+    current;
+    current = current.parent
+  )
+    if (current === scope) return true;
+  return false;
+}
+
+function isBoundedPoolCall(
+  call: ts.CallExpression,
+  limiters: BoundedPools
+): boolean {
+  if (ts.isIdentifier(call.expression)) {
+    const pool = limiters.get(call.expression.text);
+    if (pool && isWithinDeclarationScope(pool, call)) return true;
+  }
+  return false;
+}
+
+function hasSideEffectingCallback(
+  callback: ts.Expression,
+  functions: FunctionIndex,
+  pools: BoundedPools,
+  memo: SideEffectMemo,
+  visited = new Set<ts.FunctionLikeDeclaration>(),
+  depth = 0
+): boolean {
+  const declaration = callbackFunction(callback, functions);
+  if (!declaration || !('body' in declaration) || !declaration.body)
+    return true;
+  const cached = memo.get(declaration);
+  if (cached !== undefined) return cached;
+  if (visited.has(declaration) || depth >= 16) return true;
+  visited.add(declaration);
+  let sideEffect = false;
+  const walk = (node: ts.Node): void => {
+    if (sideEffect) return;
+    if (node !== declaration && ts.isFunctionLike(node)) {
+      if (
+        ts.isCallExpression(node.parent) &&
+        node.parent.arguments.includes(node as ts.Expression)
+      )
+        return; // The parent call examines callbacks without executing them.
+      return;
+    }
+    if (ts.isCallExpression(node)) {
+      const name = methodName(node);
+      if (name && concurrentSideEffectMethods.has(name)) {
+        sideEffect = true;
+        return;
+      }
+      if (isBoundedPoolCall(node, pools)) {
+        for (const argument of node.arguments)
+          if (
+            !ts.isArrowFunction(argument) &&
+            !ts.isFunctionExpression(argument)
+          )
+            walk(argument);
+        return;
+      }
+      for (const argument of node.arguments) {
+        if (
+          callbackFunction(argument, functions) &&
+          hasSideEffectingCallback(
+            argument,
+            functions,
+            pools,
+            memo,
+            visited,
+            depth + 1
+          )
+        ) {
+          sideEffect = true;
+          return;
+        }
+      }
+      if (
+        ts.isIdentifier(node.expression) &&
+        hasSideEffectingCallback(
+          node.expression,
+          functions,
+          pools,
+          memo,
+          visited,
+          depth + 1
+        )
+      ) {
+        sideEffect = true;
+        return;
+      }
+    }
+    ts.forEachChild(node, walk);
+  };
+  walk(declaration.body);
+  visited.delete(declaration);
+  memo.set(declaration, sideEffect);
+  return sideEffect;
+}
+
+function findUnboundedPromiseAll(
+  sourceFile: ts.SourceFile,
+  node: ts.Node,
+  findings: Finding[],
+  functions: FunctionIndex,
+  pools: BoundedPools,
+  memo: SideEffectMemo,
+  mapAliases: ReadonlyMap<string, readonly ts.VariableDeclaration[]>
+): void {
+  if (!ts.isCallExpression(node)) return;
+  const target = node.expression;
+  if (
+    !ts.isPropertyAccessExpression(target) ||
+    !['all', 'allSettled', 'race', 'any'].includes(target.name.text) ||
+    !ts.isIdentifier(target.expression) ||
+    target.expression.text !== 'Promise'
+  )
+    return;
+  const argument = callArgument(node);
+  if (!argument) return;
+  let mapped = ts.isCallExpression(argument) ? argument : undefined;
+  if (ts.isIdentifier(argument)) {
+    // Resolve one immutable lexical alias, without following dynamic values
+    // or guessing that the name of a promise array is meaningful.
+    const visible = (mapAliases.get(argument.text) ?? []).filter(
+      (declaration) =>
+        declaration.initializer &&
+        ts.isVariableDeclarationList(declaration.parent) &&
+        (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+        isWithinDeclarationScope(declaration, node)
+    );
+    if (visible.length !== 1) return;
+    mapped = unwrapCall(visible[0]?.initializer);
+  }
+  if (!mapped || methodName(mapped) !== 'map') return;
+  if (hasStaticArrayBound(mapped)) return;
+  const callback = mapped.arguments[0];
+  if (!callback || !hasSideEffectingCallback(callback, functions, pools, memo))
+    return;
+  findings.push(
+    createFinding(sourceFile, node, 'unbounded-concurrent-mutation')
+  );
+}
+
+function createFinding(
+  sourceFile: ts.SourceFile,
+  node: ts.Node,
+  kind: FindingKind
+): Finding {
+  const start = sourceFile.getLineAndCharacterOfPosition(
+    node.getStart(sourceFile)
+  );
+  const location = {
+    file: sourceFile.fileName,
+    line: start.line + 1,
+    column: start.character + 1
+  };
+  const ruleId =
+    kind === 'filesystem-check-then-use'
+      ? 'TLP-RACE-001'
+      : kind === 'non-atomic-read-check-write'
+        ? 'TLP-RACE-002'
+        : 'TLP-RACE-003';
+  const fingerprint = `${ruleId}:${location.file}:${location.line}:${location.column}`;
+  return {
+    id: fingerprint,
+    ruleId,
+    title:
+      kind === 'filesystem-check-then-use'
+        ? 'Filesystem check followed by a separate path operation'
+        : kind === 'non-atomic-read-check-write'
+          ? 'Read-check-write sequence without visible atomic predicate'
+          : 'Unbounded Promise.all fan-out to side-effecting work',
+    category: 'concurrency',
+    severity: 'medium',
+    confidence: 'low',
+    message:
+      kind === 'filesystem-check-then-use'
+        ? 'The same path is checked and later used in a separate filesystem operation. A concurrent replacement can invalidate the earlier check; prefer operating on one opened handle with no-follow and atomic flags.'
+        : kind === 'non-atomic-read-check-write'
+          ? 'A value is read, checked, then mutated without a visible compare-and-swap or version predicate. Concurrent requests may both pass the check; verify transaction isolation and atomic update conditions.'
+          : 'A Promise combinator maps an unbounded collection to side-effecting asynchronous work. Large inputs can overwhelm downstream services or cause overlapping updates; use a bounded concurrency pool and make writes idempotent or atomic.',
+    source: 'typescript-ast-concurrency-heuristic',
+    location,
+    evidence: [
+      {
+        summary:
+          kind === 'filesystem-check-then-use'
+            ? '[same-path filesystem check/use pattern; path and data values omitted]'
+            : kind === 'non-atomic-read-check-write'
+              ? '[same-object check/write pattern; keys and values omitted]'
+              : '[unbounded collection mutation pattern; source values omitted]',
+        fingerprint
+      }
+    ],
+    remediation: {
+      summary:
+        kind === 'filesystem-check-then-use'
+          ? 'Open once with restrictive flags and operate through the resulting handle; avoid existence/access check followed by a path reopen.'
+          : kind === 'non-atomic-read-check-write'
+            ? 'Move the state predicate into an atomic conditional update, compare a version/ETag, or use a transaction with isolation that prevents competing updates.'
+            : 'Use a bounded worker pool and validate that concurrent writes are atomic, idempotent, or uniquely keyed.'
+    },
+    metadata: {
+      analysisModel: kind,
+      cwe:
+        kind === 'filesystem-check-then-use'
+          ? 'CWE-367'
+          : kind === 'non-atomic-read-check-write'
+            ? 'CWE-362'
+            : 'CWE-400',
+      limitation:
+        'Static same-function heuristic; it cannot prove runtime scheduling, database isolation, lock scope, or filesystem provider behavior.'
+    }
+  };
+}
+
+type FunctionFacts = {
+  calls: ts.CallExpression[];
+  declarations: ts.VariableDeclaration[];
+  conditionals: ts.IfStatement[];
+};
+
+function emptyFacts(): FunctionFacts {
+  return { calls: [], declarations: [], conditionals: [] };
+}
+
+function findFilesystemCheckUse(
+  sourceFile: ts.SourceFile,
+  calls: readonly ts.CallExpression[],
+  declarations: readonly ts.VariableDeclaration[],
+  findings: Finding[]
+): void {
+  const checkedPaths = new Set<string>();
+  const aliases = new Map<string, ts.VariableDeclaration | null>();
+  for (const declaration of declarations) {
+    if (!ts.isIdentifier(declaration.name)) continue;
+    const aliasName = declaration.name.text;
+    aliases.set(aliasName, aliases.has(aliasName) ? null : declaration);
+  }
+  for (const call of calls) {
+    const name = methodName(call) ?? '';
+    if (!fileCheckMethods.has(name) && !fileUseMethods.has(name)) continue;
+    const pathArguments =
+      fileUseMethods.has(name) && fileUseDestinationMethods.has(name)
+        ? [call.arguments[0], call.arguments[1]]
+        : [callArgument(call)];
+    const visibleNodes = new Set<ts.Node>();
+    for (
+      let current: ts.Node | undefined = call;
+      current;
+      current = current.parent
+    ) {
+      visibleNodes.add(current);
+    }
+    const paths = pathArguments
+      .map((argument) =>
+        visiblePathKey(
+          argument,
+          call.getStart(sourceFile),
+          visibleNodes,
+          aliases
+        )
+      )
+      .filter((path): path is string => Boolean(path));
+    if (fileCheckMethods.has(name)) {
+      for (const path of paths) checkedPaths.add(path);
+    } else if (
+      fileUseMethods.has(name) &&
+      paths.some((path) => checkedPaths.has(path))
+    ) {
+      findings.push(
+        createFinding(sourceFile, call, 'filesystem-check-then-use')
+      );
+    }
+  }
+}
+
+function findReadCheckWrite(
+  sourceFile: ts.SourceFile,
+  facts: FunctionFacts,
+  findings: Finding[]
+): void {
+  const { declarations, conditionals, calls } = facts;
+  for (const declaration of declarations) {
+    if (!ts.isIdentifier(declaration.name)) continue;
+    const readCall = unwrapCall(declaration.initializer);
+    if (!readCall || !objectReadMethods.has(methodName(readCall) ?? ''))
+      continue;
+    const entityName = declaration.name.text;
+    for (const conditional of conditionals) {
+      if (
+        conditional.getStart(sourceFile) < declaration.getStart(sourceFile) ||
+        !mentionsIdentifier(conditional.expression, entityName)
+      )
+        continue;
+      const testedState = conditional.expression
+        .getText()
+        .match(
+          new RegExp(`${entityName}\\s*\\.\\s*([A-Za-z_$][\\w$]*)`, 'u')
+        )?.[1];
+      if (!testedState) continue;
+      const writes = calls.filter(
+        (call) =>
+          conditional.thenStatement.getStart(sourceFile) <=
+            call.getStart(sourceFile) &&
+          conditional.thenStatement.getEnd() >= call.getEnd() &&
+          objectWriteMethods.has(methodName(call) ?? '') &&
+          call.arguments.some((argument) =>
+            mentionsIdentifier(argument, entityName)
+          )
+      );
+      for (const write of writes) {
+        if (
+          containsVersionPredicate(write, entityName) ||
+          isSerializableTransaction(readCall, write)
+        )
+          continue;
+        findings.push(
+          createFinding(sourceFile, write, 'non-atomic-read-check-write')
+        );
+      }
+    }
+  }
+}
+
+function redisReceiverAliases(
+  declarations: readonly ts.VariableDeclaration[]
+): Map<string, ts.VariableDeclaration | null> {
+  const aliases = new Map<string, ts.VariableDeclaration | null>();
+  for (const declaration of declarations) {
+    if (!ts.isIdentifier(declaration.name)) continue;
+    const name = declaration.name.text;
+    aliases.set(name, aliases.has(name) ? null : declaration);
+  }
+  return aliases;
+}
+
+function isRecognizedRedisReceiver(
+  call: ts.CallExpression,
+  aliases: ReadonlyMap<string, ts.VariableDeclaration | null>
+): boolean {
+  return isRecognizedReceiver(
+    call,
+    aliases,
+    new Set(['redis', 'redisclient', 'cacheclient'])
+  );
+}
+
+function isRecognizedReceiver(
+  call: ts.CallExpression,
+  aliases: ReadonlyMap<string, ts.VariableDeclaration | null>,
+  recognizedRoots: ReadonlySet<string>
+): boolean {
+  let receiver = callRootReceiver(call);
+  if (!receiver) return false;
+  const visibleScopes = new Set<ts.Node>();
+  for (
+    let current: ts.Node | undefined = call;
+    current;
+    current = current.parent
+  )
+    if (ts.isBlock(current) || ts.isSourceFile(current))
+      visibleScopes.add(current);
+  const visited = new Set<string>();
+  for (let depth = 0; depth <= 16; depth += 1) {
+    const normalized = receiver.toLowerCase();
+    if (recognizedRoots.has(normalized)) return true;
+    if (visited.has(receiver)) return false;
+    visited.add(receiver);
+    const declaration = aliases.get(receiver);
+    if (
+      !declaration ||
+      !ts.isVariableDeclarationList(declaration.parent) ||
+      (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+      !declaration.initializer ||
+      !ts.isIdentifier(declaration.initializer) ||
+      declaration.initializer.getStart(call.getSourceFile()) >=
+        call.getStart(call.getSourceFile())
+    )
+      return false;
+    const scope = declarationScope(declaration);
+    if (!scope || !visibleScopes.has(scope)) return false;
+    receiver = declaration.initializer.text;
+  }
+  return false;
+}
+
+function findDiscardedTransactions(
+  sourceFile: ts.SourceFile,
+  facts: FunctionFacts,
+  findings: Finding[]
+): void {
+  const aliases = redisReceiverAliases(facts.declarations);
+  for (const call of facts.calls)
+    if (isDiscardedDatabaseTransaction(call, aliases))
+      findings.push(createDiscardedTransactionFinding(sourceFile, call));
+}
+
+function findDiscardedRedisLocks(
+  sourceFile: ts.SourceFile,
+  facts: FunctionFacts,
+  findings: Finding[]
+): void {
+  const aliases = redisReceiverAliases(facts.declarations);
+  for (const call of facts.calls) {
+    if (!isDiscardedPromiseCall(call)) continue;
+    const method = methodName(call)?.toLowerCase();
+    const redisAtomicSet =
+      (method === 'setnx' || (method === 'set' && hasRedisSetNxOption(call))) &&
+      isRecognizedRedisReceiver(call, aliases);
+    const redlockAcquire =
+      method === 'acquire' &&
+      isRecognizedReceiver(call, aliases, new Set(['redlock']));
+    if (redisAtomicSet || redlockAcquire)
+      findings.push(createDiscardedRedisLockFinding(sourceFile, call));
+  }
+}
+
+function hasRedisSetNxOption(call: ts.CallExpression): boolean {
+  for (const argument of call.arguments.slice(2)) {
+    if (
+      (ts.isStringLiteral(argument) ||
+        ts.isNoSubstitutionTemplateLiteral(argument)) &&
+      argument.text.toUpperCase() === 'NX'
+    )
+      return true;
+    if (!ts.isObjectLiteralExpression(argument)) continue;
+    let nxValue: boolean | undefined;
+    let valid = true;
+    for (const property of argument.properties) {
+      if (!ts.isPropertyAssignment(property)) {
+        valid = false;
+        break;
+      }
+      if (propertyName(property.name)?.toUpperCase() === 'NX') {
+        if (nxValue !== undefined) {
+          valid = false;
+          break;
+        }
+        nxValue = property.initializer.kind === ts.SyntaxKind.TrueKeyword;
+      }
+    }
+    if (valid && nxValue === true) return true;
+  }
+  return false;
+}
+
+function findRedisReadCheckWrite(
+  sourceFile: ts.SourceFile,
+  facts: FunctionFacts,
+  findings: Finding[]
+): void {
+  const { declarations, conditionals, calls } = facts;
+  const aliases = redisReceiverAliases(declarations);
+  const readsByVariable = new Map<
+    string,
+    { receiver: string; key: string; position: number } | null
+  >();
+  for (const declaration of declarations) {
+    if (
+      !ts.isIdentifier(declaration.name) ||
+      !ts.isVariableDeclarationList(declaration.parent) ||
+      !(declaration.parent.flags & ts.NodeFlags.Const)
+    )
+      continue;
+    const read = unwrapCall(declaration.initializer);
+    const readMethod = read ? methodName(read)?.toLowerCase() : undefined;
+    if (
+      !read ||
+      !['get', 'exists'].includes(readMethod ?? '') ||
+      !isRecognizedRedisReceiver(read, aliases) ||
+      !read.arguments[0]
+    )
+      continue;
+    const receiver = callRootReceiver(read);
+    const key = read.arguments[0]?.getText(sourceFile).replace(/\s+/gu, '');
+    if (!receiver || !key || key.length > 256) continue;
+    const name = declaration.name.text;
+    if (readsByVariable.has(name)) readsByVariable.set(name, null);
+    else
+      readsByVariable.set(name, {
+        receiver: receiver.toLowerCase(),
+        key,
+        position: declaration.getStart(sourceFile)
+      });
+  }
+
+  const writesByKey = new Map<string, ts.CallExpression[]>();
+  for (const call of calls) {
+    const method = methodName(call)?.toLowerCase();
+    if (
+      !['set', 'del', 'delete'].includes(method ?? '') ||
+      !isRecognizedRedisReceiver(call, aliases) ||
+      (method === 'set' && hasRedisSetNxOption(call))
+    )
+      continue;
+    const receiver = callRootReceiver(call)?.toLowerCase();
+    const key = call.arguments[0]?.getText(sourceFile).replace(/\s+/gu, '');
+    if (!receiver || !key || key.length > 256) continue;
+    const indexKey = `${receiver}\0${key}`;
+    const writes = writesByKey.get(indexKey) ?? [];
+    writes.push(call);
+    writesByKey.set(indexKey, writes);
+  }
+  const reported = new Set<string>();
+  for (const conditional of conditionals) {
+    const names = new Set<string>();
+    const collectNames = (node: ts.Node): void => {
+      if (node !== conditional.expression && ts.isFunctionLike(node)) return;
+      if (
+        ts.isIdentifier(node) &&
+        !(
+          (ts.isPropertyAccessExpression(node.parent) &&
+            node.parent.name === node) ||
+          (ts.isPropertyAssignment(node.parent) && node.parent.name === node)
+        )
+      )
+        names.add(node.text);
+      ts.forEachChild(node, collectNames);
+    };
+    collectNames(conditional.expression);
+    for (const name of names) {
+      const read = readsByVariable.get(name);
+      if (!read || read.position >= conditional.getStart(sourceFile)) continue;
+      const indexKey = `${read.receiver}\0${read.key}`;
+      if (reported.has(indexKey)) continue;
+      const writes = writesByKey.get(indexKey);
+      if (!writes) continue;
+      const branchStart = conditional.thenStatement.getStart(sourceFile);
+      const branchEnd = conditional.thenStatement.getEnd();
+      let low = 0;
+      let high = writes.length;
+      while (low < high) {
+        const middle = (low + high) >>> 1;
+        if ((writes[middle]?.getStart(sourceFile) ?? 0) < branchStart)
+          low = middle + 1;
+        else high = middle;
+      }
+      const write = writes[low];
+      if (!write || write.getEnd() > branchEnd) continue;
+      findings.push(
+        createFinding(sourceFile, write, 'non-atomic-read-check-write')
+      );
+      reported.add(indexKey);
+    }
+  }
+}
+
+/** Detects narrow, same-function filesystem and shared-state concurrency candidates. */
+export function analyzeConcurrencySource(
+  filePath: string,
+  content: string,
+  capturedSourceFile?: ts.SourceFile
+): Finding[] {
+  const sourceFile =
+    capturedSourceFile ??
+    ts.createSourceFile(
+      filePath,
+      content,
+      ts.ScriptTarget.Latest,
+      true,
+      filePath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS
+    );
+  const findings: Finding[] = [];
+  const factsByFunction = new Map<ts.Node, FunctionFacts>();
+  const topLevelFacts = emptyFacts();
+  const functionsByName = new Map<string, ts.FunctionLikeDeclaration[]>();
+  const immutableMapAliases = new Map<string, ts.VariableDeclaration[]>();
+  const collectFunctions = (node: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer &&
+      ts.isCallExpression(node.initializer) &&
+      methodName(node.initializer) === 'map'
+    ) {
+      const declarations = immutableMapAliases.get(node.name.text) ?? [];
+      declarations.push(node);
+      immutableMapAliases.set(node.name.text, declarations);
+    }
+    if (ts.isFunctionDeclaration(node) && node.name && node.body) {
+      const declarations = functionsByName.get(node.name.text) ?? [];
+      declarations.push(node);
+      functionsByName.set(node.name.text, declarations);
+    } else if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer &&
+      (ts.isArrowFunction(node.initializer) ||
+        ts.isFunctionExpression(node.initializer))
+    ) {
+      const declarations = functionsByName.get(node.name.text) ?? [];
+      declarations.push(node.initializer);
+      functionsByName.set(node.name.text, declarations);
+    }
+    ts.forEachChild(node, collectFunctions);
+  };
+  collectFunctions(sourceFile);
+  const functions: FunctionIndex = functionsByName;
+  const limiters = collectBoundedPools(sourceFile);
+  const sideEffectMemo: SideEffectMemo = new Map();
+  const functionStack: ts.Node[] = [];
+  const visit = (node: ts.Node): void => {
+    const startsFunction =
+      ts.isFunctionLike(node) && 'body' in node && Boolean(node.body);
+    if (startsFunction) {
+      functionStack.push(node);
+      factsByFunction.set(node, emptyFacts());
+    }
+    const currentFunction = functionStack.at(-1);
+    const facts =
+      (currentFunction && factsByFunction.get(currentFunction)) ??
+      topLevelFacts;
+    if (ts.isCallExpression(node)) {
+      facts.calls.push(node);
+      findUnboundedPromiseAll(
+        sourceFile,
+        node,
+        findings,
+        functions,
+        limiters,
+        sideEffectMemo,
+        immutableMapAliases
+      );
+    }
+    if (ts.isVariableDeclaration(node)) facts.declarations.push(node);
+    if (ts.isIfStatement(node)) facts.conditionals.push(node);
+    ts.forEachChild(node, visit);
+    if (startsFunction) functionStack.pop();
+  };
+  visit(sourceFile);
+  findDiscardedTransactions(sourceFile, topLevelFacts, findings);
+  findDiscardedRedisLocks(sourceFile, topLevelFacts, findings);
+  findFilesystemCheckUse(
+    sourceFile,
+    topLevelFacts.calls,
+    topLevelFacts.declarations,
+    findings
+  );
+  findReadCheckWrite(sourceFile, topLevelFacts, findings);
+  findRedisReadCheckWrite(sourceFile, topLevelFacts, findings);
+  for (const facts of factsByFunction.values()) {
+    findDiscardedTransactions(sourceFile, facts, findings);
+    findDiscardedRedisLocks(sourceFile, facts, findings);
+    findFilesystemCheckUse(
+      sourceFile,
+      facts.calls,
+      facts.declarations,
+      findings
+    );
+    findReadCheckWrite(sourceFile, facts, findings);
+    findRedisReadCheckWrite(sourceFile, facts, findings);
+  }
+  return [
+    ...new Map(findings.map((finding) => [finding.id, finding])).values()
+  ];
+}

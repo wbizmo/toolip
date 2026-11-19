@@ -167,14 +167,13 @@ async function mockWatchers(
       listeners.set(String(directory), listener);
       return new TestWatcher();
     }) as typeof actual.watch;
-    const fakeReaddir = ((
-      directory: string | Buffer | URL,
-      options: unknown
+    const fakeOpenDirectory = ((
+      ...args: Parameters<typeof actual.opendirSync>
     ) => {
       readCount.value += 1;
-      return actual.readdirSync(directory as never, options as never);
-    }) as typeof actual.readdirSync;
-    return { ...actual, watch: fakeWatch, readdirSync: fakeReaddir };
+      return actual.opendirSync(...args);
+    }) as typeof actual.opendirSync;
+    return { ...actual, watch: fakeWatch, opendirSync: fakeOpenDirectory };
   });
 
   return () => {

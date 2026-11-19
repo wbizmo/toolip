@@ -47,6 +47,35 @@ export class EchoAnalyzer implements Analyzer {
   }
 }
 
+/** Tracks active isolated work through shared memory and completes after a delay. */
+export class ConcurrentAnalyzer implements Analyzer {
+  readonly id = 'concurrent';
+  readonly version = '1.0.0';
+  readonly isolation = {
+    module: import.meta.url,
+    exportName: 'ConcurrentAnalyzer'
+  };
+
+  async analyze(context: AnalyzerContext): Promise<AnalyzerResult> {
+    const counters = new Int32Array(
+      context.options?.sharedCounters as SharedArrayBuffer
+    );
+    const active = Atomics.add(counters, 0, 1) + 1;
+    Atomics.add(counters, 2, 1);
+    while (true) {
+      const previousPeak = Atomics.load(counters, 1);
+      if (active <= previousPeak) break;
+      if (Atomics.compareExchange(counters, 1, previousPeak, active) === previousPeak)
+        break;
+    }
+    const holdMs =
+      typeof context.options?.holdMs === 'number' ? context.options.holdMs : 100;
+    await new Promise((resolve) => setTimeout(resolve, holdMs));
+    Atomics.sub(counters, 0, 1);
+    return { analyzer: this.id, durationMs: 0, findings: [] };
+  }
+}
+
 /** Throws inside the worker. */
 export class ThrowingAnalyzer implements Analyzer {
   readonly id = 'throws';

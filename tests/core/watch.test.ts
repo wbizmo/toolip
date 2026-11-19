@@ -5,6 +5,30 @@ import { describe, expect, it } from 'vitest';
 import { watchProject } from '../../src/core/watch/watch.js';
 
 describe('watchProject', () => {
+  it.skipIf(process.platform === 'linux')(
+    'reports when fallback directory watches reach their configured resource cap',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-watch-limit-'));
+      await mkdir(path.join(root, 'child'));
+      const errors: string[] = [];
+      const close = watchProject(root, async () => undefined, {
+        maxDirectories: 1,
+        onError(error) {
+          errors.push(error instanceof Error ? error.message : String(error));
+        }
+      });
+
+      try {
+        expect(errors).toContain(
+          'Project watch directory limit reached (1); deeper paths are not monitored.'
+        );
+      } finally {
+        close();
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
   it('reattaches child watchers after a watched directory is replaced', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-watch-replace-'));
     const nested = path.join(root, 'nested');

@@ -1,5 +1,6 @@
 import type { Command } from 'commander';
 import { discoverWorkspaces } from '../core/monorepo/discover.js';
+import { serializeJsonOutputBounded } from '../core/report-writer.js';
 
 export function registerMonorepoCommand(program: Command): void {
   program
@@ -11,7 +12,7 @@ export function registerMonorepoCommand(program: Command): void {
       const workspaces = await discoverWorkspaces(options.path);
 
       if (options.json) {
-        console.log(JSON.stringify({ workspaces }, null, 2));
+        console.log(serializeJsonOutputBounded({ workspaces }));
         return;
       }
 
