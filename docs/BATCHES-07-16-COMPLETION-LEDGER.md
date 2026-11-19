@@ -2377,3 +2377,22 @@ cancellation-under-load and cross-platform evidence. Issue #55 remains the
 final release gate with integrated audit, artifact and owner-approval steps.
 No issue is complete or closed by this continuation; changes remain local and
 unpushed.
+
+## 2026-11-19 implementation checkpoint — outbound and lock semantics for #60/#89/#91
+
+The AST request model now treats unshadowed `globalThis.fetch`, `window.fetch`
+and `self.fetch` as native request sinks while excluding locally shadowed
+platform objects, local `fetch` bindings and arbitrary object `.fetch()`
+methods. Sensitive-flow analysis also covers `XMLHttpRequest` request headers
+and bodies, including direct constructor expressions, while a shadowed
+constructor remains outside the platform model. The concurrency pass reports
+discarded Redis `SET NX`/`SETNX` and Redlock acquisition results separately
+from discarded database transactions; ordinary cache writes and awaited or
+returned acquisitions remain negative controls. Findings omit request, lock
+key and lock value evidence. The three focused AST suites pass 115 tests and
+TypeScript typecheck passes. Comprehensive verification, coverage, benchmarks,
+platform CI and independent review are deliberately deferred. The protected
+Stage A source digest is
+`b197daa12e7b3f26c718edff089f0cc0901c7d04a2152af52e8743f07834cb91`.
+This is an implementation checkpoint with validation pending; PR #104 remains
+draft and the issues remain open.

@@ -316,6 +316,48 @@ function mutableAlias() {
     expect(findings.map((finding) => finding.location?.line)).toEqual([2, 3]);
   });
 
+  it('flags discarded Redis lock acquisition results while accepting observed and ordinary writes', () => {
+    const findings = analyzeAstSource(
+      'src/redis-locks.ts',
+      `async function unsafe(key: string, token: string) {
+  redis.set(key, 'super-secret-lock-value', { NX: true, PX: 5000 });
+  void redisClient.setnx(key, token);
+  redlock.acquire([key], 5000).then(useLock);
+}
+async function observed(key: string, token: string) {
+  const acquired = await redis.set(key, token, 'NX', 'PX', 5000);
+  return redlock.acquire([key], 5000);
+}
+function ordinaryCacheWrite(key: string, value: string) {
+  cacheClient.set(key, value);
+  utility.acquire([key], 5000);
+}`
+    ).filter((finding) => finding.ruleId === 'TLP-RACE-005');
+
+    expect(findings.map((finding) => finding.location?.line)).toEqual([
+      2, 3, 4
+    ]);
+    expect(
+      findings.every((finding) => finding.metadata?.cwe === 'CWE-362')
+    ).toBe(true);
+    expect(JSON.stringify(findings)).not.toContain('super-secret-lock-value');
+  });
+
+  it('follows immutable Redis lock-client aliases but not mutable aliases', () => {
+    const findings = analyzeAstSource(
+      'src/redis-lock-aliases.ts',
+      `function aliases(key: string, token: string) {
+  const locks = redis;
+  locks.set(key, token, 'NX');
+  let mutable = redis;
+  mutable = utility;
+  mutable.setnx(key, token);
+}`
+    ).filter((finding) => finding.ruleId === 'TLP-RACE-005');
+
+    expect(findings.map((finding) => finding.location?.line)).toEqual([3]);
+  });
+
   it('does not trust a custom transaction method as a serializable database lock', () => {
     const findings = analyzeAstSource(
       'src/purchase.ts',

@@ -3639,12 +3639,13 @@ function sensitiveOutputSink(
       ((method === 'connect' || method === 'createconnection') &&
         ['net', 'tls'].includes(receiver ?? '')) ||
       (method === 'sendbeacon' && receiver === 'navigator') ||
-      (method === 'send' &&
+      ((method === 'send' || method === 'setrequestheader') &&
         receiverExpression &&
-        isWebSocketReceiver(receiverExpression, scope)) ||
+        (isWebSocketReceiver(receiverExpression, scope) ||
+          isXmlHttpRequestReceiver(receiverExpression, scope))) ||
       dynamicMethod ||
       importedDirectClient) &&
-    (method === 'fetch' ||
+    (isNativeFetchCall(call, scope) ||
       [
         'axios',
         'http',
@@ -3656,9 +3657,10 @@ function sensitiveOutputSink(
         'client',
         'navigator'
       ].includes(receiver ?? '') ||
-      (method === 'send' &&
+      ((method === 'send' || method === 'setrequestheader') &&
         receiverExpression &&
-        isWebSocketReceiver(receiverExpression, scope)) ||
+        (isWebSocketReceiver(receiverExpression, scope) ||
+          isXmlHttpRequestReceiver(receiverExpression, scope))) ||
       importedReceiver ||
       importedDirectClient)
   )
@@ -3775,17 +3777,25 @@ function isWebSocketReceiver(expression: ts.Expression, scope: Scope): boolean {
   return isBuiltInConstructorReceiver(expression, scope, 'WebSocket');
 }
 
+function isXmlHttpRequestReceiver(
+  expression: ts.Expression,
+  scope: Scope
+): boolean {
+  return isBuiltInConstructorReceiver(expression, scope, 'XMLHttpRequest');
+}
+
 const builtInConstructorReceiverCache = new WeakMap<
   ts.Node,
-  Map<'FormData' | 'WebSocket', ReadonlySet<string>>
+  Map<'FormData' | 'WebSocket' | 'XMLHttpRequest', ReadonlySet<string>>
 >();
 
 function isBuiltInConstructorReceiver(
   expression: ts.Expression,
   scope: Scope,
-  constructorName: 'FormData' | 'WebSocket'
+  constructorName: 'FormData' | 'WebSocket' | 'XMLHttpRequest'
 ): boolean {
   const value = unwrapExpression(expression);
+  if (isBuiltInConstructorCreation(value, scope, constructorName)) return true;
   if (!ts.isIdentifier(value)) return false;
   for (
     let current: Scope | undefined = scope;
@@ -3802,7 +3812,7 @@ function isBuiltInConstructorReceiver(
 
 function builtInConstructorReceivers(
   scope: Scope,
-  constructorName: 'FormData' | 'WebSocket'
+  constructorName: 'FormData' | 'WebSocket' | 'XMLHttpRequest'
 ): ReadonlySet<string> {
   let byConstructor = builtInConstructorReceiverCache.get(scope.node);
   if (!byConstructor) {
@@ -3846,7 +3856,7 @@ function builtInConstructorReceivers(
 function isBuiltInConstructorCreation(
   expression: ts.Expression,
   scope: Scope,
-  constructorName: 'FormData' | 'WebSocket'
+  constructorName: 'FormData' | 'WebSocket' | 'XMLHttpRequest'
 ): boolean {
   const value = unwrapExpression(expression);
   return (
@@ -4252,6 +4262,33 @@ const outboundRequestMethods = new Set([
   'request'
 ]);
 
+function isNativeFetchCall(call: ts.CallExpression, scope: Scope): boolean {
+  const target = call.expression;
+  if (ts.isIdentifier(target))
+    return (
+      target.text === 'fetch' && bindingOwner(scope, 'fetch') === undefined
+    );
+  if (
+    !ts.isPropertyAccessExpression(target) &&
+    !ts.isElementAccessExpression(target)
+  )
+    return false;
+  const method = ts.isPropertyAccessExpression(target)
+    ? target.name.text
+    : target.argumentExpression &&
+        (ts.isStringLiteral(target.argumentExpression) ||
+          ts.isNoSubstitutionTemplateLiteral(target.argumentExpression))
+      ? target.argumentExpression.text
+      : undefined;
+  const receiver = unwrapExpression(target.expression);
+  return Boolean(
+    method === 'fetch' &&
+    ts.isIdentifier(receiver) &&
+    ['globalThis', 'self', 'window'].includes(receiver.text) &&
+    bindingOwner(scope, receiver.text) === undefined
+  );
+}
+
 function isOutboundRequestCall(call: ts.CallExpression, scope: Scope): boolean {
   const target = call.expression;
   const targetName = ts.isIdentifier(target)
@@ -4296,7 +4333,7 @@ function isOutboundRequestCall(call: ts.CallExpression, scope: Scope): boolean {
     return true;
   if (
     outboundRequestMethods.has(targetName) &&
-    (targetName === 'fetch' ||
+    (isNativeFetchCall(call, scope) ||
       [
         'axios',
         'http',
@@ -4374,7 +4411,12 @@ function isDynamicOutboundModuleExpression(
 }
 
 const outboundDestinationOptionKeys = new Set([
-  'baseURL', 'url', 'host', 'hostname', 'socketPath', 'proxy'
+  'baseURL',
+  'url',
+  'host',
+  'hostname',
+  'socketPath',
+  'proxy'
 ]);
 
 function hasTaintedOutboundDestinationOption(
@@ -4501,19 +4543,12 @@ function sourceSinkRule(
     if (taintedUrl || taintedDestinationOptions) {
       // Only native global Fetch defines redirect: 'error' semantics. Other
       // request clients may treat it as an ignored configuration field.
-      const nativeFetch =
-        ts.isIdentifier(target) &&
-        target.text === 'fetch' &&
-        bindingOwner(scope, 'fetch') === undefined;
+      const nativeFetch = isNativeFetchCall(node, scope);
       if (
         !nativeFetch ||
         taintedDestinationOptions ||
         !first ||
-        !hasVerifiedFetchHostAllowlist(
-          node,
-          first,
-          hostAllowlistProofBudget
-        )
+        !hasVerifiedFetchHostAllowlist(node, first, hostAllowlistProofBudget)
       )
         return astSecurityRules.serverSideRequestForgery;
     }

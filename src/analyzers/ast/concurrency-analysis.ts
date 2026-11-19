@@ -126,6 +126,11 @@ function isDiscardedDatabaseTransaction(
     !ts.isElementAccessExpression(target)
   )
     return false;
+  if (!isDiscardedPromiseCall(call)) return false;
+  return isRecognizedReceiver(call, aliases, databaseReceivers);
+}
+
+function isDiscardedPromiseCall(call: ts.CallExpression): boolean {
   let current: ts.Node = call;
   let discarded = false;
   while (true) {
@@ -156,8 +161,7 @@ function isDiscardedDatabaseTransaction(
       ts.isExpressionStatement(parent) && parent.expression === current;
     break;
   }
-  if (!discarded) return false;
-  return isRecognizedReceiver(call, aliases, databaseReceivers);
+  return discarded;
 }
 
 function createDiscardedTransactionFinding(
@@ -200,6 +204,49 @@ function createDiscardedTransactionFinding(
       cwe: 'CWE-362',
       limitation:
         'Recognizes direct discarded transaction calls on common database client names; it does not model custom clients, promise ownership, or transaction isolation.'
+    }
+  };
+}
+
+function createDiscardedRedisLockFinding(
+  sourceFile: ts.SourceFile,
+  call: ts.CallExpression
+): Finding {
+  const start = sourceFile.getLineAndCharacterOfPosition(
+    call.getStart(sourceFile)
+  );
+  const location = {
+    file: sourceFile.fileName,
+    line: start.line + 1,
+    column: start.character + 1
+  };
+  const fingerprint = `TLP-RACE-005:${location.file}:${location.line}:${location.column}`;
+  return {
+    id: fingerprint,
+    ruleId: 'TLP-RACE-005',
+    title: 'Redis lock acquisition result is discarded',
+    category: 'concurrency',
+    severity: 'medium',
+    confidence: 'low',
+    message:
+      'A recognized Redis atomic-set or Redlock acquisition is used without awaiting or returning its result. The protected operation may continue before ownership is established or after acquisition fails.',
+    source: 'typescript-ast-concurrency-heuristic',
+    location,
+    evidence: [
+      {
+        summary: '[discarded Redis lock result; key and value omitted]',
+        fingerprint
+      }
+    ],
+    remediation: {
+      summary:
+        'Await or return the lock acquisition, verify that ownership was obtained, and release it with an owner token in a finally block.'
+    },
+    metadata: {
+      analysisModel: 'discarded-redis-lock-result',
+      cwe: 'CWE-362',
+      limitation:
+        'Recognizes Redis SET NX, SETNX and Redlock acquire calls on common receiver names; custom lock clients and ownership/release semantics remain unknown.'
     }
   };
 }
@@ -1010,6 +1057,26 @@ function findDiscardedTransactions(
       findings.push(createDiscardedTransactionFinding(sourceFile, call));
 }
 
+function findDiscardedRedisLocks(
+  sourceFile: ts.SourceFile,
+  facts: FunctionFacts,
+  findings: Finding[]
+): void {
+  const aliases = redisReceiverAliases(facts.declarations);
+  for (const call of facts.calls) {
+    if (!isDiscardedPromiseCall(call)) continue;
+    const method = methodName(call)?.toLowerCase();
+    const redisAtomicSet =
+      (method === 'setnx' || (method === 'set' && hasRedisSetNxOption(call))) &&
+      isRecognizedRedisReceiver(call, aliases);
+    const redlockAcquire =
+      method === 'acquire' &&
+      isRecognizedReceiver(call, aliases, new Set(['redlock']));
+    if (redisAtomicSet || redlockAcquire)
+      findings.push(createDiscardedRedisLockFinding(sourceFile, call));
+  }
+}
+
 function hasRedisSetNxOption(call: ts.CallExpression): boolean {
   for (const argument of call.arguments.slice(2)) {
     if (
@@ -1224,6 +1291,7 @@ export function analyzeConcurrencySource(
   };
   visit(sourceFile);
   findDiscardedTransactions(sourceFile, topLevelFacts, findings);
+  findDiscardedRedisLocks(sourceFile, topLevelFacts, findings);
   findFilesystemCheckUse(
     sourceFile,
     topLevelFacts.calls,
@@ -1234,6 +1302,7 @@ export function analyzeConcurrencySource(
   findRedisReadCheckWrite(sourceFile, topLevelFacts, findings);
   for (const facts of factsByFunction.values()) {
     findDiscardedTransactions(sourceFile, facts, findings);
+    findDiscardedRedisLocks(sourceFile, facts, findings);
     findFilesystemCheckUse(
       sourceFile,
       facts.calls,

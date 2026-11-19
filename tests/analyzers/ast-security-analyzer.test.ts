@@ -281,6 +281,29 @@ async function handler(req: RequestLike, db: Database) {
     );
   });
 
+  it('recognizes unshadowed platform fetch receivers without trusting arbitrary fetch methods', () => {
+    const findings = analyzeAstSource(
+      'src/platform-fetch.ts',
+      `async function handler(req: RequestLike) {
+  await globalThis.fetch(req.query.primary);
+  await window['fetch'](req.query.secondary);
+  await self.fetch(req.query.tertiary);
+  await api.fetch(req.query.custom);
+}
+async function shadowed(req: RequestLike, globalThis: { fetch(url: string): Promise<unknown> }) {
+  await globalThis.fetch(req.query.shadowed);
+}
+async function local(req: RequestLike) {
+  const fetch = (url: string) => Promise.resolve(url);
+  await fetch(req.query.local);
+}`
+    ).filter((finding) => finding.ruleId === 'TLP-AST-006');
+
+    expect(findings.map((finding) => finding.location?.line)).toEqual([
+      2, 3, 4
+    ]);
+  });
+
   it('recognizes request functions imported from known HTTP clients', () => {
     const findings = analyzeAstSource(
       'routes.ts',
