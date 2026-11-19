@@ -49,6 +49,8 @@ if (
   !Number.isSafeInteger(scan.coverage?.dependencyArtifactBinaryFiles) ||
   !Number.isSafeInteger(scan.coverage?.nonNpmDependencyArtifactsChecked) ||
   !Number.isSafeInteger(scan.coverage?.nonNpmDependencyArtifactCount) ||
+  !Number.isSafeInteger(scan.coverage?.cargoDependencyArtifactCount) ||
+  !Number.isSafeInteger(scan.coverage?.goDependencyArtifactCount) ||
   !Number.isSafeInteger(scan.coverage?.nonNpmDependencyArtifactFiles) ||
   !Number.isSafeInteger(scan.coverage?.nonNpmDependencyArtifactBytes) ||
   !Number.isSafeInteger(scan.coverage?.nonNpmDependencyArtifactNetworkBytes) ||
@@ -65,8 +67,11 @@ if (
   scan.coverage.dependencyArtifactBinaryFiles !== 0 ||
   scan.coverage.nonNpmDependencyArtifactsChecked !==
     scan.coverage.nonNpmDependencyArtifactCount ||
+  scan.coverage.cargoDependencyArtifactCount +
+    scan.coverage.goDependencyArtifactCount !==
+    scan.coverage.nonNpmDependencyArtifactCount ||
   scan.coverage.nonNpmDependencyArtifactBinaryFiles !== 0 ||
-  !(scan.coverage.nonNpmDependencyArtifactCount > 0
+  !(scan.coverage.cargoDependencyArtifactCount > 0
     ? /^[0-9a-f]{64}$/iu.test(scan.cargoArtifactPolicySha256 ?? '')
     : scan.cargoArtifactPolicySha256 === null) ||
   !Array.isArray(scan.appliedExceptions) ||
@@ -124,7 +129,7 @@ if (
     scan.coverage.nonNpmDependencyArtifactCount ||
   Object.entries(verifiedNonNpmArchiveDigests).some(
     ([location, digest]) =>
-      !/^cargo-lock\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+@[A-Za-z0-9.+-]+#[a-f0-9]{64}$/u.test(
+      !/^(?:cargo-lock\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+@[A-Za-z0-9.+-]+|go-module\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+@[A-Za-z0-9_-]+)#[a-f0-9]{64}$/u.test(
         location
       ) || !/^[a-f0-9]{64}$/iu.test(digest ?? '')
   )

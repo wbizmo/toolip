@@ -16,6 +16,8 @@ import {
   scanGitTree,
   compareNpmLockfiles,
   inspectDependencyChanges,
+  inspectGoArtifacts,
+  inspectGoModuleZip,
   parseGoModuleArtifactInventory,
   listPullRequestChanges,
   parseNpmLockInventory,
@@ -28,6 +30,42 @@ import {
 const roots: string[] = [];
 const markers: string[] = [];
 const fakeGithubToken = ['ghp_', '123456789012345678901234567890'].join('');
+
+function storedZip(entries: Array<[string, string]>): Buffer {
+  const localParts: Buffer[] = [];
+  const centralParts: Buffer[] = [];
+  let offset = 0;
+  for (const [name, text] of entries) {
+    const nameBytes = Buffer.from(name);
+    const content = Buffer.from(text);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(content.length, 18);
+    local.writeUInt16LE(content.length, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+    localParts.push(local, nameBytes, content);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(content.length, 20);
+    central.writeUInt16LE(content.length, 24);
+    central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt32LE(offset, 42);
+    centralParts.push(central, nameBytes);
+    offset += local.length + nameBytes.length + content.length;
+  }
+  const centralOffset = offset;
+  const central = Buffer.concat(centralParts);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(entries.length, 8);
+  eocd.writeUInt16LE(entries.length, 10);
+  eocd.writeUInt32LE(central.length, 12);
+  eocd.writeUInt32LE(centralOffset, 16);
+  return Buffer.concat([...localParts, central, eocd]);
+}
 
 function npmTarball(entries: Array<[string, string]>): Buffer {
   const blocks: Buffer[] = [];
@@ -2353,8 +2391,12 @@ describe('trusted Stage A Git-object scanner', () => {
     expect(result.status).not.toBe('approved');
     expect(
       result.incompleteReasons.some((reason) =>
-        reason.startsWith('referenced-binary-content-uninspected:')
-      )
+        [
+          'referenced-binary-content-uninspected:payload.bin',
+          'unsupported-executable-binary:payload.bin'
+        ].includes(reason)
+      ),
+      JSON.stringify(result.incompleteReasons)
     ).toBe(true);
   });
 
@@ -2966,6 +3008,86 @@ describe('trusted Stage A Git-object scanner', () => {
       'go-module-checksum-missing:go.mod',
       'go-module-replacement-unverified:go.mod'
     ]);
+  });
+
+  it('verifies and scans a bounded Go module ZIP without extraction', () => {
+    const module = 'example.test/Upper';
+    const version = 'v1.2.3';
+    const files: Array<[string, string]> = [
+      ['go.mod', `module ${module}\n`],
+      ['install.go', 'package upper\n// harmless source\n']
+    ];
+    const checksum = createHash('sha256')
+      .update(
+        files
+          .map(
+            ([name, content]) =>
+              `${createHash('sha256').update(content).digest('hex')}  ${name}\n`
+          )
+          .sort()
+          .join('')
+      )
+      .digest('base64');
+    const archive = storedZip(
+      files.map(([name, content]) => [
+        `example.test/!upper@v1.2.3/${name}`,
+        content
+      ])
+    );
+    expect(
+      inspectGoModuleZip(archive, {
+        module,
+        version,
+        checksum,
+        location: 'go-module/Z28ubW9k/ZXhhbXBsZS50ZXN0L1VwcGVy@djEuMi4z#digest'
+      })
+    ).toMatchObject({
+      files: 2,
+      reasons: [],
+      binaryFiles: 0
+    });
+
+    const traversal = storedZip([
+      ['example.test/!upper@v1.2.3/../escape', 'payload']
+    ]);
+    expect(
+      inspectGoModuleZip(traversal, {
+        module,
+        version,
+        checksum,
+        location: 'go-module/test'
+      }).reasons
+    ).toContain('go-zip-entry-name-invalid');
+  });
+
+  it('fetches the exact Go proxy artifact and records complete coverage', async () => {
+    const module = 'example.test/lib';
+    const version = 'v1.0.0';
+    const content = `module ${module}\n`;
+    const checksum = createHash('sha256')
+      .update(`${createHash('sha256').update(content).digest('hex')}  go.mod\n`)
+      .digest('base64');
+    const archive = storedZip([[`${module}@${version}/go.mod`, content]]);
+    const digest = Buffer.from(checksum, 'base64').toString('hex');
+    const location = `go-module/Z28ubW9k/${Buffer.from(module).toString('base64url')}@${Buffer.from(version).toString('base64url')}#${digest}`;
+    const result = await inspectGoArtifacts(
+      [{ module, version, checksum, location }],
+      {
+        fetchImpl: async () => new Response(archive, { status: 200 })
+      }
+    );
+    expect(result).toMatchObject({
+      reasons: [],
+      coverage: {
+        checked: 1,
+        files: 1,
+        binaryFiles: 0,
+        networkBytes: archive.length
+      }
+    });
+    expect(result.verifiedArtifactSha256ByLocation).toEqual({
+      [location]: createHash('sha256').update(archive).digest('hex')
+    });
   });
 
   it('scans exact npm tarball contents without extraction and flags install hooks', () => {

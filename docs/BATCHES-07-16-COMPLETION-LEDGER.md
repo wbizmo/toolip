@@ -2411,3 +2411,20 @@ bounded content inspection must be implemented before these identities can
 contribute to Stage A approval. The trusted scanner digest is
 `10f049c8d4222e735873513b02f5f8364ab84a9488cac6ecebf48f393550c159` at
 all three workflow pins. PR #104 remains draft and #96 remains open.
+
+The follow-up completes the supported public Go artifact path in the trusted
+scanner. Stage A downloads each exact escaped module/version from the public
+Go proxy under the shared deadline, file, byte and artifact-count budgets;
+parses ZIP central and local headers without extraction; rejects encrypted,
+unsupported, duplicate, traversal and malformed entries; recomputes Go's
+`h1` directory hash from sorted file hashes; and scans UTF-8 content before
+Stage B. Binary module content remains explicitly incomplete. Approval
+artifacts bind the exact archive SHA-256 and distinguish Go counts from Cargo
+counts so Cargo's operator policy is required only for Cargo. The focused
+Stage A and approval-artifact suites pass 126 tests, including the restored
+fail-closed `.bin` reference fixture; typecheck passes. The current protected
+scanner digest is
+`677a03218c1bf2691c67ec1ee3305657cbef808117339020a5a667170da0c0d8` at
+all three pins. Go workspaces, vendoring, replacements and private proxies
+remain explicit unsupported/incomplete boundaries rather than receiving
+approval.

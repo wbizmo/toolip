@@ -54,6 +54,10 @@ const record = {
     dependencyArtifactBinaryFiles: 0,
     nonNpmDependencyArtifactsChecked: 0,
     nonNpmDependencyArtifactCount: 0,
+    cargoDependencyArtifactCount: 0,
+    goDependencyArtifactCount: 0,
+    cargoDependencyArtifactCount: 0,
+    goDependencyArtifactCount: 0,
     nonNpmDependencyArtifactFiles: 0,
     nonNpmDependencyArtifactBytes: 0,
     nonNpmDependencyArtifactNetworkBytes: 0,
@@ -301,7 +305,8 @@ describe('Stage A artifact identity verification', () => {
       coverage: {
         ...record.coverage,
         nonNpmDependencyArtifactsChecked: 1,
-        nonNpmDependencyArtifactCount: 1
+        nonNpmDependencyArtifactCount: 1,
+        cargoDependencyArtifactCount: 1
       },
       cargoArtifactPolicySha256: cargoPolicySha256,
       verifiedArtifactSha256ByLocation: { [location]: 'a'.repeat(64) }
@@ -318,6 +323,25 @@ describe('Stage A artifact identity verification', () => {
         expectedCargoArtifactPolicySha256: 'b'.repeat(64)
       })
     ).toThrow('does not match');
+  });
+
+  it('accepts verified Go artifacts without requiring a Cargo-only policy', () => {
+    const location = `go-module/Z28ubW9k/ZXhhbXBsZS50ZXN0L2xpYg@djEuMi4z#${'a'.repeat(64)}`;
+    const goRecord = {
+      ...record,
+      coverage: {
+        ...record.coverage,
+        nonNpmDependencyArtifactsChecked: 1,
+        nonNpmDependencyArtifactCount: 1,
+        goDependencyArtifactCount: 1
+      },
+      verifiedArtifactSha256ByLocation: { [location]: 'b'.repeat(64) }
+    };
+    expect(
+      verifyStageAArtifact(goRecord, event, repository, {
+        expectedNpmProvenancePolicySha256: npmPolicySha256
+      }).cargoArtifactPolicySha256
+    ).toBeNull();
   });
 
   it('rejects malformed and duplicate-key Cargo artifact policies', () => {

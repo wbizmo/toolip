@@ -60,7 +60,7 @@ export function verifyStageAArtifact(
       record.exceptionPolicySha256 === null ||
       /^[0-9a-f]{64}$/iu.test(record.exceptionPolicySha256 ?? '')
     ) ||
-    !(record.coverage?.nonNpmDependencyArtifactCount > 0
+    !(record.coverage?.cargoDependencyArtifactCount > 0
       ? /^[0-9a-f]{64}$/iu.test(record.cargoArtifactPolicySha256 ?? '') &&
         typeof expectedCargoArtifactPolicySha256 === 'string' &&
         record.cargoArtifactPolicySha256 === expectedCargoArtifactPolicySha256
@@ -108,6 +108,8 @@ export function verifyStageAArtifact(
       record.coverage?.nonNpmDependencyArtifactsChecked
     ) ||
     !nonnegativeSafeInteger(record.coverage?.nonNpmDependencyArtifactCount) ||
+    !nonnegativeSafeInteger(record.coverage?.cargoDependencyArtifactCount) ||
+    !nonnegativeSafeInteger(record.coverage?.goDependencyArtifactCount) ||
     !nonnegativeSafeInteger(record.coverage?.nonNpmDependencyArtifactFiles) ||
     !nonnegativeSafeInteger(record.coverage?.nonNpmDependencyArtifactBytes) ||
     !nonnegativeSafeInteger(
@@ -127,6 +129,9 @@ export function verifyStageAArtifact(
       record.coverage.dependencyArtifactCount ||
     record.coverage.dependencyArtifactBinaryFiles !== 0 ||
     record.coverage.nonNpmDependencyArtifactsChecked !==
+      record.coverage.nonNpmDependencyArtifactCount ||
+    record.coverage.cargoDependencyArtifactCount +
+      record.coverage.goDependencyArtifactCount !==
       record.coverage.nonNpmDependencyArtifactCount ||
     record.coverage.nonNpmDependencyArtifactBinaryFiles !== 0 ||
     record.registrySignatureAudit !==
@@ -165,7 +170,7 @@ export function verifyStageAArtifact(
       record.coverage.nonNpmDependencyArtifactCount ||
     Object.entries(record.verifiedArtifactSha256ByLocation).some(
       ([location, digest]) =>
-        !/^cargo-lock\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+@[A-Za-z0-9.+-]+#[a-f0-9]{64}$/u.test(
+        !/^(?:cargo-lock\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+@[A-Za-z0-9.+-]+|go-module\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+@[A-Za-z0-9_-]+)#[a-f0-9]{64}$/u.test(
           location
         ) || !/^[a-f0-9]{64}$/iu.test(digest ?? '')
     ) ||
@@ -301,7 +306,7 @@ async function main() {
         )
       : undefined;
   const expectedCargoArtifactPolicySha256 =
-    record?.coverage?.nonNpmDependencyArtifactCount > 0
+    record?.coverage?.cargoDependencyArtifactCount > 0
       ? cargoArtifactPolicyDigest(
           process.env.TOOLIP_STAGE_A_CARGO_SHA256_POLICY
         )

@@ -18,7 +18,7 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { gunzipSync } from 'node:zlib';
+import { gunzipSync, inflateRawSync } from 'node:zlib';
 import { parse as parseToml } from 'smol-toml';
 import {
   canonicalJsonSha256,
@@ -69,6 +69,7 @@ const BINARY_EXTENSIONS = new Set([
   '.a',
   '.apk',
   '.avi',
+  '.bin',
   '.class',
   '.db',
   '.dll',
@@ -1900,6 +1901,339 @@ export function parseGoModuleArtifactInventory(
     ),
     packageCount: required.size,
     reasons: Object.freeze([...new Set(reasons)].sort())
+  });
+}
+
+function escapeGoModuleComponent(value) {
+  let escaped = '';
+  for (const character of value) {
+    if (character === '!') escaped += '!!';
+    else if (character >= 'A' && character <= 'Z')
+      escaped += `!${character.toLowerCase()}`;
+    else escaped += character;
+  }
+  return escaped;
+}
+
+/** Inspect and hash a Go module ZIP without extracting or executing it. */
+export function inspectGoModuleZip(
+  archive,
+  artifact,
+  {
+    maxUnpackedBytes = MAX_ARTIFACT_UNPACKED_BYTES,
+    maxFiles = MAX_ARTIFACT_FILES
+  } = {}
+) {
+  const reasons = [];
+  const findings = [];
+  if (!Buffer.isBuffer(archive) || archive.length > MAX_ARTIFACT_BYTES)
+    return Object.freeze({
+      files: 0,
+      bytes: 0,
+      findings: Object.freeze([]),
+      reasons: Object.freeze(['go-artifact-size-or-identity-invalid']),
+      binaryFiles: 0
+    });
+  const expectedRoot = `${escapeGoModuleComponent(artifact.module)}@${escapeGoModuleComponent(artifact.version)}/`;
+  const minimumEocd = Math.max(0, archive.length - 65_557);
+  let eocd = -1;
+  for (let offset = archive.length - 22; offset >= minimumEocd; offset--) {
+    if (archive.readUInt32LE(offset) === 0x06054b50) {
+      eocd = offset;
+      break;
+    }
+  }
+  if (eocd < 0)
+    return Object.freeze({
+      files: 0,
+      bytes: 0,
+      findings: Object.freeze([]),
+      reasons: Object.freeze(['go-zip-directory-invalid']),
+      binaryFiles: 0
+    });
+  if (eocd < 0)
+    return Object.freeze({
+      files: 0,
+      bytes: 0,
+      findings: Object.freeze([]),
+      reasons: Object.freeze(['go-zip-directory-invalid']),
+      binaryFiles: 0
+    });
+  const entryCount = archive.readUInt16LE(eocd + 10);
+  const directoryBytes = archive.readUInt32LE(eocd + 12);
+  const directoryOffset = archive.readUInt32LE(eocd + 16);
+  if (
+    archive.readUInt16LE(eocd + 4) !== 0 ||
+    archive.readUInt16LE(eocd + 6) !== 0 ||
+    archive.readUInt16LE(eocd + 8) !== entryCount ||
+    entryCount > maxFiles ||
+    directoryOffset + directoryBytes > eocd
+  )
+    reasons.push('go-zip-directory-invalid');
+  const entries = [];
+  const seen = new Set();
+  let cursor = directoryOffset;
+  let declaredBytes = 0;
+  for (let index = 0; index < entryCount && reasons.length === 0; index++) {
+    if (
+      cursor + 46 > archive.length ||
+      archive.readUInt32LE(cursor) !== 0x02014b50
+    ) {
+      reasons.push('go-zip-directory-invalid');
+      break;
+    }
+    const flags = archive.readUInt16LE(cursor + 8);
+    const method = archive.readUInt16LE(cursor + 10);
+    const compressedSize = archive.readUInt32LE(cursor + 20);
+    const size = archive.readUInt32LE(cursor + 24);
+    const nameLength = archive.readUInt16LE(cursor + 28);
+    const extraLength = archive.readUInt16LE(cursor + 30);
+    const commentLength = archive.readUInt16LE(cursor + 32);
+    const localOffset = archive.readUInt32LE(cursor + 42);
+    const next = cursor + 46 + nameLength + extraLength + commentLength;
+    if (
+      next > archive.length ||
+      (flags & 1) !== 0 ||
+      ![0, 8].includes(method) ||
+      size > MAX_ARTIFACT_FILE_BYTES ||
+      compressedSize > MAX_ARTIFACT_BYTES
+    ) {
+      reasons.push('go-zip-entry-invalid');
+      break;
+    }
+    let name;
+    try {
+      name = new TextDecoder('utf-8', { fatal: true }).decode(
+        archive.subarray(cursor + 46, cursor + 46 + nameLength)
+      );
+    } catch {
+      reasons.push('go-zip-entry-name-invalid');
+      break;
+    }
+    if (
+      !name.startsWith(expectedRoot) ||
+      name === expectedRoot ||
+      name.includes('\\') ||
+      name.includes('\0') ||
+      name.split('/').some((part) => part === '.' || part === '..') ||
+      name.endsWith('/') ||
+      seen.has(name)
+    ) {
+      reasons.push('go-zip-entry-name-invalid');
+      break;
+    }
+    seen.add(name);
+    declaredBytes += size;
+    if (declaredBytes > maxUnpackedBytes) {
+      reasons.push('go-artifact-content-budget-exceeded');
+      break;
+    }
+    entries.push({ name, method, compressedSize, size, localOffset });
+    cursor = next;
+  }
+  if (cursor !== directoryOffset + directoryBytes)
+    reasons.push('go-zip-directory-invalid');
+
+  const hashLines = [];
+  let bytes = 0;
+  let binaryFiles = 0;
+  for (const entry of entries) {
+    const { localOffset } = entry;
+    if (
+      localOffset + 30 > archive.length ||
+      archive.readUInt32LE(localOffset) !== 0x04034b50
+    ) {
+      reasons.push('go-zip-local-header-invalid');
+      break;
+    }
+    const nameLength = archive.readUInt16LE(localOffset + 26);
+    const extraLength = archive.readUInt16LE(localOffset + 28);
+    const dataStart = localOffset + 30 + nameLength + extraLength;
+    const dataEnd = dataStart + entry.compressedSize;
+    if (dataEnd > archive.length) {
+      reasons.push('go-zip-entry-invalid');
+      break;
+    }
+    const localName = archive
+      .subarray(localOffset + 30, localOffset + 30 + nameLength)
+      .toString('utf8');
+    if (localName !== entry.name) {
+      reasons.push('go-zip-local-header-invalid');
+      break;
+    }
+    let content;
+    try {
+      const compressed = archive.subarray(dataStart, dataEnd);
+      content =
+        entry.method === 0
+          ? compressed
+          : inflateRawSync(compressed, { maxOutputLength: entry.size });
+    } catch {
+      reasons.push('go-zip-entry-decompression-failed');
+      break;
+    }
+    if (content.length !== entry.size) {
+      reasons.push('go-zip-entry-size-mismatch');
+      break;
+    }
+    bytes += content.length;
+    const relativePath = entry.name.slice(expectedRoot.length);
+    hashLines.push(
+      `${createHash('sha256').update(content).digest('hex')}  ${relativePath}\n`
+    );
+    if (content.includes(0)) binaryFiles++;
+    else {
+      try {
+        const text = new TextDecoder('utf-8', { fatal: true }).decode(content);
+        findings.push(
+          ...scanText(
+            `artifact:${artifact.location}/${relativePath}`,
+            text,
+            reasons
+          )
+        );
+      } catch {
+        binaryFiles++;
+      }
+    }
+  }
+  hashLines.sort();
+  const actualChecksum = createHash('sha256')
+    .update(hashLines.join(''))
+    .digest('base64');
+  if (actualChecksum !== artifact.checksum)
+    reasons.push('go-artifact-integrity-mismatch');
+  if (binaryFiles > 0) reasons.push('go-artifact-binary-content-uninspected');
+  return Object.freeze({
+    files: entries.length,
+    bytes,
+    findings: Object.freeze([...new Set(findings)].sort()),
+    reasons: Object.freeze([...new Set(reasons)].sort()),
+    binaryFiles
+  });
+}
+
+export async function inspectGoArtifacts(
+  artifacts,
+  {
+    fetchImpl = globalThis.fetch,
+    deadlineMs = MAX_ARTIFACT_DEADLINE_MS,
+    maxCount = MAX_ARTIFACT_COUNT,
+    maxTotalBytes = MAX_ARTIFACT_TOTAL_BYTES,
+    maxTotalNetworkBytes = MAX_ARTIFACT_TOTAL_BYTES,
+    maxFiles = MAX_ARTIFACT_FILES
+  } = {}
+) {
+  const reasons = [];
+  const findings = [];
+  const coverage = {
+    checked: 0,
+    bytes: 0,
+    files: 0,
+    binaryFiles: 0,
+    networkBytes: 0
+  };
+  const verifiedArtifactSha256ByLocation = new Map();
+  if (artifacts.length > maxCount)
+    return Object.freeze({
+      reasons: Object.freeze(['go-artifact-count-budget-exceeded']),
+      findings: Object.freeze([]),
+      coverage: Object.freeze(coverage),
+      verifiedArtifactSha256ByLocation: Object.freeze({})
+    });
+  const startedAt = Date.now();
+  for (const artifact of artifacts) {
+    if (Date.now() - startedAt >= deadlineMs) {
+      reasons.push('go-artifact-inspection-deadline-exceeded');
+      break;
+    }
+    if (
+      typeof artifact.module !== 'string' ||
+      typeof artifact.version !== 'string' ||
+      typeof artifact.checksum !== 'string' ||
+      !/^go-module\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+@[A-Za-z0-9_-]+#[a-f0-9]{64}$/u.test(
+        artifact.location ?? ''
+      )
+    ) {
+      reasons.push('go-artifact-identity-invalid');
+      continue;
+    }
+    const escapedModule = escapeGoModuleComponent(artifact.module);
+    const escapedVersion = escapeGoModuleComponent(artifact.version);
+    const url = new URL(
+      `https://proxy.golang.org/${escapedModule}/@v/${escapedVersion}.zip`
+    );
+    try {
+      const response = await fetchImpl(url, {
+        redirect: 'follow',
+        signal: AbortSignal.timeout(
+          Math.max(1, deadlineMs - (Date.now() - startedAt))
+        )
+      });
+      if (!response?.ok) throw new Error('go-artifact-fetch-failed');
+      const finalUrl = new URL(response.url || url);
+      if (
+        !(
+          (finalUrl.origin === url.origin &&
+            finalUrl.pathname === url.pathname &&
+            !finalUrl.search) ||
+          (finalUrl.protocol === 'https:' &&
+            finalUrl.hostname === 'storage.googleapis.com')
+        ) ||
+        finalUrl.hash
+      )
+        throw new Error('go-artifact-redirected-outside-proxy');
+      const networkBudget = Math.max(
+        0,
+        maxTotalNetworkBytes - coverage.networkBytes
+      );
+      if (networkBudget === 0)
+        throw new Error('go-artifact-total-download-budget-exceeded');
+      const archive = await boundedResponseBytes(
+        response,
+        Math.min(MAX_ARTIFACT_BYTES, networkBudget)
+      );
+      const inspected = inspectGoModuleZip(archive, artifact, {
+        maxUnpackedBytes: Math.max(0, maxTotalBytes - coverage.bytes),
+        maxFiles: Math.max(0, maxFiles - coverage.files)
+      });
+      const archiveSha256 = createHash('sha256').update(archive).digest('hex');
+      coverage.networkBytes += archive.length;
+      coverage.bytes += inspected.bytes;
+      coverage.files += inspected.files;
+      coverage.binaryFiles += inspected.binaryFiles;
+      findings.push(...inspected.findings);
+      reasons.push(
+        ...inspected.reasons.map((reason) => `${reason}:${artifact.location}`)
+      );
+      if (inspected.reasons.length === 0) {
+        coverage.checked++;
+        verifiedArtifactSha256ByLocation.set(artifact.location, archiveSha256);
+      }
+    } catch (error) {
+      const code =
+        error instanceof Error &&
+        [
+          'artifact-size-budget-exceeded',
+          'go-artifact-redirected-outside-proxy',
+          'go-artifact-total-download-budget-exceeded'
+        ].includes(error.message)
+          ? error.message
+          : 'go-artifact-fetch-or-inspection-failed';
+      reasons.push(`${code}:${artifact.location}`);
+    }
+  }
+  return Object.freeze({
+    reasons: Object.freeze([...new Set(reasons)].sort()),
+    findings: Object.freeze([...new Set(findings)].sort()),
+    coverage: Object.freeze(coverage),
+    verifiedArtifactSha256ByLocation: Object.freeze(
+      Object.fromEntries(
+        [...verifiedArtifactSha256ByLocation].sort(([left], [right]) =>
+          left.localeCompare(right)
+        )
+      )
+    )
   });
 }
 
@@ -4640,6 +4974,37 @@ export async function scanGithubPullRequest({
         )
       }
     );
+    const goArtifacts = await inspectGoArtifacts(dependency.goArtifactRecords, {
+      fetchImpl,
+      deadlineMs: Math.max(
+        0,
+        MAX_ARTIFACT_DEADLINE_MS - (Date.now() - dependencyInspectionStartedAt)
+      ),
+      maxCount: Math.max(
+        0,
+        MAX_ARTIFACT_COUNT -
+          dependency.artifactRecords.length -
+          dependency.cargoArtifactRecords.length
+      ),
+      maxTotalBytes: Math.max(
+        0,
+        MAX_ARTIFACT_TOTAL_BYTES -
+          dependencyArtifacts.coverage.bytes -
+          cargoArtifacts.coverage.bytes
+      ),
+      maxTotalNetworkBytes: Math.max(
+        0,
+        MAX_ARTIFACT_TOTAL_BYTES -
+          dependencyArtifacts.coverage.networkBytes -
+          cargoArtifacts.coverage.networkBytes
+      ),
+      maxFiles: Math.max(
+        0,
+        MAX_ARTIFACT_FILES -
+          dependencyArtifacts.coverage.files -
+          cargoArtifacts.coverage.files
+      )
+    });
     const cargoArtifactPolicy = verifyCargoArtifactPolicy(
       dependency.cargoArtifactRecords,
       process.env.TOOLIP_STAGE_A_CARGO_SHA256_POLICY
@@ -4651,7 +5016,8 @@ export async function scanGithubPullRequest({
         ...head.findings,
         ...merged.findings,
         ...dependencyArtifacts.findings,
-        ...cargoArtifacts.findings
+        ...cargoArtifacts.findings,
+        ...goArtifacts.findings
       ])
     ].sort();
     const appliedExceptions = [];
@@ -4680,7 +5046,8 @@ export async function scanGithubPullRequest({
             ...head.findings,
             ...merged.findings,
             ...dependencyArtifacts.findings,
-            ...cargoArtifacts.findings
+            ...cargoArtifacts.findings,
+            ...goArtifacts.findings
           ].map((finding) => stageAFindingRecord(finding).id)
         );
         const candidateIncompleteReasons = [
@@ -4689,6 +5056,7 @@ export async function scanGithubPullRequest({
           ...dependency.reasons,
           ...dependencyArtifacts.reasons,
           ...cargoArtifacts.reasons,
+          ...goArtifacts.reasons,
           ...cargoArtifactPolicy.reasons
         ];
         const matchingExceptions = matchingStageAExceptions(
@@ -4778,9 +5146,13 @@ export async function scanGithubPullRequest({
         ...merged.incompleteReasons,
         ...dependencyIncompleteReasons,
         ...cargoArtifacts.reasons,
+        ...goArtifacts.reasons,
         ...cargoArtifactPolicy.reasons,
         ...(dependency.cargoArtifactCount > cargoArtifacts.coverage.checked
           ? ['cargo-dependency-artifact-uninspected']
+          : []),
+        ...(dependency.goArtifactCount > goArtifacts.coverage.checked
+          ? ['go-dependency-artifact-uninspected']
           : []),
         ...(dependency.scopedPackages.some(
           (scope) => !allowedPublicScopes.includes(scope)
@@ -4846,8 +5218,10 @@ export async function scanGithubPullRequest({
       appliedExceptions: Object.freeze(appliedExceptions),
       verifiedArtifactSha512ByLocation:
         dependencyArtifacts.verifiedArtifactSha512ByLocation,
-      verifiedArtifactSha256ByLocation:
-        cargoArtifacts.verifiedArtifactSha256ByLocation,
+      verifiedArtifactSha256ByLocation: Object.freeze({
+        ...cargoArtifacts.verifiedArtifactSha256ByLocation,
+        ...goArtifacts.verifiedArtifactSha256ByLocation
+      }),
       cargoArtifactPolicySha256: cargoArtifactPolicy.policySha256,
       coverage: Object.freeze({
         changedFiles: changedPaths.length,
@@ -4861,14 +5235,22 @@ export async function scanGithubPullRequest({
         dependencyArtifactNetworkBytes:
           dependencyArtifacts.coverage.networkBytes,
         dependencyArtifactBinaryFiles: dependencyArtifacts.coverage.binaryFiles,
-        nonNpmDependencyArtifactsChecked: cargoArtifacts.coverage.checked,
-        nonNpmDependencyArtifactCount: dependency.cargoArtifactCount,
-        nonNpmDependencyArtifactFiles: cargoArtifacts.coverage.files,
-        nonNpmDependencyArtifactBytes: cargoArtifacts.coverage.bytes,
+        nonNpmDependencyArtifactsChecked:
+          cargoArtifacts.coverage.checked + goArtifacts.coverage.checked,
+        nonNpmDependencyArtifactCount:
+          dependency.cargoArtifactCount + dependency.goArtifactCount,
+        cargoDependencyArtifactCount: dependency.cargoArtifactCount,
+        goDependencyArtifactCount: dependency.goArtifactCount,
+        nonNpmDependencyArtifactFiles:
+          cargoArtifacts.coverage.files + goArtifacts.coverage.files,
+        nonNpmDependencyArtifactBytes:
+          cargoArtifacts.coverage.bytes + goArtifacts.coverage.bytes,
         nonNpmDependencyArtifactNetworkBytes:
-          cargoArtifacts.coverage.networkBytes,
+          cargoArtifacts.coverage.networkBytes +
+          goArtifacts.coverage.networkBytes,
         nonNpmDependencyArtifactBinaryFiles:
-          cargoArtifacts.coverage.binaryFiles,
+          cargoArtifacts.coverage.binaryFiles +
+          goArtifacts.coverage.binaryFiles,
         headCommitSignatureStatus: exactHeadCommitVerification
           ? exactHeadCommitVerification.verified
             ? 'verified'
