@@ -209,6 +209,17 @@ describe('hook installation (issue #41)', () => {
     }
   });
 
+  it('leaves an oversized user hook untouched instead of loading it unbounded', async () => {
+    const root = makeRepo();
+    const hook = path.join(root, '.git', 'hooks', 'pre-commit');
+    mkdirSync(path.dirname(hook), { recursive: true });
+    const existing = Buffer.alloc(1024 * 1024 + 1, 0x61);
+    writeFileSync(hook, existing, { mode: 0o755 });
+
+    await expect(installPreCommitHookDetailed(root)).rejects.toThrow();
+    expect(readFileSync(hook)).toEqual(existing);
+  });
+
   it('warns about other hook managers', async () => {
     const root = makeRepo();
     const hook = path.join(root, '.git', 'hooks', 'pre-commit');

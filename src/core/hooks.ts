@@ -1,18 +1,12 @@
-import {
-  chmod,
-  mkdir,
-  readFile,
-  rename,
-  rm,
-  stat,
-  writeFile
-} from 'node:fs/promises';
+import { chmod, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ToolipError } from '../errors/toolip-error.js';
 import { runGit } from './git/safe-git.js';
+import { readBoundedUtf8File } from './bounded-file.js';
 
 const managedStart = '# >>> toolip managed pre-commit >>>';
 const managedEnd = '# <<< toolip managed pre-commit <<<';
+const maximumHookBytes = 1024 * 1024;
 
 /**
  * The hook never downloads anything: it uses the project-local (lockfile
@@ -81,7 +75,7 @@ export async function installPreCommitHookDetailed(
   let existing = '';
   let mode = 0o755;
   try {
-    existing = await readFile(hookPath, 'utf8');
+    existing = await readBoundedUtf8File(hookPath, maximumHookBytes);
     mode = ((await stat(hookPath)).mode & 0o777) | 0o111;
   } catch (error) {
     if (errorCode(error) !== 'ENOENT') throw error;

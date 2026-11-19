@@ -1,4 +1,4 @@
-import { access, readFile } from 'node:fs/promises';
+import { access } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   Analyzer,
@@ -11,8 +11,13 @@ import {
   isOmittedOnPlatform,
   readNpmDependencyInventory
 } from '../../core/dependencies/inventory.js';
+import { TextFileReader } from '../../core/text-file-reader.js';
 
 const lifecycleNames = ['preinstall', 'install', 'postinstall'] as const;
+const maximumManifestFiles = 20_000;
+const maximumManifestBytes = 1024 * 1024;
+const maximumAggregateManifestBytes = 32 * 1024 * 1024;
+const maximumFindings = 10_000;
 
 type PackageManifest = {
   name?: string;
@@ -106,6 +111,14 @@ export class InstallScriptAnalyzer implements Analyzer {
   async analyze(context: AnalyzerContext): Promise<AnalyzerResult> {
     const startedAt = performance.now();
     const dependencies = await readNpmDependencyInventory(context.root);
+    const manifestReader = new TextFileReader(
+      {
+        maxFiles: maximumManifestFiles,
+        maxFileBytes: maximumManifestBytes,
+        maxTotalBytes: maximumAggregateManifestBytes
+      },
+      { root: context.root, maxConcurrentReads: 1 }
+    );
 
     const findings: Finding[] = [];
     let packagesInspected = 0;
@@ -113,13 +126,27 @@ export class InstallScriptAnalyzer implements Analyzer {
     // Lifecycle scripts can only be inspected for packages present on disk.
     // Anything else is unexamined, not clean.
     const notInspected: string[] = [];
+    let notInspectedCount = 0;
+    let failedCount = 0;
+    let suppressedFindings = 0;
     // Optional packages npm legitimately omits (platform-specific) are out of
     // scope, not skipped: counting them would fail healthy projects.
     let excludedOptional = 0;
 
-    for (const dependency of dependencies) {
+    for (let index = 0; index < dependencies.length; index += 1) {
+      const dependency = dependencies[index];
+      if (!dependency) continue;
       if (context.signal?.aborted) {
         throw new Error('Install-script analysis was cancelled.');
+      }
+
+      if (index >= maximumManifestFiles) {
+        notInspectedCount += 1;
+        if (notInspected.length < 5)
+          notInspected.push(
+            `${dependency.name}@${dependency.version} (manifest file budget reached)`
+          );
+        continue;
       }
 
       const manifestPath = path.join(
@@ -136,20 +163,52 @@ export class InstallScriptAnalyzer implements Analyzer {
           excludedOptional += 1;
           continue;
         }
-        notInspected.push(
-          `${dependency.name}@${dependency.version} (${manifestState === 'missing' ? 'not installed' : 'manifest not accessible'})`
-        );
+        notInspectedCount += 1;
+        if (notInspected.length < 5)
+          notInspected.push(
+            `${dependency.name}@${dependency.version} (${manifestState === 'missing' ? 'not installed' : 'manifest not accessible'})`
+          );
         continue;
       }
 
-      const manifest = JSON.parse(
-        await readFile(manifestPath, 'utf8')
-      ) as PackageManifest;
+      const read = await manifestReader.read(manifestPath, context.signal);
+      if (read.status !== 'ok') {
+        if (read.status === 'cancelled')
+          throw new Error('Install-script analysis was cancelled.');
+        if (read.status === 'failed' || read.status === 'changed')
+          failedCount += 1;
+        else notInspectedCount += 1;
+        if (notInspected.length < 5)
+          notInspected.push(
+            `${dependency.name}@${dependency.version} (manifest ${read.status})`
+          );
+        continue;
+      }
+
+      let manifest: PackageManifest;
+      try {
+        manifest = JSON.parse(read.content) as PackageManifest;
+        if (
+          !manifest ||
+          typeof manifest !== 'object' ||
+          Array.isArray(manifest)
+        )
+          throw new Error('manifest root is not an object');
+      } catch {
+        failedCount += 1;
+        if (notInspected.length < 5)
+          notInspected.push(
+            `${dependency.name}@${dependency.version} (manifest is invalid)`
+          );
+        continue;
+      }
 
       if (manifest.version && manifest.version !== dependency.version) {
-        notInspected.push(
-          `${dependency.name}@${dependency.version} (installed version ${manifest.version} differs)`
-        );
+        notInspectedCount += 1;
+        if (notInspected.length < 5)
+          notInspected.push(
+            `${dependency.name}@${dependency.version} (installed version ${manifest.version} differs)`
+          );
         continue;
       }
 
@@ -168,6 +227,11 @@ export class InstallScriptAnalyzer implements Analyzer {
           signal.regex.lastIndex = 0;
 
           if (!signal.regex.test(command)) {
+            continue;
+          }
+
+          if (findings.length >= maximumFindings) {
+            suppressedFindings += 1;
             continue;
           }
 
@@ -213,23 +277,39 @@ export class InstallScriptAnalyzer implements Analyzer {
       analyzer: this.id,
       durationMs: Math.round(performance.now() - startedAt),
       findings,
-      coverage: coverageOf({
-        eligible: dependencies.length - excludedOptional,
-        scanned: packagesInspected,
-        skipped: notInspected.length,
-        failed: 0,
-        excluded: excludedOptional
-      }),
-      warnings:
-        notInspected.length > 0
+      coverage: (() => {
+        const coverage = coverageOf({
+          eligible: dependencies.length - excludedOptional,
+          scanned: packagesInspected,
+          skipped: notInspectedCount,
+          failed: failedCount,
+          excluded: excludedOptional
+        });
+        return suppressedFindings > 0 && coverage.state === 'complete'
+          ? {
+              ...coverage,
+              state: 'partial' as const,
+              reason: 'lifecycle-script finding output limit was reached'
+            }
+          : coverage;
+      })(),
+      warnings: [
+        ...(notInspectedCount > 0
           ? [
-              `${notInspected.length} dependenc${notInspected.length === 1 ? 'y was' : 'ies were'} not inspected, for example: ${notInspected.slice(0, 5).join(', ')}. Install dependencies without running scripts (npm ci --ignore-scripts) to inspect them.`
+              `${notInspectedCount} dependenc${notInspectedCount === 1 ? 'y was' : 'ies were'} not inspected${notInspected.length > 0 ? `, for example: ${notInspected.join(', ')}` : ''}. Install dependencies without running scripts (npm ci --ignore-scripts) to inspect them.`
             ]
-          : undefined,
+          : []),
+        ...(suppressedFindings > 0
+          ? [
+              `Lifecycle-script finding output limit reached; ${suppressedFindings} additional finding(s) were suppressed.`
+            ]
+          : [])
+      ],
       metadata: {
         packagesInspected,
         lifecycleScripts,
-        findings: findings.length
+        findings: findings.length,
+        suppressedFindings
       }
     };
   }

@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Toolip offline advisory bundle v1",
+  "description": "The structural format for an integrity-checked offline OSV/EPSS/KEV snapshot. Verify the digest, manifest consistency, age, and Ed25519 signature in Toolip; JSON Schema alone does not establish trust.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "generatedAt", "manifest", "records", "sha256"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "version",
+        "generatedAt",
+        "recordCount",
+        "ecosystems",
+        "sources"
+      ],
+      "properties": {
+        "format": { "const": "toolip-advisory-bundle" },
+        "version": { "const": 1 },
+        "generatedAt": { "type": "string", "format": "date-time" },
+        "recordCount": { "type": "integer", "minimum": 0, "maximum": 200000 },
+        "ecosystems": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "version",
+              "recordCount",
+              "capturedAt",
+              "sourceUpdatedAt"
+            ],
+            "properties": {
+              "id": { "enum": ["osv", "epss", "kev", "other"] },
+              "version": { "type": "string", "minLength": 1, "maxLength": 256 },
+              "recordCount": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200000
+              },
+              "capturedAt": { "type": "string", "format": "date-time" },
+              "sourceUpdatedAt": { "type": "string", "format": "date-time" }
+            }
+          }
+        }
+      }
+    },
+    "records": {
+      "type": "object",
+      "maxProperties": 200000,
+      "propertyNames": { "minLength": 1, "maxLength": 2048 },
+      "additionalProperties": {
+        "type": "object",
+        "required": ["storedAt", "value"],
+        "properties": {
+          "storedAt": { "type": "string", "format": "date-time" },
+          "value": {}
+        }
+      }
+    },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "keyId", "value"],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "keyId": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$" },
+        "value": { "type": "string", "contentEncoding": "base64" }
+      }
+    }
+  }
+}

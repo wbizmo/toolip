@@ -1,0 +1,10 @@
+# Trust roots for the pre-execution boundary require owner review.
+/.github/workflows/ @wbizmo
+/scripts/stage-a-gate.mjs @wbizmo
+/scripts/stage-a-yaml-entry.mjs @wbizmo
+/scripts/STAGE-A-YAML-NOTICE.md @wbizmo
+/vendor/stage-a-yaml-parser.mjs @wbizmo
+/scripts/write-stage-a-artifact.mjs @wbizmo
+/scripts/verify-stage-a-artifact.mjs @wbizmo
+/scripts/verify-workflows.mjs @wbizmo
+/scripts/verify-node.mjs @wbizmo
