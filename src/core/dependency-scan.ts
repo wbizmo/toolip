@@ -320,7 +320,7 @@ export async function scanDependencies(
     npmProvenance = await mapConcurrent(
       [...candidates.values()],
       budget?.maxConcurrentRequests ?? options.concurrency ?? 8,
-      async (identity) => {
+      async (identity): Promise<NpmProvenanceVerification> => {
         const verifierOptions: NpmProvenanceOptions = {
           policy: options.npmProvenancePolicy,
           allowPublicScope: options.allowPublicScope,
