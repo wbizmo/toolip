@@ -2086,7 +2086,7 @@ export function inspectGoModuleZip(
     }
   }
   hashEntries.sort((left, right) =>
-    left.name < right.name ? -1 : left.name > right.name ? 1 : 0
+    Buffer.compare(Buffer.from(left.name), Buffer.from(right.name))
   );
   const actualChecksum = createHash('sha256')
     .update(
@@ -3233,7 +3233,7 @@ export function inspectDependencyChanges(repo, baseSha, headSha, mergeSha) {
   });
 }
 
-function workflowRunCommands(source) {
+function workflowRunCommands(source, sourcePath = '') {
   let document;
   let workflow;
   try {
@@ -3351,6 +3351,8 @@ function workflowRunCommands(source) {
           'GitHub Actions environment analysis exceeds its budget'
         );
       const stepEnv = { ...jobEnv, ...stepSpecificEnv };
+      const effectiveWorkingDirectory =
+        stepDefault ?? jobDefault ?? workflowDefault ?? '.';
       const expressionSafety = inspectExpressions(text);
       const hasNpmCommand = npmCommands(text).length > 0;
       const unverifiedNpmEnvironment =
@@ -3366,6 +3368,10 @@ function workflowRunCommands(source) {
       const launchesChildProcess = commandMayLaunchChildProcess(text);
       const workflowExpression = (expression) => `${'$'}{{ ${expression} }}`;
       const protectedScannerBindings =
+        sourcePath === '.github/workflows/stage-a.yml' &&
+        path.posix.normalize(
+          effectiveWorkingDirectory.replaceAll('\\', '/')
+        ) === '.' &&
         text === 'node scripts/stage-a-gate.mjs'
           ? new Map([
               [
@@ -3432,7 +3438,7 @@ function workflowRunCommands(source) {
       }
       commands.push({
         text,
-        cwd: stepDefault ?? jobDefault ?? workflowDefault ?? '.',
+        cwd: effectiveWorkingDirectory,
         jobName,
         unsafeEnvironmentReference,
         untrustedExpression: expressionSafety.untrusted,
@@ -3789,7 +3795,7 @@ function localReferences(source, sourcePath, packagesByName, texts) {
       // scanText reports malformed execution manifests with the exact path.
     }
   } else if (/(?:^|\/)\.github\/workflows\/[^/]+\.ya?ml$/iu.test(sourcePath)) {
-    commands.push(...workflowRunCommands(source));
+    commands.push(...workflowRunCommands(source, sourcePath));
   } else {
     commands.push({ text: source, cwd: '.' });
   }
@@ -4163,7 +4169,7 @@ function scanText(name, text, incompleteReasons = []) {
     }
   }
   if (/(?:^|\/)\.github\/workflows\/[^/]+\.ya?ml$/iu.test(name)) {
-    const commands = workflowRunCommands(text);
+    const commands = workflowRunCommands(text, name);
     if (commands.some((command) => command.untrustedEventExpression))
       findings.push(`${name}#untrusted-event-shell-interpolation`);
     if (

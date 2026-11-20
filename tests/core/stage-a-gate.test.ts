@@ -1876,6 +1876,35 @@ describe('trusted Stage A Git-object scanner', () => {
       status: 'blocked',
       findings: ['.github/workflows/stage-a.yml#untrusted-shell-input']
     });
+
+    for (const [workflowPath, workingDirectory] of [
+      ['.github/workflows/other.yml', undefined],
+      ['.github/workflows/stage-a.yml', 'payload']
+    ] as const) {
+      const misplacedScanner = await repo({
+        [workflowPath]: [
+          'name: scanner',
+          'on: pull_request_target',
+          'jobs:',
+          '  scan:',
+          '    steps:',
+          '      - env:',
+          `          GITHUB_TOKEN: "\${{ github.token }}"`,
+          ...(workingDirectory
+            ? [`        working-directory: ${workingDirectory}`]
+            : []),
+          '        run: node scripts/stage-a-gate.mjs',
+          ''
+        ].join('\n'),
+        'scripts/stage-a-gate.mjs': 'process.stdout.write("safe");\n'
+      });
+      expect(
+        scanGitTree(misplacedScanner.root, misplacedScanner.sha)
+      ).toMatchObject({
+        status: 'blocked',
+        findings: [`${workflowPath}#untrusted-shell-input`]
+      });
+    }
   });
 
   it('blocks event and action-output expressions wrapped in workflow functions', async () => {
@@ -3095,6 +3124,22 @@ describe('trusted Stage A Git-object scanner', () => {
         location: 'go-module/test'
       }).reasons
     ).toContain('go-zip-entry-name-invalid');
+  });
+
+  it('sorts Go checksum filenames by UTF-8 bytes', () => {
+    const root = 'example.test/Upper@v1.2.3/';
+    const archive = storedZip([
+      [`${root}𐐀.go`, 'deseret\n'],
+      [`${root}Ａ.go`, 'fullwidth\n']
+    ]);
+    expect(
+      inspectGoModuleZip(archive, {
+        module: 'example.test/Upper',
+        version: 'v1.2.3',
+        checksum: 'CpeIok+NlDBI6XuuQvUTuGtf90dnSTX2ywL+6PsdXmI=',
+        location: 'go-module/test'
+      }).reasons
+    ).toEqual([]);
   });
 
   it('fetches the exact Go proxy artifact and records complete coverage', async () => {
