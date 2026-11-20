@@ -6,15 +6,7 @@
  */
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import {
-  appendFile,
-  mkdir,
-  mkdtemp,
-  readdir,
-  readFile,
-  rm,
-  writeFile
-} from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +17,7 @@ import {
   parseCargoArtifactPolicy
 } from './stage-a-canonical-json.mjs';
 import { parseDocument } from '../vendor/stage-a-yaml-parser.mjs';
+import { trustedScannerDigest } from './stage-a-scanner-digest.mjs';
 
 const MAX_FILES = 100_000;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -1934,7 +1927,9 @@ export function inspectGoModuleZip(
       reasons: Object.freeze(['go-artifact-size-or-identity-invalid']),
       binaryFiles: 0
     });
-  const expectedRoot = `${escapeGoModuleComponent(artifact.module)}@${escapeGoModuleComponent(artifact.version)}/`;
+  // The proxy URL is escaped, but the module ZIP itself uses the original
+  // module path and version as its root (golang.org/ref/mod#zip-path).
+  const expectedRoot = `${artifact.module}@${artifact.version}/`;
   const minimumEocd = Math.max(0, archive.length - 65_557);
   let eocd = -1;
   for (let offset = archive.length - 22; offset >= minimumEocd; offset--) {
@@ -1943,14 +1938,6 @@ export function inspectGoModuleZip(
       break;
     }
   }
-  if (eocd < 0)
-    return Object.freeze({
-      files: 0,
-      bytes: 0,
-      findings: Object.freeze([]),
-      reasons: Object.freeze(['go-zip-directory-invalid']),
-      binaryFiles: 0
-    });
   if (eocd < 0)
     return Object.freeze({
       files: 0,
@@ -2034,7 +2021,7 @@ export function inspectGoModuleZip(
   if (cursor !== directoryOffset + directoryBytes)
     reasons.push('go-zip-directory-invalid');
 
-  const hashLines = [];
+  const hashEntries = [];
   let bytes = 0;
   let binaryFiles = 0;
   for (const entry of entries) {
@@ -2078,9 +2065,10 @@ export function inspectGoModuleZip(
     }
     bytes += content.length;
     const relativePath = entry.name.slice(expectedRoot.length);
-    hashLines.push(
-      `${createHash('sha256').update(content).digest('hex')}  ${relativePath}\n`
-    );
+    hashEntries.push({
+      name: entry.name,
+      digest: createHash('sha256').update(content).digest('hex')
+    });
     if (content.includes(0)) binaryFiles++;
     else {
       try {
@@ -2097,9 +2085,13 @@ export function inspectGoModuleZip(
       }
     }
   }
-  hashLines.sort();
+  hashEntries.sort((left, right) =>
+    left.name < right.name ? -1 : left.name > right.name ? 1 : 0
+  );
   const actualChecksum = createHash('sha256')
-    .update(hashLines.join(''))
+    .update(
+      hashEntries.map(({ name, digest }) => `${digest}  ${name}\n`).join('')
+    )
     .digest('base64');
   if (actualChecksum !== artifact.checksum)
     reasons.push('go-artifact-integrity-mismatch');
@@ -3121,6 +3113,9 @@ export function inspectDependencyChanges(repo, baseSha, headSha, mergeSha) {
   const headTree = parseTree(
     git(repo, ['ls-tree', '-rz', '--full-tree', headSha])
   );
+  const mergeTree = mergeSha
+    ? parseTree(git(repo, ['ls-tree', '-rz', '--full-tree', mergeSha]))
+    : headTree;
   if (headTree.blobs.some((blob) => /(?:^|\/)\.npmrc$/iu.test(blob.path)))
     reasons.push('unsupported-npm-registry-configuration');
   const unsupportedLockfiles = headTree.blobs
@@ -3148,10 +3143,12 @@ export function inspectDependencyChanges(repo, baseSha, headSha, mergeSha) {
     reasons.push('unsupported-dependency-ecosystem-provenance');
   const cargoHead = inspectCargoLockfiles(repo, headSha, headTree);
   const cargoMerge = mergeSha
-    ? inspectCargoLockfiles(repo, mergeSha)
+    ? inspectCargoLockfiles(repo, mergeSha, mergeTree)
     : cargoHead;
   const goHead = inspectGoModuleFiles(repo, headSha, headTree);
-  const goMerge = mergeSha ? inspectGoModuleFiles(repo, mergeSha) : goHead;
+  const goMerge = mergeSha
+    ? inspectGoModuleFiles(repo, mergeSha, mergeTree)
+    : goHead;
   const cargoArtifactRecordsByLocation = new Map();
   for (const artifact of [
     ...cargoHead.artifactRecords,
@@ -3367,11 +3364,64 @@ function workflowRunCommands(source) {
         )
       );
       const launchesChildProcess = commandMayLaunchChildProcess(text);
+      const workflowExpression = (expression) => `${'$'}{{ ${expression} }}`;
+      const protectedScannerBindings =
+        text === 'node scripts/stage-a-gate.mjs'
+          ? new Map([
+              [
+                'TOOLIP_STAGE_A_CARGO_SHA256_POLICY',
+                workflowExpression('vars.TOOLIP_STAGE_A_CARGO_SHA256_POLICY')
+              ],
+              ['GITHUB_TOKEN', workflowExpression('github.token')],
+              ['STAGE_A_REPOSITORY', workflowExpression('github.repository')],
+              [
+                'STAGE_A_PR_NUMBER',
+                workflowExpression('github.event.pull_request.number')
+              ],
+              [
+                'STAGE_A_PR_AUTHOR',
+                workflowExpression('github.event.pull_request.user.login')
+              ],
+              [
+                'STAGE_A_PR_AUTHOR_ASSOCIATION',
+                workflowExpression(
+                  'github.event.pull_request.author_association'
+                )
+              ],
+              [
+                'STAGE_A_PR_HEAD_REPOSITORY',
+                workflowExpression(
+                  'github.event.pull_request.head.repo.full_name'
+                )
+              ],
+              [
+                'STAGE_A_PR_HEAD_IS_FORK',
+                workflowExpression('github.event.pull_request.head.repo.fork')
+              ],
+              [
+                'STAGE_A_BASE_REPOSITORY',
+                workflowExpression('github.repository')
+              ],
+              [
+                'STAGE_A_BASE_SHA',
+                workflowExpression('github.event.pull_request.base.sha')
+              ],
+              [
+                'STAGE_A_HEAD_SHA',
+                workflowExpression('github.event.pull_request.head.sha')
+              ],
+              [
+                'STAGE_A_MERGE_SHA',
+                workflowExpression('github.event.pull_request.merge_commit_sha')
+              ]
+            ])
+          : undefined;
       let unsafeEnvironmentReference = false;
       let malformedEnvironmentReference = false;
       for (const [name, value] of Object.entries(stepEnv)) {
         const valueSafety = inspectExpressions(value);
         if (!valueSafety.untrusted && !valueSafety.malformed) continue;
+        if (protectedScannerBindings?.get(name) === value) continue;
         if (
           !commandIdentifiers.has(name.toLowerCase()) &&
           !launchesChildProcess
@@ -5636,55 +5686,7 @@ async function main() {
   if (result.status !== 'approved') process.exitCode = 1;
 }
 
-export async function trustedScannerDigest() {
-  const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
-  const repositoryRoot = path.resolve(scriptDirectory, '..');
-  const files = [
-    'scripts/stage-a-gate.mjs',
-    'scripts/stage-a-npm-provenance.mjs',
-    'scripts/stage-a-canonical-json.mjs',
-    'scripts/verify-stage-a-scanner.mjs',
-    'scripts/verify-node.mjs',
-    'scripts/write-stage-a-artifact.mjs',
-    'scripts/verify-stage-a-artifact.mjs',
-    'scripts/verify-workflows.mjs',
-    'vendor/stage-a-yaml-parser.mjs',
-    'package.json',
-    'package-lock.json',
-    'tsconfig.json',
-    'security/runtime-floors.json'
-  ];
-  const visit = async (directory) => {
-    const entries = await readdir(path.join(repositoryRoot, directory), {
-      withFileTypes: true
-    });
-    const found = [];
-    for (const entry of entries.sort((left, right) =>
-      left.name.localeCompare(right.name)
-    )) {
-      const relativePath = path.posix.join(directory, entry.name);
-      if (entry.isSymbolicLink())
-        throw new Error('Trusted Stage A source contains a symlink.');
-      if (entry.isDirectory()) found.push(...(await visit(relativePath)));
-      else if (entry.isFile() && entry.name.endsWith('.ts'))
-        found.push(relativePath);
-    }
-    return found;
-  };
-  files.push(...(await visit('src')));
-  files.sort();
-  const digest = createHash('sha256').update('toolip-stage-a-scanner-v3\0');
-  for (const relativePath of files) {
-    const bytes = await readFile(path.join(repositoryRoot, relativePath));
-    digest
-      .update(relativePath)
-      .update('\0')
-      .update(String(bytes.length))
-      .update('\0')
-      .update(bytes);
-  }
-  return digest.digest('hex');
-}
+export { trustedScannerDigest };
 
 if (
   process.argv[1] &&

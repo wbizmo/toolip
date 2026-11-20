@@ -121,9 +121,11 @@ describe('CycloneDX and OpenVEX integration', () => {
       timestamp: '2026-11-06T12:00:00.000Z'
     });
     const statements = document.statements as Array<Record<string, unknown>>;
-    statements[0]!.status = 'not_affected';
-    statements[0]!.justification = 'vulnerable_code_not_present';
-    statements[0]!.impact_statement = 'Vulnerable code is absent';
+    const statement = statements[0];
+    if (!statement) throw new Error('Expected an OpenVEX statement fixture');
+    statement.status = 'not_affected';
+    statement.justification = 'vulnerable_code_not_present';
+    statement.impact_statement = 'Vulnerable code is absent';
     expect(parseVexDocument(document, 'openvex')[0]).toMatchObject({
       status: 'not_affected',
       justification: 'vulnerable_code_not_present'

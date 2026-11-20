@@ -81,7 +81,6 @@ async function main() {
 
   const graph = await readNpmDependencyGraph(dependencyRoot);
   if (
-    graph.manager !== 'npm' ||
     !graph.complete ||
     graph.warnings.length > 0 ||
     graph.unresolvedDependencies.length > 0 ||

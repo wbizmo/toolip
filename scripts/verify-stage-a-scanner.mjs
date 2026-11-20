@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { trustedScannerDigest } from './stage-a-gate.mjs';
+import { trustedScannerDigest } from './stage-a-scanner-digest.mjs';
 
 const expected = process.env.TOOLIP_STAGE_A_SHA256;
 if (!/^[0-9a-f]{64}$/iu.test(expected ?? ''))

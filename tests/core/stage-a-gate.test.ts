@@ -1837,6 +1837,47 @@ describe('trusted Stage A Git-object scanner', () => {
     ).toBe('approved');
   });
 
+  it('accepts only the exact protected scanner environment contract', async () => {
+    const protectedScanner = await repo({
+      '.github/workflows/stage-a.yml': [
+        'name: scanner',
+        'on: pull_request_target',
+        'jobs:',
+        '  scan:',
+        '    steps:',
+        '      - env:',
+        `          GITHUB_TOKEN: "\${{ github.token }}"`,
+        `          STAGE_A_REPOSITORY: "\${{ github.repository }}"`,
+        `          STAGE_A_PR_NUMBER: "\${{ github.event.pull_request.number }}"`,
+        '        run: node scripts/stage-a-gate.mjs',
+        ''
+      ].join('\n'),
+      'scripts/stage-a-gate.mjs': 'process.stdout.write("safe");\n'
+    });
+    expect(
+      scanGitTree(protectedScanner.root, protectedScanner.sha).status
+    ).toBe('approved');
+
+    const changedBinding = await repo({
+      '.github/workflows/stage-a.yml': [
+        'name: scanner',
+        'on: pull_request_target',
+        'jobs:',
+        '  scan:',
+        '    steps:',
+        '      - env:',
+        `          STAGE_A_REPOSITORY: "\${{ github.event.pull_request.title }}"`,
+        '        run: node scripts/stage-a-gate.mjs',
+        ''
+      ].join('\n'),
+      'scripts/stage-a-gate.mjs': 'process.stdout.write("safe");\n'
+    });
+    expect(scanGitTree(changedBinding.root, changedBinding.sha)).toMatchObject({
+      status: 'blocked',
+      findings: ['.github/workflows/stage-a.yml#untrusted-shell-input']
+    });
+  });
+
   it('blocks event and action-output expressions wrapped in workflow functions', async () => {
     const wrappedEvent = await repo({
       '.github/workflows/event.yml': [
@@ -3017,22 +3058,20 @@ describe('trusted Stage A Git-object scanner', () => {
       ['go.mod', `module ${module}\n`],
       ['install.go', 'package upper\n// harmless source\n']
     ];
+    const root = `${module}@${version}/`;
     const checksum = createHash('sha256')
       .update(
         files
           .map(
             ([name, content]) =>
-              `${createHash('sha256').update(content).digest('hex')}  ${name}\n`
+              `${createHash('sha256').update(content).digest('hex')}  ${root}${name}\n`
           )
-          .sort()
+          .sort((left, right) => left.slice(66).localeCompare(right.slice(66)))
           .join('')
       )
       .digest('base64');
     const archive = storedZip(
-      files.map(([name, content]) => [
-        `example.test/!upper@v1.2.3/${name}`,
-        content
-      ])
+      files.map(([name, content]) => [`${root}${name}`, content])
     );
     expect(
       inspectGoModuleZip(archive, {
@@ -3047,9 +3086,7 @@ describe('trusted Stage A Git-object scanner', () => {
       binaryFiles: 0
     });
 
-    const traversal = storedZip([
-      ['example.test/!upper@v1.2.3/../escape', 'payload']
-    ]);
+    const traversal = storedZip([[`${root}../escape`, 'payload']]);
     expect(
       inspectGoModuleZip(traversal, {
         module,
@@ -3065,7 +3102,9 @@ describe('trusted Stage A Git-object scanner', () => {
     const version = 'v1.0.0';
     const content = `module ${module}\n`;
     const checksum = createHash('sha256')
-      .update(`${createHash('sha256').update(content).digest('hex')}  go.mod\n`)
+      .update(
+        `${createHash('sha256').update(content).digest('hex')}  ${module}@${version}/go.mod\n`
+      )
       .digest('base64');
     const archive = storedZip([[`${module}@${version}/go.mod`, content]]);
     const digest = Buffer.from(checksum, 'base64').toString('hex');

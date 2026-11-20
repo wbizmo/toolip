@@ -29,7 +29,7 @@ jobs:
         run: node scripts/verify-node.mjs
       - name: Verify protected scanner source digest before dependency setup
         env:
-          TOOLIP_STAGE_A_SHA256: c801f3a4bc5042805ac475c5a39af197adb178e0dcfc335e5259ed21e676293b
+          TOOLIP_STAGE_A_SHA256: e2263b5f91d865a4c71b153dd019f9d2ca1eff3960596bbe0f148b94cca336b8
         run: node scripts/verify-stage-a-scanner.mjs
       - name: Install protected scanner dependencies without scripts
         env:
@@ -49,7 +49,7 @@ jobs:
       - name: Verify trusted scanner digest and fetch/scan exact PR Git objects
         id: gate
         env:
-          TOOLIP_STAGE_A_SHA256: c801f3a4bc5042805ac475c5a39af197adb178e0dcfc335e5259ed21e676293b
+          TOOLIP_STAGE_A_SHA256: e2263b5f91d865a4c71b153dd019f9d2ca1eff3960596bbe0f148b94cca336b8
           TOOLIP_STAGE_A_PUBLIC_SCOPES: '@babel,@bcoe,@biomejs,@esbuild,@gar,@hono,@isaacs,@jridgewell,@modelcontextprotocol,@nodelib,@npmcli,@oxc-project,@rolldown,@sigstore,@tufjs,@types,@vitest'
           TOOLIP_STAGE_A_CARGO_SHA256_POLICY: ${{ vars.TOOLIP_STAGE_A_CARGO_SHA256_POLICY }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -107,7 +107,7 @@ jobs:
         run: echo 'TOOLIP_STAGE_A_SIGNATURE_AUDIT=not-applicable' >> "$GITHUB_ENV"
       - name: Write immutable Stage A run metadata
         env:
-          TOOLIP_STAGE_A_SHA256: c801f3a4bc5042805ac475c5a39af197adb178e0dcfc335e5259ed21e676293b
+          TOOLIP_STAGE_A_SHA256: e2263b5f91d865a4c71b153dd019f9d2ca1eff3960596bbe0f148b94cca336b8
         run: node scripts/write-stage-a-artifact.mjs
       - name: Publish Stage A approval metadata for gated CI
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

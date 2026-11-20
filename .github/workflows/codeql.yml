@@ -16,6 +16,7 @@ on:
     - cron: '17 4 * * 1'
 
 permissions:
+  actions: read
   contents: read
   pull-requests: read
 
@@ -26,6 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      pull_request: ${{ steps.verify.outputs.pull_request }}
       merge_sha: ${{ steps.verify.outputs.merge_sha }}
     steps:
       - name: Fail closed when Stage A did not succeed
@@ -77,3 +79,6 @@ jobs:
           queries: security-extended
       - name: Analyze
         uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && format('refs/pull/{0}/merge', needs.stage-a-result.outputs.pull_request) || github.ref }}
+          sha: ${{ github.event_name == 'workflow_run' && needs.stage-a-result.outputs.merge_sha || github.sha }}

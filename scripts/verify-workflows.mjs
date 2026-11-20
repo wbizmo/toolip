@@ -19,7 +19,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import semver from 'semver';
 import { parse } from 'yaml';
-import { trustedScannerDigest } from './stage-a-gate.mjs';
+import { trustedScannerDigest } from './stage-a-scanner-digest.mjs';
 
 const DIR = process.env.WORKFLOWS_DIR ?? '.github/workflows';
 const RELEASE = new Set(['publish.yml', 'github-release.yml']);
