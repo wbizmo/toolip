@@ -48,6 +48,15 @@ function pythonTarget(
 }
 
 describe('non-npm lockfile inventory', () => {
+  it('reports an unavailable project root instead of treating it as empty', async () => {
+    const root = await fixture();
+    await rm(root, { recursive: true });
+
+    const graph = await readOtherEcosystemInventoryDetailed(root);
+
+    expect(graph.warnings).toContain('project-root-directory-unavailable');
+  });
+
   it('resolves Pipenv direct requirements only from public exact lock entries', async () => {
     const root = await fixture();
     await writeFile(

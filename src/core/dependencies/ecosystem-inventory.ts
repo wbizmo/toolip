@@ -4828,6 +4828,14 @@ export async function readOtherEcosystemInventoryDetailed(
   throwIfAborted(options.signal);
   let output: LockedPackage[] = [];
   const warnings: string[] = [];
+  let rootDirectoryFiles: string[] = [];
+  if (!fileSource) {
+    try {
+      rootDirectoryFiles = await readdir(root);
+    } catch {
+      warnings.push('project-root-directory-unavailable');
+    }
+  }
   let pythonTarget: PythonTargetProfile | undefined;
   let goTarget: GoTargetProfile | undefined;
   const cargoTarget = options.cargoTarget
@@ -5442,7 +5450,7 @@ export async function readOtherEcosystemInventoryDetailed(
       ? fileSource.files.filter((file) =>
           requirementPattern.test(path.posix.basename(file))
         )
-      : (await readdir(root).catch(() => [])).filter((file) =>
+      : rootDirectoryFiles.filter((file) =>
           requirementPattern.test(path.posix.basename(file))
         )
   ).sort();
@@ -5907,7 +5915,7 @@ export async function readOtherEcosystemInventoryDetailed(
     warnings.push('gradle-resolved-graph-unavailable');
   const projectFiles = fileSource
     ? [...fileSource.files]
-    : [...(await readdir(root).catch(() => [])), ...gradleWorkspace.manifests];
+    : [...rootDirectoryFiles, ...gradleWorkspace.manifests];
   const projectFileSet = new Set(projectFiles);
   const hasRoot = (name: string): boolean => projectFileSet.has(name);
   const hasPythonManifest =

@@ -64,7 +64,9 @@ describe('NpmPackageHealthClient', () => {
     expect(result.status).toBe('available');
     expect(fetchImplementation).toHaveBeenCalledOnce();
     const request = fetchImplementation.mock.calls[0]?.[1];
-    expect(new Headers(request?.headers).get('accept')).toBe('application/json');
+    expect(new Headers(request?.headers).get('accept')).toBe(
+      'application/json'
+    );
   });
 
   it('does not query scoped packages unless public disclosure is opted in', async () => {
