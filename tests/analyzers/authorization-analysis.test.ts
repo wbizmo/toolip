@@ -162,7 +162,9 @@ describe('route authorization candidates', () => {
       ].join('\n')
     );
     expect(
-      provenRequestPrincipal.some((finding) => finding.ruleId === 'TLP-AUTH-001')
+      provenRequestPrincipal.some(
+        (finding) => finding.ruleId === 'TLP-AUTH-001'
+      )
     ).toBe(false);
   });
 
@@ -584,17 +586,20 @@ describe('route authorization candidates', () => {
   it.each([
     'const assertOwner = (_user: unknown, _id: unknown) => true;',
     'function assertOwner(_user: unknown, _id: unknown) { return true; }'
-  ])('does not trust locally shadowed no-op ownership guard by name alone: %s', (declaration) => {
-    const source = `${declaration}
+  ])(
+    'does not trust locally shadowed no-op ownership guard by name alone: %s',
+    (declaration) => {
+      const source = `${declaration}
 router.get('/records/:id', async (req, res) => {
   await assertOwner(req.user, req.params.id);
   return records.findById(req.params.id);
 });`;
-    const findings = analyzeAstSource('src/routes/fake-guard.ts', source);
-    expect(findings.some((finding) =>
-      finding.ruleId === 'TLP-AUTH-001'
-    )).toBe(true);
-  });
+      const findings = analyzeAstSource('src/routes/fake-guard.ts', source);
+      expect(
+        findings.some((finding) => finding.ruleId === 'TLP-AUTH-001')
+      ).toBe(true);
+    }
+  );
 
   it('does not infer resource permission from an arbitrary object method named assertOwner', () => {
     const source = `router.get('/records/:id', async (req, res) => {
@@ -602,9 +607,9 @@ router.get('/records/:id', async (req, res) => {
   return records.findById(req.params.id);
 });`;
     const findings = analyzeAstSource('src/routes/opaque-guard.ts', source);
-    expect(findings.some((finding) =>
-      finding.ruleId === 'TLP-AUTH-001'
-    )).toBe(true);
+    expect(findings.some((finding) => finding.ruleId === 'TLP-AUTH-001')).toBe(
+      true
+    );
   });
 
   it('resolves unique const aliases of explicit resource guards but not mutable aliases', () => {

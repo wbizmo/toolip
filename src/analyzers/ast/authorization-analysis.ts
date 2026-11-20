@@ -68,7 +68,10 @@ const explicitGuardAliasIndex = new WeakMap<
   ReadonlyMap<string, readonly ts.VariableDeclaration[]>
 >();
 const maxExplicitGuardAliasDepth = 16;
-const localGuardDeclarations = new WeakMap<ts.SourceFile, ReadonlySet<string>>();
+const localGuardDeclarations = new WeakMap<
+  ts.SourceFile,
+  ReadonlySet<string>
+>();
 
 /**
  * A project-owned function named assertOwner can be a no-op. An opaque local
@@ -91,14 +94,14 @@ function locallyDeclaredGuards(source: ts.SourceFile): ReadonlySet<string> {
       node.name &&
       ts.isIdentifier(node.name) &&
       explicitGuards.has(node.name.text)
-    ) declarations.add(node.name.text);
+    )
+      declarations.add(node.name.text);
     ts.forEachChild(node, visit);
   };
   visit(source);
   localGuardDeclarations.set(source, declarations);
   return declarations;
 }
-
 
 function callName(call: ts.CallExpression): string | undefined {
   const target = call.expression;
