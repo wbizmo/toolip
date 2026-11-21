@@ -40,6 +40,20 @@ The scale harness exposes bounded independent fixture controls:
 - `TOOLIP_BENCHMARK_GRAPH_FANOUT` varies converging lockfile graph density
   (1–8 outgoing edges per package).
 
+After the combined Batches 07–16 merge, the same isolated-worker harness also
+accepts the post-merge qualification sizes through 250,000:
+
+```sh
+GIT_COMMIT=$(git rev-parse HEAD) TOOLIP_BENCHMARK_ISOLATED=true \
+  TOOLIP_BENCHMARK_OUTPUT=docs/benchmarks/post-merge-100k-250k.jsonl \
+  npm run benchmark:scale -- 100000 250000
+```
+
+The 250,000 limit is enforced before fixture allocation and in every worker.
+These larger sizes are not part of the default 1k/10k/50k developer command;
+they are an explicit qualification campaign and retain the same truthful
+complete/partial result fields as the smaller fixtures.
+
 The scorecard API returns findings only after analysis completes, so the
 harness emits `timeToFirstFindingMs: null` with the reason. Do not infer a
 first-finding latency from total scan time. The current scorecard fixture also

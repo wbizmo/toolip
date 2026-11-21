@@ -116,6 +116,8 @@ export type SecurityDoctorOptions = {
   snapshot?: ProjectSnapshot;
   /** Caller-owned cache; unchanged path/content/rule inputs reuse file findings. */
   analysisCache?: AnalysisResultCache;
+  /** Bounded whole-project AST worker deadline; large explicit scans may raise it. */
+  astProjectTimeoutMs?: number;
   /**
    * Supplies file content instead of reading the worktree. Pre-commit uses this
    * to scan the exact staged blobs, never the (possibly different) working copy.
@@ -477,7 +479,10 @@ export async function runSecurityDoctor(
             astInputs.length / astProjectCacheChunkSize
           );
           const analyzed = await analyzeAstProjectInWorker(astInputs, {
-            signal: options.signal
+            signal: options.signal,
+            ...(options.astProjectTimeoutMs === undefined
+              ? {}
+              : { timeoutMs: options.astProjectTimeoutMs })
           });
           astFindingsByPath = analyzed.findingsByPath;
           astDependencyDigests = analyzed.dependencyDigests;
@@ -500,7 +505,10 @@ export async function runSecurityDoctor(
             // instead of cloning the full source tree into a plan worker and
             // then transferring it again for analysis.
             const analyzed = await analyzeAstProjectInWorker(astInputs, {
-              signal: options.signal
+              signal: options.signal,
+              ...(options.astProjectTimeoutMs === undefined
+                ? {}
+                : { timeoutMs: options.astProjectTimeoutMs })
             });
             const fingerprints = createAstProjectFingerprints(
               astInputs,
@@ -519,7 +527,10 @@ export async function runSecurityDoctor(
             };
           } else {
             const plan = await planAstProjectInWorker(astInputs, {
-              signal: options.signal
+              signal: options.signal,
+              ...(options.astProjectTimeoutMs === undefined
+                ? {}
+                : { timeoutMs: options.astProjectTimeoutMs })
             });
             const fingerprints = createAstProjectFingerprints(
               astInputs,
@@ -560,7 +571,10 @@ export async function runSecurityDoctor(
                 pathsToAnalyze.has(input.filePath)
               );
               const analyzed = await analyzeAstProjectInWorker(analysisInputs, {
-                signal: options.signal
+                signal: options.signal,
+                ...(options.astProjectTimeoutMs === undefined
+                  ? {}
+                  : { timeoutMs: options.astProjectTimeoutMs })
               });
               for (const input of analysisInputs) {
                 if (

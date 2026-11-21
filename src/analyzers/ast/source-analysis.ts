@@ -2686,10 +2686,10 @@ export type AstProjectAnalysis = {
   dependencyDigests: Map<string, string>;
 };
 
-// Match repository discovery's default file ceiling so a supported large
-// snapshot is not marked partial solely because its source files are numerous.
-// The byte and work budgets remain independent guards against dense inputs.
-const MAX_INTERPROCEDURAL_FILES = 50_000;
+// Permit the explicit post-merge qualification ceiling while retaining the
+// independent byte and work guards against dense inputs. Normal discovery
+// keeps its lower default; callers must deliberately raise their scan budget.
+const MAX_INTERPROCEDURAL_FILES = 250_000;
 const MAX_INTERPROCEDURAL_BYTES = 64 * 1024 * 1024;
 const MAX_INTERPROCEDURAL_WORK = 8_000_000;
 

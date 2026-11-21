@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { appendFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { PerformanceObserver } from 'node:perf_hooks';
 import { spawnSync } from 'node:child_process';
@@ -15,7 +16,10 @@ import {
   createProjectSnapshot,
   type ProjectSnapshot
 } from '../src/application/project-snapshot.js';
-import { AnalysisResultCache } from '../src/application/task-scheduler.js';
+import {
+  AnalysisResultCache,
+  MAX_ANALYSIS_CACHE_ENTRIES
+} from '../src/application/task-scheduler.js';
 import { createScannerContext } from '../src/core/scanner-context.js';
 import { buildSecurityScorecard } from '../src/application/security-scorecard.js';
 import { runGitChecked } from '../src/core/git/safe-git.js';
@@ -26,6 +30,7 @@ import {
 import { analyzeMaliciousContent } from '../src/analyzers/malicious-content/analyzer.js';
 
 const defaultSizes = [1_000, 10_000, 50_000];
+const maximumQualificationSize = 250_000;
 const defaultSourceBody =
   'export const fixtureValue = "bounded-source-fixture";\n';
 function boundedEnvironmentInteger(
@@ -85,13 +90,21 @@ const workerFixture =
   workerIndex >= 0 ? process.argv[workerIndex + 1] : undefined;
 const workerSize =
   workerIndex >= 0 ? Number(process.argv[workerIndex + 2]) : undefined;
+const benchmarkOutputPath = process.env.TOOLIP_BENCHMARK_OUTPUT
+  ? path.resolve(process.env.TOOLIP_BENCHMARK_OUTPUT)
+  : undefined;
 const requestedSizes =
   workerIndex >= 0 ? [] : process.argv.slice(2).map(Number);
 const sizes = requestedSizes.length > 0 ? requestedSizes : defaultSizes;
 if (
-  sizes.some((size) => !Number.isSafeInteger(size) || size < 1 || size > 50_000)
+  sizes.some(
+    (size) =>
+      !Number.isSafeInteger(size) || size < 1 || size > maximumQualificationSize
+  )
 ) {
-  throw new Error('benchmark sizes must be safe integers between 1 and 50,000');
+  throw new Error(
+    `benchmark sizes must be safe integers between 1 and ${maximumQualificationSize.toLocaleString('en-US')}`
+  );
 }
 
 type Measurement<T> = {
@@ -160,28 +173,28 @@ function emit(
   pass: string,
   data: unknown
 ): void {
-  process.stdout.write(
-    `${JSON.stringify({
-      schemaVersion: 1,
-      fixture,
-      size,
-      pass,
-      platform: process.platform,
-      architecture: process.arch,
-      osRelease: os.release(),
-      cpuModel: os.cpus()[0]?.model ?? 'unknown',
-      logicalCpuCount: os.availableParallelism(),
-      hostMemoryBytes: os.totalmem(),
-      node: process.version,
-      gitSha: process.env.GIT_COMMIT ?? 'working-tree',
-      measurementScope:
-        process.env.TOOLIP_BENCHMARK_ISOLATED === 'true'
-          ? 'isolated-fixture-process'
-          : 'process',
-      providerRequests: 0,
-      ...data
-    })}\n`
-  );
+  const row = `${JSON.stringify({
+    schemaVersion: 1,
+    fixture,
+    size,
+    pass,
+    platform: process.platform,
+    architecture: process.arch,
+    osRelease: os.release(),
+    cpuModel: os.cpus()[0]?.model ?? 'unknown',
+    logicalCpuCount: os.availableParallelism(),
+    hostMemoryBytes: os.totalmem(),
+    node: process.version,
+    gitSha: process.env.GIT_COMMIT ?? 'working-tree',
+    measurementScope:
+      process.env.TOOLIP_BENCHMARK_ISOLATED === 'true'
+        ? 'isolated-fixture-process'
+        : 'process',
+    providerRequests: 0,
+    ...data
+  })}\n`;
+  process.stdout.write(row);
+  if (benchmarkOutputPath) appendFileSync(benchmarkOutputPath, row, 'utf8');
 }
 
 const seededRuleIds = [
@@ -834,7 +847,9 @@ async function benchmarkRepositoryScan(
   const expectedFiles = size + 3;
   const maximumTotalBytes = Math.max(1, expectedFiles * 4_096);
   const analysisCache = useAnalysisCache
-    ? new AnalysisResultCache(Math.max(1, size * 2))
+    ? new AnalysisResultCache(
+        Math.min(MAX_ANALYSIS_CACHE_ENTRIES, Math.max(1, size * 2))
+      )
     : undefined;
   const fixtureName = useAnalysisCache
     ? 'repository-security-scorecard-full-pass'
@@ -889,6 +904,7 @@ async function benchmarkRepositoryScan(
             snapshot,
             projectSnapshot: snapshot,
             analysisCache,
+            analysisTimeoutMs: 600_000,
             offline: true,
             budget: {
               maxFiles: expectedFiles,
@@ -903,7 +919,7 @@ async function benchmarkRepositoryScan(
           context.summary.totalFiles !== expectedFiles
         ) {
           throw new Error(
-            `full repository scan was incomplete at ${size} source files: ${JSON.stringify({ analysis: scorecard.analysis, warnings: scorecard.warnings, cache: analysisCache ? { entries: analysisCache.size, bytes: analysisCache.byteSize } : undefined })}`
+            `full repository scan was incomplete at ${size} source files: ${JSON.stringify({ analysis: scorecard.analysis, coverage: scorecard.coverage, warnings: scorecard.warnings, cache: analysisCache ? { entries: analysisCache.size, bytes: analysisCache.byteSize } : undefined })}`
           );
         }
         const expectedSeeded = Math.min(seededFindingCount, size);
@@ -1037,7 +1053,10 @@ async function benchmarkConcurrentRepositoryScans(size: number): Promise<void> {
               scannerContext: context,
               snapshot,
               projectSnapshot: snapshot,
-              analysisCache: new AnalysisResultCache(Math.max(1, size * 2)),
+              analysisCache: new AnalysisResultCache(
+                Math.min(MAX_ANALYSIS_CACHE_ENTRIES, Math.max(1, size * 2))
+              ),
+              analysisTimeoutMs: 600_000,
               offline: true,
               budget: {
                 maxFiles: expectedFiles,
@@ -1272,11 +1291,12 @@ if (workerIndex >= 0) {
     !workerFixture ||
     !Number.isSafeInteger(workerSize) ||
     (workerSize ?? 0) < 1 ||
-    (workerSize ?? 0) > 50_000
+    (workerSize ?? 0) > maximumQualificationSize
   )
     throw new Error('benchmark worker requires a fixture name and size');
   await runWorker(workerFixture, workerSize);
 } else {
+  if (benchmarkOutputPath) writeFileSync(benchmarkOutputPath, '', 'utf8');
   const scriptPath = path.resolve(
     process.argv[1] ?? 'scripts/benchmark-dependency-graph.ts'
   );

@@ -1081,21 +1081,21 @@ async function updateLockfile(
   const major = semver.major(version);
 
   if (Number.isInteger(major) && major >= 2) {
-    await runtime.exec(
+    await execPackageManager(
       'yarn',
       ['install', '--mode=update-lockfile'],
       cwd,
-      undefined,
+      runtime,
       env
     );
     return;
   }
 
-  await runtime.exec(
+  await execPackageManager(
     'yarn',
     ['install', '--ignore-scripts', '--non-interactive'],
     cwd,
-    undefined,
+    runtime,
     env
   );
 }
@@ -1106,7 +1106,7 @@ async function runTests(
   runtime: UpgradePrRuntime,
   env: NodeJS.ProcessEnv
 ): Promise<void> {
-  await runtime.exec(manager, ['test'], cwd, undefined, env);
+  await execPackageManager(manager, ['test'], cwd, runtime, env);
 }
 
 /** Install exactly the just-written lock graph without invoking dependency hooks. */
@@ -1136,23 +1136,35 @@ export async function installFrozenDependencies(
 
   const major = semver.major(version);
   if (Number.isInteger(major) && major >= 2) {
-    await runtime.exec(
+    await execPackageManager(
       'yarn',
       ['install', '--immutable', '--mode=skip-build'],
       cwd,
-      undefined,
+      runtime,
       env
     );
     return;
   }
 
-  await runtime.exec(
+  await execPackageManager(
     'yarn',
     ['install', '--frozen-lockfile', '--ignore-scripts', '--non-interactive'],
     cwd,
-    undefined,
+    runtime,
     env
   );
+}
+
+async function execPackageManager(
+  manager: Exclude<PackageManager, 'unknown'>,
+  args: string[],
+  cwd: string,
+  runtime: UpgradePrRuntime,
+  env?: NodeJS.ProcessEnv
+): Promise<{ stdout: string; stderr: string }> {
+  return manager === 'yarn'
+    ? runtime.exec('corepack', ['yarn', ...args], cwd, undefined, env)
+    : runtime.exec(manager, args, cwd, undefined, env);
 }
 
 function assertPackageManagerDeclaration(
@@ -1195,11 +1207,11 @@ async function supportedManagerVersion(
   runtime: UpgradePrRuntime,
   env?: NodeJS.ProcessEnv
 ): Promise<string> {
-  const result = await runtime.exec(
+  const result = await execPackageManager(
     manager,
     ['--version'],
     cwd,
-    undefined,
+    runtime,
     env
   );
   const version = result.stdout.trim().split(/\s+/u, 1)[0] ?? '';

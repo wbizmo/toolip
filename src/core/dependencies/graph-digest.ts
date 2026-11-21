@@ -6,7 +6,10 @@ import type {
   UnresolvedDependencyEdge
 } from './inventory.js';
 
-const maximumGraphDigestBytes = 64 * 1024 * 1024;
+// The post-merge qualification ceiling contains up to 250k exact package
+// instances and a bounded fan-out graph. Canonical strings are still capped
+// independently from the two-million-item limit before hashing.
+const maximumGraphDigestBytes = 256 * 1024 * 1024;
 const maximumGraphDigestItems = 2_000_000;
 type DigestBudget = { bytes: number; items: number };
 
