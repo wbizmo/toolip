@@ -727,3 +727,33 @@ After adding npm `--prefix` and equals-form selectors, the bounded scale fixture
 |       1,000 |       32,002 |  22.86 ms |  66.0 MiB | 205.4 MiB | 3 files / complete |
 |      10,000 |      320,002 |  90.88 ms |  73.9 MiB | 213.6 MiB | 3 files / complete |
 |      50,000 |    1,600,002 | 358.54 ms | 135.3 MiB | 292.7 MiB | 3 files / complete |
+
+## Post-merge 100k/250k qualification — 2026-11-21
+
+The explicit post-merge campaign ran from clean implementation commit
+`413c19fc187346d16590df069fb99d8e6eb07850` on Linux x64, Node 24.22.1,
+kernel 6.18.57 and an AMD EPYC 9V74 host. The 44 raw JSONL rows are preserved
+in [`post-merge-100k-250k-2026-11-21-linux-node24.jsonl`](benchmarks/post-merge-100k-250k-2026-11-21-linux-node24.jsonl),
+SHA-256 `d275f3f4899b999e30b58f641e92ef78d05ad64e8345ff3b55c31f210d69fb14`.
+Providers were disabled and every fixture ran in an isolated process.
+
+| Source files | Scorecard cold / warm / one-file incremental | Peak RSS, cold / warm / incremental | Concurrent cold pair |
+| -----------: | -------------------------------------------: | ----------------------------------: | -------------------: |
+|      100,000 |                  38.74 s / 12.02 s / 20.89 s |              1.05 / 1.59 / 1.58 GiB |   19.78 s / 1.44 GiB |
+|      250,000 |                 113.92 s / 36.59 s / 51.75 s |              1.57 / 2.64 / 2.94 GiB |   61.87 s / 2.15 GiB |
+
+All six scorecard passes and both concurrent pairs reported complete coverage
+of exactly 100,003 or 250,003 files. The malicious execution-chain fixtures
+also remained complete. Wide and converging npm graphs were complete; the
+250k converging fixture contained 250,000 packages and 499,999 edges. Cargo
+optional-feature fixtures were complete. Cargo registry chain and wide-root
+fixtures deliberately remained incomplete with explicit
+`cargo-registry-feature-resolution-unverified` warnings because inert
+Cargo.lock/manifest inputs cannot prove registry feature activation; the
+runner did not fetch crates or invoke Cargo.
+
+This is one exact-commit observation per pass, not five repetitions or a
+p50/p95 claim. It qualifies the harness and these bounded 100k/250k fixtures,
+but does not satisfy the later 500k/1M/2M and 10M campaign in #86, establish a
+cross-platform performance ceiling, or turn explicit Cargo unknowns into clean
+results.
