@@ -1,6 +1,15 @@
 import type { Finding } from '../contracts/finding.js';
-import { DepsDevClient } from '../providers/depsdev/client.js';
-import { readNpmDependencyInventory } from './dependencies/inventory.js';
+import { coverageOf, type AnalysisCoverage } from '../contracts/analysis.js';
+import { mapConcurrent } from '../application/concurrency.js';
+import {
+  sharedDepsDevClient,
+  type DepsDevClient
+} from '../providers/depsdev/client.js';
+import {
+  readNpmDependencyGraph,
+  type DependencyFileSource,
+  type DependencyIdentity
+} from './dependencies/inventory.js';
 
 export type LicenseEntry = {
   name: string;
@@ -15,27 +24,114 @@ export type LicenseAnalysisResult = {
   licenses: LicenseEntry[];
   findings: Finding[];
   warnings: string[];
+  coverage: AnalysisCoverage;
   summary: {
     total: number;
     unknown: number;
     restrictive: number;
     distribution: Record<string, number>;
   };
+  providerMetrics: {
+    requests: number;
+    maxConcurrency: number;
+    httpRequests?: number;
+    throttledResponses?: number;
+    retries?: number;
+    cacheHits?: number;
+    peakConcurrency?: number;
+  };
+};
+
+export type LicenseAnalysisOptions = {
+  concurrency?: number;
+  offline?: boolean;
+  allowPublicScope?: boolean;
+  fileSource?: DependencyFileSource;
+  /** Reuse the canonical graph already parsed by the enclosing scorecard. */
+  inventory?: readonly DependencyIdentity[];
+  inventoryComplete?: boolean;
+  inventoryWarnings?: readonly string[];
 };
 
 export type LicenseMetadataProvider = Pick<DepsDevClient, 'getVersion'>;
 
 export async function analyzeLicenses(
   root: string,
-  provider: LicenseMetadataProvider = new DepsDevClient(),
-  signal?: AbortSignal
+  provider: LicenseMetadataProvider = sharedDepsDevClient,
+  signal?: AbortSignal,
+  options: LicenseAnalysisOptions = {}
 ): Promise<LicenseAnalysisResult> {
-  const inventory = await readNpmDependencyInventory(root);
-  const directDependencies = inventory.filter((dependency) => dependency.direct);
+  const graph = options.inventory
+    ? undefined
+    : await readNpmDependencyGraph(root, options.fileSource);
+  const inventory = options.inventory ?? graph?.packages ?? [];
+  const graphComplete = options.inventory
+    ? (options.inventoryComplete ?? true)
+    : (graph?.complete ?? false);
+  const graphWarnings = [
+    ...(options.inventoryWarnings ?? []),
+    ...(graph?.warnings ?? [])
+  ];
+  const directGroups = new Map<string, DependencyIdentity[]>();
+  for (const dependency of inventory) {
+    if (!dependency.direct) continue;
+    const key = `${dependency.name}\0${dependency.version}`;
+    const group = directGroups.get(key) ?? [];
+    group.push(dependency);
+    directGroups.set(key, group);
+  }
+  const directDependencies = [...directGroups.values()].flatMap((group) => {
+    const representative = group[0];
+    if (!representative) return [];
+    return [
+      {
+        ...representative,
+        // A production instance takes precedence when the same exact package
+        // version is also present as a development dependency. Public metadata
+        // is withheld if any matching instance comes from an unverified origin.
+        development: group.every((dependency) => dependency.development),
+        registry: group.every((dependency) =>
+          isPublicNpmRegistry(dependency.registry)
+        )
+          ? 'https://registry.npmjs.org'
+          : undefined
+      }
+    ];
+  });
 
-  const entries = await Promise.all(
-    directDependencies.map(async (dependency): Promise<LicenseEntry> => {
+  let active = 0;
+  let maxConcurrency = 0;
+  let requests = 0;
+  const entries = await mapConcurrent(
+    directDependencies,
+    Math.max(1, Math.min(32, Math.floor(options.concurrency ?? 8))),
+    async (dependency): Promise<LicenseEntry> => {
+      if (signal?.aborted) {
+        return {
+          name: dependency.name,
+          version: dependency.version,
+          license: 'UNKNOWN',
+          type: dependency.development ? 'devDependency' : 'dependency',
+          metadataSource: 'unavailable',
+          metadataError: 'cancelled'
+        };
+      }
+      if (options.offline) {
+        return unavailableLicense(dependency, 'offline');
+      }
+      if (!isPublicNpmRegistry(dependency.registry)) {
+        return unavailableLicense(dependency, 'registry-origin-unverified');
+      }
+      if (
+        dependency.name.startsWith('@') &&
+        options.allowPublicScope !== true
+      ) {
+        return unavailableLicense(dependency, 'scoped-name-not-queried');
+      }
+      active++;
+      maxConcurrency = Math.max(maxConcurrency, active);
       try {
+        requests++;
         const metadata = await provider.getVersion(
           dependency.name,
           dependency.version,
@@ -61,35 +157,131 @@ export async function analyzeLicenses(
           metadataSource: 'unavailable',
           metadataError: errorMessage(error)
         };
+      } finally {
+        active--;
       }
-    })
+    }
   );
 
-  entries.sort((a, b) => a.name.localeCompare(b.name));
+  entries.sort(
+    (a, b) =>
+      a.name.localeCompare(b.name) ||
+      a.version.localeCompare(b.version) ||
+      a.type.localeCompare(b.type)
+  );
 
   const findings = entries.flatMap(licenseToFindings);
-  const warnings = entries
-    .filter((entry) => entry.metadataSource === 'unavailable')
-    .map(
-      (entry) =>
-        `License metadata unavailable for ${entry.name}@${entry.version}: ${entry.metadataError ?? 'provider error'}`
-    );
-  const distribution = entries.reduce<Record<string, number>>((summary, entry) => {
-    summary[entry.license] = (summary[entry.license] ?? 0) + 1;
-    return summary;
-  }, {});
+  const warnings = [
+    ...graphWarnings,
+    ...entries
+      .filter((entry) => entry.metadataSource === 'unavailable')
+      .map(
+        (entry) =>
+          `License metadata unavailable for ${entry.name}@${entry.version}: ${entry.metadataError ?? 'provider error'}`
+      )
+  ];
+  const distribution = entries.reduce<Record<string, number>>(
+    (summary, entry) => {
+      summary[entry.license] = (summary[entry.license] ?? 0) + 1;
+      return summary;
+    },
+    {}
+  );
+
+  const requestMetrics = (
+    provider as LicenseMetadataProvider & {
+      getMetrics?: () => {
+        httpRequests: number;
+        throttledResponses: number;
+        retries: number;
+        cacheHits?: number;
+        peakConcurrency?: number;
+      };
+    }
+  ).getMetrics?.();
+
+  const eligible = entries.length + graphWarnings.length;
+  const scanned = entries.filter(
+    (entry) =>
+      entry.metadataSource === 'deps.dev' && entry.license !== 'UNKNOWN'
+  ).length;
+  const rawCoverage = coverageOf({
+    eligible,
+    scanned,
+    skipped: 0,
+    failed: Math.max(0, eligible - scanned)
+  });
+  const coverage: AnalysisCoverage = {
+    ...rawCoverage,
+    state:
+      !graphComplete && rawCoverage.state !== 'failed'
+        ? 'partial'
+        : rawCoverage.state,
+    ...(graphComplete && rawCoverage.state === 'complete'
+      ? {}
+      : {
+          reason: [
+            ...(!graphComplete ? ['dependency graph is incomplete'] : []),
+            ...(warnings.length > 0
+              ? ['license metadata is unknown or unavailable']
+              : [])
+          ].join('; ')
+        })
+  };
 
   return {
     licenses: entries,
     findings,
     warnings,
+    coverage,
     summary: {
       total: entries.length,
       unknown: entries.filter((entry) => entry.license === 'UNKNOWN').length,
-      restrictive: entries.filter((entry) => isRestrictiveLicense(entry.license)).length,
+      restrictive: entries.filter((entry) =>
+        isRestrictiveLicense(entry.license)
+      ).length,
       distribution
+    },
+    providerMetrics: {
+      requests,
+      maxConcurrency,
+      ...(requestMetrics
+        ? {
+            httpRequests: requestMetrics.httpRequests,
+            throttledResponses: requestMetrics.throttledResponses,
+            retries: requestMetrics.retries,
+            cacheHits: requestMetrics.cacheHits,
+            peakConcurrency: requestMetrics.peakConcurrency
+          }
+        : {})
     }
   };
+}
+
+function unavailableLicense(
+  dependency: Pick<DependencyIdentity, 'name' | 'version' | 'development'>,
+  reason: string
+): LicenseEntry {
+  return {
+    name: dependency.name,
+    version: dependency.version,
+    license: 'UNKNOWN',
+    type: dependency.development ? 'devDependency' : 'dependency',
+    metadataSource: 'unavailable',
+    metadataError: reason
+  };
+}
+
+function isPublicNpmRegistry(registry: string | undefined): boolean {
+  if (!registry) return false;
+  try {
+    const url = new URL(registry);
+    return (
+      url.protocol === 'https:' && url.origin === 'https://registry.npmjs.org'
+    );
+  } catch {
+    return false;
+  }
 }
 
 function isRestrictiveLicense(license: string): boolean {
@@ -118,7 +310,9 @@ function licenseToFindings(entry: LicenseEntry): Finding[] {
         providerUnavailable
           ? 'Retry when dependency metadata is available or verify the package license directly from its registry/repository before distribution.'
           : 'Verify the package license directly from its registry/repository before distribution.',
-        providerUnavailable ? 'deps.dev metadata unavailable' : 'No license reported'
+        providerUnavailable
+          ? 'deps.dev metadata unavailable'
+          : 'No license reported'
       )
     ];
   }

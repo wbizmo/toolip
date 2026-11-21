@@ -1,4 +1,11 @@
-import { mkdtemp, mkdir, realpath, rm, symlink } from 'node:fs/promises';
+import {
+  mkdtemp,
+  mkdir,
+  realpath,
+  rm,
+  symlink,
+  unlink
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -29,9 +36,9 @@ async function fixture(): Promise<{
 
 afterEach(async () => {
   await Promise.all(
-    temporaryRoots.splice(0).map((root) =>
-      rm(root, { recursive: true, force: true })
-    )
+    temporaryRoots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true }))
   );
 });
 
@@ -39,6 +46,9 @@ describe('MCP workspace boundary', () => {
   it('allows the approved root and real nested paths', async () => {
     const { allowed, nested } = await fixture();
     const boundary = await createWorkspaceBoundary([allowed]);
+
+    expect(Object.isFrozen(boundary)).toBe(true);
+    expect(Object.isFrozen(boundary.allowedRoots)).toBe(true);
 
     await expect(boundary.resolve(allowed)).resolves.toBe(
       await realpath(allowed)
@@ -63,11 +73,37 @@ describe('MCP workspace boundary', () => {
   it('denies symlinks that resolve outside the approved workspace', async () => {
     const { allowed, outside } = await fixture();
     const link = path.join(allowed, 'escape');
-    await symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
+    await symlink(
+      outside,
+      link,
+      process.platform === 'win32' ? 'junction' : 'dir'
+    );
 
     const boundary = await createWorkspaceBoundary([allowed]);
 
     await expect(boundary.resolve(link)).rejects.toMatchObject({
+      code: 'MCP_WORKSPACE_DENIED'
+    });
+  });
+
+  it('rechecks a workspace alias after it is swapped to an outside symlink', async () => {
+    const { allowed, nested, outside } = await fixture();
+    const alias = path.join(allowed, 'alias');
+    await symlink(
+      nested,
+      alias,
+      process.platform === 'win32' ? 'junction' : 'dir'
+    );
+    const boundary = await createWorkspaceBoundary([allowed]);
+    await expect(boundary.resolve(alias)).resolves.toBe(await realpath(nested));
+
+    await unlink(alias);
+    await symlink(
+      outside,
+      alias,
+      process.platform === 'win32' ? 'junction' : 'dir'
+    );
+    await expect(boundary.resolve(alias)).rejects.toMatchObject({
       code: 'MCP_WORKSPACE_DENIED'
     });
   });

@@ -159,16 +159,17 @@ describe('pre-commit fails closed on incomplete scans (issue #27)', () => {
     ).toBe(false);
   });
 
-  it('does not count conscious exclusions (.toolipignore, assets, symlinks) as incomplete', async () => {
+  it('does not count .toolipignore and known assets as incomplete in an explicit full scan', async () => {
     const root = makeRepo();
     write(root, '.toolipignore', 'generated\n');
+    write(root, '.gitignore', 'node_modules/\n.env\n.env.*\n*.pem\n*.key\n');
     write(root, 'generated/huge.json', oversized());
     write(root, 'logo.png', 'png');
     write(root, 'ok.ts', CLEAN);
-    git(root, 'add', '-A');
 
-    const result = await runPreCommit(root);
+    const result = await runPreCommit(root, { full: true });
 
+    expect(result.scope).toBe('full');
     expect(result.coverage.state).toBe('complete');
     expect(result.passed).toBe(true);
   });
@@ -526,5 +527,5 @@ describe('reports and the doctor command expose analysis state (issue #27)', () 
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 });

@@ -4,7 +4,7 @@ How Toolip's Git-facing features decide what to scan, where hooks go, and what "
 
 ## Pre-commit scans what will be committed
 
-`toolip pre-commit` (and the hook that runs it) scans the **staged blobs** read from Git's object database, not the working-tree files.
+`toolip pre-commit` (and the hook that runs it) scans the **staged blobs** read from Git's object database, not the working-tree files. Staged security inputs are never hidden by `.toolipignore`. The malicious execution-chain pass may read additional bounded blobs from the stage-0 index so a staged entrypoint can be traced into an unchanged tracked target; it filters resulting findings back to a staged path or trace. It does not read worktree content for this resolution.
 
 - Staged paths come from `git diff --cached --raw -z` (NUL-delimited, so spaces, newlines and non-ASCII names are safe). Renames are handled as delete + add, so the new path is scanned.
 - Content comes from one `git cat-file --batch` process keyed by object ID. The worktree is never opened, so partial staging, a clean worktree next to a dirty index, files deleted from the worktree after staging, and `git commit <paths>` (which uses a temporary index via `GIT_INDEX_FILE`) all scan the correct bytes.
@@ -15,7 +15,7 @@ How Toolip's Git-facing features decide what to scan, where hooks go, and what "
 
 **Not content-scanned (listed as warnings, not silently passed):** binary blobs, blobs over the per-file budget, symbolic links, and submodules (gitlinks). Treating oversized or binary content as incomplete coverage is tightened further by the analyzer-completion work in Batch 03.
 
-Limits: staged blobs are bounded by the text-file budget (2 MiB per file, 64 MiB total, 20,000 files by default). Complexity is O(S + B) for S staged paths and B scanned bytes.
+Limits: index enumeration is capped by Git output limits; retained blob reads use the text-file budget (2 MiB per file, 64 MiB total, 20,000 files by default). Exceeding a content budget makes the staged scan incomplete and blocks the commit. Complexity is O(I + B) for I indexed paths and B retained bytes; secret and configuration findings remain scoped to staged paths.
 
 ## Hook installation
 

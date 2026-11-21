@@ -37,6 +37,9 @@ export type VaultExportFormat = 'shell' | 'json';
 
 const algorithm = 'aes-256-gcm';
 const lockTimeoutMs = 5_000;
+const maximumVaultFileBytes = 64 * 1024 * 1024;
+const maximumVaultPlaintextBytes = 47 * 1024 * 1024;
+const maximumVaultSecrets = 100_000;
 
 export function defaultVaultPath(): string {
   return path.join(os.homedir(), '.toolip', 'vault.json');
@@ -48,7 +51,7 @@ export async function initVault(
 ): Promise<void> {
   await withVaultLock(vaultPath, async (assertOwned, directoryIdentity) => {
     try {
-      await openPrivateFile(vaultPath);
+      await openPrivateFile(vaultPath, maximumVaultFileBytes);
       throw new ToolipError('Vault already exists. Refusing to overwrite it.', {
         code: 'VAULT_ALREADY_EXISTS',
         exitCode: 1
@@ -238,7 +241,7 @@ async function readEncryptedVault(
         code: 'ENOENT'
       });
     }
-    raw = await openPrivateFile(vaultPath);
+    raw = await openPrivateFile(vaultPath, maximumVaultFileBytes);
     await assertDirectoryIdentity(directory, directoryIdentity);
   } catch (error) {
     if (errorCode(error) === 'ENOENT') {
@@ -280,6 +283,8 @@ async function readEncryptedVault(
       decipher.update(encrypted),
       decipher.final()
     ]);
+    if (decrypted.byteLength > maximumVaultPlaintextBytes)
+      throw corruptVault('Vault plaintext exceeds its byte budget.');
 
     return parseVaultData(decrypted.toString('utf8'));
   } catch (error) {
@@ -300,13 +305,23 @@ async function writeEncryptedVault(
   directoryIdentity: DirectoryIdentity
 ): Promise<void> {
   const directory = path.dirname(vaultPath);
-
+  if (!Array.isArray(data.secrets) || data.secrets.length > maximumVaultSecrets)
+    throw new ToolipError('Vault exceeds its secret-count budget.', {
+      code: 'VAULT_SIZE_LIMIT',
+      exitCode: 1
+    });
+  const plaintext = JSON.stringify(data);
+  if (Buffer.byteLength(plaintext, 'utf8') > maximumVaultPlaintextBytes)
+    throw new ToolipError('Vault exceeds its storage byte budget.', {
+      code: 'VAULT_SIZE_LIMIT',
+      exitCode: 1
+    });
   const salt = crypto.randomBytes(16);
   const iv = crypto.randomBytes(12);
   const key = deriveKey(masterPassword, salt);
   const cipher = crypto.createCipheriv(algorithm, key, iv);
   const encrypted = Buffer.concat([
-    cipher.update(JSON.stringify(data), 'utf8'),
+    cipher.update(plaintext, 'utf8'),
     cipher.final()
   ]);
 
@@ -317,6 +332,12 @@ async function writeEncryptedVault(
     authTag: cipher.getAuthTag().toString('base64'),
     data: encrypted.toString('base64')
   };
+  const serialized = `${JSON.stringify(file, null, 2)}\n`;
+  if (Buffer.byteLength(serialized, 'utf8') > maximumVaultFileBytes)
+    throw new ToolipError('Vault exceeds its storage byte budget.', {
+      code: 'VAULT_SIZE_LIMIT',
+      exitCode: 1
+    });
   const tempPath = path.join(
     directory,
     `.${path.basename(vaultPath)}.${process.pid}.${crypto.randomUUID()}.tmp`
@@ -327,7 +348,7 @@ async function writeEncryptedVault(
     await validateRegularFileIfPresent(vaultPath);
     await assertDirectoryIdentity(directory, directoryIdentity);
     handle = await open(tempPath, 'wx', 0o600);
-    await handle.writeFile(`${JSON.stringify(file, null, 2)}\n`, 'utf8');
+    await handle.writeFile(serialized, 'utf8');
     if (process.platform !== 'win32') await handle.chmod(0o600);
     await handle.sync();
     await handle.close();
@@ -418,7 +439,11 @@ function parseVaultData(raw: string): VaultData {
     throw corruptVault('Decrypted vault payload is not valid JSON.');
   }
 
-  if (!isRecord(value) || !Array.isArray(value.secrets)) {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.secrets) ||
+    value.secrets.length > maximumVaultSecrets
+  ) {
     throw corruptVault('Decrypted vault payload has an invalid shape.');
   }
 

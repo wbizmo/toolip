@@ -150,6 +150,63 @@ describe('TextFileReader', () => {
     });
   });
 
+  it('bounds concurrent file reads under a parallel caller', async () => {
+    const files = await Promise.all(
+      Array.from({ length: 8 }, (_, index) =>
+        tempFile(`parallel-${index}.txt`, `content-${index}`)
+      )
+    );
+    const reader = new TextFileReader(
+      { maxFiles: 8, maxFileBytes: 100, maxTotalBytes: 1_000 },
+      { maxConcurrentReads: 2 }
+    );
+    const results = await Promise.all(files.map((file) => reader.read(file)));
+
+    expect(results.every((result) => result.status === 'ok')).toBe(true);
+    expect(reader.peakConcurrentReadCount).toBe(2);
+    expect(reader.activeReadCount).toBe(0);
+    expect(reader.queuedReadCount).toBe(0);
+  });
+
+  it('removes an aborted queued read and releases its file reservation', async () => {
+    const first = await tempFile('slot-first.txt', 'first');
+    const second = await tempFile('slot-second.txt', 'second');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let opened = 0;
+    const reader = new TextFileReader(
+      { maxFiles: 2, maxFileBytes: 100, maxTotalBytes: 100 },
+      {
+        maxConcurrentReads: 1,
+        openFile: async (filePath, flags) => {
+          opened += 1;
+          if (filePath === first) await gate;
+          return openFile(filePath, flags);
+        }
+      }
+    );
+    const firstRead = reader.read(first);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const controller = new AbortController();
+    const secondRead = reader.read(second, controller.signal);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(reader.queuedReadCount).toBe(1);
+
+    controller.abort();
+    await expect(secondRead).resolves.toMatchObject({ status: 'cancelled' });
+    expect(reader.queuedReadCount).toBe(0);
+    release();
+    await expect(firstRead).resolves.toMatchObject({ status: 'ok' });
+    expect(opened).toBe(1);
+    expect(reader.activeReadCount).toBe(0);
+  });
+
+  it('rejects read concurrency above the hard cap', () => {
+    expect(
+      () => new TextFileReader(undefined, { maxConcurrentReads: 33 })
+    ).toThrow('Text file read concurrency must be between 1 and 32');
+  });
+
   it('reads exact size boundaries using initialized output and hashes the snapshot', async () => {
     const file = await tempFile('boundary.txt', '1234');
     const reader = new TextFileReader(
@@ -536,4 +593,52 @@ describe('TextFileReader', () => {
       });
     }
   );
+
+  it('does not lend a read slot to another file until the first handle closes', async () => {
+    const firstFile = await tempFile('close-first.txt', 'first');
+    const secondFile = await tempFile('close-second.txt', 'second');
+    let openCount = 0;
+    let notifyCloseStarted!: () => void;
+    let finishClose!: () => void;
+    const closeStarted = new Promise<void>((resolve) => {
+      notifyCloseStarted = resolve;
+    });
+    const closeGate = new Promise<void>((resolve) => {
+      finishClose = resolve;
+    });
+    const reader = new TextFileReader(
+      { maxFiles: 10, maxFileBytes: 100, maxTotalBytes: 200 },
+      {
+        maxConcurrentReads: 1,
+        openFile: async (filename, flags) => {
+          openCount++;
+          const handle = await openFile(filename, flags);
+          if (openCount !== 1) return handle;
+          return new Proxy(handle, {
+            get(target, property) {
+              if (property === 'close')
+                return async () => {
+                  notifyCloseStarted();
+                  await closeGate;
+                  await target.close();
+                };
+              const value = Reflect.get(target, property, target) as unknown;
+              return typeof value === 'function' ? value.bind(target) : value;
+            }
+          });
+        }
+      }
+    );
+    const first = reader.read(firstFile);
+    await closeStarted;
+    const second = reader.read(secondFile);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const opensBeforeCloseCompleted = openCount;
+    finishClose();
+    const [one, two] = await Promise.all([first, second]);
+    expect(one.status).toBe('ok');
+    expect(two.status).toBe('ok');
+    expect(opensBeforeCloseCompleted).toBe(1);
+    expect(reader.peakConcurrentReadCount).toBe(1);
+  });
 });

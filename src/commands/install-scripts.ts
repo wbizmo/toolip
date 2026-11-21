@@ -10,6 +10,7 @@ import {
 import { AnalyzerRunner } from '../application/analyzer-runner.js';
 import { ToolipError } from '../errors/toolip-error.js';
 import { InstallScriptAnalyzer } from '../analyzers/install-scripts/install-script-analyzer.js';
+import { serializeJsonOutputBounded } from '../core/report-writer.js';
 
 type InstallScriptOptions = {
   path: string;
@@ -82,18 +83,14 @@ export function registerInstallScriptsCommand(
 
       if (options.json) {
         console.log(
-          JSON.stringify(
-            {
-              analyzer: result.analyzer,
-              durationMs: result.durationMs,
-              analysis: assessmentJson(assessment),
-              summary: result.metadata,
-              findings,
-              warnings: result.warnings ?? []
-            },
-            null,
-            2
-          )
+          serializeJsonOutputBounded({
+            analyzer: result.analyzer,
+            durationMs: result.durationMs,
+            analysis: assessmentJson(assessment),
+            summary: result.metadata,
+            findings,
+            warnings: result.warnings ?? []
+          })
         );
         finish();
         return;

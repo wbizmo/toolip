@@ -1,38 +1,114 @@
 import { readdirSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { lstat } from 'node:fs/promises';
+import semver from 'semver';
+import { ToolipError } from '../../errors/toolip-error.js';
+import {
+  isTrustedPublicNpmRegistry,
+  npmIntegrityStatus,
+  readBoundedDependencyText,
+  readPnpmDependencyGraph,
+  readYarnDependencyGraph
+} from './lockfile-resolvers.js';
 
 export type DependencyIdentity = {
   id: string;
-  ecosystem: 'npm';
+  ecosystem: 'npm' | 'PyPI' | 'Go' | 'crates.io' | 'Maven' | 'Packagist';
+  manager?: 'npm' | 'pnpm' | 'yarn';
   name: string;
   version: string;
   direct: boolean;
   development: boolean;
+  /** Name used at the install/import location; it can differ for an alias. */
+  installName?: string;
   /** Only reachable through optionalDependencies. */
   optional?: boolean;
   /** Lockfile `os` / `cpu` / `libc` constraints (npm allow-list with `!` blocks). */
   os?: string[];
   cpu?: string[];
   libc?: string[];
-  source: 'package-lock';
+  source: string;
+  /** Distinguishes lock-resolved instances from exact declarations without install evidence. */
+  resolutionConfidence?: 'lockfile' | 'declared-pin' | 'workspace' | 'unknown';
   installPath: string;
+  integrity?: string;
+  resolved?: string;
+  registry?: string;
+  workspace?: string;
+  /** Maven artifact classifier and extension/type from resolved graphs. */
+  classifier?: string;
+  packageType?: string;
+  /** Resolver-specific platform/extra context retained for lock variants. */
+  resolutionContext?: string;
+  /** Exact target profile used to resolve an ecosystem-specific graph. */
+  resolutionTarget?: string;
+  /** Declared artifact hash is distinct from bytes independently verified. */
+  artifactIntegrityStatus?:
+    'verified' | 'declared-not-verified' | 'unavailable';
+  /** Feature names declared in a first-party Cargo manifest, not active resolution. */
+  declaredFeatures?: string[];
+  /** Features activated for a workspace Cargo package under the selected profile. */
+  activeFeatures?: string[];
+  /** Exact Composer license metadata for SBOM output. */
+  licenses?: string[];
 };
 
 export type DependencyEdge = {
   from: 'root' | string;
   to: string;
   name: string;
+  /** Manifest dependency key when it differs from the resolved package name. */
+  alias?: string;
   requirement: string;
   section:
     'dependency' | 'devDependency' | 'optionalDependency' | 'peerDependency';
+  marker?: string;
+  extras?: string[];
+  /** Rust/Cargo requested feature flags when declared by a workspace manifest. */
+  requestedFeatures?: string[];
+  /** Rust/Cargo target cfg expression for a manifest dependency declaration. */
+  target?: string;
+  /** Target profile that owns a platform-specific edge. */
+  resolutionTarget?: string;
 };
 
+export type UnresolvedDependencyEdge = {
+  from: 'root' | string;
+  name: string;
+  requirement: string;
+  section: DependencyEdge['section'];
+};
+
+/** Immutable captured dependency inputs shared by one project analysis. */
+export type DependencyFileSource = Readonly<{
+  files: readonly string[];
+  /** Bound Git revision from a trusted immutable source; never infer from export data. */
+  sourceRevision?: string;
+  hasFile: (relativePath: string) => boolean;
+  readText: (relativePath: string) => string | undefined;
+}>;
+
 export type NpmDependencyGraph = {
+  manager?: 'npm' | 'pnpm' | 'yarn';
   packages: DependencyIdentity[];
   edges: DependencyEdge[];
+  unresolvedDependencies: UnresolvedDependencyEdge[];
   rootDependencies: string[];
+  complete: boolean;
+  warnings: string[];
 };
+
+// One immutable captured source is shared by all analyzers in a scan. Keep a
+// single-flight graph promise under that weak key, avoiding repeated YAML/JSON
+// parsing without retaining snapshots after their callers release them. The
+// source contract is immutable: successful graphs remain valid for its lifetime.
+const capturedDependencyGraphs = new WeakMap<
+  DependencyFileSource,
+  { root: string; promise: Promise<NpmDependencyGraph> }
+>();
+const maximumNpmLockEntries = 1_000_000;
+const maximumNpmDependencyDeclarations = 1_000_000;
+const maximumNpmResolutionDepth = 256;
 
 type PackageLockEntry = {
   name?: string;
@@ -44,16 +120,96 @@ type PackageLockEntry = {
   libc?: string[];
   link?: boolean;
   resolved?: string;
+  integrity?: string;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   optionalDependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
+  peerDependenciesMeta?: Record<string, { optional?: boolean }>;
 };
 
 type PackageLockV2 = {
   lockfileVersion?: number;
   packages?: Record<string, PackageLockEntry>;
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function validPackageLockEntry(value: unknown): value is PackageLockEntry {
+  if (!isRecord(value)) return false;
+  for (const field of [
+    'dependencies',
+    'devDependencies',
+    'optionalDependencies',
+    'peerDependencies'
+  ]) {
+    const dependencies = value[field];
+    if (dependencies !== undefined && !isStringRecord(dependencies))
+      return false;
+  }
+  if (value.peerDependenciesMeta !== undefined) {
+    if (!isRecord(value.peerDependenciesMeta)) return false;
+    for (const key in value.peerDependenciesMeta) {
+      if (!Object.hasOwn(value.peerDependenciesMeta, key)) continue;
+      const metadata = value.peerDependenciesMeta[key];
+      if (
+        !isRecord(metadata) ||
+        (metadata.optional !== undefined &&
+          typeof metadata.optional !== 'boolean')
+      )
+        return false;
+    }
+  }
+  for (const field of ['name', 'version', 'resolved', 'integrity']) {
+    if (value[field] !== undefined && typeof value[field] !== 'string')
+      return false;
+  }
+  for (const field of ['dev', 'optional', 'link']) {
+    if (value[field] !== undefined && typeof value[field] !== 'boolean')
+      return false;
+  }
+  for (const field of ['os', 'cpu', 'libc']) {
+    if (
+      value[field] !== undefined &&
+      (!Array.isArray(value[field]) ||
+        value[field].some((item) => typeof item !== 'string'))
+    )
+      return false;
+  }
+  return true;
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  if (!isRecord(value)) return false;
+  for (const key in value) {
+    if (Object.hasOwn(value, key) && typeof value[key] !== 'string')
+      return false;
+  }
+  return true;
+}
+
+function readCapturedDependencyText(
+  fileSource: DependencyFileSource,
+  relativePath: string
+): string {
+  if (!fileSource.hasFile(relativePath)) {
+    const error = new Error(
+      `Dependency snapshot does not contain ${relativePath}.`
+    );
+    Object.assign(error, { code: 'ENOENT' });
+    throw error;
+  }
+  const text = fileSource.readText(relativePath);
+  if (text === undefined) {
+    throw new ToolipError(
+      `Dependency snapshot has no text for ${relativePath}.`,
+      { code: 'DEPENDENCY_SNAPSHOT_CONTENT_UNAVAILABLE' }
+    );
+  }
+  return text;
+}
 
 function packageNameFromLockPath(lockPath: string): string | undefined {
   const marker = 'node_modules/';
@@ -68,6 +224,49 @@ function identityId(
   version: string
 ): string {
   return `npm:${installPath}:${name}@${version}`;
+}
+
+function sanitizedNpmResolution(value: unknown): {
+  resolved?: string;
+  registry?: string;
+  unsafe?: boolean;
+} {
+  if (typeof value !== 'string')
+    return value === undefined ? {} : { unsafe: true };
+  if (value.length > 2_048) return { unsafe: true };
+  const gitPrefix = value.startsWith('git+') ? 'git+' : '';
+  const candidate = gitPrefix ? value.slice(gitPrefix.length) : value;
+  try {
+    const url = new URL(candidate);
+    if (
+      !['https:', 'ssh:'].includes(url.protocol) ||
+      (url.port !== '' && url.port !== '443')
+    )
+      return { unsafe: true };
+    // Preserve exact source identity in a redacted graph without accepting a
+    // credential-bearing URL as verified registry provenance.
+    const unsafeCredentials = Boolean(
+      url.username || url.password || url.search
+    );
+    if (gitPrefix) {
+      const revision = url.hash.slice(1);
+      if (!/^[a-f0-9]{40,64}$/iu.test(revision)) return { unsafe: true };
+      return {
+        resolved: `git+${url.protocol}//${url.host}${url.pathname}#${revision.toLowerCase()}`
+      };
+    }
+    if (
+      url.protocol !== 'https:' ||
+      (url.hash && !/^[a-f0-9]{40}$/iu.test(url.hash.slice(1)))
+    )
+      return { unsafe: true };
+    const resolved = `${url.protocol}//${url.host}${url.pathname}`;
+    return unsafeCredentials
+      ? { resolved, unsafe: true }
+      : { resolved, registry: url.origin };
+  } catch {
+    return { unsafe: true };
+  }
 }
 
 function parentPackagePath(lockPath: string): string {
@@ -106,72 +305,237 @@ function resolveCandidatePath(
 function resolveInstalledPath(
   packages: Record<string, PackageLockEntry>,
   fromPath: string,
-  dependencyName: string
+  dependencyName: string,
+  parentPathByInstallPath: ReadonlyMap<string, string>,
+  installPathsByParentAndName: ReadonlyMap<string, ReadonlyMap<string, string>>
 ): string | undefined {
   let cursor = fromPath;
-
-  while (true) {
-    const candidate = cursor
-      ? `${cursor}/node_modules/${dependencyName}`
-      : `node_modules/${dependencyName}`;
-    const resolved = resolveCandidatePath(packages, candidate);
+  let depth = 0;
+  while (depth <= maximumNpmResolutionDepth) {
+    const candidate = installPathsByParentAndName
+      .get(cursor)
+      ?.get(dependencyName);
+    const resolved = candidate
+      ? resolveCandidatePath(packages, candidate)
+      : undefined;
 
     if (resolved) {
       return resolved;
     }
 
     if (!cursor) return undefined;
-    cursor = parentPackagePath(cursor);
+    if (depth === maximumNpmResolutionDepth)
+      throw new Error(
+        `npm dependency resolution exceeds the ${maximumNpmResolutionDepth}-ancestor limit`
+      );
+    cursor = parentPathByInstallPath.get(cursor) ?? parentPackagePath(cursor);
+    depth += 1;
   }
+  return undefined;
 }
 
-function requirements(
+function* requirements(
   entry: PackageLockEntry,
   includeDevelopment: boolean
-): Array<{
+): Generator<{
   name: string;
   requirement: string;
   section: DependencyEdge['section'];
+  optional?: boolean;
 }> {
-  const sections: Array<
-    [DependencyEdge['section'], Record<string, string> | undefined]
-  > = [
-    ['dependency', entry.dependencies],
-    ['optionalDependency', entry.optionalDependencies],
-    ['peerDependency', entry.peerDependencies]
+  const sections: Array<{
+    section: DependencyEdge['section'];
+    values: Record<string, string> | undefined;
+  }> = [
+    { section: 'dependency', values: entry.dependencies },
+    { section: 'optionalDependency', values: entry.optionalDependencies },
+    { section: 'peerDependency', values: entry.peerDependencies }
   ];
 
   if (includeDevelopment) {
-    sections.push(['devDependency', entry.devDependencies]);
+    sections.push({ section: 'devDependency', values: entry.devDependencies });
   }
 
-  return sections.flatMap(([section, values]) =>
-    Object.entries(values ?? {}).map(([name, requirement]) => ({
-      name,
-      requirement,
-      section
-    }))
-  );
+  for (const { section, values } of sections) {
+    if (!values) continue;
+    for (const name in values) {
+      if (!Object.hasOwn(values, name)) continue;
+      const requirement = values[name];
+      if (typeof requirement !== 'string') continue;
+      yield {
+        name,
+        requirement,
+        section,
+        ...(section === 'peerDependency' &&
+        entry.peerDependenciesMeta?.[name]?.optional === true
+          ? { optional: true }
+          : {})
+      };
+    }
+  }
 }
 
-export async function readNpmDependencyGraph(
-  root: string
+export function readNpmDependencyGraph(
+  root: string,
+  fileSource?: DependencyFileSource
 ): Promise<NpmDependencyGraph> {
-  const raw = await readFile(path.join(root, 'package-lock.json'), 'utf8');
-  const lockfile = JSON.parse(raw) as PackageLockV2;
+  if (!fileSource) return readNpmDependencyGraphUncached(root);
 
-  if (!lockfile.packages) {
+  const normalizedRoot = path.resolve(root);
+  const cached = capturedDependencyGraphs.get(fileSource);
+  if (cached?.root === normalizedRoot) return cached.promise;
+
+  const promise = readNpmDependencyGraphUncached(root, fileSource);
+  capturedDependencyGraphs.set(fileSource, { root: normalizedRoot, promise });
+  void promise.catch(() => {
+    if (capturedDependencyGraphs.get(fileSource)?.promise === promise)
+      capturedDependencyGraphs.delete(fileSource);
+  });
+  return promise;
+}
+
+async function readNpmDependencyGraphUncached(
+  root: string,
+  fileSource?: DependencyFileSource
+): Promise<NpmDependencyGraph> {
+  const lockfiles = [
+    ['package-lock.json', 'npm'],
+    ['pnpm-lock.yaml', 'pnpm'],
+    ['yarn.lock', 'yarn']
+  ] as const;
+  const detected: Array<(typeof lockfiles)[number]> = [];
+  if (fileSource) {
+    detected.push(...lockfiles.filter(([file]) => fileSource.hasFile(file)));
+  } else {
+    for (const candidate of lockfiles) {
+      const metadata = await lstat(path.join(root, candidate[0])).catch(
+        (error: unknown) => {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+            return undefined;
+          throw error;
+        }
+      );
+      if (metadata) {
+        if (!metadata.isFile() || metadata.isSymbolicLink()) {
+          throw new ToolipError(
+            `Dependency lockfile ${candidate[0]} is not a regular file.`,
+            { code: 'DEPENDENCY_LOCKFILE_INVALID' }
+          );
+        }
+        detected.push(candidate);
+      }
+    }
+  }
+  if (detected.length > 1) {
+    throw new ToolipError(
+      `Multiple npm package-manager lockfiles are present (${detected.map(([name]) => name).join(', ')}); dependency identity is ambiguous.`,
+      { code: 'DEPENDENCY_LOCKFILE_AMBIGUOUS' }
+    );
+  }
+  if (detected.length === 0) {
+    const error = new Error('npm package-manager lockfile is missing');
+    Object.assign(error, { code: 'ENOENT' });
+    throw error;
+  }
+  const selected = detected[0]?.[1];
+  if (selected === 'pnpm') return readPnpmDependencyGraph(root, fileSource);
+  if (selected === 'yarn') return readYarnDependencyGraph(root, fileSource);
+
+  const raw = fileSource
+    ? readCapturedDependencyText(fileSource, 'package-lock.json')
+    : await readBoundedDependencyText(path.join(root, 'package-lock.json'));
+  const parsed: unknown = JSON.parse(raw);
+
+  if (
+    !isRecord(parsed) ||
+    ![2, 3].includes(parsed.lockfileVersion as number) ||
+    !isRecord(parsed.packages)
+  ) {
     throw new Error(
-      'Toolip requires package-lock.json lockfileVersion 2 or newer.'
+      'Toolip requires a package-lock.json lockfileVersion 2 or 3 with a packages object.'
     );
   }
 
-  const identitiesByPath = new Map<string, DependencyIdentity>();
+  const lockfile = parsed as PackageLockV2;
+  const warnings = new Set<string>();
+  const packageLockEntries = Object.create(null) as Record<
+    string,
+    PackageLockEntry
+  >;
+  let lockEntryCount = 0;
+  for (const installPath in lockfile.packages) {
+    if (!Object.hasOwn(lockfile.packages, installPath)) continue;
+    lockEntryCount += 1;
+    if (lockEntryCount > maximumNpmLockEntries)
+      throw new Error(
+        `npm lockfile exceeds the ${maximumNpmLockEntries}-entry limit`
+      );
+  }
+  for (const installPath in lockfile.packages) {
+    if (!Object.hasOwn(lockfile.packages, installPath)) continue;
+    const entry = lockfile.packages[installPath];
+    if (!validPackageLockEntry(entry)) {
+      warnings.add('npm-lockfile-package-entry-invalid');
+      continue;
+    }
+    packageLockEntries[installPath] = entry;
+  }
 
-  for (const [installPath, entry] of Object.entries(lockfile.packages)) {
-    if (installPath === '' || !entry.version) continue;
+  const identitiesByPath = new Map<string, DependencyIdentity>();
+  const parentPathByInstallPath = new Map<string, string>();
+  const installPathsByParentAndName = new Map<string, Map<string, string>>();
+
+  for (const installPath in packageLockEntries) {
+    if (!Object.hasOwn(packageLockEntries, installPath)) continue;
+    const entry = packageLockEntries[installPath];
+    if (!entry) continue;
+    const parentPath = parentPackagePath(installPath);
+    parentPathByInstallPath.set(installPath, parentPath);
+    const installName = packageNameFromLockPath(installPath);
+    if (installName) {
+      let children = installPathsByParentAndName.get(parentPath);
+      if (!children) {
+        children = new Map<string, string>();
+        installPathsByParentAndName.set(parentPath, children);
+      }
+      children.set(installName, installPath);
+    }
+    if (installPath === '') continue;
+    if (!entry.version) {
+      if (!entry.link) warnings.add('npm-lockfile-version-unresolved');
+      else if (!entry.resolved)
+        warnings.add('npm-lockfile-link-target-unresolved');
+      continue;
+    }
+    if (
+      path.posix.isAbsolute(installPath) ||
+      /^[A-Za-z]:/u.test(installPath) ||
+      installPath.includes('\\') ||
+      installPath.includes('\0') ||
+      installPath.split('/').includes('..')
+    ) {
+      warnings.add('npm-lockfile-install-path-invalid');
+      continue;
+    }
+    if (!semver.valid(entry.version)) {
+      warnings.add('npm-lockfile-version-unresolved');
+      continue;
+    }
     const name = entry.name ?? packageNameFromLockPath(installPath);
-    if (!name) continue;
+    if (!name) {
+      warnings.add('npm-lockfile-package-name-unresolved');
+      continue;
+    }
+    const resolution = sanitizedNpmResolution(entry.resolved);
+    const integrity = npmIntegrityStatus(entry.integrity);
+    if (resolution.unsafe && !entry.link)
+      warnings.add('npm-lockfile-source-url-unsafe');
+    const isWorkspace =
+      entry.link === true || !installPath.startsWith('node_modules/');
+    const trustedRegistryOrigin = isTrustedPublicNpmRegistry(
+      resolution.resolved
+    );
+    if (integrity.malformed) warnings.add('npm-lockfile-integrity-malformed');
 
     identitiesByPath.set(installPath, {
       id: identityId(installPath, name, entry.version),
@@ -185,30 +549,79 @@ export async function readNpmDependencyGraph(
       cpu: Array.isArray(entry.cpu) ? entry.cpu.map(String) : undefined,
       libc: Array.isArray(entry.libc) ? entry.libc.map(String) : undefined,
       source: 'package-lock',
-      installPath
+      resolutionConfidence: isWorkspace
+        ? 'workspace'
+        : trustedRegistryOrigin
+          ? 'lockfile'
+          : 'unknown',
+      installPath,
+      installName: npmInstallName(installPath, name),
+      ...(entry.integrity === undefined
+        ? {}
+        : { artifactIntegrityStatus: integrity.status }),
+      workspace: !installPath.startsWith('node_modules/')
+        ? installPath
+        : undefined,
+      manager: 'npm',
+      integrity: entry.integrity,
+      ...(resolution.resolved ? { resolved: resolution.resolved } : {}),
+      ...(resolution.registry ? { registry: resolution.registry } : {})
     });
   }
 
   const edges: DependencyEdge[] = [];
+  const unresolvedDependencies: UnresolvedDependencyEdge[] = [];
   const rootTargets = new Set<string>();
   const seenEdges = new Set<string>();
-
-  for (const [fromPath, entry] of Object.entries(lockfile.packages)) {
+  let declarationCount = 0;
+  for (const fromPath in packageLockEntries) {
+    if (!Object.hasOwn(packageLockEntries, fromPath)) continue;
+    const entry = packageLockEntries[fromPath];
+    if (!entry) continue;
     const fromIdentity =
       fromPath === '' ? undefined : identitiesByPath.get(fromPath);
 
-    if (fromPath !== '' && !fromIdentity) continue;
-
     for (const requirement of requirements(entry, fromPath === '')) {
+      declarationCount += 1;
+      if (declarationCount > maximumNpmDependencyDeclarations)
+        throw new Error(
+          `npm lockfile exceeds the ${maximumNpmDependencyDeclarations}-declaration limit`
+        );
+      if (fromPath !== '' && !fromIdentity) continue;
       const targetPath = resolveInstalledPath(
-        lockfile.packages,
+        packageLockEntries,
         fromPath,
-        requirement.name
+        requirement.name,
+        parentPathByInstallPath,
+        installPathsByParentAndName
       );
-      if (!targetPath) continue;
+      if (!targetPath) {
+        if (requirement.optional) continue;
+        unresolvedDependencies.push({
+          from: fromIdentity?.id ?? 'root',
+          name: requirement.name,
+          requirement: requirement.requirement,
+          section: requirement.section
+        });
+        warnings.add(
+          `unresolved npm dependency ${requirement.name}@${requirement.requirement} from ${fromPath || 'root'}`
+        );
+        continue;
+      }
 
       const target = identitiesByPath.get(targetPath);
-      if (!target) continue;
+      if (!target) {
+        unresolvedDependencies.push({
+          from: fromIdentity?.id ?? 'root',
+          name: requirement.name,
+          requirement: requirement.requirement,
+          section: requirement.section
+        });
+        warnings.add(
+          `unresolved npm package identity ${requirement.name}@${requirement.requirement} from ${fromPath || 'root'}`
+        );
+        continue;
+      }
 
       const from = fromIdentity?.id ?? 'root';
       const key = `${from}:${target.id}:${requirement.section}`;
@@ -218,7 +631,9 @@ export async function readNpmDependencyGraph(
       edges.push({
         from,
         to: target.id,
-        ...requirement
+        ...requirement,
+        name: target.name,
+        ...(target.name !== requirement.name ? { alias: requirement.name } : {})
       });
 
       if (from === 'root') {
@@ -227,30 +642,54 @@ export async function readNpmDependencyGraph(
     }
   }
 
-  const packages = [...identitiesByPath.values()]
-    .map((identity) => ({
+  const packages: DependencyIdentity[] = [];
+  for (const identity of identitiesByPath.values()) {
+    packages.push({
       ...identity,
       direct: rootTargets.has(identity.id)
-    }))
-    .sort((a, b) =>
-      `${a.name}@${a.version}:${a.installPath}`.localeCompare(
-        `${b.name}@${b.version}:${b.installPath}`
-      )
-    );
+    });
+  }
+  packages.sort((a, b) =>
+    `${a.name}@${a.version}:${a.installPath}`.localeCompare(
+      `${b.name}@${b.version}:${b.installPath}`
+    )
+  );
 
   return {
+    manager: 'npm',
     packages,
     edges: edges.sort((a, b) =>
       `${a.from}:${a.name}:${a.to}`.localeCompare(`${b.from}:${b.name}:${b.to}`)
     ),
-    rootDependencies: [...rootTargets].sort()
+    unresolvedDependencies,
+    rootDependencies: [...rootTargets].sort(),
+    complete: warnings.size === 0,
+    warnings: [...warnings].sort()
   };
 }
 
+function npmInstallName(installPath: string, resolvedName: string): string {
+  const marker = 'node_modules/';
+  const markerIndex = installPath.lastIndexOf(marker);
+  if (markerIndex < 0) return resolvedName;
+  const parts = installPath.slice(markerIndex + marker.length).split('/');
+  return parts[0]?.startsWith('@') && parts[1]
+    ? `${parts[0]}/${parts[1]}`
+    : (parts[0] ?? resolvedName);
+}
+
 export async function readNpmDependencyInventory(
-  root: string
+  root: string,
+  fileSource?: DependencyFileSource
 ): Promise<DependencyIdentity[]> {
-  return (await readNpmDependencyGraph(root)).packages;
+  const graph = await readNpmDependencyGraph(root, fileSource);
+  if (!graph.complete) {
+    throw new ToolipError(
+      `Dependency inventory is incomplete: ${graph.warnings.slice(0, 5).join('; ')}`,
+      { code: 'DEPENDENCY_INVENTORY_INCOMPLETE' }
+    );
+  }
+  return graph.packages;
 }
 
 function allowedBy(constraint: string[] | undefined, current: string): boolean {

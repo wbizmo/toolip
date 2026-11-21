@@ -45,6 +45,55 @@ const httpError = (statusCode: number, headers?: Record<string, string>) =>
 
 // Issue #48: pacote requests ran outside every deadline and could hang a scan forever.
 describe('scan budget and bounded retries (issue #48)', () => {
+  it('rejects invalid scan duration, request timeout and provider concurrency', () => {
+    for (const totalMs of [0, 600_001, 1.5, Number.NaN, Infinity])
+      expect(() => createScanBudget({ totalMs })).toThrow(
+        'scan duration must be an integer from 1 to 600000 milliseconds'
+      );
+    for (const requestTimeoutMs of [0, 600_001, 1.5, Number.NaN, Infinity])
+      expect(() => createScanBudget({ requestTimeoutMs })).toThrow(
+        'provider request timeout must be an integer from 1 to 600000 milliseconds'
+      );
+    for (const maxConcurrentRequests of [0, -1, 1.5, Number.NaN, Infinity, 33])
+      expect(() => createScanBudget({ maxConcurrentRequests })).toThrow(
+        'provider concurrency must be an integer from 1 to 32'
+      );
+  });
+
+  it('rejects malformed budgets and unbounded retry policy values', async () => {
+    const valid = budget();
+    const malformed = [
+      { ...valid, deadlineAt: Number.POSITIVE_INFINITY },
+      { ...valid, maxConcurrentRequests: 33 },
+      { ...valid, requestTimeoutMs: Number.NaN }
+    ];
+    for (const item of malformed)
+      await expect(
+        withBudget(async () => 'unused', item, { retries: 0 })
+      ).rejects.toThrow('provider scan budget is invalid');
+
+    for (const retries of [-1, 6, 1.5, Number.NaN, Infinity])
+      await expect(
+        withBudget(async () => 'unused', valid, { retries })
+      ).rejects.toThrow('provider retries must be an integer from 0 to 5');
+
+    for (const ms of [-1, 60_001, 1.5, Number.NaN, Infinity])
+      await expect(
+        withBudget(async () => 'unused', valid, { baseMs: ms })
+      ).rejects.toThrow(
+        'provider retry delays must be integers from 0 to 60000 milliseconds'
+      );
+    await expect(
+      withBudget(
+        async () => {
+          throw httpError(503);
+        },
+        valid,
+        { retries: 1, random: () => 2 }
+      )
+    ).rejects.toThrow('provider retry random value must be from 0 to 1');
+  });
+
   it('returns a bounded timed_out result for a hanging provider and aborts the request signal', async () => {
     const b = budget({ requestTimeoutMs: 60, totalMs: 5_000 });
     let observed: AbortSignal | undefined;
@@ -319,51 +368,42 @@ describe('scanDependencies and the scorecard under a budget (issue #48)', () => 
     return dir;
   }
 
-  it('records timed-out and failed lookups, keeps the good ones, and reports partial coverage', async () => {
+  it('does not query manifest ranges as if they were installed identities', async () => {
     const root = project({ good: '1.0.0', slow: '1.0.0', broken: '1.0.0' });
-    vi.spyOn(pacote, 'manifest').mockImplementation(async (name: string) => {
-      if (name === 'good') return { name, version: '1.0.0' };
-      if (name === 'slow') return new Promise(() => undefined);
-      throw httpError(404);
-    });
+    const registry = vi.spyOn(pacote, 'manifest');
 
     const result = await scanDependencies(root, {
       budget: budget({ requestTimeoutMs: 60 })
     });
 
-    expect(result.packages.map((p) => p.name)).toEqual(['good']);
+    expect(result.packages).toEqual([]);
+    expect(registry).not.toHaveBeenCalled();
     expect(result.failures.map((f) => [f.name, f.kind]).sort()).toEqual([
-      ['broken', 'failed'],
-      ['slow', 'timed_out']
+      ['broken', 'unresolved'],
+      ['good', 'unresolved'],
+      ['slow', 'unresolved']
     ]);
     expect(result.coverage).toMatchObject({
-      state: 'partial',
+      state: 'failed',
       eligible: 3,
-      scanned: 1
+      scanned: 0
     });
   });
 
-  it('limits concurrent provider requests to the budget', async () => {
+  it('marks manifest-only packages unresolved without querying the provider', async () => {
     const names = Object.fromEntries(
       Array.from({ length: 12 }, (_, i) => [`pkg-${i}`, '1.0.0'])
     );
     const root = project(names);
-    let active = 0;
-    let peak = 0;
-    vi.spyOn(pacote, 'manifest').mockImplementation(async (name: string) => {
-      active += 1;
-      peak = Math.max(peak, active);
-      await new Promise((resolve) => setTimeout(resolve, 15));
-      active -= 1;
-      return { name, version: '1.0.0' };
-    });
+    const registry = vi.spyOn(pacote, 'manifest');
 
     const result = await scanDependencies(root, {
       budget: budget({ maxConcurrentRequests: 3 })
     });
 
-    expect(peak).toBeLessThanOrEqual(3);
-    expect(result.coverage.state).toBe('complete');
+    expect(registry).not.toHaveBeenCalled();
+    expect(result.failures).toHaveLength(12);
+    expect(result.coverage.state).toBe('failed');
   });
 
   it('the scorecard returns within its deadline, marks dependency health unmeasured and the run partial', async () => {
@@ -394,6 +434,6 @@ describe('scanDependencies and the scorecard under a budget (issue #48)', () => 
     expect(scorecard.score.dependencyHealth).toBeNull();
     expect(scorecard.analysis.state).toBe('partial');
     expect(scorecard.analysis.reasons.join(' ')).toContain('dependency health');
-    expect(scorecard.warnings.join(' ')).toContain('slow@1.0.0');
+    expect(scorecard.warnings.join(' ')).toContain('slow@1.0.0: unresolved');
   });
 });

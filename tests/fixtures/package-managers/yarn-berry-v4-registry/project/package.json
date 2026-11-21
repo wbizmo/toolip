@@ -1,0 +1,16 @@
+{
+  "name": "toolip-yarn-v4-generated",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "yarn@4.5.0",
+  "workspaces": [
+    "packages/*"
+  ],
+  "dependencies": {
+    "@toolip-fixture/app-18": "workspace:*",
+    "@toolip-fixture/app-19": "workspace:*",
+    "@toolip-fixture/optional-peer": "workspace:*",
+    "react18-alias": "npm:react@18.2.0",
+    "react19-alias": "npm:react@19.0.0"
+  }
+}

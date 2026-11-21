@@ -64,6 +64,43 @@ describe('InstallScriptAnalyzer', () => {
     }
   });
 
+  it('reports oversized installed manifests as skipped instead of reading them unbounded', async () => {
+    const root = await mkdtemp(
+      path.join(os.tmpdir(), 'toolip-install-script-')
+    );
+    try {
+      const packageDirectory = path.join(root, 'node_modules', 'large-package');
+      await mkdir(packageDirectory, { recursive: true });
+      await writeFile(
+        path.join(root, 'package-lock.json'),
+        JSON.stringify({
+          lockfileVersion: 3,
+          packages: {
+            '': { dependencies: { 'large-package': '1.0.0' } },
+            'node_modules/large-package': { version: '1.0.0' }
+          }
+        })
+      );
+      await writeFile(
+        path.join(packageDirectory, 'package.json'),
+        ' '.repeat(1024 * 1024 + 1)
+      );
+
+      const result = await new InstallScriptAnalyzer().analyze({ root });
+
+      expect(result.findings).toEqual([]);
+      expect(result.coverage).toMatchObject({
+        state: 'failed',
+        eligible: 1,
+        scanned: 0,
+        skipped: 1,
+        failed: 0
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('uses the lockfile install path for nested duplicate versions', async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), 'toolip-install-script-')

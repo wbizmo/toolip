@@ -49,6 +49,38 @@ describe('report', () => {
     expect('ruleId' in (report.findings[0] ?? {})).toBe(false);
   });
 
+  it('retains exact npm provenance trust status in sanitized scan reports', () => {
+    const report = createReport({
+      version: '0.1.0',
+      command: 'scan',
+      root: '/project',
+      findings: [],
+      npmProvenance: [
+        {
+          identityDigest: 'a'.repeat(64),
+          name: 'example',
+          version: '1.2.3',
+          status: 'verified',
+          reason: 'verified',
+          sourceRepository: 'https://github.com/acme/example',
+          certificateIssuer: 'https://token.actions.githubusercontent.com',
+          certificateIdentity:
+            'https://github.com/acme/example/.github/workflows/release.yml@refs/tags/v1.2.3',
+          artifactIntegrity: 'declared-not-verified'
+        }
+      ]
+    });
+
+    expect(report.npmProvenance).toMatchObject([
+      {
+        name: 'example',
+        status: 'verified',
+        sourceRepository: 'https://github.com/acme/example',
+        artifactIntegrity: 'declared-not-verified'
+      }
+    ]);
+  });
+
   it('detects report formats', () => {
     expect(detectReportFormat('report.json')).toBe('json');
     expect(detectReportFormat('report.md')).toBe('md');

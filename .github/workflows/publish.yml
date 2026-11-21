@@ -108,6 +108,50 @@ jobs:
         if: steps.availability.outputs.should_publish == 'true'
         run: npm run release:check
 
+      - name: Attest and verify the exact packed release candidate
+        if: steps.availability.outputs.should_publish == 'true'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          SOURCE_REPOSITORY: https://github.com/${{ github.repository }}
+          SOURCE_COMMIT: ${{ github.sha }}
+          RUNNER_TEMP: ${{ runner.temp }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL="toolip-${VERSION}.tgz"
+          BUNDLE="${RUNNER_TEMP}/toolip-${VERSION}.sigstore.bundle.json"
+          SUMMARY="${RUNNER_TEMP}/toolip-${VERSION}.attestation-summary.json"
+          test -f "$TARBALL"
+
+          node dist/src/index.js npm-attestation create \
+            --tarball "$TARBALL" \
+            --output "$BUNDLE" \
+            --source-repository "$SOURCE_REPOSITORY" \
+            --source-commit "$SOURCE_COMMIT" > "$SUMMARY"
+
+          SCANNER_DIGEST="$(node -p \
+            "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).scannerArtifactSha256" \
+            "$SUMMARY")"
+          node dist/src/index.js npm-attestation verify \
+            --tarball "$TARBALL" \
+            --bundle "$BUNDLE" \
+            --certificate-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-identity "https://github.com/wbizmo/toolip/.github/workflows/publish.yml@refs/heads/main" \
+            --source-repository "$SOURCE_REPOSITORY" \
+            --source-commit "$SOURCE_COMMIT" \
+            --scanner-artifact-sha256 "$SCANNER_DIGEST"
+
+      - name: Preserve the verified Sigstore attestation bundle
+        if: steps.availability.outputs.should_publish == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: toolip-${{ steps.release.outputs.version }}-sigstore-attestation
+          path: |
+            ${{ runner.temp }}/toolip-${{ steps.release.outputs.version }}.sigstore.bundle.json
+            ${{ runner.temp }}/toolip-${{ steps.release.outputs.version }}.attestation-summary.json
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Publish to npm with trusted publishing (OIDC)
         if: steps.availability.outputs.should_publish == 'true'
         # No NPM_TOKEN: npm >= 11.5.1 exchanges the job's OIDC identity for a
@@ -115,4 +159,5 @@ jobs:
         # npm-release environment (required reviewers) gates this job.
         env:
           NPM_CONFIG_PROVENANCE: 'true'
-        run: npm publish --access public
+          VERSION: ${{ steps.release.outputs.version }}
+        run: npm publish --ignore-scripts "toolip-${VERSION}.tgz" --access public

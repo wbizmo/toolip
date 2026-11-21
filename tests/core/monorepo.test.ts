@@ -26,4 +26,19 @@ describe('monorepo discovery', () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('rejects workspace globs that could escape the repository root', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-monorepo-'));
+    try {
+      await writeFile(
+        path.join(root, 'package.json'),
+        JSON.stringify({ workspaces: ['../outside/*'] })
+      );
+      await expect(discoverWorkspaces(root)).rejects.toThrow(
+        'Workspace patterns are unsafe'
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

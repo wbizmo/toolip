@@ -1,4 +1,9 @@
 import type { Command } from 'commander';
+import {
+  createProjectSnapshot,
+  type ProjectSnapshot
+} from '../application/project-snapshot.js';
+import { AnalysisResultCache } from '../application/task-scheduler.js';
 import { runSecurityDoctor } from '../core/security-doctor.js';
 import { watchProject } from '../core/watch/watch.js';
 
@@ -9,8 +14,17 @@ export function registerWatchCommand(program: Command): void {
     .option('-p, --path <path>', 'Project path.', process.cwd())
     .option('--once', 'Run once without watching.')
     .action(async (options: { path: string; once?: boolean }) => {
+      const cache = new AnalysisResultCache();
+      let previousSnapshot: ProjectSnapshot | undefined;
       const render = async (): Promise<void> => {
-        const result = await runSecurityDoctor(options.path);
+        const snapshot = await createProjectSnapshot(options.path, {
+          previous: previousSnapshot
+        });
+        const result = await runSecurityDoctor(snapshot.root, {
+          snapshot,
+          analysisCache: cache
+        });
+        previousSnapshot = snapshot;
         console.clear();
         console.log('Toolip Watch');
         console.log('');
@@ -19,6 +33,12 @@ export function registerWatchCommand(program: Command): void {
         console.log(`Dangerous code: ${result.summary.dangerousCode}`);
         console.log(`Configuration: ${result.summary.configuration}`);
         console.log(`Total findings: ${result.findings.length}`);
+        console.log(
+          `Incremental reads: ${snapshot.metrics.filesRead} files / ${snapshot.metrics.bytesRead} bytes; reused ${snapshot.metrics.filesReused} files / ${snapshot.metrics.bytesReused} bytes`
+        );
+        console.log(
+          `Analysis cache: ${result.cacheMetrics.hits} hits / ${result.cacheMetrics.misses} misses`
+        );
       };
 
       await render();
@@ -30,9 +50,12 @@ export function registerWatchCommand(program: Command): void {
 
       const close = watchProject(options.path, render, {
         onError(error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message =
+            error instanceof Error ? error.message : String(error);
           console.error(`Toolip watch check failed: ${message}`);
-          console.error('Watching continues; fix the error or press Ctrl+C to stop.');
+          console.error(
+            'Watching continues; fix the error or press Ctrl+C to stop.'
+          );
         }
       });
 

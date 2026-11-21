@@ -7,6 +7,7 @@ import {
 } from '../application/analysis-status.js';
 import { AnalyzerRunner } from '../application/analyzer-runner.js';
 import { DockerfileAnalyzer } from '../analyzers/docker/analyzer.js';
+import { serializeJsonOutputBounded } from '../core/report-writer.js';
 
 type DockerScanOptions = {
   path: string;
@@ -40,18 +41,14 @@ export function registerDockerScanCommand(
 
       if (options.json) {
         console.log(
-          JSON.stringify(
-            {
-              analyzer: result.analyzer,
-              durationMs: result.durationMs,
-              analysis: assessmentJson(assessment),
-              summary: result.metadata,
-              findings: result.findings,
-              warnings: result.warnings ?? []
-            },
-            null,
-            2
-          )
+          serializeJsonOutputBounded({
+            analyzer: result.analyzer,
+            durationMs: result.durationMs,
+            analysis: assessmentJson(assessment),
+            summary: result.metadata,
+            findings: result.findings,
+            warnings: result.warnings ?? []
+          })
         );
         finishAnalysis({
           assessment,

@@ -1,12 +1,13 @@
-import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { mapConcurrent } from '../../application/concurrency.js';
+import { coverageOf } from '../../contracts/analysis.js';
 import type {
   Analyzer,
   AnalyzerContext,
   AnalyzerResult
 } from '../../contracts/analyzer.js';
 import type { Finding } from '../../contracts/finding.js';
+import { TextFileReader } from '../../core/text-file-reader.js';
 
 type PackageManifest = {
   dependencies?: Record<string, string>;
@@ -21,12 +22,20 @@ type Candidate = {
   section: string;
 };
 
+const maximumManifestBytes = 2 * 1024 * 1024;
+const maximumCandidateLookups = 5_000;
+const maximumPackageNameBytes = 214;
+const maximumRequirementBytes = 16 * 1024;
+
 export type RegistryLookup = (
   packageName: string,
   signal?: AbortSignal
 ) => Promise<boolean>;
 
-function dependencies(manifest: PackageManifest): Candidate[] {
+function dependencyCandidates(
+  manifest: PackageManifest,
+  maximum: number
+): { candidates: Candidate[]; total: number; rejected: number } {
   const sections = [
     'dependencies',
     'devDependencies',
@@ -34,27 +43,48 @@ function dependencies(manifest: PackageManifest): Candidate[] {
     'peerDependencies'
   ] as const;
 
-  return sections.flatMap((section) =>
-    Object.entries(manifest[section] ?? {}).map(
-      ([name, requirement]) => ({ name, requirement, section })
-    )
-  );
+  const candidates: Candidate[] = [];
+  let total = 0;
+  let rejected = 0;
+  for (const section of sections) {
+    const dependencies = manifest[section];
+    if (dependencies === undefined) continue;
+    if (
+      dependencies === null ||
+      typeof dependencies !== 'object' ||
+      Array.isArray(dependencies)
+    ) {
+      throw new Error(`package.json ${section} must be an object`);
+    }
+    for (const name in dependencies) {
+      if (!Object.hasOwn(dependencies, name)) continue;
+      const requirement = dependencies[name];
+      if (typeof requirement !== 'string')
+        throw new Error(`package.json ${section} entries must be strings`);
+      if (!internalSignal(name, requirement)) continue;
+      total += 1;
+      if (
+        Buffer.byteLength(name, 'utf8') > maximumPackageNameBytes ||
+        Buffer.byteLength(requirement, 'utf8') > maximumRequirementBytes
+      ) {
+        rejected += 1;
+        continue;
+      }
+      if (candidates.length < maximum)
+        candidates.push({ name, requirement, section });
+    }
+  }
+  return { candidates, total, rejected };
 }
 
-function internalSignal(
-  name: string,
-  requirement: string
-): boolean {
+function internalSignal(name: string, requirement: string): boolean {
   return (
     requirement.startsWith('file:') ||
     requirement.startsWith('workspace:') ||
     requirement.startsWith('link:') ||
     requirement.startsWith('git+') ||
     requirement.startsWith('github:') ||
-    (
-      name.startsWith('@') &&
-      (requirement === '*' || requirement === 'latest')
-    )
+    (name.startsWith('@') && (requirement === '*' || requirement === 'latest'))
   );
 }
 
@@ -74,9 +104,7 @@ async function defaultLookup(
   if (response.status === 404) return false;
 
   if (!response.ok) {
-    throw new Error(
-      `npm registry lookup failed with HTTP ${response.status}.`
-    );
+    throw new Error(`npm registry lookup failed with HTTP ${response.status}.`);
   }
 
   return true;
@@ -94,10 +122,12 @@ function toFinding(candidate: Candidate): Finding {
       `${candidate.name} uses ${candidate.requirement} in ` +
       `${candidate.section}, but the same name exists on the public npm registry.`,
     source: 'npm-registry',
-    evidence: [{
-      summary: `${candidate.section}: ${candidate.name} = ${candidate.requirement}`,
-      fingerprint: `${candidate.name}:${candidate.requirement}`
-    }],
+    evidence: [
+      {
+        summary: `${candidate.section}: ${candidate.name} = ${candidate.requirement}`,
+        fingerprint: `${candidate.name}:${candidate.requirement}`
+      }
+    ],
     remediation: {
       summary:
         'Use an organization-controlled scope, enforce a private registry for the scope, pin registry configuration, and verify package provenance.'
@@ -115,17 +145,77 @@ export class DependencyConfusionAnalyzer implements Analyzer {
     private readonly concurrency = 8
   ) {}
 
-  async analyze(
-    context: AnalyzerContext
-  ): Promise<AnalyzerResult> {
+  async analyze(context: AnalyzerContext): Promise<AnalyzerResult> {
     const startedAt = performance.now();
-    const manifest = JSON.parse(
-      await readFile(path.join(context.root, 'package.json'), 'utf8')
-    ) as PackageManifest;
-
-    const candidates = dependencies(manifest).filter((item) =>
-      internalSignal(item.name, item.requirement)
+    const manifestReader = new TextFileReader(
+      {
+        maxFiles: 1,
+        maxFileBytes: maximumManifestBytes,
+        maxTotalBytes: maximumManifestBytes
+      },
+      { root: context.root, maxConcurrentReads: 1 }
     );
+    const manifestRead = await manifestReader.read(
+      path.join(context.root, 'package.json'),
+      context.signal
+    );
+    if (manifestRead.status !== 'ok') {
+      const failed =
+        manifestRead.status === 'failed' || manifestRead.status === 'changed';
+      const reason =
+        manifestRead.status === 'oversized'
+          ? 'package.json exceeds the 2 MiB analysis limit'
+          : manifestRead.status === 'cancelled'
+            ? 'analysis was cancelled while reading package.json'
+            : manifestRead.status === 'budget-exceeded'
+              ? 'package.json exceeded the configured read budget'
+              : manifestRead.status === 'binary'
+                ? 'package.json is not valid text input'
+                : 'package.json could not be read as a stable file';
+      return {
+        analyzer: this.id,
+        durationMs: Math.round(performance.now() - startedAt),
+        findings: [],
+        warnings: [reason],
+        coverage: coverageOf({
+          eligible: 1,
+          scanned: 0,
+          skipped: failed ? 0 : 1,
+          failed: failed ? 1 : 0,
+          cancelled: manifestRead.status === 'cancelled'
+        }),
+        metadata: { candidates: 0, publicCollisions: 0 }
+      };
+    }
+
+    let discovered: {
+      candidates: Candidate[];
+      total: number;
+      rejected: number;
+    };
+    try {
+      const manifest = JSON.parse(manifestRead.content) as PackageManifest;
+      if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest))
+        throw new Error('package.json root must be an object');
+      discovered = dependencyCandidates(manifest, maximumCandidateLookups);
+    } catch (error) {
+      const reason =
+        error instanceof Error ? error.message : 'package.json is invalid';
+      return {
+        analyzer: this.id,
+        durationMs: Math.round(performance.now() - startedAt),
+        findings: [],
+        warnings: [`Dependency confusion analysis failed: ${reason}.`],
+        coverage: coverageOf({
+          eligible: 1,
+          scanned: 0,
+          skipped: 0,
+          failed: 1
+        }),
+        metadata: { candidates: 0, publicCollisions: 0 }
+      };
+    }
+    const { candidates, total, rejected } = discovered;
 
     const checks = await mapConcurrent(
       candidates,
@@ -144,8 +234,23 @@ export class DependencyConfusionAnalyzer implements Analyzer {
       analyzer: this.id,
       durationMs: Math.round(performance.now() - startedAt),
       findings,
+      ...(total > candidates.length
+        ? {
+            warnings: [
+              `Dependency confusion lookup budget or input limits withheld ${total - candidates.length} candidate(s).`
+            ]
+          }
+        : {}),
+      coverage: coverageOf({
+        eligible: total,
+        scanned: checks.length,
+        skipped: total - checks.length,
+        failed: 0
+      }),
       metadata: {
-        candidates: candidates.length,
+        candidates: total,
+        checkedCandidates: checks.length,
+        rejectedCandidates: rejected,
         publicCollisions: findings.length
       }
     };

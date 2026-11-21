@@ -1,35 +1,34 @@
-import { readFile } from 'node:fs/promises';
+import { lstat } from 'node:fs/promises';
 import path from 'node:path';
-import {
-  toolipConfigSchema,
-  type ToolipConfig
-} from './schema.js';
+import { TextFileReader } from '../text-file-reader.js';
+import { toolipConfigSchema, type ToolipConfig } from './schema.js';
 
-export const TOOLIP_CONFIG_FILE =
-  'toolip.config.json';
+export const TOOLIP_CONFIG_FILE = 'toolip.config.json';
+const maximumConfigBytes = 1024 * 1024;
 
-export async function loadToolipConfig(
-  root: string
-): Promise<ToolipConfig> {
-  const filePath = path.join(
-    root,
-    TOOLIP_CONFIG_FILE
-  );
+export async function loadToolipConfig(root: string): Promise<ToolipConfig> {
+  const filePath = path.join(root, TOOLIP_CONFIG_FILE);
 
   try {
-    const raw = await readFile(filePath, 'utf8');
-    const parsed = JSON.parse(raw) as unknown;
-
-    return toolipConfigSchema.parse(parsed);
+    await lstat(filePath);
   } catch (error) {
-    if (
-      error instanceof Error &&
-      'code' in error &&
-      error.code === 'ENOENT'
-    ) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
       return toolipConfigSchema.parse({});
     }
-
     throw error;
   }
+
+  const read = await new TextFileReader(
+    {
+      maxFiles: 1,
+      maxFileBytes: maximumConfigBytes,
+      maxTotalBytes: maximumConfigBytes
+    },
+    { root }
+  ).read(filePath);
+  if (read.status !== 'ok')
+    throw new Error(`Toolip configuration could not be read (${read.status}).`);
+  const parsed = JSON.parse(read.content) as unknown;
+
+  return toolipConfigSchema.parse(parsed);
 }

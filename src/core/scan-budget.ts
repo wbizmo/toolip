@@ -1,6 +1,11 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { ToolipError } from '../errors/toolip-error.js';
 
+const MAX_SCAN_DURATION_MS = 600_000;
+const MAX_PROVIDER_CONCURRENCY = 32;
+const MAX_PROVIDER_RETRIES = 5;
+const MAX_RETRY_DELAY_MS = 60_000;
+
 /**
  * Shared execution budget for one scan (issue #48): an absolute deadline, an
  * AbortSignal that fires at the deadline or on external cancellation, a cap on
@@ -45,7 +50,33 @@ export function createScanBudget(options: ScanBudgetOptions = {}): {
   budget: ScanBudget;
   dispose: () => void;
 } {
-  const totalMs = Math.max(1, options.totalMs ?? 120_000);
+  const totalMs = options.totalMs ?? 120_000;
+  if (
+    !Number.isSafeInteger(totalMs) ||
+    totalMs < 1 ||
+    totalMs > MAX_SCAN_DURATION_MS
+  )
+    throw new RangeError(
+      `scan duration must be an integer from 1 to ${MAX_SCAN_DURATION_MS} milliseconds`
+    );
+  const maxConcurrentRequests = options.maxConcurrentRequests ?? 8;
+  if (
+    !Number.isSafeInteger(maxConcurrentRequests) ||
+    maxConcurrentRequests < 1 ||
+    maxConcurrentRequests > MAX_PROVIDER_CONCURRENCY
+  )
+    throw new RangeError(
+      `provider concurrency must be an integer from 1 to ${MAX_PROVIDER_CONCURRENCY}`
+    );
+  const requestTimeoutMs = options.requestTimeoutMs ?? 15_000;
+  if (
+    !Number.isSafeInteger(requestTimeoutMs) ||
+    requestTimeoutMs < 1 ||
+    requestTimeoutMs > MAX_SCAN_DURATION_MS
+  )
+    throw new RangeError(
+      `provider request timeout must be an integer from 1 to ${MAX_SCAN_DURATION_MS} milliseconds`
+    );
   const controller = new AbortController();
   const timer = setTimeout(
     () => controller.abort(new DeadlineError()),
@@ -61,8 +92,8 @@ export function createScanBudget(options: ScanBudgetOptions = {}): {
     budget: {
       signal: controller.signal,
       deadlineAt: Date.now() + totalMs,
-      maxConcurrentRequests: Math.max(1, options.maxConcurrentRequests ?? 8),
-      requestTimeoutMs: Math.max(1, options.requestTimeoutMs ?? 15_000)
+      maxConcurrentRequests,
+      requestTimeoutMs
     },
     dispose: () => {
       clearTimeout(timer);
@@ -112,14 +143,47 @@ export async function withBudget<T>(
   budget: ScanBudget,
   policy: RetryPolicy = {}
 ): Promise<T> {
-  const retries = Math.max(0, policy.retries ?? 2);
+  if (
+    !budget?.signal ||
+    typeof budget.signal.aborted !== 'boolean' ||
+    !Number.isSafeInteger(budget.deadlineAt) ||
+    !Number.isSafeInteger(budget.maxConcurrentRequests) ||
+    budget.maxConcurrentRequests < 1 ||
+    budget.maxConcurrentRequests > MAX_PROVIDER_CONCURRENCY ||
+    !Number.isSafeInteger(budget.requestTimeoutMs) ||
+    budget.requestTimeoutMs < 1 ||
+    budget.requestTimeoutMs > MAX_SCAN_DURATION_MS
+  )
+    throw new TypeError('provider scan budget is invalid');
+  const retries = policy.retries ?? 2;
+  if (
+    !Number.isSafeInteger(retries) ||
+    retries < 0 ||
+    retries > MAX_PROVIDER_RETRIES
+  )
+    throw new RangeError(
+      `provider retries must be an integer from 0 to ${MAX_PROVIDER_RETRIES}`
+    );
   const baseMs = policy.baseMs ?? 250;
   const maxMs = policy.maxMs ?? 5_000;
+  if (
+    !Number.isSafeInteger(baseMs) ||
+    baseMs < 0 ||
+    baseMs > MAX_RETRY_DELAY_MS ||
+    !Number.isSafeInteger(maxMs) ||
+    maxMs < 0 ||
+    maxMs > MAX_RETRY_DELAY_MS
+  )
+    throw new RangeError(
+      `provider retry delays must be integers from 0 to ${MAX_RETRY_DELAY_MS} milliseconds`
+    );
   const random = policy.random ?? Math.random;
   const sleep =
     policy.sleep ??
     ((ms: number, signal: AbortSignal) =>
       delay(ms, undefined, { signal }).then(() => undefined));
+  if (typeof random !== 'function' || typeof sleep !== 'function')
+    throw new TypeError('provider retry functions are invalid');
 
   for (let attempt = 0; ; attempt += 1) {
     if (budget.signal.aborted) throw abortedError(budget);
@@ -138,9 +202,12 @@ export async function withBudget<T>(
 
       const failure = classify(error);
       const retryAfterMs = retryAfter(error);
+      const randomValue = random();
+      if (!Number.isFinite(randomValue) || randomValue < 0 || randomValue > 1)
+        throw new RangeError('provider retry random value must be from 0 to 1');
       const delayMs = Math.min(
         maxMs,
-        retryAfterMs ?? baseMs * 2 ** attempt * (0.5 + random() / 2)
+        retryAfterMs ?? baseMs * 2 ** attempt * (0.5 + randomValue / 2)
       );
       const remaining = budget.deadlineAt - Date.now();
 

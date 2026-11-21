@@ -10,6 +10,7 @@ import {
   ReachabilityAnalyzer,
   type PackageReachability
 } from '../analyzers/reachability/reachability-analyzer.js';
+import { serializeJsonOutputBounded } from '../core/report-writer.js';
 
 type ReachabilityOptions = {
   path: string;
@@ -69,17 +70,13 @@ export function registerReachabilityCommand(
 
       if (options.json) {
         console.log(
-          JSON.stringify(
-            {
-              analyzer: result.analyzer,
-              durationMs: result.durationMs,
-              analysis: assessmentJson(assessment),
-              packages,
-              warnings: result.warnings ?? []
-            },
-            null,
-            2
-          )
+          serializeJsonOutputBounded({
+            analyzer: result.analyzer,
+            durationMs: result.durationMs,
+            analysis: assessmentJson(assessment),
+            packages,
+            warnings: result.warnings ?? []
+          })
         );
         finish();
         return;

@@ -14,13 +14,18 @@ export async function fetchPackageManifest(
   packageName: string,
   budget?: ScanBudget
 ): Promise<NpmPackageManifest> {
+  const registry = 'https://registry.npmjs.org';
   if (!budget) {
-    return validate(packageName, await pacote.manifest(packageName));
+    return validate(
+      packageName,
+      await pacote.manifest(packageName, { registry })
+    );
   }
 
   const manifest = await withBudget(
     (signal) =>
       pacote.manifest(packageName, {
+        registry,
         signal,
         timeout: budget.requestTimeoutMs,
         fetchRetries: 0

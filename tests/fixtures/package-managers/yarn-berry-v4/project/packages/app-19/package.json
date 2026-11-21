@@ -1,0 +1,13 @@
+{
+  "name": "@toolip-fixture/app-19",
+  "version": "1.0.0",
+  "private": true,
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  }
+}
