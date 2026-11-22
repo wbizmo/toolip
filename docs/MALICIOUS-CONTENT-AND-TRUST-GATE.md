@@ -122,6 +122,8 @@ metadata do not become findings solely because they contain commands or URLs.
 Repository findings and path-specific incomplete reasons are limited to files
 changed by the PR and unchanged files reachable from those changed entrypoints;
 unchanged Toolip scanner and test code is not re-reported on unrelated PRs.
+Markdown documentation is not an executable entrypoint for process-chain
+analysis.
 For supported Cargo lockfiles, Stage A fetches only exact crates.io `.crate`
 archives, verifies each archive against both the lock checksum and the
 administrator-owned repository variable `TOOLIP_STAGE_A_CARGO_SHA256_POLICY`,
