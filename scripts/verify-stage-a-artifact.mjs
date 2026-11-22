@@ -203,10 +203,10 @@ export function verifyStageAArtifact(
   });
 }
 
-export async function verifyCurrentPullRequestIdentity(
+export function verifyCurrentPullRequestIdentity(
   record,
   expectedRepository,
-  { token, fetchImpl = globalThis.fetch } = {}
+  current
 ) {
   if (
     !record ||
@@ -215,68 +215,9 @@ export async function verifyCurrentPullRequestIdentity(
     record.baseRef !== 'main' ||
     !/^[0-9a-f]{40}$/iu.test(record.baseSha ?? '') ||
     !/^[0-9a-f]{40}$/iu.test(record.headSha ?? '') ||
-    !/^[0-9a-f]{40}$/iu.test(record.mergeSha ?? '') ||
-    typeof token !== 'string' ||
-    token.length < 20
+    !/^[0-9a-f]{40}$/iu.test(record.mergeSha ?? '')
   )
     throw new Error('Stage A current pull request identity input is invalid');
-  const response = await fetchImpl(
-    `https://api.github.com/repos/${expectedRepository}/pulls/${record.pullRequest}`,
-    {
-      redirect: 'manual',
-      signal: AbortSignal.timeout(10_000),
-      headers: {
-        accept: 'application/vnd.github+json',
-        authorization: `Bearer ${token}`,
-        'x-github-api-version': '2022-11-28'
-      }
-    }
-  );
-  if (
-    response.status !== 200 ||
-    (response.url && new URL(response.url).origin !== 'https://api.github.com')
-  )
-    throw new Error('Stage A current pull request identity is unavailable');
-  const declaredLength = Number(response.headers.get('content-length'));
-  if (Number.isFinite(declaredLength) && declaredLength > 256 * 1024)
-    throw new Error('Stage A current pull request identity exceeds its budget');
-  const reader = response.body?.getReader();
-  if (!reader)
-    throw new Error(
-      'Stage A current pull request identity has no response body'
-    );
-  const chunks = [];
-  let bytes = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      bytes += value.byteLength;
-      if (bytes > 256 * 1024) {
-        await reader.cancel().catch(() => undefined);
-        throw new Error(
-          'Stage A current pull request identity exceeds its budget'
-        );
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  let current;
-  try {
-    const payload = new Uint8Array(bytes);
-    let offset = 0;
-    for (const chunk of chunks) {
-      payload.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    current = JSON.parse(
-      new TextDecoder('utf-8', { fatal: true }).decode(payload)
-    );
-  } catch {
-    throw new Error('Stage A current pull request identity is malformed');
-  }
   if (
     current?.number !== record.pullRequest ||
     current?.state !== 'open' ||
@@ -293,9 +234,16 @@ export async function verifyCurrentPullRequestIdentity(
 
 async function main() {
   const artifactPath = process.argv[2];
-  if (!artifactPath)
-    throw new Error('Stage A approval artifact path is required');
+  const currentPullRequestPath = process.argv[3];
+  if (!artifactPath || !currentPullRequestPath)
+    throw new Error(
+      'Stage A approval and current pull request artifact paths are required'
+    );
   const record = JSON.parse(await readFile(artifactPath, 'utf8'));
+  const currentPullRequestText = await readFile(currentPullRequestPath, 'utf8');
+  if (Buffer.byteLength(currentPullRequestText, 'utf8') > 256 * 1024)
+    throw new Error('Stage A current pull request identity exceeds its budget');
+  const currentPullRequest = JSON.parse(currentPullRequestText);
   const event = JSON.parse(
     await readFile(process.env.GITHUB_EVENT_PATH, 'utf8')
   );
@@ -317,10 +265,10 @@ async function main() {
     process.env.GITHUB_REPOSITORY,
     { expectedNpmProvenancePolicySha256, expectedCargoArtifactPolicySha256 }
   );
-  await verifyCurrentPullRequestIdentity(
+  verifyCurrentPullRequestIdentity(
     record,
     process.env.GITHUB_REPOSITORY,
-    { token: process.env.GITHUB_TOKEN }
+    currentPullRequest
   );
   await appendFile(
     process.env.GITHUB_OUTPUT,

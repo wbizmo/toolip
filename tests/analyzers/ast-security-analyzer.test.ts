@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { AstSecurityAnalyzer } from '../../src/analyzers/ast/ast-security-analyzer.js';
+import { createScannerContext } from '../../src/core/scanner-context.js';
 import {
   analyzeAstSource,
   createAstProjectAnalysis,
@@ -20,6 +21,37 @@ function requiredProjectInput(
 }
 
 describe('AST security source analysis', () => {
+  it('accepts a scanner context rooted through a directory alias', async (ctx) => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), 'toolip-ast-root-'));
+    const root = path.join(parent, 'root');
+    const alias = path.join(parent, 'alias');
+    await mkdir(root);
+    await writeFile(path.join(root, 'safe.ts'), 'export const safe = true;');
+    try {
+      try {
+        await symlink(root, alias, 'dir');
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          'code' in error &&
+          ['EACCES', 'EPERM', 'ENOTSUP'].includes(String(error.code))
+        ) {
+          ctx.skip();
+        }
+        throw error;
+      }
+      const scannerContext = await createScannerContext(root);
+      await expect(
+        new AstSecurityAnalyzer().analyze({
+          root: alias,
+          options: { scannerContext }
+        })
+      ).resolves.toBeDefined();
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
   it('does not confuse RegExp.exec() with child_process.exec()', () => {
     const findings = analyzeAstSource(
       'auth.service.ts',

@@ -27,14 +27,14 @@ jobs:
 
     steps:
       - name: Verify manual authorization
-        shell: bash
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
-          CONFIRMATION: ${{ inputs.confirmation }}
-        run: |
-          if [ "$CONFIRMATION" != "publish toolip" ]; then
-            echo "Release authorization text did not match."
-            exit 1
-          fi
+          PUBLISH_CONFIRMATION: ${{ inputs.confirmation }}
+        with:
+          script: |
+            if (process.env.PUBLISH_CONFIRMATION !== 'publish toolip') {
+              core.setFailed('Release authorization text did not match.');
+            }
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -51,47 +51,55 @@ jobs:
       - name: Use current npm CLI
         run: npm install --global "npm@^11.5.1"
 
-      - name: Resolve release version
-        id: release
+      - name: Verify requested package version
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          actual="$(node -p "require('./package.json').version")"
-
-          if [ "$actual" != "$REQUESTED_VERSION" ]; then
-            echo "Requested version does not match package.json version $actual."
-            exit 1
-          fi
-
-          echo "version=$actual" >> "$GITHUB_OUTPUT"
+        with:
+          script: |
+            const fs = require('node:fs');
+            const { version } = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            if (process.env.REQUESTED_VERSION !== version) {
+              core.setFailed(`Requested version does not match package.json version ${version}.`);
+            }
 
       - name: Require matching verified GitHub release tag
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.release.outputs.version }}
-        run: |
-          set -euo pipefail
-          TAG="v${VERSION}"
-          git fetch --tags --force
-          test "$(git rev-list -n 1 "refs/tags/$TAG")" = "$GITHUB_SHA" || {
-            echo "The release tag must reference this exact main commit." >&2
-            exit 1
-          }
-          gh release view "$TAG" >/dev/null || {
-            echo "A verified GitHub release must exist before npm publishing." >&2
-            exit 1
-          }
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const fs = require('node:fs');
+            const { version } = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const tag = `v${version}`;
+            const { data: ref } = await github.rest.git.getRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `tags/${tag}`
+            });
+            let target = ref.object.sha;
+            if (ref.object.type === 'tag') {
+              const { data: annotated } = await github.rest.git.getTag({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag_sha: target
+              });
+              target = annotated.object.sha;
+            }
+            if (target !== context.sha) {
+              core.setFailed('The release tag must reference this exact main commit.');
+              return;
+            }
+            await github.rest.repos.getReleaseByTag({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag
+            });
 
       - name: Check npm version availability
         id: availability
         shell: bash
-        env:
-          VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
           if npm view "toolip@$VERSION" version --silent >/dev/null 2>&1; then
             echo "toolip@$VERSION is already published; nothing to do."
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
@@ -110,14 +118,12 @@ jobs:
 
       - name: Attest and verify the exact packed release candidate
         if: steps.availability.outputs.should_publish == 'true'
-        env:
-          VERSION: ${{ steps.release.outputs.version }}
-          SOURCE_REPOSITORY: https://github.com/${{ github.repository }}
-          SOURCE_COMMIT: ${{ github.sha }}
-          RUNNER_TEMP: ${{ runner.temp }}
         shell: bash
         run: |
           set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          SOURCE_REPOSITORY="https://github.com/${GITHUB_REPOSITORY}"
+          SOURCE_COMMIT="$GITHUB_SHA"
           TARBALL="toolip-${VERSION}.tgz"
           BUNDLE="${RUNNER_TEMP}/toolip-${VERSION}.sigstore.bundle.json"
           SUMMARY="${RUNNER_TEMP}/toolip-${VERSION}.attestation-summary.json"
@@ -145,10 +151,10 @@ jobs:
         if: steps.availability.outputs.should_publish == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: toolip-${{ steps.release.outputs.version }}-sigstore-attestation
+          name: toolip-sigstore-attestation
           path: |
-            ${{ runner.temp }}/toolip-${{ steps.release.outputs.version }}.sigstore.bundle.json
-            ${{ runner.temp }}/toolip-${{ steps.release.outputs.version }}.attestation-summary.json
+            ${{ runner.temp }}/toolip-*.sigstore.bundle.json
+            ${{ runner.temp }}/toolip-*.attestation-summary.json
           if-no-files-found: error
           retention-days: 90
 
@@ -159,5 +165,6 @@ jobs:
         # npm-release environment (required reviewers) gates this job.
         env:
           NPM_CONFIG_PROVENANCE: 'true'
-          VERSION: ${{ steps.release.outputs.version }}
-        run: npm publish --ignore-scripts "toolip-${VERSION}.tgz" --access public
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          npm publish --ignore-scripts "toolip-${VERSION}.tgz" --access public

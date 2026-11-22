@@ -4,6 +4,7 @@ import type {
   AnalyzerResult
 } from '../../contracts/analyzer.js';
 import type { Finding } from '../../contracts/finding.js';
+import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { coverageOf } from '../../contracts/analysis.js';
 import { createScannerContext } from '../../core/scanner-context.js';
@@ -42,7 +43,10 @@ export class AstSecurityAnalyzer implements Analyzer {
     const scannerContext =
       (context.options?.scannerContext as ScannerContext | undefined) ??
       (await createScannerContext(context.root));
-    if (path.resolve(scannerContext.root) !== path.resolve(context.root)) {
+    if (
+      (await realpath(path.resolve(scannerContext.root))) !==
+      (await realpath(path.resolve(context.root)))
+    ) {
       throw new Error('scanner context root does not match the analyzer root');
     }
     const reader = new TextFileReader(undefined, { root: scannerContext.root });

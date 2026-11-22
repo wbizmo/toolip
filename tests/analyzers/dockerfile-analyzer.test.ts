@@ -1,11 +1,46 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DockerfileAnalyzer } from '../../src/analyzers/docker/analyzer.js';
+import { createScannerContext } from '../../src/core/scanner-context.js';
 
 describe('DockerfileAnalyzer', () => {
+  it('accepts a scanner context rooted through a directory alias', async (ctx) => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), 'toolip-docker-root-'));
+    const root = path.join(parent, 'root');
+    const alias = path.join(parent, 'alias');
+    await mkdir(root);
+    await writeFile(
+      path.join(root, 'Dockerfile'),
+      'FROM scratch\nUSER 1000\nHEALTHCHECK CMD true\n'
+    );
+    try {
+      try {
+        await symlink(root, alias, 'dir');
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          'code' in error &&
+          ['EACCES', 'EPERM', 'ENOTSUP'].includes(String(error.code))
+        ) {
+          ctx.skip();
+        }
+        throw error;
+      }
+      const scannerContext = await createScannerContext(root);
+      await expect(
+        new DockerfileAnalyzer().analyze({
+          root: alias,
+          options: { scannerContext }
+        })
+      ).resolves.toBeDefined();
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
   it('distinguishes external unpinned COPY sources from local stages and digest-pinned sources', async () => {
     const digest = 'a'.repeat(64);
     const scenarios = [

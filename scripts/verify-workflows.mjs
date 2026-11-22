@@ -235,7 +235,7 @@ for (const file of files) {
         'STAGE_A_BASE_REPOSITORY',
         'STAGE_A_BASE_SHA',
         'STAGE_A_HEAD_SHA',
-        'STAGE_A_MERGE_SHA'
+        'STAGE_A_MERGE_SHA_FILE'
       ].some((name) => typeof scannerEnv[name] !== 'string') ||
       /\$\{\{\s*github\.event\./u.test(
         String(stageASteps[scannerIndex]?.run ?? '')
@@ -400,10 +400,15 @@ for (const file of files) {
         ['npm publish --ignore-scripts "toolip-$', '{VERSION}.tgz"'].join('')
       ) ||
       !String(publishStep?.env?.NPM_CONFIG_PROVENANCE ?? '').includes('true') ||
-      createAttestation?.env?.SOURCE_COMMIT !==
-        ['$', '{{ github.sha }}'].join('') ||
-      createAttestation?.env?.SOURCE_REPOSITORY !==
-        ['https://github.com/$', '{{ github.repository }}'].join('') ||
+      !String(createAttestation?.run ?? '').includes(
+        'SOURCE_COMMIT="$GITHUB_SHA"'
+      ) ||
+      !String(createAttestation?.run ?? '').includes(
+        [
+          'SOURCE_REPOSITORY="https://github.com/${',
+          'GITHUB_REPOSITORY}"'
+        ].join('')
+      ) ||
       [
         createAttestation,
         verifyAttestation,

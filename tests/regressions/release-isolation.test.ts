@@ -79,6 +79,10 @@ describe('release isolation policy (regression for Batch 00)', () => {
     const protectedBuildIndex = stageASteps.findIndex(
       (step) => String(step.run ?? '').trim() === 'npm run build'
     );
+    const currentPrSnapshotIndex = stageASteps.findIndex((step) =>
+      String(step.uses ?? '').startsWith('actions/github-script@') &&
+      String(step.with?.script ?? '').includes('github.rest.pulls.get')
+    );
     const provenanceIndex = stageASteps.findIndex((step) =>
       String(step.run ?? '').includes('scripts/stage-a-npm-provenance.mjs')
     );
@@ -102,6 +106,22 @@ describe('release isolation policy (regression for Batch 00)', () => {
     expect(scannerDigestIndex).toBeLessThan(protectedInstallIndex);
     expect(protectedInstallIndex).toBeLessThan(protectedBuildIndex);
     expect(protectedBuildIndex).toBeLessThan(scannerIndex);
+    expect(currentPrSnapshotIndex).toBeGreaterThan(protectedBuildIndex);
+    expect(currentPrSnapshotIndex).toBeLessThan(scannerIndex);
+    expect(stageASteps[currentPrSnapshotIndex]?.with?.script).toContain(
+      'expectedBase'
+    );
+    expect(stageASteps[currentPrSnapshotIndex]?.with?.script).toContain(
+      'expectedHead'
+    );
+    expect(
+      stageASteps[scannerIndex]?.env?.STAGE_A_MERGE_SHA_FILE
+    ).toBe(
+      ['${{ runner.temp ', '}}/toolip-stage-a-current-pr.json'].join('')
+    );
+    expect(stageASteps[scannerIndex]?.env).not.toHaveProperty(
+      'STAGE_A_MERGE_SHA'
+    );
     expect(stageASteps[protectedInstallIndex]?.name).toContain(
       'protected scanner dependencies'
     );
@@ -148,11 +168,17 @@ describe('release isolation policy (regression for Batch 00)', () => {
         )
       ).toBe(true);
       expect(stageB.permissions['pull-requests']).toBe('read');
-      expect(
-        stageB.jobs['stage-a-result'].steps.find((step) =>
-          String(step.run ?? '').includes('verify-stage-a-artifact.mjs')
-        )?.env?.GITHUB_TOKEN
-      ).toEqual(['${{', ' github.token }}'].join(''));
+      const verifier = stageB.jobs['stage-a-result'].steps.find((step) =>
+        String(step.run ?? '').includes('verify-stage-a-artifact.mjs')
+      );
+      expect(verifier?.env).not.toHaveProperty('GITHUB_TOKEN');
+      expect(verifier?.run).toContain('current-pr.json');
+      const currentPrSnapshot = stageB.jobs['stage-a-result'].steps.find(
+        (step) => String(step.uses ?? '').startsWith('actions/github-script@')
+      );
+      expect(currentPrSnapshot?.with?.script).toContain(
+        'github.rest.pulls.get'
+      );
       expect(
         stageB.jobs['stage-a-result'].steps.find((step) =>
           String(step.run ?? '').includes('verify-stage-a-artifact.mjs')

@@ -358,7 +358,7 @@ describe('Stage A artifact identity verification', () => {
     ).toThrow('invalid');
   });
 
-  it('rechecks the live PR identity before any Stage B work starts', async () => {
+  it('rechecks the current PR identity before any Stage B work starts', () => {
     const current = {
       number: 123,
       state: 'open',
@@ -367,25 +367,9 @@ describe('Stage A artifact identity verification', () => {
       head: { sha: headSha },
       merge_commit_sha: mergeSha
     };
-    const fetchImpl = async (
-      url: string | URL | Request,
-      init?: RequestInit
-    ) => {
-      expect(String(url)).toBe(
-        `https://api.github.com/repos/${repository}/pulls/123`
-      );
-      expect(init?.redirect).toBe('manual');
-      expect(new Headers(init?.headers).get('authorization')).toBe(
-        `Bearer ${'x'.repeat(32)}`
-      );
-      return new Response(JSON.stringify(current), { status: 200 });
-    };
-    await expect(
-      verifyCurrentPullRequestIdentity(record, repository, {
-        token: 'x'.repeat(32),
-        fetchImpl
-      })
-    ).resolves.toBe(true);
+    expect(verifyCurrentPullRequestIdentity(record, repository, current)).toBe(
+      true
+    );
     for (const stale of [
       { ...current, head: { sha: 'd'.repeat(40) } },
       { ...current, base: { ...current.base, sha: 'e'.repeat(40) } },
@@ -393,19 +377,12 @@ describe('Stage A artifact identity verification', () => {
       { ...current, state: 'closed' },
       { ...current, body: 'removed complexity disclosure' }
     ]) {
-      await expect(
-        verifyCurrentPullRequestIdentity(record, repository, {
-          token: 'x'.repeat(32),
-          fetchImpl: async () =>
-            new Response(JSON.stringify(stale), { status: 200 })
-        })
-      ).rejects.toThrow('stale');
+      expect(() =>
+        verifyCurrentPullRequestIdentity(record, repository, stale)
+      ).toThrow('stale');
     }
-    await expect(
-      verifyCurrentPullRequestIdentity(record, repository, {
-        token: 'x'.repeat(32),
-        fetchImpl: async () => new Response('unavailable', { status: 503 })
-      })
-    ).rejects.toThrow('unavailable');
+    expect(() =>
+      verifyCurrentPullRequestIdentity(record, repository, undefined)
+    ).toThrow('stale');
   });
 });

@@ -47,13 +47,48 @@ jobs:
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           run-id: ${{ github.event.workflow_run.id }}
+      - name: Snapshot current PR identity outside the shell
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          STAGE_A_APPROVAL_PATH: ${{ runner.temp }}/stage-a/stage-a-approval.json
+          STAGE_A_CURRENT_PR_PATH: ${{ runner.temp }}/stage-a/current-pr.json
+        with:
+          script: |
+            const fs = require('node:fs');
+            const approvalText = fs.readFileSync(process.env.STAGE_A_APPROVAL_PATH, 'utf8');
+            if (Buffer.byteLength(approvalText, 'utf8') > 256 * 1024) {
+              core.setFailed('Stage A approval artifact exceeds its size budget.');
+              return;
+            }
+            const approval = JSON.parse(approvalText);
+            if (!Number.isSafeInteger(approval.pullRequest)) {
+              core.setFailed('Stage A approval has an invalid pull request number.');
+              return;
+            }
+            const { data: pullRequest } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: approval.pullRequest
+            });
+            const identity = {
+              number: pullRequest.number,
+              state: pullRequest.state,
+              body: pullRequest.body,
+              base: {
+                repo: { full_name: pullRequest.base.repo.full_name },
+                ref: pullRequest.base.ref,
+                sha: pullRequest.base.sha
+              },
+              head: { sha: pullRequest.head.sha },
+              merge_commit_sha: pullRequest.merge_commit_sha
+            };
+            fs.writeFileSync(process.env.STAGE_A_CURRENT_PR_PATH, JSON.stringify(identity), { mode: 0o600 });
       - name: Validate approval identity and immutable commits
         id: verify
         env:
-          GITHUB_TOKEN: ${{ github.token }}
           TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY: ${{ vars.TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY }}
           TOOLIP_STAGE_A_CARGO_SHA256_POLICY: ${{ vars.TOOLIP_STAGE_A_CARGO_SHA256_POLICY }}
-        run: node scripts/verify-stage-a-artifact.mjs "${{ runner.temp }}/stage-a/stage-a-approval.json"
+        run: node scripts/verify-stage-a-artifact.mjs "${{ runner.temp }}/stage-a/stage-a-approval.json" "${{ runner.temp }}/stage-a/current-pr.json"
 
   complexity-evidence:
     name: Require algorithmic complexity evidence
@@ -63,16 +98,13 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Verify PR time/space analysis is documented
-        shell: bash
-        env:
-          COMPLEXITY_EVIDENCE: ${{ needs.stage-a-result.outputs.complexity_evidence }}
+        if: needs.stage-a-result.outputs.complexity_evidence != 'true'
         run: |
-          set -euo pipefail
-          if [[ "$COMPLEXITY_EVIDENCE" != "true" ]]; then
-            echo "Missing required PR complexity disclosure from the trusted Stage A event record."
-            exit 1
-          fi
-          echo "Complexity disclosure present; reviewer must validate correctness."
+          echo 'Missing required PR complexity disclosure from the trusted Stage A event record.'
+          exit 1
+      - name: Record reviewer requirement
+        if: needs.stage-a-result.outputs.complexity_evidence == 'true'
+        run: echo 'Complexity disclosure present; reviewer must validate correctness.'
 
   static:
     name: Typecheck, lint, formatting, workflow and lockfile policy
@@ -104,15 +136,9 @@ jobs:
       - name: Formatting (repo docs/config/scripts)
         run: npm run format:check
       - name: Formatting (changed source and tests)
-        env:
-          BASE_SHA: ${{ needs.stage-a-result.outputs.base_sha }}
-          HEAD_SHA: ${{ needs.stage-a-result.outputs.head_sha }}
-        run: npm run format:changed
+        run: npm run format:changed -- origin/main HEAD
       - name: Whitespace errors in diff
-        env:
-          BASE_SHA: ${{ needs.stage-a-result.outputs.base_sha }}
-          HEAD_SHA: ${{ needs.stage-a-result.outputs.head_sha }}
-        run: git diff --check "$BASE_SHA" "$HEAD_SHA"
+        run: git diff --check origin/main...HEAD
       - name: Workflow release-isolation and permission policy
         run: npm run verify:workflows
       - name: Lockfile and supply-chain integrity

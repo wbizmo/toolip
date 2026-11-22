@@ -3,6 +3,7 @@ import type {
   AnalyzerContext,
   AnalyzerResult
 } from '../../contracts/analyzer.js';
+import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import type { Finding, FindingSeverity } from '../../contracts/finding.js';
 import { coverageOf } from '../../contracts/analysis.js';
@@ -1043,7 +1044,10 @@ export class DockerfileAnalyzer implements Analyzer {
     const scanner =
       (context.options?.scannerContext as ScannerContext | undefined) ??
       (await createScannerContext(context.root));
-    if (path.resolve(scanner.root) !== path.resolve(context.root))
+    if (
+      (await realpath(path.resolve(scanner.root))) !==
+      (await realpath(path.resolve(context.root)))
+    )
       throw new Error(
         'scanner context root does not match the Dockerfile root'
       );
