@@ -2,6 +2,7 @@
 import { writeFile } from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { validOwnerAttestationEntry } from './verify-stage-a-artifact.mjs';
 
 const event = JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH, 'utf8'));
 const pr = event.pull_request;
@@ -135,6 +136,20 @@ if (
   )
 )
   throw new Error('Stage A exact non-npm archive digest set is incomplete');
+if (
+  scan.appliedExceptions.some(
+    (entry) =>
+      !validOwnerAttestationEntry(entry, {
+        repository,
+        headSha: pr.head.sha,
+        headInputSha256: scan.headInputSha256,
+        verifiedArtifactSha512ByLocation: verifiedArchiveDigests
+      })
+  )
+)
+  throw new Error(
+    'Stage A owner attestation does not match the verified archive digest'
+  );
 let npmProvenanceStatus = 'not-applicable';
 let npmProvenancePolicySha256 = null;
 let npmProvenanceArtifactCount = 0;

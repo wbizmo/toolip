@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  validOwnerAttestationEntry,
   verifyCurrentPullRequestIdentity,
   verifyStageAArtifact
 } from '../../scripts/verify-stage-a-artifact.mjs';
@@ -101,6 +102,70 @@ const event = {
 };
 
 describe('Stage A artifact identity verification', () => {
+  it('validates exact digest-bound owner attestations in an immutable approval', () => {
+    const start = new Date(Date.now() - 60_000).toISOString();
+    const end = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const reason =
+      'unsupported-toolchain-execution:artifact:node_modules/package-0/bin/tool:node_modules/package-0';
+    const entry = {
+      id: 'owner-reviewed-artifact',
+      reasonCode: 'unsupported-toolchain-execution',
+      exactReason: reason,
+      headInputSha256: record.headInputSha256,
+      expiresAt: end,
+      reviewer: 'wbizmo',
+      reviewedAt: start,
+      reviewedCommit: headSha,
+      ownerAttestation: {
+        owner: 'wbizmo',
+        headSha,
+        attestedAt: start,
+        artifactLocation: 'node_modules/package-0',
+        artifactSha512:
+          record.verifiedArtifactSha512ByLocation['node_modules/package-0']
+      }
+    };
+    const approved = { ...record, appliedExceptions: [entry] };
+    expect(validOwnerAttestationEntry(entry, approved)).toBe(true);
+    expect(
+      verifyStageAArtifact(approved, event, repository, {
+        expectedNpmProvenancePolicySha256: npmPolicySha256
+      }).appliedExceptions
+    ).toHaveLength(1);
+    for (const changed of [
+      {
+        ...entry,
+        exactReason: 'unsupported-toolchain-execution:node_modules/other'
+      },
+      { ...entry, reviewer: 'intruder' },
+      {
+        ...entry,
+        ownerAttestation: {
+          ...entry.ownerAttestation,
+          artifactSha512: 'a'.repeat(128)
+        }
+      },
+      {
+        ...entry,
+        ownerAttestation: { ...entry.ownerAttestation, headSha: '0'.repeat(40) }
+      },
+      {
+        ...entry,
+        expiresAt: new Date(Date.now() + 9 * 24 * 60 * 60 * 1000).toISOString()
+      }
+    ]) {
+      expect(validOwnerAttestationEntry(changed, approved)).toBe(false);
+      expect(() =>
+        verifyStageAArtifact(
+          { ...approved, appliedExceptions: [changed] },
+          event,
+          repository,
+          { expectedNpmProvenancePolicySha256: npmPolicySha256 }
+        )
+      ).toThrow();
+    }
+  });
+
   it('accepts only an approved artifact bound to its successful PR run and exact commits', () => {
     expect(
       verifyStageAArtifact(record, event, repository, {
