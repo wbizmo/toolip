@@ -244,7 +244,14 @@ function parseYarnPnpState(source: string): YarnPnpState {
 }
 
 function isWithin(root: string, candidate: string): boolean {
-  const relative = path.relative(root, candidate);
+  // realpathSync/realpath may disagree about Windows long-path prefixes even
+  // for the same file. Normalize both sides before checking containment, or
+  // Node's path.relative treats `\\?\C:\...` and `C:\...` as different
+  // roots and the resolver silently loses otherwise valid package evidence.
+  const relative = path.relative(
+    instancePathKey(root),
+    instancePathKey(candidate)
+  );
   return (
     relative === '' ||
     (!path.isAbsolute(relative) &&
