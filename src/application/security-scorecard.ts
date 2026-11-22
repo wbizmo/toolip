@@ -101,6 +101,8 @@ export type SecurityScorecardOptions = {
   /** Reuse a caller's bounded immutable capture rather than taking a second snapshot. */
   projectSnapshot?: ProjectSnapshot;
   analysisCache?: AnalysisResultCache;
+  /** Bounded end-to-end analyzer deadline for explicit large scans. */
+  analysisTimeoutMs?: number;
   /** Reuse discovery already performed by the enclosing command. */
   scannerContext?: ScannerContext;
 };
@@ -157,7 +159,17 @@ export async function buildSecurityScorecard(
   const packageHealthAnalyzer = services.packageHealth ?? analyzePackageHealth;
   const licenseAnalyzer = services.licenseAnalysis ?? analyzeLicenses;
   const scanRoot = options.scannerContext?.root ?? root;
-  const runner = new AnalyzerRunner({ concurrency: 1, timeoutMs: 60_000 });
+  const analysisTimeoutMs = options.analysisTimeoutMs ?? 60_000;
+  if (
+    !Number.isSafeInteger(analysisTimeoutMs) ||
+    analysisTimeoutMs < 1 ||
+    analysisTimeoutMs > 600_000
+  )
+    throw new Error('scorecard analysis timeout is outside the supported range');
+  const runner = new AnalyzerRunner({
+    concurrency: 1,
+    timeoutMs: analysisTimeoutMs
+  });
   const { budget, dispose } = createScanBudget(options.budget);
   let context: Awaited<ReturnType<typeof scannerContextFromSnapshot>>;
   let projectSnapshot: ProjectSnapshot;
@@ -248,6 +260,7 @@ export async function buildSecurityScorecard(
             signal,
             snapshot: projectSnapshot,
             analysisCache: options.analysisCache,
+            astProjectTimeoutMs: analysisTimeoutMs,
             rulePacks: options.rulePacks,
             analyzerPlugins: options.analyzerPlugins,
             enableExecutablePlugins: options.enableExecutablePlugins

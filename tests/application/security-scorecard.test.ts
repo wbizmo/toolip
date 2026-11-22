@@ -96,6 +96,14 @@ const cleanGit = async () => ({
 });
 
 describe('buildSecurityScorecard', () => {
+  it('rejects an unbounded explicit analysis timeout before scanning', async () => {
+    await expect(
+      buildSecurityScorecard('/not-read', {}, { analysisTimeoutMs: 600_001 })
+    ).rejects.toThrow(
+      'scorecard analysis timeout is outside the supported range'
+    );
+  });
+
   it('binds verified rule-pack identity into the signed scorecard subject', async () => {
     const root = await fixture();
     const now = Date.now();

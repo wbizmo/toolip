@@ -80,6 +80,7 @@ const maximumComposerAliasesPerPackage = 8;
 const maximumComposerRequirementsPerPackage = 10_000;
 const maximumComposerRootRequirements = 10_000;
 const maximumCargoWorkspaceManifests = 5_000;
+const maximumCargoLockBytes = 256 * 1024 * 1024;
 const maximumGradleWorkspaceManifests = 5_000;
 const maximumGradleWorkspaceEntries = 50_000;
 const maximumGradleWorkspaceLockfiles = 128;
@@ -97,7 +98,11 @@ const maximumPythonRequirementBytes = 32 * 1024 * 1024;
 const maximumPythonWorkspaceManifests = 5_000;
 const maximumPythonWorkspaceEntries = 50_000;
 const maximumWorkspaceGlobWork = 16_000_000;
-const maximumEcosystemResolutionWork = 250_000;
+const maximumCargoDeclarationWork = 250_000;
+// A 250k exact-instance Cargo graph can require one candidate comparison plus
+// one workspace-context comparison per edge. Keep this globally bounded while
+// allowing the explicit qualification ceiling to resolve completely.
+const maximumEcosystemResolutionWork = 1_000_000;
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
   if (!signal?.aborted) return;
@@ -2849,7 +2854,8 @@ function fromJavaDependencyGraph(
 async function readInput(
   root: string,
   relativePath: string,
-  fileSource?: DependencyFileSource
+  fileSource?: DependencyFileSource,
+  maximumBytes?: number
 ): Promise<string | undefined> {
   if (fileSource) {
     if (!fileSource.hasFile(relativePath)) return undefined;
@@ -2859,7 +2865,10 @@ async function readInput(
     return text;
   }
   try {
-    return await readBoundedDependencyText(path.join(root, relativePath));
+    return await readBoundedDependencyText(
+      path.join(root, relativePath),
+      maximumBytes
+    );
   } catch (error) {
     if (
       error &&
@@ -5015,7 +5024,12 @@ export async function readOtherEcosystemInventoryDetailed(
   ];
   for (const [file, ecosystem, source] of tomlLocks) {
     try {
-      const text = await readInput(root, file, fileSource);
+      const text = await readInput(
+        root,
+        file,
+        fileSource,
+        file === 'Cargo.lock' ? maximumCargoLockBytes : undefined
+      );
       if (text === undefined) continue;
       loadedLockfiles.add(file);
       const before = output.length;
@@ -5267,13 +5281,13 @@ export async function readOtherEcosystemInventoryDetailed(
         declarationsByName.get(dependency.name)?.length ?? 0;
       if (
         workspaceDeclarationWork + cargoDeclarationWork >
-        maximumEcosystemResolutionWork
+        maximumCargoDeclarationWork
       )
         break;
     }
     if (
       workspaceDeclarationWork + cargoDeclarationWork >
-      maximumEcosystemResolutionWork
+      maximumCargoDeclarationWork
     ) {
       if (!cargoDeclarationWarningAdded) {
         warnings.push('cargo-workspace-declaration-work-budget-exceeded');

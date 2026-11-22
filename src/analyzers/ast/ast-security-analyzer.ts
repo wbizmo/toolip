@@ -153,7 +153,7 @@ export class AstSecurityAnalyzer implements Analyzer {
         taintWorkLimitPerFile: 250_000,
         taintWorkLimitPerProject: 8_000_000,
         interproceduralInputLimits: {
-          files: 50_000,
+          files: 250_000,
           bytes: 64 * 1024 * 1024
         },
         crossFileAnalysis: projectFindingsByPath

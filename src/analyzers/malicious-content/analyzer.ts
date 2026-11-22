@@ -25,7 +25,9 @@ type Entry = {
   suspicious: boolean;
   unknown: boolean;
 };
-const MAX_ANALYSIS_FILES = 100_000;
+// Covers the explicit 250k qualification fixture plus its bounded metadata
+// files. Byte, entrypoint and graph-work budgets remain independent caps.
+const MAX_ANALYSIS_FILES = 250_010;
 const MAX_ANALYSIS_BYTES = 256 * 1024 * 1024;
 const MAX_ANALYSIS_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_BINARY_NAMED_TEXT_PROBES = 256;

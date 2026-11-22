@@ -27,7 +27,8 @@ const execFileAsync = promisify(execFile);
 const pnpmAvailable =
   spawnSync('pnpm', ['--version'], { encoding: 'utf8' }).status === 0;
 const yarnAvailable =
-  spawnSync('yarn', ['--version'], { encoding: 'utf8' }).status === 0;
+  spawnSync('corepack', ['yarn', '--version'], { encoding: 'utf8' }).status ===
+  0;
 
 describe('createUpgradePullRequest', () => {
   it('runs a devDependency-provided test executable after frozen install in a real worktree', async () => {
@@ -175,7 +176,11 @@ describe('createUpgradePullRequest', () => {
         if (command === 'pnpm' && args[0] === '--version') {
           return { stdout: '12.18.0', stderr: '' };
         }
-        if (command === 'yarn' && args[0] === '--version') {
+        if (
+          command === 'corepack' &&
+          args[0] === 'yarn' &&
+          args[1] === '--version'
+        ) {
           return { stdout: yarnVersion, stderr: '' };
         }
         return { stdout: '', stderr: '' };
@@ -192,6 +197,7 @@ describe('createUpgradePullRequest', () => {
 
     await installFrozenDependencies('yarn', '/tmp/worktree', runtime);
     expect(calls.at(-1)).toEqual([
+      'corepack',
       'yarn',
       'install',
       '--frozen-lockfile',
@@ -202,6 +208,7 @@ describe('createUpgradePullRequest', () => {
     yarnVersion = '4.5.0';
     await installFrozenDependencies('yarn', '/tmp/worktree', runtime);
     expect(calls.at(-1)).toEqual([
+      'corepack',
       'yarn',
       'install',
       '--immutable',
@@ -997,7 +1004,9 @@ async function verifyFrozenManagerFixture(
 
   try {
     await mkdir(path.join(root, 'fixture-cli/bin'), { recursive: true });
-    const managerCommand = manager === 'pnpm' ? 'pnpm' : 'yarn';
+    const managerCommand = manager === 'pnpm' ? 'pnpm' : 'corepack';
+    const managerArgs = (args: string[]): string[] =>
+      manager === 'pnpm' ? args : ['yarn', ...args];
     const yarnBerry = manager === 'yarn-berry';
     if (yarnBerry) {
       await writeFile(
@@ -1010,11 +1019,15 @@ async function verifyFrozenManagerFixture(
         })
       );
     }
-    const version = await runtime.exec(managerCommand, ['--version'], root);
+    const version = await runtime.exec(
+      managerCommand,
+      managerArgs(['--version']),
+      root
+    );
     const yarnClassic =
-      managerCommand === 'yarn' && version.stdout.trim().startsWith('1.');
+      manager !== 'pnpm' && version.stdout.trim().startsWith('1.');
     const useYarnBerry =
-      yarnBerry || (managerCommand === 'yarn' && !yarnClassic);
+      yarnBerry || (manager !== 'pnpm' && !yarnClassic);
     await writeFile(
       path.join(root, 'package.json'),
       JSON.stringify({
@@ -1062,7 +1075,7 @@ async function verifyFrozenManagerFixture(
         : yarnClassic
           ? ['install', '--ignore-scripts', '--non-interactive']
           : ['install', '--mode=skip-build'];
-    await runtime.exec(managerCommand, lockfileArgs, root);
+    await runtime.exec(managerCommand, managerArgs(lockfileArgs), root);
     await runtime.exec('git', ['init', root], container);
     await runtime.exec('git', ['config', 'user.name', 'Toolip Test'], root);
     await runtime.exec(
@@ -1080,11 +1093,11 @@ async function verifyFrozenManagerFixture(
     worktreeAdded = true;
 
     await installFrozenDependencies(
-      managerCommand as 'pnpm' | 'yarn',
+      manager === 'pnpm' ? 'pnpm' : 'yarn',
       worktree,
       runtime
     );
-    await runtime.exec(managerCommand, ['test'], worktree);
+    await runtime.exec(managerCommand, managerArgs(['test']), worktree);
 
     expect(existsSync(rootHookMarker)).toBe(false);
     expect(existsSync(dependencyHookMarker)).toBe(false);

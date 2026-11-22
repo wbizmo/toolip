@@ -923,7 +923,7 @@ describe('non-npm lockfile inventory', () => {
       ],
       ['composer.lock', JSON.stringify({ packages: lockedCandidates })]
     ]);
-    for (let index = 0; index < 300; index++) {
+    for (let index = 0; index < 1_100; index++) {
       const directory = `packages/workspace-${index}`;
       files.set(
         `${directory}/composer.json`,
