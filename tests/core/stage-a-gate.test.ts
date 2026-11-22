@@ -568,6 +568,31 @@ describe('trusted Stage A Git-object scanner', () => {
     ).toThrow('Malformed package scripts');
   });
 
+  it('does not block a documentation change on unchanged project scanner heuristics', async () => {
+    const fixture = await repo({
+      'README.md': 'Documentation update.\n',
+      'scripts/stage-a-gate.mjs': 'spawnSync(command, args, options);\n',
+      'scripts/release-check.sh': 'npm install\n'
+    });
+    expect(
+      scanGitTree(fixture.root, fixture.sha, { changedPaths: ['README.md'] })
+    ).toMatchObject({
+      status: 'approved',
+      findings: [],
+      incompleteReasons: []
+    });
+  });
+
+  it('still blocks suspicious content when the flagged file changed', async () => {
+    const fixture = await repo({
+      'payload.js': 'const payload = atob(encoded); eval(payload);\n'
+    });
+    expect(
+      scanGitTree(fixture.root, fixture.sha, { changedPaths: ['payload.js'] })
+        .status
+    ).toBe('blocked');
+  });
+
   it('keeps unsupported build toolchains incomplete before Stage B can execute them', async () => {
     const packageScript = await repo({
       'package.json': JSON.stringify({

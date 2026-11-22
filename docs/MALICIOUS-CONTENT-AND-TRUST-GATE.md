@@ -119,6 +119,9 @@ registry signatures, provenance and lifecycle-hook review still apply to every
 locked package. Suspicious child-process heuristics inspect executable tokens
 with comments and string literals masked, so test fixtures and static launcher
 metadata do not become findings solely because they contain commands or URLs.
+Repository findings and path-specific incomplete reasons are limited to files
+changed by the PR and unchanged files reachable from those changed entrypoints;
+unchanged Toolip scanner and test code is not re-reported on unrelated PRs.
 For supported Cargo lockfiles, Stage A fetches only exact crates.io `.crate`
 archives, verifies each archive against both the lock checksum and the
 administrator-owned repository variable `TOOLIP_STAGE_A_CARGO_SHA256_POLICY`,

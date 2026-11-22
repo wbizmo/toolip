@@ -3964,13 +3964,17 @@ function traceChangedEntrypoints(changedPaths, texts, findingPaths) {
     edgeCount += targets.size;
     if (targets.size > 0) adjacency.set(sourcePath, targets);
     if (unresolvedRefs.size > 0) unresolved.set(sourcePath, unresolvedRefs);
-    if (edgeCount > MAX_GRAPH_EDGES) return { traces: [], incomplete: true };
+    if (edgeCount > MAX_GRAPH_EDGES)
+      return { traces: [], incomplete: true, referencedPaths: new Set() };
   }
   const traces = [];
+  const referencedPaths = new Set();
+  const finish = (incomplete) => ({ traces, incomplete, referencedPaths });
   let traceBytes = 0;
   let work = 0;
   for (const entrypoint of changedPaths) {
     if (!texts.has(entrypoint)) continue;
+    if (/\.(?:md|mdx|markdown)$/iu.test(entrypoint)) continue;
     const rawContent = texts.get(entrypoint) ?? '';
     const content = /\.(?:md|mdx|markdown)$/iu.test(entrypoint)
       ? maskMarkdownNonCode(rawContent)
@@ -3983,14 +3987,15 @@ function traceChangedEntrypoints(changedPaths, texts, findingPaths) {
       /\b(?:node|nodejs|deno|bun)\s+(?:-e|--eval)\b/iu.test(content) ||
       /\b(?:npx|bunx|npm\s+exec|pnpm\s+dlx|yarn\s+dlx)\b/iu.test(content)
     )
-      return { traces, incomplete: true };
+      return finish(true);
     const queue = [entrypoint];
     const parents = new Map([[entrypoint, undefined]]);
     let archiveExtractorReached = false;
     let archiveLauncherReached = false;
     for (let cursor = 0; cursor < queue.length; cursor++) {
-      if (++work > MAX_TRACE_WORK) return { traces, incomplete: true };
+      if (++work > MAX_TRACE_WORK) return finish(true);
       const current = queue[cursor] ?? '';
+      referencedPaths.add(current);
       const currentSource = texts.get(current) ?? '';
       // A changed entrypoint may reach an unchanged extractor and another
       // unchanged file that launches a process. The exact extracted target
@@ -4011,7 +4016,7 @@ function traceChangedEntrypoints(changedPaths, texts, findingPaths) {
       )
         archiveLauncherReached = true;
       if (archiveExtractorReached && archiveLauncherReached)
-        return { traces, incomplete: true };
+        return finish(true);
       if (current !== entrypoint && findingPaths.has(current)) {
         const chain = [];
         let node = current;
@@ -4022,10 +4027,10 @@ function traceChangedEntrypoints(changedPaths, texts, findingPaths) {
         const trace = chain.reverse().join(' -> ');
         traceBytes += Buffer.byteLength(trace);
         if (traces.length >= MAX_TRACE_COUNT || traceBytes > MAX_TRACE_BYTES)
-          return { traces, incomplete: true };
+          return finish(true);
         traces.push(trace);
       }
-      if (unresolved.has(current)) return { traces, incomplete: true };
+      if (unresolved.has(current)) return finish(true);
       for (const target of adjacency.get(current) ?? []) {
         if (parents.has(target)) continue;
         parents.set(target, current);
@@ -4033,7 +4038,11 @@ function traceChangedEntrypoints(changedPaths, texts, findingPaths) {
       }
     }
   }
-  return { traces: [...new Set(traces)].sort(), incomplete: false };
+  return {
+    traces: [...new Set(traces)].sort(),
+    incomplete: false,
+    referencedPaths
+  };
 }
 
 export function scanText(name, text, incompleteReasons = []) {
@@ -4701,8 +4710,30 @@ export function scanGitTree(repo, expectedSha, { changedPaths = [] } = {}) {
   );
   if (executionChains.incomplete)
     incompleteReasons.push('execution-reference-coverage-incomplete');
-  const stableFindings = [...new Set(findings)].sort();
-  const stableIncomplete = [...new Set(incompleteReasons)].sort();
+  const relevantPaths = new Set(changedPaths);
+  for (const target of executionChains.referencedPaths ?? [])
+    relevantPaths.add(target);
+  for (const chain of executionChains.traces)
+    for (const target of chain.split(' -> ')) relevantPaths.add(target);
+  const pathIsRelevant = (value) =>
+    relevantPaths.has(value) ||
+    relevantPaths.has(value.split('#', 1)[0] ?? value);
+  const candidateFindings = findings.filter((finding) => {
+    if (changedPaths.length === 0) return true;
+    if (finding.startsWith('execution-chain:')) return true;
+    return pathIsRelevant(finding.split('#', 1)[0] ?? finding);
+  });
+  const candidateIncomplete = incompleteReasons.filter((reason) => {
+    if (changedPaths.length === 0) return true;
+    if (reason.startsWith('referenced-binary-content-uninspected:'))
+      return true;
+    const separator = reason.indexOf(':');
+    if (separator < 0) return true;
+    const detail = reason.slice(separator + 1);
+    return !/[./\\]/u.test(detail) || pathIsRelevant(detail);
+  });
+  const stableFindings = [...new Set(candidateFindings)].sort();
+  const stableIncomplete = [...new Set(candidateIncomplete)].sort();
   stableIncomplete.push(...new Set(workflowReviewReasons));
   stableIncomplete.sort();
   return Object.freeze({
