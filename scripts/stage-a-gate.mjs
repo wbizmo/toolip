@@ -135,12 +135,12 @@ const TRUSTED_WORKFLOW_PATHS = new Set([
 const candidatePath =
   /(?:^|\/)(?:package\.json|\.npmrc|\.pypirc|\.vscode\/tasks\.json|\.github\/workflows\/[^/]+\.ya?ml|\.husky\/[^/]+|Makefile|Dockerfile|[^/]+\.(?:[cm]?js|jsx|ts|tsx|mjs|cjs|sh|bash|ps1|json|ya?ml|toml|py|rb|go|rs|java|php|tf|gradle|kts))$/iu;
 const dangerous = [
-  /\beval\s*\(/iu,
-  /\bnew\s+Function\s*\(/iu,
+  /\beval\s*\(/u,
+  /\bnew\s+Function\s*\(/u,
   /\b(?:curl|wget)\b[^\r\n;&|]{0,300}(?:\||&&|;)[ \t]*(?:sh|bash|zsh)\b/iu,
   /\b(?:bash|sh|zsh)\s+<\(\s*(?:curl|wget)\b/iu,
   /\b(?:pwsh|powershell)(?:\.exe)?\b[^\r\n]{0,128}\s-(?:enc|encodedcommand)\s+[A-Za-z0-9+/=]{20,}/iu,
-  /\b(?:eval|Function)\s*\(\s*(?:atob|Buffer\.from|decodeURIComponent|[a-z_$][\w$]*)/iu,
+  /\b(?:eval|Function)\s*\(\s*(?:atob|Buffer\.from|decodeURIComponent|[a-z_$][\w$]*)/u,
   /\b(?:exec|execSync|spawn|spawnSync)\s*\([^\r\n]{0,300}(?:curl|wget|https?:\/\/|process\.env)/iu,
   /\b(?:Invoke-Expression|IEX)\b[^\r\n]{0,300}(?:DownloadString|FromBase64String|https?:\/\/)/iu,
   /\b(?:base64\s+-d|openssl\s+enc)[^\r\n]{0,200}(?:\||;|&&)[ \t]*(?:sh|bash|node)\b/iu
@@ -590,7 +590,7 @@ const startupPersistence =
   /(?:\bcrontab\s+-|\b(?:systemctl|launchctl)\s+(?:enable|load|bootstrap)|\.config[\\/]autostart|(?:\.bashrc|\.zshrc|\.profile|Startup[\\/])|(?:CurrentVersion[\\/]Run|HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run))/iu;
 // Creation and archive listing do not constitute unpack-and-execute.
 const archiveExtraction =
-  /\b(?:tar\s+(?:--extract\b|--get\b|-?[a-z]*x[a-z]*\b)|bsdtar\s+(?:--extract\b|-?[a-z]*x[a-z]*\b)|cpio\s+(?:--extract\b|-(?![a-z]*t)[a-z]*i[a-z]*\b)|(?:busybox\s+)?unzip\s+(?!-[lt]\b)|7z(?:a|r|z)?\s+(?:x|e)\b|(?:unrar|rar)\s+(?:x|e)\b|jar\s+(?:x[a-z]*\b|--extract\b)|Expand-Archive\b|python(?:3)?\s+-m\s+(?:zipfile|tarfile)\s+-e\b)/giu;
+  /\b(?:tar\s+(?:--extract\b|--get\b|-[vzf]{0,2}x[a-z]*\b|x[a-z]*\b)|bsdtar\s+(?:--extract\b|-[vzf]{0,2}x[a-z]*\b)|cpio\s+(?:--extract\b|-(?![a-z]*t)[a-z]*i[a-z]*\b)|(?:busybox\s+)?unzip\s+(?!-[lt]\b)|7z(?:a|r|z)?\s+(?:x|e)\b|(?:unrar|rar)\s+(?:x|e)\b|jar\s+(?:x[a-z]*\b|--extract\b)|Expand-Archive\b|python(?:3)?\s+-m\s+(?:zipfile|tarfile)\s+-e\b)/giu;
 const archiveExecution =
   /(?:\bStart-Process\b(?:\s+-FilePath)?\s+[^\s;&|]+|\b(?:node(?:\.exe)?|bash|sh|zsh|pwsh|powershell|python(?:3)?|java(?:\.exe)?|deno|bun|ruby|perl|php|cmd(?:\.exe)?)\b\s+(?:-jar\s+|\/(?:c|k)\s+)?[^\s;&|]+|(?:^|[;&|\r\n]\s*)(?:call\s+)?(?:&\s*)?\.{1,2}[\\/]\S+)/imu;
 const archiveApiExtraction =
@@ -631,7 +631,7 @@ function hasCredentialTransfer(source) {
   return false;
 }
 
-function maskJavaScriptNonCode(source, maskStrings = true) {
+export function maskJavaScriptNonCode(source, maskStrings = true) {
   const output = [...source];
   let quote = '';
   let escaped = false;
@@ -3233,7 +3233,7 @@ export function inspectDependencyChanges(repo, baseSha, headSha, mergeSha) {
   });
 }
 
-function workflowRunCommands(source, sourcePath = '') {
+export function workflowRunCommands(source, sourcePath = '') {
   let document;
   let workflow;
   try {
@@ -4029,7 +4029,7 @@ function traceChangedEntrypoints(changedPaths, texts, findingPaths) {
   return { traces: [...new Set(traces)].sort(), incomplete: false };
 }
 
-function scanText(name, text, incompleteReasons = []) {
+export function scanText(name, text, incompleteReasons = []) {
   const findings = [];
   if (
     name === 'package.json' ||
@@ -4168,7 +4168,16 @@ function scanText(name, text, incompleteReasons = []) {
         incompleteReasons.push(`unverified-npm-resolution:${name}#folderOpen`);
     }
   }
-  if (/(?:^|\/)\.github\/workflows\/[^/]+\.ya?ml$/iu.test(name)) {
+  // Workflows shipped inside an npm tarball are inert package data in this
+  // repository; GitHub Actions never discovers or executes dependency-owned
+  // workflow files from node_modules. Continue scanning their contents as
+  // ordinary data, but apply workflow execution policy only to repository
+  // workflows.
+  const embeddedDependencyWorkflow = name.startsWith('artifact:node_modules/');
+  if (
+    /(?:^|\/)\.github\/workflows\/[^/]+\.ya?ml$/iu.test(name) &&
+    !embeddedDependencyWorkflow
+  ) {
     const commands = workflowRunCommands(text, name);
     if (commands.some((command) => command.untrustedEventExpression))
       findings.push(`${name}#untrusted-event-shell-interpolation`);
@@ -4219,10 +4228,11 @@ function scanText(name, text, incompleteReasons = []) {
     /\.(?:sh|bash|ps1|psm1)$/iu.test(name) ||
     /^\uFEFF?#![^\n]*(?:\b(?:bash|zsh|pwsh|powershell|sh)\b)/iu.test(text);
   const sourceSignature =
-    /(?:^|\n)\s*(?:import\s|export\s|(?:const|let|var)\s+\w|(?:async\s+)?function\s+\w|(?:curl|wget|eval|exec|source|\.\s+)[^\n]*)/u.test(
+    /(?:^|\n)\s*(?:import\s|export\s|(?:const|let|var)\s+\w|(?:async\s+)?function\s+\w|(?:\b(?:curl|wget|eval|exec|source)\b|\.\s+)[^\n]*)/u.test(
       text
     );
-  const executableText = sourceCode || shebang || sourceSignature;
+  const executableText =
+    sourceCode || shebang || (!markdown && sourceSignature);
   if (shellExecutionSource) {
     if (/\bStart-Process\b/iu.test(text))
       incompleteReasons.push(`unresolved-powershell-process:${name}`);

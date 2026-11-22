@@ -48,13 +48,48 @@ jobs:
           github-token: ${{ github.token }}
           repository: ${{ github.repository }}
           run-id: ${{ github.event.workflow_run.id }}
+      - name: Snapshot current PR identity outside the shell
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          STAGE_A_APPROVAL_PATH: ${{ runner.temp }}/stage-a/stage-a-approval.json
+          STAGE_A_CURRENT_PR_PATH: ${{ runner.temp }}/stage-a/current-pr.json
+        with:
+          script: |
+            const fs = require('node:fs');
+            const approvalText = fs.readFileSync(process.env.STAGE_A_APPROVAL_PATH, 'utf8');
+            if (Buffer.byteLength(approvalText, 'utf8') > 256 * 1024) {
+              core.setFailed('Stage A approval artifact exceeds its size budget.');
+              return;
+            }
+            const approval = JSON.parse(approvalText);
+            if (!Number.isSafeInteger(approval.pullRequest)) {
+              core.setFailed('Stage A approval has an invalid pull request number.');
+              return;
+            }
+            const { data: pullRequest } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: approval.pullRequest
+            });
+            const identity = {
+              number: pullRequest.number,
+              state: pullRequest.state,
+              body: pullRequest.body,
+              base: {
+                repo: { full_name: pullRequest.base.repo.full_name },
+                ref: pullRequest.base.ref,
+                sha: pullRequest.base.sha
+              },
+              head: { sha: pullRequest.head.sha },
+              merge_commit_sha: pullRequest.merge_commit_sha
+            };
+            fs.writeFileSync(process.env.STAGE_A_CURRENT_PR_PATH, JSON.stringify(identity), { mode: 0o600 });
       - name: Validate approval identity and immutable commits
         id: verify
         env:
-          GITHUB_TOKEN: ${{ github.token }}
           TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY: ${{ vars.TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY }}
           TOOLIP_STAGE_A_CARGO_SHA256_POLICY: ${{ vars.TOOLIP_STAGE_A_CARGO_SHA256_POLICY }}
-        run: node scripts/verify-stage-a-artifact.mjs "${{ runner.temp }}/stage-a/stage-a-approval.json"
+        run: node scripts/verify-stage-a-artifact.mjs "${{ runner.temp }}/stage-a/stage-a-approval.json" "${{ runner.temp }}/stage-a/current-pr.json"
 
   analyze:
     name: CodeQL JavaScript/TypeScript security analysis

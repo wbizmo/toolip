@@ -148,11 +148,17 @@ describe('release isolation policy (regression for Batch 00)', () => {
         )
       ).toBe(true);
       expect(stageB.permissions['pull-requests']).toBe('read');
-      expect(
-        stageB.jobs['stage-a-result'].steps.find((step) =>
-          String(step.run ?? '').includes('verify-stage-a-artifact.mjs')
-        )?.env?.GITHUB_TOKEN
-      ).toEqual(['${{', ' github.token }}'].join(''));
+      const verifier = stageB.jobs['stage-a-result'].steps.find((step) =>
+        String(step.run ?? '').includes('verify-stage-a-artifact.mjs')
+      );
+      expect(verifier?.env).not.toHaveProperty('GITHUB_TOKEN');
+      expect(verifier?.run).toContain('current-pr.json');
+      const currentPrSnapshot = stageB.jobs['stage-a-result'].steps.find(
+        (step) => String(step.uses ?? '').startsWith('actions/github-script@')
+      );
+      expect(currentPrSnapshot?.with?.script).toContain(
+        'github.rest.pulls.get'
+      );
       expect(
         stageB.jobs['stage-a-result'].steps.find((step) =>
           String(step.run ?? '').includes('verify-stage-a-artifact.mjs')

