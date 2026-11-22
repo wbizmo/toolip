@@ -116,4 +116,40 @@ describe('dependency graph digest', () => {
 
     expect(digest).toMatch(/^[a-f0-9]{64}$/u);
   }, 30_000);
+
+  it('digests the 250k package ceiling with eight edges per package', () => {
+    const packageCount = 250_000;
+    const packages = Array.from({ length: packageCount }, (_, index) => ({
+      id: `npm:${index}`,
+      ecosystem: 'npm' as const,
+      name: `package-${index}`,
+      version: '1.0.0',
+      direct: index < 2,
+      development: false,
+      source: 'fixture',
+      installPath: `node_modules/package-${index}`
+    }));
+    const edges = Array.from({ length: packageCount * 8 }, (_, index) => {
+      const from = index % packageCount;
+      const to = (from + Math.floor(index / packageCount) + 1) % packageCount;
+      return {
+        from: `npm:${from}`,
+        to: `npm:${to}`,
+        name: `package-${to}`,
+        requirement: '*',
+        section: 'dependency' as const
+      };
+    });
+
+    expect(
+      digestDependencyGraph({
+        manager: 'npm',
+        complete: true,
+        packages,
+        edges,
+        unresolvedDependencies: [],
+        warnings: []
+      })
+    ).toMatch(/^[a-f0-9]{64}$/u);
+  }, 120_000);
 });

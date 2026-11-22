@@ -1308,6 +1308,11 @@ async function createIsolatedProjectEnvironment(
     NPM_CONFIG_IGNORE_SCRIPTS: 'true',
     NPM_CONFIG_AUDIT: 'false',
     NPM_CONFIG_FUND: 'false',
+    // Reuse the trusted runtime's pre-populated package-manager cache. Project
+    // operations remain offline, and project-selected Corepack specs are off.
+    COREPACK_HOME:
+      process.env.COREPACK_HOME ??
+      path.join(os.homedir(), '.cache', 'node', 'corepack'),
     COREPACK_ENABLE_PROJECT_SPEC: '0',
     COREPACK_ENABLE_NETWORK: '0',
     YARN_IGNORE_PATH: '1',
