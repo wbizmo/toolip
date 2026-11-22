@@ -19,7 +19,16 @@ const oid = 'a'.repeat(40);
 
 afterEach(async () =>
   Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
+    roots
+      .splice(0)
+      .map((root) =>
+        rm(root, {
+          recursive: true,
+          force: true,
+          maxRetries: 5,
+          retryDelay: 100
+        })
+      )
   )
 );
 

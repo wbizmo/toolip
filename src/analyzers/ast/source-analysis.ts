@@ -2731,7 +2731,7 @@ function isPathWithin(root: string, candidate: string): boolean {
  * by the scanner. The compiler host cannot read repository files outside that
  * snapshot; TypeScript's own standard library declarations remain available.
  */
-export function createAstProjectAnalysis(
+function createAstProjectAnalysisUnchecked(
   inputs: readonly AstProjectInput[]
 ): AstProjectAnalysis {
   const totalBytes = inputs.reduce(
@@ -3021,6 +3021,23 @@ export function createAstProjectAnalysis(
     ),
     dependencyDigests
   };
+}
+
+export function createAstProjectAnalysis(
+  inputs: readonly AstProjectInput[]
+): AstProjectAnalysis {
+  try {
+    return createAstProjectAnalysisUnchecked(inputs);
+  } catch (error) {
+    if (
+      error instanceof RangeError &&
+      error.message === 'Maximum call stack size exceeded'
+    )
+      throw new Error('AST source traversal budget exceeded', {
+        cause: error
+      });
+    throw error;
+  }
 }
 
 export type AstProjectComponentPlan = {

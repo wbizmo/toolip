@@ -41,12 +41,19 @@ describe('createUpgradePullRequest', () => {
     const runtime: UpgradePrRuntime = {
       makeTempDir: mkdtemp,
       async exec(command, args, cwd) {
-        const result = await execFileAsync(command, args, {
-          cwd,
-          encoding: 'utf8',
-          timeout: 60_000,
-          maxBuffer: 4 * 1024 * 1024
-        });
+        const npmCli = process.env.npm_execpath;
+        const useNodeForNpm =
+          process.platform === 'win32' && command === 'npm' && npmCli;
+        const result = await execFileAsync(
+          useNodeForNpm ? process.execPath : command,
+          useNodeForNpm ? [npmCli, ...args] : args,
+          {
+            cwd,
+            encoding: 'utf8',
+            timeout: 60_000,
+            maxBuffer: 4 * 1024 * 1024
+          }
+        );
         return {
           stdout: String(result.stdout ?? ''),
           stderr: String(result.stderr ?? '')
@@ -1074,7 +1081,15 @@ async function verifyFrozenManagerFixture(
         : yarnClassic
           ? ['install', '--ignore-scripts', '--non-interactive']
           : ['install', '--mode=skip-build'];
-    await runtime.exec(managerCommand, managerArgs(lockfileArgs), root);
+    await runtime.exec(
+      managerCommand,
+      managerArgs(lockfileArgs),
+      root,
+      undefined,
+      yarnBerry
+        ? { ...process.env, YARN_ENABLE_IMMUTABLE_INSTALLS: 'false' }
+        : undefined
+    );
     await runtime.exec('git', ['init', root], container);
     await runtime.exec('git', ['config', 'user.name', 'Toolip Test'], root);
     await runtime.exec(

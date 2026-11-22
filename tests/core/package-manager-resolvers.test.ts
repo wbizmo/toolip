@@ -356,7 +356,7 @@ describe('pnpm and Yarn exact dependency graphs', () => {
       packageVersion: string;
       state: string;
     }>;
-    expect(result.coverage?.state).toBe('complete');
+    expect(result.coverage?.state, result.warnings?.join('; ')).toBe('complete');
     expect(packages).toContainEqual(
       expect.objectContaining({
         packageName: 'foo',
