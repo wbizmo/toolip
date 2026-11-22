@@ -83,10 +83,10 @@ function storedZip(entries: Array<[string, string]>): Buffer {
   return Buffer.concat([...localParts, central, eocd]);
 }
 
-function npmTarball(entries: Array<[string, string]>): Buffer {
+function npmTarball(entries: Array<[string, string | Buffer]>): Buffer {
   const blocks: Buffer[] = [];
   for (const [name, text] of entries) {
-    const content = Buffer.from(text);
+    const content = Buffer.isBuffer(text) ? text : Buffer.from(text);
     const header = Buffer.alloc(512);
     header.write(name, 0, 100, 'utf8');
     header.write('0000644\0', 100, 8, 'ascii');
@@ -190,6 +190,25 @@ describe('trusted Stage A Git-object scanner', () => {
     expect(result.findings).not.toContain(
       'docs/release-notes.md#archive-execution'
     );
+  });
+
+  it('ignores dependency lockfiles embedded in inert test fixtures', async () => {
+    const fixture = await repo({
+      'tests/fixtures/js/yarn.lock': 'fixture-package@^1.0.0:\n',
+      'tests/fixtures/rust/Cargo.toml': '[package]\nname="fixture"\n',
+      'tests/fixtures/rust/Cargo.lock': 'version = 3\n'
+    });
+
+    const result = inspectDependencyChanges(
+      fixture.root,
+      fixture.sha,
+      fixture.sha
+    );
+    expect(result.reasons).not.toContain('unsupported-lockfile-format');
+    expect(result.reasons).not.toContain(
+      'unsupported-dependency-ecosystem-provenance'
+    );
+    expect(result.cargoArtifactCount).toBe(0);
   });
 
   it('surfaces fork, external-author, and commit-signature review requirements without treating them as malicious', async () => {
@@ -3415,6 +3434,62 @@ describe('trusted Stage A Git-object scanner', () => {
     );
   });
 
+  it('uses the verified package manifest as the source of truth for optional install metadata', () => {
+    const archive = npmTarball([
+      [
+        'package/package.json',
+        JSON.stringify({ name: 'example', version: '2.0.0' })
+      ]
+    ]);
+    const result = inspectNpmTarball(
+      archive,
+      artifact(archive, { hasInstallScript: true })
+    );
+    expect(result.reasons).not.toContain('lifecycle-metadata-mismatch');
+    expect(result.reasons).not.toContain(
+      'dependency-lifecycle-script-review:node_modules/example'
+    );
+  });
+
+  it('accepts verified package archives with a package-specific top-level directory', () => {
+    const archive = npmTarball([
+      [
+        'node v22.20/package.json',
+        JSON.stringify({ name: '@types/node', version: '22.20.1' })
+      ],
+      ['node v22.20/index.d.ts', 'export declare const value: string;']
+    ]);
+    const result = inspectNpmTarball(
+      archive,
+      artifact(archive, {
+        name: '@types/node',
+        version: '22.20.1'
+      })
+    );
+    expect(result.reasons).not.toContain('tar-path-outside-package-root');
+    expect(result.reasons).not.toContain('artifact-package-manifest-missing');
+    expect(result.reasons).not.toContain('artifact-package-identity-mismatch');
+    expect(result.files).toBe(2);
+  });
+
+  it('continues archive inspection after a large binary entry', () => {
+    const archive = npmTarball([
+      ['package/bin/tool', Buffer.alloc(3 * 1024 * 1024, 0xa5)],
+      [
+        'package/package.json',
+        JSON.stringify({ name: 'example', version: '2.0.0' })
+      ],
+      ['package/index.js', 'export const safe = true;']
+    ]);
+    const result = inspectNpmTarball(archive, artifact(archive));
+    expect(result.files).toBe(3);
+    expect(result.binaryFiles).toBe(1);
+    expect(result.reasons).toContain('artifact-binary-content-uninspected');
+    expect(result.reasons).not.toContain('artifact-file-size-exceeded');
+    expect(result.reasons).not.toContain('artifact-package-manifest-missing');
+    expect(result.reasons).not.toContain('tar-terminator-missing');
+  });
+
   it('treats benign dependency code generation and inert package content as noise', () => {
     const safeArchive = npmTarball([
       [
@@ -3456,6 +3531,11 @@ describe('trusted Stage A Git-object scanner', () => {
       [
         'package/lib/gyp-parser.py',
         'eval(open(build_file).read(), safe_globals)'
+      ],
+      ['package/lib/lib.es5.d.ts', 'declare function eval(x: string): any;'],
+      [
+        'package/examples/client.js',
+        "import { spawn } from 'node:child_process'; spawn(process.env.TOOL, []);"
       ]
     ]);
     expect(

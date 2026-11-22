@@ -343,7 +343,7 @@ describe('pnpm and Yarn exact dependency graphs', () => {
     await symlink(
       installedPackage,
       path.join(root, 'node_modules/alias'),
-      'dir'
+      process.platform === 'win32' ? 'junction' : 'dir'
     );
     await writeFile(
       path.join(root, 'entry.ts'),
@@ -356,7 +356,9 @@ describe('pnpm and Yarn exact dependency graphs', () => {
       packageVersion: string;
       state: string;
     }>;
-    expect(result.coverage?.state, result.warnings?.join('; ')).toBe('complete');
+    expect(result.coverage?.state, result.warnings?.join('; ')).toBe(
+      'complete'
+    );
     expect(packages).toContainEqual(
       expect.objectContaining({
         packageName: 'foo',
