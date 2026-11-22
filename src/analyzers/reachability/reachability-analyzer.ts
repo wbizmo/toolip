@@ -21,6 +21,7 @@ import { coverageOf } from '../../contracts/analysis.js';
 import { createScannerContext } from '../../core/scanner-context.js';
 import { sourceProvenanceFor } from '../../core/source-provenance.js';
 import { TextFileReader } from '../../core/text-file-reader.js';
+import { comparablePath, isWithinPath } from '../../core/path-boundary.js';
 import {
   readNpmDependencyGraph,
   type DependencyIdentity,
@@ -243,32 +244,8 @@ function parseYarnPnpState(source: string): YarnPnpState {
   return packages;
 }
 
-function isWithin(root: string, candidate: string): boolean {
-  // realpathSync/realpath may disagree about Windows long-path prefixes even
-  // for the same file. Normalize both sides before checking containment, or
-  // Node's path.relative treats `\\?\C:\...` and `C:\...` as different
-  // roots and the resolver silently loses otherwise valid package evidence.
-  const relative = path.relative(
-    instancePathKey(root),
-    instancePathKey(candidate)
-  );
-  return (
-    relative === '' ||
-    (!path.isAbsolute(relative) &&
-      relative !== '..' &&
-      !relative.startsWith(`..${path.sep}`))
-  );
-}
-
 function instancePathKey(candidate: string): string {
-  let resolved = path.resolve(candidate);
-  if (process.platform === 'win32') {
-    if (/^\\\\\?\\UNC\\/iu.test(resolved))
-      resolved = `\\\\${resolved.slice(8)}`;
-    else if (/^\\\\\?\\/u.test(resolved)) resolved = resolved.slice(4);
-    return resolved.toLowerCase();
-  }
-  return resolved;
+  return comparablePath(candidate);
 }
 
 type YarnPnpLocation =
@@ -290,7 +267,7 @@ async function resolveYarnPnpLocation(
   )
     return undefined;
   const absolutePath = path.resolve(root, location);
-  if (!isWithin(root, absolutePath)) return undefined;
+  if (!isWithinPath(root, absolutePath)) return undefined;
   const relative = path.relative(root, absolutePath);
   const archiveMatch = relative.match(/(?:^|[\\/])[^\\/]+\.zip(?=[\\/]|$)/iu);
   if (archiveMatch) {
@@ -301,14 +278,14 @@ async function resolveYarnPnpLocation(
       archiveIndex + archiveMatch[0].length
     );
     const archivePath = path.resolve(root, archiveRelative);
-    if (!isWithin(root, archivePath)) return undefined;
+    if (!isWithinPath(root, archivePath)) return undefined;
     try {
       const archiveStat = await lstat(archivePath, { bigint: true });
       const archiveRealpath = await realpathAsync(archivePath);
       if (
         !archiveStat.isFile() ||
         archiveStat.isSymbolicLink() ||
-        !isWithin(root, archiveRealpath) ||
+        !isWithinPath(root, archiveRealpath) ||
         archiveStat.size > BigInt(128 * 1024 * 1024)
       )
         return undefined;
@@ -319,7 +296,7 @@ async function resolveYarnPnpLocation(
   }
   try {
     const canonicalPath = await realpathAsync(absolutePath);
-    if (!isWithin(root, canonicalPath)) return undefined;
+    if (!isWithinPath(root, canonicalPath)) return undefined;
     const directoryStat = await lstat(canonicalPath);
     if (!directoryStat.isDirectory()) return undefined;
     return { kind: 'directory', absolutePath: canonicalPath };
@@ -334,7 +311,7 @@ function createRootBoundResolverHost(root: string): ts.ModuleResolutionHost {
   const canonicalWithin = (candidate: string): string | undefined => {
     try {
       const canonical = realpathSync(candidate);
-      return isWithin(canonicalRoot, canonical) ? canonical : undefined;
+      return isWithinPath(canonicalRoot, canonical) ? canonical : undefined;
     } catch {
       return undefined;
     }
@@ -862,7 +839,10 @@ export class ReachabilityAnalyzer implements Analyzer {
           const resolvedPath = await realpathAsync(location.directory).catch(
             () => undefined
           );
-          if (!resolvedPath || !isWithin(scannerContext.root, resolvedPath)) {
+          if (
+            !resolvedPath ||
+            !isWithinPath(scannerContext.root, resolvedPath)
+          ) {
             unresolved.add(dependency.id);
             addWarning(`yarn-installed-location-outside-root:${dependency.id}`);
             continue;
@@ -903,7 +883,7 @@ export class ReachabilityAnalyzer implements Analyzer {
         path.isAbsolute(relativeInstallPath) ||
         relativeInstallPath === '..' ||
         relativeInstallPath.startsWith(`..${path.sep}`) ||
-        !isWithin(scannerContext.root, resolvedPath)
+        !isWithinPath(scannerContext.root, resolvedPath)
       ) {
         unresolved.add(dependency.id);
         addWarning(`dependency-install-location-unavailable:${dependency.id}`);
@@ -1045,7 +1025,7 @@ export class ReachabilityAnalyzer implements Analyzer {
             : undefined;
           if (
             resolved &&
-            (!resolvedFile || !isWithin(scannerContext.root, resolvedFile))
+            (!resolvedFile || !isWithinPath(scannerContext.root, resolvedFile))
           ) {
             addWarning(
               `${file.relativePath}: package resolution escaped the project root`
@@ -1063,6 +1043,113 @@ export class ReachabilityAnalyzer implements Analyzer {
             const parent = path.dirname(cursor);
             if (parent === cursor) break;
             cursor = parent;
+          }
+          if (!packageId && resolvedFile) {
+            // Windows junctions can resolve to a canonical path that differs
+            // from the lockfile install path even after path normalization.
+            // Recover only when the resolver landed under node_modules, the
+            // lock graph identifies one exact target, and the resolved
+            // package manifest matches that already-verified target.
+            const targetIds = new Set(
+              (dependenciesByRequestName.get(reference.packageName) ?? []).map(
+                (dependency) => dependency.id
+              )
+            );
+            if (targetIds.size === 1) {
+              const [targetId] = targetIds;
+              const target = targetId
+                ? dependencyById.get(targetId)
+                : undefined;
+              if (target && !unresolved.has(target.id)) {
+                let manifestDirectory = path.dirname(resolvedFile);
+                while (manifestDirectory) {
+                  if (
+                    manifestDirectory.split(/[\\/]+/u).includes('node_modules')
+                  ) {
+                    const manifest = await metadataReader.read(
+                      path.join(manifestDirectory, 'package.json'),
+                      context.signal
+                    );
+                    if (manifest.status === 'ok') {
+                      try {
+                        const installed = JSON.parse(manifest.content) as {
+                          name?: unknown;
+                          version?: unknown;
+                        };
+                        if (
+                          installed.name === target.name &&
+                          installed.version === target.version
+                        ) {
+                          packageId = target.id;
+                          break;
+                        }
+                      } catch {
+                        // Invalid package metadata cannot establish identity.
+                      }
+                    }
+                  }
+                  const parent = path.dirname(manifestDirectory);
+                  if (parent === manifestDirectory) break;
+                  manifestDirectory = parent;
+                }
+              }
+            }
+          }
+          if (!packageId) {
+            const targetIds = new Set(
+              (dependenciesByRequestName.get(reference.packageName) ?? []).map(
+                (dependency) => dependency.id
+              )
+            );
+            if (targetIds.size === 1) {
+              const [targetId] = targetIds;
+              const target = targetId
+                ? dependencyById.get(targetId)
+                : undefined;
+              const packageSegments = reference.packageName.split('/');
+              if (
+                target &&
+                !unresolved.has(target.id) &&
+                packageSegments.every(
+                  (segment) =>
+                    segment.length > 0 && segment !== '.' && segment !== '..'
+                )
+              ) {
+                let importerDirectory = path.dirname(file.absolutePath);
+                while (isWithinPath(scannerContext.root, importerDirectory)) {
+                  const packageManifestPath = path.join(
+                    importerDirectory,
+                    'node_modules',
+                    ...reference.packageName.split('/'),
+                    'package.json'
+                  );
+                  const manifest = await metadataReader.read(
+                    packageManifestPath,
+                    context.signal
+                  );
+                  if (manifest.status === 'ok') {
+                    try {
+                      const installed = JSON.parse(manifest.content) as {
+                        name?: unknown;
+                        version?: unknown;
+                      };
+                      if (
+                        installed.name === target.name &&
+                        installed.version === target.version
+                      ) {
+                        packageId = target.id;
+                        break;
+                      }
+                    } catch {
+                      // Invalid package metadata cannot establish identity.
+                    }
+                  }
+                  const parent = path.dirname(importerDirectory);
+                  if (parent === importerDirectory) break;
+                  importerDirectory = parent;
+                }
+              }
+            }
           }
         }
 

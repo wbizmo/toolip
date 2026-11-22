@@ -3,6 +3,7 @@ import { constants, type BigIntStats } from 'node:fs';
 import { type FileHandle, open } from 'node:fs/promises';
 import { lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { isWithinPath } from './path-boundary.js';
 
 export type TextFileBudget = {
   maxFiles: number;
@@ -90,17 +91,6 @@ export function snapshotOf(stat: BigIntStats): FileSnapshot {
     mtimeNs: stat.mtimeNs,
     ctimeNs: stat.ctimeNs
   };
-}
-
-/** Tests canonical path containment without relying on string prefixes. */
-function isWithin(root: string, candidate: string): boolean {
-  const relative = path.relative(root, candidate);
-  return (
-    relative === '' ||
-    (!path.isAbsolute(relative) &&
-      relative !== '..' &&
-      !relative.startsWith(`..${path.sep}`))
-  );
 }
 
 /** Reads bounded text snapshots and rejects incomplete or changed inputs. */
@@ -237,7 +227,7 @@ export class TextFileReader {
       if (trustedRoot !== undefined) {
         const before = await this.realpathFile(absolutePath);
         if (signal?.aborted) return { status: 'cancelled', bytes: 0 };
-        if (!isWithin(trustedRoot, before))
+        if (!isWithinPath(trustedRoot, before))
           return { status: 'changed', bytes: 0 };
       }
 
@@ -309,7 +299,7 @@ export class TextFileReader {
       if (trustedRoot !== undefined) {
         const afterPath = await this.realpathFile(absolutePath);
         if (signal?.aborted) return { status: 'cancelled', bytes: offset };
-        if (!isWithin(trustedRoot, afterPath))
+        if (!isWithinPath(trustedRoot, afterPath))
           return { status: 'changed', bytes: offset };
       }
       if (buffer.subarray(0, Math.min(buffer.length, 8 * 1024)).includes(0)) {

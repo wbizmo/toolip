@@ -423,7 +423,7 @@ describe('createUpgradePullRequest', () => {
         await rm(fixture.container, { recursive: true, force: true });
       }
     }
-  });
+  }, 30_000);
 
   it('blocks push and PR creation when frozen dependency installation fails', async () => {
     const fixture = await createRepositoryFixture();

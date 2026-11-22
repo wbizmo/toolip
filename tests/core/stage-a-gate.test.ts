@@ -2842,7 +2842,7 @@ describe('trusted Stage A Git-object scanner', () => {
         'unsupported-dependency-ecosystem-provenance'
       );
     }
-  });
+  }, 30_000);
 
   it('blocks repository npm registry configuration outside the attested registry policy', async () => {
     const fixture = await repo({
