@@ -116,7 +116,9 @@ credential transfer, persistence and archive extraction followed by execution
 remain checked. Documentation, tests, source maps, schemas and HTML examples
 are treated as inert package data for content-pattern checks. Archive integrity,
 registry signatures, provenance and lifecycle-hook review still apply to every
-locked package.
+locked package. Suspicious child-process heuristics inspect executable tokens
+with comments and string literals masked, so test fixtures and static launcher
+metadata do not become findings solely because they contain commands or URLs.
 For supported Cargo lockfiles, Stage A fetches only exact crates.io `.crate`
 archives, verifies each archive against both the lock checksum and the
 administrator-owned repository variable `TOOLIP_STAGE_A_CARGO_SHA256_POLICY`,
