@@ -85,9 +85,11 @@ and builds only protected-base scanner dependencies with lifecycle scripts
 disabled and verifies their registry signatures. No PR dependency install or
 build occurs before the exact PR trees and artifacts have been scanned. The scanner runs on
 exact Node.js `24.22.1` (the runtime pin is checked against the supported engine
-range) and fetches the event's PR merge ref into a temporary **bare Git
-object database**. It never checks out PR files or runs repository code in this
-workflow. It validates the base-to-head diff (including detected renames and
+range) and resolves the current PR merge commit through GitHub's API before
+fetching it into a temporary **bare Git object database**. It checks that the
+current base and head SHAs match the event before scanning. It never checks out
+PR files or runs repository code in this workflow. It validates the base-to-head
+diff (including detected renames and
 copies), checks the immutable merge parents, then scans the exact head and merge
 trees. Changed entrypoints are traced through static local imports and common
 interpreter invocations to unchanged files in each scanned tree. npm lockfiles
