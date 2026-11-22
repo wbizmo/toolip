@@ -1026,8 +1026,7 @@ async function verifyFrozenManagerFixture(
     );
     const yarnClassic =
       manager !== 'pnpm' && version.stdout.trim().startsWith('1.');
-    const useYarnBerry =
-      yarnBerry || (manager !== 'pnpm' && !yarnClassic);
+    const useYarnBerry = yarnBerry || (manager !== 'pnpm' && !yarnClassic);
     await writeFile(
       path.join(root, 'package.json'),
       JSON.stringify({
@@ -1084,6 +1083,7 @@ async function verifyFrozenManagerFixture(
       root
     );
     await runtime.exec('git', ['add', '.'], root);
+    if (yarnBerry) await runtime.exec('git', ['add', '--', 'yarn.lock'], root);
     await runtime.exec('git', ['commit', '-m', 'fixture'], root);
     await runtime.exec(
       'git',

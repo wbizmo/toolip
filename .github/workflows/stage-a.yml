@@ -29,7 +29,7 @@ jobs:
         run: node scripts/verify-node.mjs
       - name: Verify protected scanner source digest before dependency setup
         env:
-          TOOLIP_STAGE_A_SHA256: 86e9a4a8027337222f8966e69f66184aacf37779a7b2f827116365e621e3fc9f
+          TOOLIP_STAGE_A_SHA256: 986c4f27c8d5ecec6ede8cd80d4a238602e3ab2be8cf20d287ec07f107835b62
         run: node scripts/verify-stage-a-scanner.mjs
       - name: Install protected scanner dependencies without scripts
         env:
@@ -47,10 +47,20 @@ jobs:
           npm audit signatures --ignore-scripts --registry=https://registry.npmjs.org/ --userconfig=/dev/null --globalconfig="$RUNNER_TEMP/toolip-empty-global.npmrc"
       - name: Build protected scanner sources
         run: npm run build
+      - name: Resolve GitHub's current synthetic merge commit
+        id: merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGE_A_PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          merge_sha=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$STAGE_A_PR_NUMBER" --jq '.merge_commit_sha // empty')
+          [[ "$merge_sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$merge_sha" >> "$GITHUB_OUTPUT"
       - name: Verify trusted scanner digest and fetch/scan exact PR Git objects
         id: gate
         env:
-          TOOLIP_STAGE_A_SHA256: 86e9a4a8027337222f8966e69f66184aacf37779a7b2f827116365e621e3fc9f
+          TOOLIP_STAGE_A_SHA256: 986c4f27c8d5ecec6ede8cd80d4a238602e3ab2be8cf20d287ec07f107835b62
           TOOLIP_STAGE_A_PUBLIC_SCOPES: '@babel,@bcoe,@biomejs,@esbuild,@gar,@hono,@isaacs,@jridgewell,@modelcontextprotocol,@nodelib,@npmcli,@oxc-project,@rolldown,@sigstore,@tufjs,@types,@vitest'
           TOOLIP_STAGE_A_CARGO_SHA256_POLICY: ${{ vars.TOOLIP_STAGE_A_CARGO_SHA256_POLICY }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -63,7 +73,7 @@ jobs:
           STAGE_A_BASE_REPOSITORY: ${{ github.repository }}
           STAGE_A_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           STAGE_A_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          STAGE_A_MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          STAGE_A_MERGE_SHA: ${{ steps.merge.outputs.sha }}
         run: node scripts/stage-a-gate.mjs
       - name: Verify exact scanned npm archives against operator issuer/source policy
         if: steps.gate.outputs.status == 'approved' && steps.gate.outputs.dependency_audit_required == 'true'
@@ -109,7 +119,7 @@ jobs:
         run: echo 'TOOLIP_STAGE_A_SIGNATURE_AUDIT=not-applicable' >> "$GITHUB_ENV"
       - name: Write immutable Stage A run metadata
         env:
-          TOOLIP_STAGE_A_SHA256: 86e9a4a8027337222f8966e69f66184aacf37779a7b2f827116365e621e3fc9f
+          TOOLIP_STAGE_A_SHA256: 986c4f27c8d5ecec6ede8cd80d4a238602e3ab2be8cf20d287ec07f107835b62
         run: node scripts/write-stage-a-artifact.mjs
       - name: Publish Stage A approval metadata for gated CI
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

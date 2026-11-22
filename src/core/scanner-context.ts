@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { realpath } from 'node:fs/promises';
 import { walkProjectFiles, type ProjectFile } from './file-walker.js';
 import { profileProject, type ProjectProfile } from './profile-project.js';
 
@@ -52,7 +53,7 @@ export async function createScannerContext(
   root: string,
   options: { maxFiles?: number; signal?: AbortSignal } = {}
 ): Promise<ScannerContext> {
-  const absoluteRoot = path.resolve(root);
+  const absoluteRoot = await realpath(path.resolve(root));
   const files = await walkProjectFiles(absoluteRoot, {
     maxFiles: options.maxFiles,
     signal: options.signal,
