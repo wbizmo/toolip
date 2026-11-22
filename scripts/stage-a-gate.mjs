@@ -4298,7 +4298,7 @@ export function scanText(name, text, incompleteReasons = []) {
   if (
     executableText &&
     !dependencyArtifact &&
-    suspiciousProcessExecution.test(behaviorContent)
+    suspiciousProcessExecution.test(scanContent)
   )
     findings.push(name);
   if (

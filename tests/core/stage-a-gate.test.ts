@@ -30,6 +30,7 @@ import {
   parseNpmLockInventory,
   inspectNpmArtifacts,
   inspectNpmTarball,
+  scanText,
   verifyPullRequestMergeParents,
   stageAAuthorshipReviewSignals,
   workflowRunCommands
@@ -2172,6 +2173,11 @@ describe('trusted Stage A Git-object scanner', () => {
     expect(scanGitTree(fixture.root, fixture.sha).status).toBe('approved');
   });
 
+  it('does not treat inert child-process strings in scanner tests as execution', () => {
+    const source = `const fixture = "spawnSync(command, args, { url: 'https://example.invalid' })";`;
+    expect(scanText('tests/core/fixture.test.ts', source, [])).toEqual([]);
+  });
+
   it('blocks symlinks that escape the repository tree', async () => {
     const fixture = await repo({ 'safe.txt': 'safe' });
     const linkBlob = execFileSync(
@@ -3328,7 +3334,8 @@ describe('trusted Stage A Git-object scanner', () => {
       [
         'package/index.js',
         'export const compile = new Function(' +
-          '`return $' + '{schema}`' +
+          '`return $' +
+          '{schema}`' +
           ');'
       ],
       ['package/test/compiler.test.js', 'eval(testExpression);'],
