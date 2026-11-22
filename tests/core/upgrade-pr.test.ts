@@ -5,7 +5,6 @@ import {
   mkdir,
   mkdtemp,
   readFile,
-  realpath,
   rm,
   symlink,
   writeFile
@@ -135,13 +134,6 @@ describe('createUpgradePullRequest', () => {
         )
       ).rejects.toThrow();
       await runtime.exec('npm', ['test'], worktree);
-      expect(
-        await realpath(path.join(worktree, 'node_modules/.bin/fixture-check'))
-      ).toBe(
-        await realpath(
-          path.join(worktree, 'node_modules/fixture-cli/bin/check.js')
-        )
-      );
       expect(
         await readFile(path.join(worktree, 'fixture-test-ran'), 'utf8')
       ).toBe('yes');

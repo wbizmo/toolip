@@ -253,6 +253,17 @@ function isWithin(root: string, candidate: string): boolean {
   );
 }
 
+function instancePathKey(candidate: string): string {
+  let resolved = path.resolve(candidate);
+  if (process.platform === 'win32') {
+    if (/^\\\\\?\\UNC\\/iu.test(resolved))
+      resolved = `\\\\${resolved.slice(8)}`;
+    else if (/^\\\\\?\\/u.test(resolved)) resolved = resolved.slice(4);
+    return resolved.toLowerCase();
+  }
+  return resolved;
+}
+
 type YarnPnpLocation =
   | { kind: 'directory'; absolutePath: string }
   | { kind: 'archive'; absolutePath: string }
@@ -849,7 +860,7 @@ export class ReachabilityAnalyzer implements Analyzer {
             addWarning(`yarn-installed-location-outside-root:${dependency.id}`);
             continue;
           }
-          instancePaths.set(resolvedPath, dependency.id);
+          instancePaths.set(instancePathKey(resolvedPath), dependency.id);
           if (!installedPathById.has(dependency.id)) {
             installedPathById.set(
               dependency.id,
@@ -922,7 +933,7 @@ export class ReachabilityAnalyzer implements Analyzer {
         addWarning(`dependency-installed-identity-mismatch:${dependency.id}`);
         continue;
       }
-      instancePaths.set(resolvedPath, dependency.id);
+      instancePaths.set(instancePathKey(resolvedPath), dependency.id);
     }
     const sourceProvenance = new Map<
       string,
@@ -1040,7 +1051,7 @@ export class ReachabilityAnalyzer implements Analyzer {
           }
           let cursor = resolvedFile ? path.dirname(resolvedFile) : undefined;
           while (cursor) {
-            packageId = instancePaths.get(cursor);
+            packageId = instancePaths.get(instancePathKey(cursor));
             if (packageId || cursor === scannerContext.root) break;
             const parent = path.dirname(cursor);
             if (parent === cursor) break;

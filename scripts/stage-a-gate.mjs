@@ -38,11 +38,12 @@ const MAX_REFERENCED_BINARY_CANDIDATES = 256;
 const MAX_REFERENCED_BINARY_GRAPH_DEPTH = 16;
 const MAX_TRACE_BYTES = 1024 * 1024;
 const MAX_ARTIFACT_COUNT = 500;
-const MAX_ARTIFACT_BYTES = 32 * 1024 * 1024;
+const MAX_ARTIFACT_BYTES = 64 * 1024 * 1024;
 const MAX_ARTIFACT_UNPACKED_BYTES = 128 * 1024 * 1024;
-const MAX_ARTIFACT_TOTAL_BYTES = 512 * 1024 * 1024;
+const MAX_ARTIFACT_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_ARTIFACT_FILES = 100_000;
 const MAX_ARTIFACT_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_NPM_ARTIFACT_TEXT_FILE_BYTES = 32 * 1024 * 1024;
 const MAX_ARTIFACT_CONCURRENCY = 4;
 const MAX_ARTIFACT_DEADLINE_MS = 180_000;
 const MAX_STAGE_A_EXCEPTION_BYTES = 256 * 1024;
@@ -1162,7 +1163,7 @@ function readTarText(header, start, length) {
   );
 }
 
-function safeTarName(name, packageRoot = 'package') {
+function safeTarName(name) {
   if (
     !name ||
     name.startsWith('/') ||
@@ -1176,8 +1177,6 @@ function safeTarName(name, packageRoot = 'package') {
   const normalized = path.posix.normalize(name);
   if (normalized !== name.replace(/\/$/u, '') && normalized !== name)
     throw new Error('tar-path-invalid');
-  if (normalized !== packageRoot && !normalized.startsWith(`${packageRoot}/`))
-    throw new Error('tar-path-outside-package-root');
   return normalized;
 }
 
@@ -1219,6 +1218,7 @@ export function inspectNpmTarball(archive, artifact) {
   let bytes = 0;
   let binaryFiles = 0;
   let manifest;
+  let packageRoot;
   let bindingGyp = false;
   let sawTerminator = false;
   while (offset + 512 <= unpacked.length) {
@@ -1244,6 +1244,10 @@ export function inspectNpmTarball(archive, artifact) {
     try {
       size = readTarOctal(header, 124, 12);
       canonical = safeTarName(name);
+      const entryRoot = canonical.split('/')[0];
+      if (!entryRoot || (packageRoot && entryRoot !== packageRoot))
+        throw new Error('tar-path-outside-package-root');
+      if (!packageRoot) packageRoot = entryRoot;
       const declaredChecksum = readTarOctal(header, 148, 8);
       let checksum = 0;
       for (let index = 0; index < 512; index++)
@@ -1257,10 +1261,14 @@ export function inspectNpmTarball(archive, artifact) {
       break;
     }
     const type = String.fromCharCode(header[156] ?? 0);
+    if (canonical === packageRoot && type !== '5') {
+      reasons.push('tar-file-path-invalid');
+      break;
+    }
     const bodyStart = offset + 512;
     const bodyEnd = bodyStart + size;
     if (
-      size > MAX_ARTIFACT_FILE_BYTES ||
+      size > MAX_ARTIFACT_UNPACKED_BYTES ||
       bodyEnd > unpacked.length ||
       !Number.isSafeInteger(bodyEnd)
     ) {
@@ -1277,7 +1285,7 @@ export function inspectNpmTarball(archive, artifact) {
       break;
     }
     if (type === '0' || type === '\0' || type === '7') {
-      if (canonical === 'package') {
+      if (canonical === packageRoot) {
         reasons.push('tar-file-path-invalid');
         break;
       }
@@ -1293,8 +1301,8 @@ export function inspectNpmTarball(archive, artifact) {
       }
       seen.add(canonical);
       const content = unpacked.subarray(bodyStart, bodyEnd);
-      if (canonical === 'package/binding.gyp') bindingGyp = true;
-      if (canonical === 'package/package.json') {
+      if (canonical === `${packageRoot}/binding.gyp`) bindingGyp = true;
+      if (canonical === `${packageRoot}/package.json`) {
         try {
           manifest = JSON.parse(
             new TextDecoder('utf-8', { fatal: true }).decode(content)
@@ -1315,12 +1323,14 @@ export function inspectNpmTarball(archive, artifact) {
         )
           reasons.push('artifact-package-identity-mismatch');
       }
-      if (!content.includes(0)) {
+      if (size > MAX_NPM_ARTIFACT_TEXT_FILE_BYTES && !content.includes(0)) {
+        reasons.push('artifact-file-size-exceeded');
+      } else if (!content.includes(0)) {
         try {
           const text = new TextDecoder('utf-8', { fatal: true }).decode(
             content
           );
-          const artifactPath = `artifact:${artifact.location}/${canonical.slice('package/'.length)}`;
+          const artifactPath = `artifact:${artifact.location}/${canonical.slice(packageRoot.length + 1)}`;
           findings.push(...scanText(artifactPath, text, incompleteReasons));
         } catch {
           binaryFiles++;
@@ -1353,7 +1363,10 @@ export function inspectNpmTarball(archive, artifact) {
     if (!artifact.hasInstallScript) reasons.push('lifecycle-metadata-mismatch');
   }
   if (bindingGyp) hasInstallScript = true;
-  if (Boolean(artifact.hasInstallScript) !== hasInstallScript)
+  // A registry/lock metadata bit set to true is conservative: the immutable
+  // archive remains authoritative about whether an install hook exists. The
+  // unsafe mismatch is an archive hook whose exact lock entry says none.
+  if (hasInstallScript && !artifact.hasInstallScript)
     reasons.push('lifecycle-metadata-mismatch');
   if (!manifest) reasons.push('artifact-package-manifest-missing');
   if (hasInstallScript)
@@ -2965,14 +2978,22 @@ function cargoManifestDirectory(manifestPath) {
   return directory === '.' ? '' : directory;
 }
 
+function isDependencyFixturePath(name) {
+  return /(?:^|\/)(?:__fixtures__|fixtures|tests?)(?:\/|$)/iu.test(name);
+}
+
 function inspectCargoLockfiles(repo, commit, tree) {
   const resolvedTree =
     tree ?? parseTree(git(repo, ['ls-tree', '-rz', '--full-tree', commit]));
-  const lockfiles = resolvedTree.blobs.filter((blob) =>
-    /(?:^|\/)Cargo\.lock$/u.test(blob.path)
+  const lockfiles = resolvedTree.blobs.filter(
+    (blob) =>
+      !isDependencyFixturePath(blob.path) &&
+      /(?:^|\/)Cargo\.lock$/u.test(blob.path)
   );
-  const manifests = resolvedTree.blobs.filter((blob) =>
-    /(?:^|\/)Cargo\.toml$/iu.test(blob.path)
+  const manifests = resolvedTree.blobs.filter(
+    (blob) =>
+      !isDependencyFixturePath(blob.path) &&
+      /(?:^|\/)Cargo\.toml$/iu.test(blob.path)
   );
   const reasons = [];
   if (lockfiles.length > 100 || manifests.length > 500)
@@ -3174,13 +3195,18 @@ function inspectCargoLockfiles(repo, commit, tree) {
 }
 
 function inspectGoModuleFiles(repo, commit, tree) {
-  const moduleFiles = tree.blobs.filter((blob) =>
-    /(?:^|\/)go\.mod$/u.test(blob.path)
+  const moduleFiles = tree.blobs.filter(
+    (blob) =>
+      !isDependencyFixturePath(blob.path) && /(?:^|\/)go\.mod$/u.test(blob.path)
   );
   const sums = new Set(
     tree.blobs
       .map((blob) => blob.path)
-      .filter((blobPath) => /(?:^|\/)go\.sum$/u.test(blobPath))
+      .filter(
+        (blobPath) =>
+          !isDependencyFixturePath(blobPath) &&
+          /(?:^|\/)go\.sum$/u.test(blobPath)
+      )
   );
   const reasons = [];
   const records = new Map();
@@ -3244,6 +3270,7 @@ export function inspectDependencyChanges(repo, baseSha, headSha, mergeSha) {
     .map((blob) => blob.path)
     .filter(
       (name) =>
+        !isDependencyFixturePath(name) &&
         name !== 'package-lock.json' &&
         /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|deno\.lock|pdm\.lock|uv\.lock|pixi\.lock|conda-lock\.ya?ml)$/iu.test(
           name
@@ -3251,15 +3278,19 @@ export function inspectDependencyChanges(repo, baseSha, headSha, mergeSha) {
     );
   if (unsupportedLockfiles.length > 0)
     reasons.push('unsupported-lockfile-format');
-  const unsupportedEcosystemInputs = headTree.blobs.some((blob) =>
-    /(?:^|\/)(?:go\.work|go\.work\.sum|vendor\/modules\.txt|\.cargo\/config(?:\.toml)?|uv\.(?:lock|toml)|pdm\.(?:lock|toml)|pixi\.(?:lock|toml)|conda-lock\.ya?ml|environment\.ya?ml|deno\.(?:jsonc?|lock)|poetry\.lock|Pipfile(?:\.lock)?|pyproject\.toml|setup\.(?:py|cfg)|requirements(?:-[^/]+)?\.(?:txt|in)|constraints(?:-[^/]+)?\.txt|Gemfile(?:\.lock)?|[^/]+\.gemspec|\.bundle\/config|composer\.json|composer\.lock|pom\.xml|\.mvn\/(?:extensions\.xml|maven\.config|wrapper\/maven-wrapper\.properties)|gradle\.lockfile|gradle\.properties|libs\.versions\.toml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?)$/iu.test(
-      blob.path
-    )
+  const unsupportedEcosystemInputs = headTree.blobs.some(
+    (blob) =>
+      !isDependencyFixturePath(blob.path) &&
+      /(?:^|\/)(?:go\.work|go\.work\.sum|vendor\/modules\.txt|\.cargo\/config(?:\.toml)?|uv\.(?:lock|toml)|pdm\.(?:lock|toml)|pixi\.(?:lock|toml)|conda-lock\.ya?ml|environment\.ya?ml|deno\.(?:jsonc?|lock)|poetry\.lock|Pipfile(?:\.lock)?|pyproject\.toml|setup\.(?:py|cfg)|requirements(?:-[^/]+)?\.(?:txt|in)|constraints(?:-[^/]+)?\.txt|Gemfile(?:\.lock)?|[^/]+\.gemspec|\.bundle\/config|composer\.json|composer\.lock|pom\.xml|\.mvn\/(?:extensions\.xml|maven\.config|wrapper\/maven-wrapper\.properties)|gradle\.lockfile|gradle\.properties|libs\.versions\.toml|build\.gradle(?:\.kts)?|settings\.gradle(?:\.kts)?)$/iu.test(
+        blob.path
+      )
   );
-  const unsupportedAdditionalEcosystemInputs = headTree.blobs.some((blob) =>
-    /(?:^|\/)(?:Package\.resolved|Package\.swift|Podfile(?:\.lock)?|Cartfile(?:\.resolved)?|pubspec\.(?:yaml|lock)|mix\.(?:exs|lock)|packages\.(?:lock\.json|config)|project\.assets\.json|NuGet\.Config|Directory\.(?:Packages|Build)\.(?:props|targets)|global\.json|[^/]+\.(?:csproj|fsproj|vbproj|sln|slnx))$/iu.test(
-      blob.path
-    )
+  const unsupportedAdditionalEcosystemInputs = headTree.blobs.some(
+    (blob) =>
+      !isDependencyFixturePath(blob.path) &&
+      /(?:^|\/)(?:Package\.resolved|Package\.swift|Podfile(?:\.lock)?|Cartfile(?:\.resolved)?|pubspec\.(?:yaml|lock)|mix\.(?:exs|lock)|packages\.(?:lock\.json|config)|project\.assets\.json|NuGet\.Config|Directory\.(?:Packages|Build)\.(?:props|targets)|global\.json|[^/]+\.(?:csproj|fsproj|vbproj|sln|slnx))$/iu.test(
+        blob.path
+      )
   );
   if (unsupportedEcosystemInputs || unsupportedAdditionalEcosystemInputs)
     reasons.push('unsupported-dependency-ecosystem-provenance');
@@ -4188,6 +4219,14 @@ export function scanText(name, text, incompleteReasons = []) {
       for (const [script, command] of Object.entries(parsed.scripts ?? {})) {
         if (typeof command !== 'string')
           throw new Error(`Non-text npm script: ${name}#${script}`);
+        // Registry-installed dependencies execute these lifecycle hooks during
+        // npm install. Their build, test, release and workspace scripts remain
+        // inert package metadata and are not part of Stage A's install graph.
+        if (
+          dependencyArtifact &&
+          !['preinstall', 'install', 'postinstall'].includes(script)
+        )
+          continue;
         if (dangerous.some((pattern) => pattern.test(command)))
           findings.push(`${name}#scripts.${script}`);
         if (hasUnsupportedToolchainExecution(command))
@@ -4359,9 +4398,14 @@ export function scanText(name, text, incompleteReasons = []) {
     dependencyArtifact &&
     (markdown ||
       /\.(?:map|html?)$/iu.test(name) ||
+      /\.d\.ts$/iu.test(name) ||
+      /(?:^|\/)(?:LICENSE|NOTICE)(?:\.[^/]+)?$/iu.test(name) ||
       /(?:^|\/)(?:test|tests|__tests__|fixtures?)\//iu.test(name) ||
       /(?:^|\/)[^/]*\.test\.[cm]?[jt]sx?$/iu.test(name) ||
       /(?:^|\/)configuration_schema\.json$/iu.test(name));
+  const nonExecutionExample =
+    dependencyArtifact && /(?:^|\/)examples\//iu.test(name);
+  const nonExecutableArtifact = inertArtifact || nonExecutionExample;
   const shebang = /^\uFEFF?#!/u.test(text);
   const shellExecutionSource =
     /\.(?:sh|bash|ps1|psm1)$/iu.test(name) ||
@@ -4372,7 +4416,7 @@ export function scanText(name, text, incompleteReasons = []) {
     );
   const executableText =
     sourceCode || shebang || (!markdown && sourceSignature);
-  if (shellExecutionSource) {
+  if (shellExecutionSource && !nonExecutableArtifact) {
     if (/\bStart-Process\b/iu.test(text))
       incompleteReasons.push(`unresolved-powershell-process:${name}`);
     if (
@@ -4387,7 +4431,7 @@ export function scanText(name, text, incompleteReasons = []) {
     if (hasUnsupportedToolchainExecution(text))
       incompleteReasons.push(`unsupported-toolchain-execution:${name}`);
   }
-  if (path.posix.extname(name) === '') {
+  if (path.posix.extname(name) === '' && !nonExecutableArtifact) {
     if (requiresUnverifiedNpmResolution(text))
       incompleteReasons.push(`unverified-npm-resolution:${name}`);
     if (hasDynamicShellCommandResolution(text))
@@ -4427,6 +4471,7 @@ export function scanText(name, text, incompleteReasons = []) {
     findings.push(name);
   if (
     (sourceCode || otherSourceCode) &&
+    !nonExecutableArtifact &&
     (unsupportedToolchainSpawn.test(sourceCode ? behaviorContent : text) ||
       unsupportedToolchainShellCommand.test(
         sourceCode ? behaviorContent : text
@@ -4435,11 +4480,16 @@ export function scanText(name, text, incompleteReasons = []) {
     incompleteReasons.push(`unsupported-toolchain-execution:${name}`);
   if (
     executableText &&
+    !nonExecutableArtifact &&
     hasUnresolvedChildProcessExecution(behaviorContent) &&
     !hasUnsupportedToolchainExecution(behaviorContent)
   )
     incompleteReasons.push(`unresolved-child-process-execution:${name}`);
-  if (shebang && hasUnsupportedToolchainExecution(scanContent))
+  if (
+    shebang &&
+    !nonExecutableArtifact &&
+    hasUnsupportedToolchainExecution(scanContent)
+  )
     incompleteReasons.push(`unsupported-toolchain-execution:${name}`);
   if (executableText && hasCredentialTransfer(behaviorContent))
     findings.push(`${name}#credential-transfer`);

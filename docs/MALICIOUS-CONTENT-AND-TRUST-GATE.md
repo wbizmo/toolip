@@ -98,7 +98,9 @@ manifest alignment. Every exact artifact in a supported npm lockfile is fetched
 from the public registry, integrity-verified, and scanned in memory before
 installation; checking only changed entries would leave unchanged install hooks
 outside the gate. Scoped names are fetched only for explicitly allowlisted
-public scopes. Issuer/source attestations are then checked against the protected
+public scopes. Lockfiles inside `tests/fixtures` are kept out of the active
+dependency inventory; their Git blobs are still covered by source scanning.
+Issuer/source attestations are then checked against the protected
 repository variable `TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY`, using the same
 SHA-512 archive digests already computed by the scanner. Missing policy,
 missing package rules, or any unavailable, untrusted or invalid attestation
@@ -168,6 +170,9 @@ The inspected tarball's embedded package name and exact version must match its
 lock entry; npm aliases retain the registry package identity for this check and
 for scope withholding. Tarball integrity alone cannot authorize mismatched
 package metadata.
+The exact archive manifest controls lifecycle-hook status: a lock metadata bit
+that conservatively says a hook exists does not imply one is present, while a
+verified hook absent from the lock metadata remains incomplete.
 Missing/moved commits, malformed objects, submodules, escaping symlinks,
 suspicious execution patterns, parser failures and exhausted size budgets block
 or make the result incomplete.
@@ -274,9 +279,10 @@ O(F+B), graph construction costs O(B+V+E), and changed-entrypoint traversal
 costs O(W), where W is capped at 1,000,000 visits with 1 MiB of trace output.
 For K npm artifacts, P supported Cargo lock records, L parsed lock/manifest
 bytes, A downloaded bytes and U decompressed bytes, integrity verification and
-archive scanning cost O(A+U+P+L). Each archive is capped at 32 MiB compressed
+archive scanning cost O(A+U+P+L). Each archive is capped at 64 MiB compressed
 and 128 MiB unpacked; npm download concurrency is four and Cargo inspection is
-sequential. Aggregate archive bytes/files are bounded. Peak additional memory
+sequential. Aggregate archive bytes are capped at 2 GiB and archive files at
+100,000. Peak additional memory
 is O(F+B+V+E+T+4A_n+U_n+A_c+U_c+P), with lock/manifest bytes capped at 16 MiB
 and archive contents at 100,000 files. It reads both head and merge trees, so
 Git object scanning uses two tree budgets. Synthetic
