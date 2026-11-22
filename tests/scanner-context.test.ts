@@ -1,10 +1,39 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  symlink,
+  writeFile
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createScannerContext } from '../src/core/scanner-context.js';
 
 describe('createScannerContext', () => {
+  it.skipIf(process.platform === 'win32')(
+    'canonicalizes a symlinked scan root for physical path boundary checks',
+    async () => {
+      const parent = await mkdtemp(
+        path.join(os.tmpdir(), 'toolip-context-root-')
+      );
+      const root = path.join(parent, 'physical');
+      const alias = path.join(parent, 'alias');
+      try {
+        await mkdir(root);
+        await writeFile(path.join(root, 'entry.ts'), 'export {};');
+        await symlink(root, alias, 'dir');
+
+        const context = await createScannerContext(alias);
+
+        expect(context.root).toBe(await realpath(root));
+      } finally {
+        await rm(parent, { recursive: true, force: true });
+      }
+    }
+  );
+
   it('creates a project scan context with profile and file summary', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-context-'));
 

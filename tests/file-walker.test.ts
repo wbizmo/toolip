@@ -130,33 +130,36 @@ describe('walkProjectFiles', () => {
     }
   });
 
-  it('parses tracked paths incrementally without splitting the full Git listing', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-walk-paths-'));
-    const unusualName = 'line\nbreak-é.ts';
-    try {
-      await writeFile(path.join(root, unusualName), 'export {};');
-      execFileSync('git', ['init', '-q', root]);
-      execFileSync('git', ['-C', root, 'add', '--all']);
-      execFileSync('git', [
-        '-C',
-        root,
-        '-c',
-        'user.name=Toolip Test',
-        '-c',
-        'user.email=toolip-test@example.invalid',
-        'commit',
-        '-qm',
-        'fixture'
-      ]);
+  it.skipIf(process.platform === 'win32')(
+    'parses tracked paths incrementally without splitting the full Git listing',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-walk-paths-'));
+      const unusualName = 'line\nbreak-é.ts';
+      try {
+        await writeFile(path.join(root, unusualName), 'export {};');
+        execFileSync('git', ['init', '-q', root]);
+        execFileSync('git', ['-C', root, 'add', '--all']);
+        execFileSync('git', [
+          '-C',
+          root,
+          '-c',
+          'user.name=Toolip Test',
+          '-c',
+          'user.email=toolip-test@example.invalid',
+          'commit',
+          '-qm',
+          'fixture'
+        ]);
 
-      const files = await walkProjectFiles(root, {
-        includeTrackedIgnored: true
-      });
-      expect(files.map((file) => file.relativePath)).toContain(unusualName);
-    } finally {
-      await rm(root, { recursive: true, force: true });
+        const files = await walkProjectFiles(root, {
+          includeTrackedIgnored: true
+        });
+        expect(files.map((file) => file.relativePath)).toContain(unusualName);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
     }
-  });
+  );
 
   it('stops streaming entries at the file budget before metadata reads', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'toolip-walk-budget-'));
