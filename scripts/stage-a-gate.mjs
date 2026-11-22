@@ -45,8 +45,20 @@ const MAX_ARTIFACT_FILES = 100_000;
 const MAX_ARTIFACT_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_ARTIFACT_CONCURRENCY = 4;
 const MAX_ARTIFACT_DEADLINE_MS = 180_000;
-const MAX_STAGE_A_EXCEPTION_BYTES = 64 * 1024;
-const MAX_STAGE_A_EXCEPTION_COUNT = 100;
+const MAX_STAGE_A_EXCEPTION_BYTES = 256 * 1024;
+const MAX_STAGE_A_EXCEPTION_COUNT = 500;
+const MAX_OWNER_ATTESTATION_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
+// Owner attestations acknowledge bounded static-analysis uncertainty in archives
+// whose exact bytes have already been integrity verified. They cannot authorize
+// absent artifacts, failed checksums, malformed archives, or unsafe provenance.
+const OWNER_ATTESTABLE_ARTIFACT_REASONS = new Set([
+  'artifact-binary-content-uninspected',
+  'dependency-lifecycle-script-review',
+  'dynamic-command-resolution',
+  'unresolved-child-process-execution',
+  'unsupported-toolchain-execution',
+  'unverified-npm-resolution'
+]);
 const MAX_STAGE_A_EXCEPTION_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 const REGEX_PREFIX_KEYWORDS = new Set([
   'await',
@@ -1419,7 +1431,9 @@ export function parseStageAExceptionPolicy(text, now = Date.now()) {
             'reasonCode',
             'headInputSha256',
             'expiresAt',
-            'rationale'
+            'rationale',
+            'exactReason',
+            'ownerAttestation'
           ].includes(key)
       )
     )
@@ -1427,6 +1441,50 @@ export function parseStageAExceptionPolicy(text, now = Date.now()) {
     const hasFindingId = typeof entry.findingId === 'string';
     const hasReasonCode = typeof entry.reasonCode === 'string';
     const expiresAt = Date.parse(entry.expiresAt);
+    const ownerAttestation = entry.ownerAttestation;
+    const hasOwnerAttestation = ownerAttestation !== undefined;
+    if (hasOwnerAttestation) {
+      const attestedAt = Date.parse(ownerAttestation?.attestedAt);
+      const location = ownerAttestation?.artifactLocation;
+      if (
+        !hasReasonCode ||
+        !OWNER_ATTESTABLE_ARTIFACT_REASONS.has(entry.reasonCode) ||
+        typeof entry.exactReason !== 'string' ||
+        !entry.exactReason.startsWith(entry.reasonCode + ':') ||
+        entry.exactReason.length > 768 ||
+        !ownerAttestation ||
+        typeof ownerAttestation !== 'object' ||
+        Array.isArray(ownerAttestation) ||
+        Object.keys(ownerAttestation).some(
+          (key) =>
+            ![
+              'owner',
+              'headSha',
+              'attestedAt',
+              'artifactLocation',
+              'artifactSha512'
+            ].includes(key)
+        ) ||
+        !/^[A-Za-z0-9-]{1,39}$/u.test(ownerAttestation.owner ?? '') ||
+        !/^[a-f0-9]{40}$/u.test(ownerAttestation.headSha ?? '') ||
+        !/^[a-f0-9]{128}$/u.test(ownerAttestation.artifactSha512 ?? '') ||
+        typeof location !== 'string' ||
+        location.length > 256 ||
+        !/^node_modules\/(?:[A-Za-z0-9@._-]+\/)*[A-Za-z0-9._-]+$/u.test(
+          location
+        ) ||
+        location.split('/').some((part) => part === '.' || part === '..') ||
+        !entry.exactReason.endsWith(':' + location) ||
+        typeof ownerAttestation.attestedAt !== 'string' ||
+        !Number.isFinite(attestedAt) ||
+        new Date(attestedAt).toISOString() !== ownerAttestation.attestedAt ||
+        attestedAt > now ||
+        expiresAt > attestedAt + MAX_OWNER_ATTESTATION_LIFETIME_MS
+      )
+        return Object.freeze({ entries: [], invalid: true });
+    } else if (entry.exactReason !== undefined) {
+      return Object.freeze({ entries: [], invalid: true });
+    }
     if (
       !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(entry.id ?? '') ||
       hasFindingId === hasReasonCode ||
@@ -1450,7 +1508,19 @@ export function parseStageAExceptionPolicy(text, now = Date.now()) {
         ...(hasFindingId ? { findingId: entry.findingId } : {}),
         ...(hasReasonCode ? { reasonCode: entry.reasonCode } : {}),
         headInputSha256: entry.headInputSha256,
-        expiresAt: entry.expiresAt
+        expiresAt: entry.expiresAt,
+        ...(hasOwnerAttestation
+          ? {
+              exactReason: entry.exactReason,
+              ownerAttestation: Object.freeze({
+                owner: ownerAttestation.owner,
+                headSha: ownerAttestation.headSha,
+                attestedAt: ownerAttestation.attestedAt,
+                artifactLocation: ownerAttestation.artifactLocation,
+                artifactSha512: ownerAttestation.artifactSha512
+              })
+            }
+          : {})
       })
     );
   }
@@ -1472,6 +1542,7 @@ export function matchingStageAExceptions(
   incompleteReasons
 ) {
   const availableFindingIds = new Set(findingIds);
+  const availableExactReasons = new Set(incompleteReasons);
   const availableReasonCodes = new Set(
     incompleteReasons.map((reason) => reason.split(':', 1)[0] ?? reason)
   );
@@ -1481,9 +1552,53 @@ export function matchingStageAExceptions(
         entry.headInputSha256 === headInputSha256 &&
         (entry.findingId
           ? availableFindingIds.has(entry.findingId)
-          : entry.reasonCode && availableReasonCodes.has(entry.reasonCode))
+          : entry.ownerAttestation
+            ? availableExactReasons.has(entry.exactReason)
+            : entry.reasonCode && availableReasonCodes.has(entry.reasonCode))
     )
   );
+}
+
+/**
+ * Authorize a narrow, audited exception from the protected-base policy.
+ * Its owner identity, tree, commit, exact unresolved reason and already
+ * verified archive digest must all match the current immutable scan.
+ * This does not authorize incomplete artifact downloads or signature checks.
+ */
+export function currentOwnerAttestation(
+  entry,
+  {
+    repository,
+    headSha,
+    headInputSha256,
+    incompleteReasons,
+    verifiedArtifactSha512ByLocation
+  }
+) {
+  const signed = entry?.ownerAttestation;
+  const repoOwner = repository?.split('/');
+  if (
+    !signed ||
+    !Array.isArray(repoOwner) ||
+    repoOwner.length !== 2 ||
+    signed.owner.toLowerCase() !== repoOwner[0].toLowerCase() ||
+    entry.headInputSha256 !== headInputSha256 ||
+    signed.headSha !== headSha ||
+    !(incompleteReasons instanceof Set
+      ? incompleteReasons.has(entry.exactReason)
+      : Array.isArray(incompleteReasons) &&
+        incompleteReasons.includes(entry.exactReason)) ||
+    !OWNER_ATTESTABLE_ARTIFACT_REASONS.has(entry.reasonCode) ||
+    !verifiedArtifactSha512ByLocation ||
+    verifiedArtifactSha512ByLocation[signed.artifactLocation] !==
+      signed.artifactSha512
+  )
+    return undefined;
+  return Object.freeze({
+    login: signed.owner,
+    submittedAt: signed.attestedAt,
+    commitId: signed.headSha
+  });
 }
 
 export function currentMaintainerApproval(reviews, headSha, pullRequestAuthor) {
@@ -4869,7 +4984,7 @@ export function stageAAuthorshipReviewSignals(input) {
         verificationReason: commitVerification.reason,
         reviewRequired: true,
         message:
-          'GitHub could not verify the pull request head commit signature; require independent maintainer review and check repository signature policy before merge.'
+          'GitHub could not verify the pull request head commit signature; check repository signature policy and document owner review before merge.'
       })
     );
   }
@@ -5187,6 +5302,14 @@ export async function scanGithubPullRequest({
           ...goArtifacts.reasons,
           ...cargoArtifactPolicy.reasons
         ];
+        const candidateIncompleteReasonSet = new Set(
+          candidateIncompleteReasons
+        );
+        const candidateReasonCodes = new Set(
+          candidateIncompleteReasons.map(
+            (reason) => reason.split(':', 1)[0] ?? reason
+          )
+        );
         const matchingExceptions = matchingStageAExceptions(
           policy.entries,
           head.inputSha256,
@@ -5194,64 +5317,94 @@ export async function scanGithubPullRequest({
           candidateIncompleteReasons
         );
         if (matchingExceptions.length > 0) {
-          let approval;
-          try {
-            if (!pullRequestAuthor)
-              throw new Error('pull-request-author-unavailable');
-            approval = await fetchCurrentMaintainerApproval({
-              repository,
-              number: Number(number),
-              headSha,
-              pullRequestAuthor,
-              token,
-              fetchImpl
-            });
-          } catch {
-            exceptionReviewReasons.push('stage-a-exception-review-unavailable');
-          }
-          if (!approval && exceptionReviewReasons.length === 0)
-            exceptionReviewReasons.push('stage-a-exception-review-required');
-          if (approval) {
-            const suppressedFindings = new Set();
-            const suppressedReasons = new Set();
-            for (const entry of matchingExceptions) {
-              const findingApplies = Boolean(
-                entry.findingId && candidateFindingIds.has(entry.findingId)
-              );
-              const reasonApplies = Boolean(
-                entry.reasonCode &&
-                candidateIncompleteReasons.some(
-                  (reason) =>
-                    (reason.split(':', 1)[0] ?? reason) === entry.reasonCode
-                )
-              );
-              if (!findingApplies && !reasonApplies) continue;
-              if (entry.findingId) suppressedFindings.add(entry.findingId);
-              if (entry.reasonCode) suppressedReasons.add(entry.reasonCode);
-              appliedExceptions.push(
-                Object.freeze({
-                  id: entry.id,
-                  ...(entry.findingId ? { findingId: entry.findingId } : {}),
-                  ...(entry.reasonCode ? { reasonCode: entry.reasonCode } : {}),
-                  headInputSha256: entry.headInputSha256,
-                  expiresAt: entry.expiresAt,
-                  reviewer: approval.login,
-                  reviewedAt: approval.submittedAt,
-                  reviewedCommit: approval.commitId
-                })
+          let independentApproval;
+          if (matchingExceptions.some((entry) => !entry.ownerAttestation)) {
+            try {
+              if (!pullRequestAuthor)
+                throw new Error('pull-request-author-unavailable');
+              independentApproval = await fetchCurrentMaintainerApproval({
+                repository,
+                number: Number(number),
+                headSha,
+                pullRequestAuthor,
+                token,
+                fetchImpl
+              });
+            } catch {
+              exceptionReviewReasons.push(
+                'stage-a-exception-review-unavailable'
               );
             }
-            findings = findings.filter(
-              (finding) =>
-                !suppressedFindings.has(stageAFindingRecord(finding).id)
-            );
-            if (suppressedReasons.size > 0)
-              exceptionReviewReasons.push(
-                ...[...suppressedReasons].map(
-                  (reason) => `stage-a-exception-applied:${reason}`
-                )
-              );
+            if (!independentApproval && exceptionReviewReasons.length === 0)
+              exceptionReviewReasons.push('stage-a-exception-review-required');
           }
+          const suppressedFindings = new Set();
+          const suppressedReasons = new Set();
+          const suppressedExactReasons = new Set();
+          for (const entry of matchingExceptions) {
+            const approval = entry.ownerAttestation
+              ? currentOwnerAttestation(entry, {
+                  repository,
+                  headSha,
+                  headInputSha256: head.inputSha256,
+                  incompleteReasons: candidateIncompleteReasonSet,
+                  verifiedArtifactSha512ByLocation:
+                    dependencyArtifacts.verifiedArtifactSha512ByLocation
+                })
+              : independentApproval;
+            if (!approval) {
+              if (entry.ownerAttestation)
+                exceptionReviewReasons.push(
+                  'stage-a-owner-attestation-invalid'
+                );
+              continue;
+            }
+            const findingApplies = Boolean(
+              entry.findingId && candidateFindingIds.has(entry.findingId)
+            );
+            const reasonApplies = Boolean(
+              entry.reasonCode &&
+              (entry.exactReason
+                ? candidateIncompleteReasonSet.has(entry.exactReason)
+                : candidateReasonCodes.has(entry.reasonCode))
+            );
+            if (!findingApplies && !reasonApplies) continue;
+            if (entry.findingId) suppressedFindings.add(entry.findingId);
+            if (entry.exactReason)
+              suppressedExactReasons.add(entry.exactReason);
+            else if (entry.reasonCode) suppressedReasons.add(entry.reasonCode);
+            appliedExceptions.push(
+              Object.freeze({
+                id: entry.id,
+                ...(entry.findingId ? { findingId: entry.findingId } : {}),
+                ...(entry.reasonCode ? { reasonCode: entry.reasonCode } : {}),
+                ...(entry.exactReason
+                  ? {
+                      exactReason: entry.exactReason,
+                      ownerAttestation: entry.ownerAttestation
+                    }
+                  : {}),
+                headInputSha256: entry.headInputSha256,
+                expiresAt: entry.expiresAt,
+                reviewer: approval.login,
+                reviewedAt: approval.submittedAt,
+                reviewedCommit: approval.commitId
+              })
+            );
+          }
+          findings = findings.filter(
+            (finding) =>
+              !suppressedFindings.has(stageAFindingRecord(finding).id)
+          );
+          if (suppressedReasons.size > 0 || suppressedExactReasons.size > 0)
+            exceptionReviewReasons.push(
+              ...[...suppressedReasons].map(
+                (reason) => 'stage-a-exception-applied:' + reason
+              ),
+              ...[...suppressedExactReasons].map(
+                (reason) => 'stage-a-exception-applied:' + reason
+              )
+            );
         }
       }
     }
@@ -5265,8 +5418,14 @@ export async function scanGithubPullRequest({
       dependencyIncompleteReasons.push('dependency-artifact-uninspected');
     const suppressedExceptionReasonCodes = new Set(
       appliedExceptions
+        .filter((entry) => !entry.exactReason)
         .map((entry) => entry.reasonCode)
         .filter((code) => typeof code === 'string')
+    );
+    const suppressedExceptionExactReasons = new Set(
+      appliedExceptions
+        .map((entry) => entry.exactReason)
+        .filter((reason) => typeof reason === 'string')
     );
     const incompleteReasons = [
       ...new Set([
@@ -5297,6 +5456,7 @@ export async function scanGithubPullRequest({
     ]
       .filter(
         (reason) =>
+          !suppressedExceptionExactReasons.has(reason) &&
           !suppressedExceptionReasonCodes.has(reason.split(':', 1)[0] ?? reason)
       )
       .sort();

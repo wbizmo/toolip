@@ -199,9 +199,15 @@ artifacts. A finding exception suppresses only that stable finding; a reason
 exception suppresses only the matching reason class for that exact tree.
 Artifact counts, integrity checks and required signature-audit coverage are
 still enforced when the approval record is written, so an exception cannot
-stand in for a required artifact inspection. An entry applies only after
-GitHub reports a current-head `APPROVED` review from an `OWNER`, `MEMBER`, or
-`COLLABORATOR` other than the PR author. Stale approvals, review-provider
+stand in for a required artifact inspection. Ordinary exceptions require a current-head approved review from a maintainer
+other than the PR author. A separate solo-maintainer owner-attestation form is
+available only for narrowly enumerated dependency archive static-analysis
+uncertainties. The entry must originate on the trusted base, match the owner,
+exact PR head commit, head-tree digest, exact incomplete reason, and already
+verified npm archive SHA-512, and expire within seven days of attestation.
+Owner attestations cannot approve missing archives, failed integrity or
+registry checks, unsupported provenance, malformed archives or incomplete
+downloads. Stale approvals, review-provider
 failures, invalid policy, and expired entries do not suppress a finding. The
 one-day approval artifact records the policy digest, exception ID, reviewer,
 review time, head commit, and expiry for audit. Server-side branch rules and
@@ -213,7 +219,7 @@ external-contributor associations, and unverified signatures emit explicit
 maintainer-review warnings; missing or inconsistent author, repository, or
 signature context makes the scan incomplete. Signature payloads are never
 copied into findings. These signals do not label a contributor malicious and
-do not replace independent-approval or signed-commit branch rules.
+do not replace branch rules or the repository's signed-commit policy.
 
 Example trusted-base policy shape (hashes are specific to the candidate):
 
@@ -373,7 +379,7 @@ independently verify:
 - A [repository ruleset](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets)
   targeting `main`, requiring the Stage A workflow, each Stage B `Verify
 trusted Stage A result` job, and the downstream CI/PR Quality/CodeQL checks,
-  with independent approval and restricted force-push/deletion rights. The
+  with owner-controlled merges, optional independent approval, and restricted force-push/deletion rights. The
   verifier job must itself be required because dependent jobs are skipped when
   Stage A fails, and GitHub treats skipped jobs as successful.
 - For this first PR, configure and test an independently trusted required

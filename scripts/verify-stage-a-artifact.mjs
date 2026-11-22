@@ -21,6 +21,56 @@ function complexityEvidence(body) {
   );
 }
 
+const OWNER_ATTESTABLE_ARTIFACT_REASONS = new Set([
+  'artifact-binary-content-uninspected',
+  'dependency-lifecycle-script-review',
+  'dynamic-command-resolution',
+  'unresolved-child-process-execution',
+  'unsupported-toolchain-execution',
+  'unverified-npm-resolution'
+]);
+
+/** Rejects forged, broad or expired owner attestations even in an approval record. */
+export function validOwnerAttestationEntry(entry, record, now = Date.now()) {
+  if (!entry || typeof entry !== 'object') return false;
+  if (!entry.ownerAttestation) return entry.exactReason === undefined;
+  const attestation = entry.ownerAttestation;
+  const owner = record?.repository?.split('/');
+  const location = attestation.artifactLocation;
+  const attestedAt = Date.parse(attestation.attestedAt);
+  const expiresAt = Date.parse(entry.expiresAt);
+  return (
+    owner?.length === 2 &&
+    typeof attestation.owner === 'string' &&
+    attestation.owner.toLowerCase() === owner[0].toLowerCase() &&
+    OWNER_ATTESTABLE_ARTIFACT_REASONS.has(entry.reasonCode) &&
+    typeof entry.exactReason === 'string' &&
+    entry.exactReason.startsWith(entry.reasonCode + ':') &&
+    entry.exactReason.length <= 768 &&
+    typeof location === 'string' &&
+    location.length <= 256 &&
+    /^node_modules\/(?:[A-Za-z0-9@._-]+\/)*[A-Za-z0-9._-]+$/u.test(location) &&
+    !location
+      .split('/')
+      .some((segment) => segment === '.' || segment === '..') &&
+    entry.exactReason.endsWith(':' + location) &&
+    /^[a-f0-9]{128}$/u.test(attestation.artifactSha512 ?? '') &&
+    record?.verifiedArtifactSha512ByLocation?.[location] ===
+      attestation.artifactSha512 &&
+    attestation.headSha === record.headSha &&
+    entry.headInputSha256 === record.headInputSha256 &&
+    entry.reviewer === attestation.owner &&
+    entry.reviewedAt === attestation.attestedAt &&
+    entry.reviewedCommit === attestation.headSha &&
+    Number.isFinite(attestedAt) &&
+    Number.isFinite(expiresAt) &&
+    new Date(attestedAt).toISOString() === attestation.attestedAt &&
+    attestedAt <= now &&
+    expiresAt > now &&
+    expiresAt <= attestedAt + 7 * 24 * 60 * 60 * 1000
+  );
+}
+
 export function verifyStageAArtifact(
   record,
   event,
@@ -86,7 +136,8 @@ export function verifyStageAArtifact(
         typeof entry.reviewer !== 'string' ||
         !/^[A-Za-z0-9-]{1,39}$/u.test(entry.reviewer) ||
         !Number.isFinite(Date.parse(entry.reviewedAt)) ||
-        entry.reviewedCommit !== record.headSha
+        entry.reviewedCommit !== record.headSha ||
+        !validOwnerAttestationEntry(entry, record)
     ) ||
     !Array.isArray(record.reasonCodes) ||
     record.reasonCodes.length !== 0 ||

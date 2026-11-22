@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   buildStageAFeedback,
   currentMaintainerApproval,
+  currentOwnerAttestation,
   fetchCurrentMaintainerApproval,
   fetchHeadCommitVerification,
   parseStageAExceptionPolicy,
@@ -293,6 +294,88 @@ describe('trusted Stage A Git-object scanner', () => {
         })
       ).rejects.toThrow('head-commit-verification-response-invalid');
     }
+  });
+
+  it('accepts only exact owner attestations for already verified artifact digests', () => {
+    const now = Date.parse('2026-11-22T18:00:00.000Z');
+    const headSha = 'a'.repeat(40);
+    const treeSha = 'b'.repeat(64);
+    const archiveSha = 'c'.repeat(128);
+    const reason =
+      'unsupported-toolchain-execution:artifact:node_modules/esbuild/bin/esbuild:node_modules/esbuild';
+    const exception = {
+      id: 'owner-reviewed-esbuild-exec',
+      reasonCode: 'unsupported-toolchain-execution',
+      exactReason: reason,
+      headInputSha256: treeSha,
+      expiresAt: '2026-11-25T18:00:00.000Z',
+      rationale:
+        'Reviewed the exact pinned archive and accepted the remaining static-analysis uncertainty.',
+      ownerAttestation: {
+        owner: 'wbizmo',
+        headSha,
+        attestedAt: '2026-11-22T17:00:00.000Z',
+        artifactLocation: 'node_modules/esbuild',
+        artifactSha512: archiveSha
+      }
+    };
+    const policy = parseStageAExceptionPolicy(
+      JSON.stringify({ version: 1, exceptions: [exception] }),
+      now
+    );
+    expect(policy.invalid).toBe(false);
+    const candidate = policy.entries[0];
+    const input = {
+      repository: 'wbizmo/toolip',
+      headSha,
+      headInputSha256: treeSha,
+      incompleteReasons: [reason],
+      verifiedArtifactSha512ByLocation: { 'node_modules/esbuild': archiveSha }
+    };
+    expect(currentOwnerAttestation(candidate, input)).toMatchObject({
+      login: 'wbizmo',
+      commitId: headSha
+    });
+    expect(
+      currentOwnerAttestation(candidate, { ...input, headSha: 'd'.repeat(40) })
+    ).toBeUndefined();
+    expect(
+      currentOwnerAttestation(candidate, {
+        ...input,
+        verifiedArtifactSha512ByLocation: {
+          'node_modules/esbuild': 'e'.repeat(128)
+        }
+      })
+    ).toBeUndefined();
+    expect(
+      currentOwnerAttestation(candidate, { ...input, incompleteReasons: [] })
+    ).toBeUndefined();
+    expect(
+      currentOwnerAttestation(candidate, {
+        ...input,
+        repository: 'someone/toolip'
+      })
+    ).toBeUndefined();
+    expect(
+      parseStageAExceptionPolicy(
+        JSON.stringify({
+          version: 1,
+          exceptions: [{ ...exception, expiresAt: '2026-12-12T00:00:00.000Z' }]
+        }),
+        now
+      ).invalid
+    ).toBe(true);
+    expect(
+      parseStageAExceptionPolicy(
+        JSON.stringify({
+          version: 1,
+          exceptions: [
+            { ...exception, reasonCode: 'scoped-artifact-fetch-withheld' }
+          ]
+        }),
+        now
+      ).invalid
+    ).toBe(true);
   });
 
   it('accepts only exact-tree, short-lived exception entries and current maintainer approvals', async () => {
