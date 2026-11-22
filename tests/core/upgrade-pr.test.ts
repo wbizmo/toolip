@@ -1083,14 +1083,19 @@ async function verifyFrozenManagerFixture(
       root
     );
     await runtime.exec('git', ['add', '.'], root);
-    if (yarnBerry) await runtime.exec('git', ['add', '--', 'yarn.lock'], root);
+    if (yarnBerry)
+      await runtime.exec('git', ['add', '-f', '--', 'yarn.lock'], root);
     await runtime.exec('git', ['commit', '-m', 'fixture'], root);
+    if (yarnBerry)
+      await runtime.exec('git', ['cat-file', '-e', 'HEAD:yarn.lock'], root);
     await runtime.exec(
       'git',
       ['worktree', 'add', '-b', `upgrade-${manager}-fixture`, worktree, 'HEAD'],
       root
     );
     worktreeAdded = true;
+    if (yarnBerry)
+      expect(existsSync(path.join(worktree, 'yarn.lock'))).toBe(true);
 
     await installFrozenDependencies(
       manager === 'pnpm' ? 'pnpm' : 'yarn',
