@@ -106,6 +106,17 @@ blocks Stage B. Only then does Stage A perform a scripts-disabled `npm ci` in a
 temporary directory containing the captured manifest and lockfile and verify
 npm registry signatures. This PR dependency install consumes only the captured
 manifest and lockfile after exact scans and provenance checks pass.
+
+Dependency-archive content rules distinguish executable payload behavior from
+benign implementation and reference data. The generic `eval` and `Function`
+checks remain active for repository code and package lifecycle commands. In
+registry-verified dependency archives, code generation and parser evaluation
+alone are not findings; decoded dynamic execution, sensitive credential use,
+credential transfer, persistence and archive extraction followed by execution
+remain checked. Documentation, tests, source maps, schemas and HTML examples
+are treated as inert package data for content-pattern checks. Archive integrity,
+registry signatures, provenance and lifecycle-hook review still apply to every
+locked package.
 For supported Cargo lockfiles, Stage A fetches only exact crates.io `.crate`
 archives, verifies each archive against both the lock checksum and the
 administrator-owned repository variable `TOOLIP_STAGE_A_CARGO_SHA256_POLICY`,
