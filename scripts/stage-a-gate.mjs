@@ -148,7 +148,7 @@ const dangerous = [
   /\b(?:bash|sh|zsh)\s+<\(\s*(?:curl|wget)\b/iu,
   /\b(?:pwsh|powershell)(?:\.exe)?\b[^\r\n]{0,128}\s-(?:enc|encodedcommand)\s+[A-Za-z0-9+/=]{20,}/iu,
   /\b(?:eval|Function)\s*\(\s*(?:atob|Buffer\.from|decodeURIComponent|[a-z_$][\w$]*)/u,
-  /\b(?:exec|execSync|spawn|spawnSync)\s*\([^\r\n]{0,300}(?:curl|wget|https?:\/\/|process\.env)/iu,
+  /\b(?:exec|execSync|spawn|spawnSync)\s*\([^\r\n]{0,300}(?:(?:curl|wget)[^\r\n]{0,300}https?:\/\/|process\.env(?:\[['"])?\s*\.?\s*(?:AWS_SECRET_ACCESS_KEY|GITHUB_TOKEN|NPM_TOKEN|GH_TOKEN|AZURE_CLIENT_SECRET))/iu,
   /\b(?:Invoke-Expression|IEX)\b[^\r\n]{0,300}(?:DownloadString|FromBase64String|https?:\/\/)/iu,
   /\b(?:base64\s+-d|openssl\s+enc)[^\r\n]{0,200}(?:\||;|&&)[ \t]*(?:sh|bash|node)\b/iu
 ];
@@ -4038,6 +4038,7 @@ function traceChangedEntrypoints(changedPaths, texts, findingPaths) {
 
 export function scanText(name, text, incompleteReasons = []) {
   const findings = [];
+  const dependencyArtifact = name.startsWith('artifact:node_modules/');
   if (
     name === 'package.json' ||
     name.endsWith('/package.json') ||
@@ -4230,6 +4231,13 @@ export function scanText(name, text, incompleteReasons = []) {
     name
   );
   const markdown = /\.(?:md|mdx|markdown)$/iu.test(name);
+  const inertArtifact =
+    dependencyArtifact &&
+    (markdown ||
+      /\.(?:map|html?)$/iu.test(name) ||
+      /(?:^|\/)(?:test|tests|__tests__|fixtures?)\//iu.test(name) ||
+      /(?:^|\/)[^/]*\.test\.[cm]?[jt]sx?$/iu.test(name) ||
+      /(?:^|\/)configuration_schema\.json$/iu.test(name));
   const shebang = /^\uFEFF?#!/u.test(text);
   const shellExecutionSource =
     /\.(?:sh|bash|ps1|psm1)$/iu.test(name) ||
@@ -4273,9 +4281,25 @@ export function scanText(name, text, incompleteReasons = []) {
   const behaviorContent = executableText
     ? maskJavaScriptNonCode(text, false)
     : text;
-  for (const pattern of dangerous)
+  // Dependency archives contain legitimate compiler code generation and
+  // parser evaluators (for example Ajv schema compilation and node-gyp's GYP
+  // expression parser). Keep generic eval/Function checks for repository code
+  // and package lifecycle commands, but in dependency source require the
+  // stronger decoded-payload pattern below. Lock integrity, registry signature
+  // and provenance checks remain mandatory for every artifact.
+  const artifactPython = dependencyArtifact && /\.py$/iu.test(name);
+  const contentPatterns = dependencyArtifact
+    ? dangerous
+        .slice(2)
+        .filter((pattern) => !(artifactPython && pattern === dangerous[5]))
+    : dangerous;
+  for (const pattern of inertArtifact ? [] : contentPatterns)
     if (pattern.test(scanContent)) findings.push(name);
-  if (executableText && suspiciousProcessExecution.test(behaviorContent))
+  if (
+    executableText &&
+    !dependencyArtifact &&
+    suspiciousProcessExecution.test(behaviorContent)
+  )
     findings.push(name);
   if (
     (sourceCode || otherSourceCode) &&

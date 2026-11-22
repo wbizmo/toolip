@@ -3301,7 +3301,7 @@ describe('trusted Stage A Git-object scanner', () => {
     );
   });
 
-  it('does not confuse JavaScript function syntax with the Function constructor', () => {
+  it('treats benign dependency code generation and inert package content as noise', () => {
     const safeArchive = npmTarball([
       [
         'package/package.json',
@@ -3320,16 +3320,45 @@ describe('trusted Stage A Git-object scanner', () => {
       inspectNpmTarball(safeArchive, artifact(safeArchive)).findings
     ).toEqual([]);
 
-    const dynamicArchive = npmTarball([
+    const codegenArchive = npmTarball([
       [
         'package/package.json',
         JSON.stringify({ name: 'example', version: '2.0.0' })
       ],
-      ['package/index.js', 'export const compile = new Function(source);']
+      [
+        'package/index.js',
+        'export const compile = new Function(' +
+          '`return $' + '{schema}`' +
+          ');'
+      ],
+      ['package/test/compiler.test.js', 'eval(testExpression);'],
+      ['package/README.md', 'The parser uses eval(expression) internally.'],
+      ['package/lib/index.js.map', '{"sourcesContent":["eval(payload)"]}'],
+      [
+        'package/lib/launcher.js',
+        "spawnSync(command, args, { shell: false, env: { PATH: process.env.PATH }, windowsHide: true, url: 'https://nodejs.org' });"
+      ],
+      [
+        'package/lib/gyp-parser.py',
+        'eval(open(build_file).read(), safe_globals)'
+      ]
     ]);
     expect(
-      inspectNpmTarball(dynamicArchive, artifact(dynamicArchive)).findings
-    ).toContain('artifact:node_modules/example/index.js');
+      inspectNpmTarball(codegenArchive, artifact(codegenArchive)).findings
+    ).toEqual([]);
+  });
+
+  it('continues to block decoded dynamic execution in dependency archives', () => {
+    const archive = npmTarball([
+      [
+        'package/package.json',
+        JSON.stringify({ name: 'example', version: '2.0.0' })
+      ],
+      ['package/index.js', 'eval(atob(encodedPayload));']
+    ]);
+    expect(inspectNpmTarball(archive, artifact(archive)).findings).toContain(
+      'artifact:node_modules/example/index.js'
+    );
   });
 
   it('does not treat package-owned workflows as active repository workflows', () => {
