@@ -6,7 +6,14 @@
  */
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -3417,8 +3424,8 @@ export function workflowRunCommands(source, sourcePath = '') {
                 workflowExpression('github.event.pull_request.head.sha')
               ],
               [
-                'STAGE_A_MERGE_SHA',
-                workflowExpression('github.event.pull_request.merge_commit_sha')
+                'STAGE_A_MERGE_SHA_FILE',
+                `${workflowExpression('runner.temp')}/toolip-stage-a-current-pr.json`
               ]
             ])
           : undefined;
@@ -5629,7 +5636,7 @@ export async function writeStageAFeedback(result, environment = process.env) {
 
 async function main() {
   const args = process.argv.slice(2);
-  const [repository, number, baseSha, headSha, mergeSha] = args.length
+  let [repository, number, baseSha, headSha, mergeSha] = args.length
     ? args
     : [
         process.env.STAGE_A_REPOSITORY,
@@ -5638,6 +5645,24 @@ async function main() {
         process.env.STAGE_A_HEAD_SHA,
         process.env.STAGE_A_MERGE_SHA
       ];
+  if (!args.length && process.env.STAGE_A_MERGE_SHA_FILE) {
+    const mergeIdentityText = await readFile(
+      process.env.STAGE_A_MERGE_SHA_FILE,
+      'utf8'
+    );
+    if (Buffer.byteLength(mergeIdentityText, 'utf8') > 4096)
+      throw new Error('Current pull request merge identity exceeds its budget');
+    const mergeIdentity = JSON.parse(mergeIdentityText);
+    if (
+      mergeIdentity?.baseSha !== baseSha ||
+      mergeIdentity?.headSha !== headSha ||
+      !/^[0-9a-f]{40}$/iu.test(mergeIdentity?.mergeSha ?? '')
+    )
+      throw new Error(
+        'Current pull request merge identity is stale or invalid'
+      );
+    mergeSha = mergeIdentity.mergeSha;
+  }
   if (!repository || !number || !baseSha || !headSha || !mergeSha)
     throw new Error(
       'Usage: node scripts/stage-a-gate.mjs <owner/repo> <pull-request-number> <base-sha> <head-sha> <merge-sha>'

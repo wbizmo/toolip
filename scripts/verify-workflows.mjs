@@ -235,7 +235,7 @@ for (const file of files) {
         'STAGE_A_BASE_REPOSITORY',
         'STAGE_A_BASE_SHA',
         'STAGE_A_HEAD_SHA',
-        'STAGE_A_MERGE_SHA'
+        'STAGE_A_MERGE_SHA_FILE'
       ].some((name) => typeof scannerEnv[name] !== 'string') ||
       /\$\{\{\s*github\.event\./u.test(
         String(stageASteps[scannerIndex]?.run ?? '')
