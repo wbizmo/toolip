@@ -15,6 +15,7 @@ export async function trustedScannerDigest() {
     'scripts/stage-a-npm-provenance.mjs',
     'scripts/stage-a-canonical-json.mjs',
     'scripts/stage-a-scanner-digest.mjs',
+    'scripts/stage-a-current-pr.mjs',
     'scripts/verify-stage-a-scanner.mjs',
     'scripts/verify-node.mjs',
     'scripts/write-stage-a-artifact.mjs',
