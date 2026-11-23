@@ -9,7 +9,7 @@ export default defineConfig({
     // and compiler workers can still run without EAGAIN or thread aborts.
     maxWorkers: 1,
 
-    // Windows Node 22 coverage instruments eight real Git fixture repositories
+    // Win32 v22 coverage instruments eight real Git fixture repositories
     // in one pre-existing test. Keep the default timeout everywhere else;
     // do not skip checks or alter the security scanner.
     testTimeout:
