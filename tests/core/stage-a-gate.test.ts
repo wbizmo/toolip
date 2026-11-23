@@ -695,7 +695,7 @@ describe('trusted Stage A Git-object scanner', () => {
     ).toBe('blocked');
   });
 
-  it('keeps unsupported build toolchains incomplete before Stage B can execute them', async () => {
+  it('keeps Cargo package scripts incomplete before Stage B', async () => {
     const packageScript = await repo({
       'package.json': JSON.stringify({
         scripts: { verify: 'cargo build --locked' }
@@ -707,7 +707,9 @@ describe('trusted Stage A Git-object scanner', () => {
         'unsupported-toolchain-execution:package.json#scripts.verify'
       ]
     });
+  });
 
+  it('keeps Cargo workflow commands incomplete before Stage B', async () => {
     const workflow = await repo({
       '.github/workflows/build.yml': [
         'name: Build',
@@ -726,7 +728,9 @@ describe('trusted Stage A Git-object scanner', () => {
         'unsupported-toolchain-execution:.github/workflows/build.yml'
       ]
     });
+  });
 
+  it('keeps JavaScript-spawned Cargo commands incomplete', async () => {
     const spawned = await repo({
       'src/build.ts': [
         "import { spawnSync } from 'node:child_process';",
@@ -738,7 +742,9 @@ describe('trusted Stage A Git-object scanner', () => {
       status: 'incomplete',
       incompleteReasons: ['unsupported-toolchain-execution:src/build.ts']
     });
+  });
 
+  it('keeps npm execFileSync installs incomplete', async () => {
     const npmSpawned = await repo({
       'src/install.js': [
         "import { execFileSync } from 'node:child_process';",
@@ -750,7 +756,9 @@ describe('trusted Stage A Git-object scanner', () => {
       status: 'incomplete',
       incompleteReasons: ['unsupported-toolchain-execution:src/install.js']
     });
+  });
 
+  it('keeps npm execSync installs incomplete', async () => {
     const npmShellCommand = await repo({
       'src/install.ts': [
         "import { execSync } from 'node:child_process';",
@@ -764,7 +772,9 @@ describe('trusted Stage A Git-object scanner', () => {
       status: 'incomplete',
       incompleteReasons: ['unsupported-toolchain-execution:src/install.ts']
     });
+  });
 
+  it('keeps Python-spawned Cargo commands incomplete', async () => {
     const python = await repo({
       'tools/build.py': [
         'import subprocess',
@@ -776,7 +786,9 @@ describe('trusted Stage A Git-object scanner', () => {
       status: 'incomplete',
       incompleteReasons: ['unsupported-toolchain-execution:tools/build.py']
     });
+  });
 
+  it('keeps Rust-spawned Cargo commands incomplete', async () => {
     const rust = await repo({
       'src/build.rs': [
         'use std::process::Command;',
@@ -788,7 +800,9 @@ describe('trusted Stage A Git-object scanner', () => {
       status: 'incomplete',
       incompleteReasons: ['unsupported-toolchain-execution:src/build.rs']
     });
+  });
 
+  it('allows inert documented Cargo commands', async () => {
     const documentation = await repo({
       'README.md': 'To build the Rust example, run `cargo build --locked`.\n'
     });
