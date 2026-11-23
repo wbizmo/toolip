@@ -84,6 +84,28 @@ describe('release isolation policy (regression for Batch 00)', () => {
     }
   });
 
+  it('uses a checksum-pinned secret scanner supported by workflow_run', () => {
+    const stageB = parse(
+      readFileSync('.github/workflows/pr-quality.yml', 'utf8')
+    );
+    const secrets = stageB.jobs.secrets;
+    expect(secrets.needs).toBe('stage-a-result');
+    const scanner = secrets.steps.find(
+      (step) => step.name === 'Scan for hardcoded credentials'
+    );
+    expect(scanner).toBeDefined();
+    expect(scanner.uses).toBeUndefined();
+    expect(scanner.shell).toBe('bash');
+    expect(scanner.run).toContain('sha256sum --check --strict');
+    expect(scanner.run).toContain('gitleaks" git');
+    expect(scanner.run).toContain('--redact=100');
+    expect(scanner.env).toBeUndefined();
+    expect(scanner.run).toContain('git rev-list --parents -n 1 HEAD');
+    expect(scanner.run).toContain('git rev-parse HEAD^1');
+    expect(scanner.run).toContain('--log-opts="$base_sha..HEAD"');
+    expect(scanner.run).not.toContain('needs.');
+  });
+
   it('gates pull request installation and execution behind exact-tree Stage A approval', () => {
     const stageA = parse(readFileSync('.github/workflows/stage-a.yml', 'utf8'));
     const stageASteps = stageA.jobs.scan.steps;
