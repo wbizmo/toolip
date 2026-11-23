@@ -3,6 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { validOwnerAttestationEntry } from './verify-stage-a-artifact.mjs';
+import { verifyStageAReviewedDependencyEvidence } from './stage-a-reviewed-baseline.mjs';
 
 const event = JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH, 'utf8'));
 const pr = event.pull_request;
@@ -65,7 +66,8 @@ if (
     scan.coverage.dependencyArtifactCount ||
   scan.coverage.dependencyArtifactsChecked !==
     scan.coverage.dependencyArtifactCount ||
-  scan.coverage.dependencyArtifactBinaryFiles !== 0 ||
+  scan.coverage.dependencyArtifactBinaryFiles !==
+    scan.coverage.reviewedDependencyBinaryFiles ||
   scan.coverage.nonNpmDependencyArtifactsChecked !==
     scan.coverage.nonNpmDependencyArtifactCount ||
   scan.coverage.cargoDependencyArtifactCount +
@@ -111,6 +113,19 @@ const dependencyArtifactCount = scan.coverage.dependencyArtifactCount;
 const verifiedArchiveDigests = scan.verifiedArtifactSha512ByLocation;
 const verifiedNonNpmArchiveDigests = scan.verifiedArtifactSha256ByLocation;
 if (
+  !verifyStageAReviewedDependencyEvidence({
+    reviewedReasons: scan.reviewedDependencyReasons,
+    reviewedBinaryFiles: scan.reviewedDependencyBinaryFiles,
+    baselineSha256: scan.reviewedDependencyBaselineSha256,
+    coverage: scan.coverage,
+    verifiedArtifactSha512ByLocation: verifiedArchiveDigests
+  })
+)
+  throw new Error(
+    'Stage A reviewed dependency evidence is missing or inconsistent'
+  );
+
+if (
   !verifiedArchiveDigests ||
   typeof verifiedArchiveDigests !== 'object' ||
   Array.isArray(verifiedArchiveDigests) ||
@@ -154,24 +169,34 @@ let npmProvenanceStatus = 'not-applicable';
 let npmProvenancePolicySha256 = null;
 let npmProvenanceArtifactCount = 0;
 let npmProvenanceVerifiedCount = 0;
+let npmOperatorReviewedCount = 0;
 if (dependencyArtifactCount > 0) {
   const npmProvenance = JSON.parse(
     await readFile(path.join(runnerTemp, 'stage-a-npm-provenance.json'), 'utf8')
   );
+  const isIssuerVerified = npmProvenance?.status === 'verified';
+  const isOperatorReviewed = npmProvenance?.status === 'operator-reviewed';
   if (
     npmProvenance?.version !== 1 ||
-    npmProvenance.status !== 'verified' ||
+    !(isIssuerVerified || isOperatorReviewed) ||
     npmProvenance.artifactCount !== dependencyArtifactCount ||
-    npmProvenance.verifiedCount !== dependencyArtifactCount ||
     npmProvenance.failureCount !== 0 ||
     npmProvenance.reasonCodes?.length !== 0 ||
-    !/^[0-9a-f]{64}$/iu.test(npmProvenance.policySha256 ?? '')
+    !/^[0-9a-f]{64}$/iu.test(npmProvenance.policySha256 ?? '') ||
+    (isIssuerVerified &&
+      (npmProvenance.verifiedCount !== dependencyArtifactCount ||
+        (npmProvenance.operatorReviewedCount ?? 0) !== 0)) ||
+    (isOperatorReviewed &&
+      (npmProvenance.verifiedCount !== 0 ||
+        npmProvenance.operatorReviewedCount !== dependencyArtifactCount ||
+        npmProvenance.policySha256 !== scan.reviewedDependencyBaselineSha256))
   )
     throw new Error('Stage A npm issuer/source policy result is incomplete');
-  npmProvenanceStatus = 'verified';
+  npmProvenanceStatus = npmProvenance.status;
   npmProvenancePolicySha256 = npmProvenance.policySha256;
   npmProvenanceArtifactCount = npmProvenance.artifactCount;
   npmProvenanceVerifiedCount = npmProvenance.verifiedCount;
+  npmOperatorReviewedCount = npmProvenance.operatorReviewedCount ?? 0;
 }
 const complexityEvidence = (body) => {
   const text = typeof body === 'string' ? body.toLowerCase() : '';
@@ -201,11 +226,15 @@ const record = {
   coverage: scan.coverage,
   exceptionPolicySha256: scan.exceptionPolicySha256,
   appliedExceptions: scan.appliedExceptions,
+  reviewedDependencyReasons: scan.reviewedDependencyReasons,
+  reviewedDependencyBinaryFiles: scan.reviewedDependencyBinaryFiles,
+  reviewedDependencyBaselineSha256: scan.reviewedDependencyBaselineSha256,
   registrySignatureAudit: expectedSignatureAudit,
   npmProvenanceStatus,
   npmProvenancePolicySha256,
   npmProvenanceArtifactCount,
   npmProvenanceVerifiedCount,
+  npmOperatorReviewedCount,
   verifiedArtifactSha512ByLocation: verifiedArchiveDigests,
   verifiedArtifactSha256ByLocation: verifiedNonNpmArchiveDigests,
   cargoArtifactPolicySha256: scan.cargoArtifactPolicySha256,

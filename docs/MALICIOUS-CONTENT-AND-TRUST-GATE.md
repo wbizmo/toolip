@@ -75,6 +75,48 @@ static non-observation as evidence that a repository is benign.
 
 For the integrated repository analyzer, let F be candidate files, B the accepted text bytes, V the execution-reference nodes, and E the resolved edges. Snapshot discovery, sorting, hashing, content signatures, and classification are O(F log F + B); indexed reference traversal and signature reachability are O(V + E) and each are capped at 100,000 visits. Peak additional memory is O(F + B + V + E), bounded by 100,000 files, 256 MiB total text, 2 MiB per file, 10,000 entrypoints, and 10,000 references per entrypoint.
 
+## Short-lived operator review of exact locked artifacts
+
+For a sole-maintainer repository, the protected base may contain
+a seven-day-reviewed inventory in
+the file named stage-a-reviewed-dependencies.json inside .toolip.
+That policy is approved through an owner-controlled protected-branch
+merge and consists of an immutable package-lock SHA-256, exact npm
+archive SHA-512 hashes, and individual path-specific static analysis
+uncertainties. No wildcard matches are accepted. Stage A fetches and
+hash-verifies every locked archive on every PR; this review is applied
+only if the dependency inventory, manifest and lockfile match the
+trusted base exactly. A novel digest, changed dependency, expired
+policy or unlisted reason makes the scan incomplete.
+
+The reviewed inventory distinguishes two different types of evidence:
+
+- Reviewed binary/content uncertainty is _accepted residual risk_,
+  not a claim that an opaque binary was decompiled or its execution
+  behavior was proven harmless. Coverage retains the actual binary
+  file count, the reviewed count and the exact review entries.
+- When an independent npm publisher issuer/source provenance policy
+  is unavailable, the owner may elect the explicit
+  **operator-reviewed** fallback. Every locked archive SHA-512 must
+  match the protected inventory, the inspected graph must be complete,
+  and the scripts-disabled npm registry-signature audit must still
+  succeed. The approval artifact reports zero SLSA-verified packages
+  and the exact number accepted under operator review. The fallback
+  does not claim universal npm/SLSA provenance and does not replace
+  registry signatures, integrity verification or a configured strict
+  issuer/source policy.
+
+A configured strict issuer/source policy always takes precedence.
+There is no automatic renewal; the protected review expires within
+seven days and must be explicitly re-evaluated. Review is not available
+for malware findings, untrusted origins, failed integrity, missing
+archives, incomplete download coverage, novel package identities,
+unknown registry scopes, or changed repository executable paths.
+The immutable Stage A writer and downstream verifier both check the
+exact reviewed binary count, archive hashes and policy digest.
+This is a bounded owner-risk-acceptance mode, not complete static
+analysis of all dependency binaries.
+
 ## Pre-execution gate status
 
 The `Stage A Trusted Pre-execution Gate` workflow runs from the protected base

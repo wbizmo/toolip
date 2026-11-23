@@ -63,6 +63,15 @@ other gaps still require remediation or the separately authorized review path.
 The administrator's PR-bypass ability is not a substitute for a successful
 security gate.
 
+The protected Stage A dependency review may additionally accept explicitly
+listed, SHA-512-pinned dependency archive uncertainties and an exact-graph
+operator-reviewed provenance fallback, both with a maximum seven-day lifetime.
+This requires owner authorization on protected main, unchanged lockfile and
+archive identity, and the complete registry-signature check; it is a declared
+risk acceptance, not proof of analysis of opaque binaries or SLSA provenance.
+Always report an operator-reviewed result distinctly from publisher-attested
+provenance and never silently renew an expired review.
+
 ## Mandatory push and CI cost policy
 
 - **NO INTERMEDIATE, INCREMENTAL OR CHECKPOINT PUSHES.** Finish the entire batch locally before pushing. Default to exactly one implementation push per completed batch or explicitly authorized combined-batch PR. Local edits and commits are allowed; progress, speculative fixes and partial implementations must never be pushed.

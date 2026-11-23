@@ -8,3 +8,9 @@
 /scripts/verify-stage-a-artifact.mjs @wbizmo
 /scripts/verify-workflows.mjs @wbizmo
 /scripts/verify-node.mjs @wbizmo
+
+# Operator-maintained trust policy and pre-execution supply-chain verification
+/.toolip/stage-a-reviewed-dependencies.json @wbizmo
+/scripts/stage-a-reviewed-baseline.mjs @wbizmo
+/scripts/stage-a-npm-provenance.mjs @wbizmo
+/scripts/stage-a-scanner-digest.mjs @wbizmo

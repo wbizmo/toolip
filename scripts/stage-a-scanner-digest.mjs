@@ -11,6 +11,7 @@ export async function trustedScannerDigest() {
   const repositoryRoot = path.resolve(scriptDirectory, '..');
   const files = [
     'scripts/stage-a-gate.mjs',
+    'scripts/stage-a-reviewed-baseline.mjs',
     'scripts/stage-a-npm-provenance.mjs',
     'scripts/stage-a-canonical-json.mjs',
     'scripts/stage-a-scanner-digest.mjs',
