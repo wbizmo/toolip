@@ -108,7 +108,7 @@ const event = {
 };
 
 describe('Stage A artifact identity verification', () => {
-  it('uses the authenticated API merge SHA when PR event lacks merge_commit_sha', () => {
+  it('uses the authenticated API merge SHA when the event merge SHA is absent or stale', () => {
     const eventPr = {
       base: { sha: baseSha },
       head: { sha: headSha },
@@ -119,6 +119,12 @@ describe('Stage A artifact identity verification', () => {
     expect(
       resolveStageAWriterMergeSha(
         { ...eventPr, merge_commit_sha: mergeSha },
+        pinned
+      )
+    ).toBe(mergeSha);
+    expect(
+      resolveStageAWriterMergeSha(
+        { ...eventPr, merge_commit_sha: '0'.repeat(40) },
         pinned
       )
     ).toBe(mergeSha);
@@ -135,15 +141,6 @@ describe('Stage A artifact identity verification', () => {
       if (stale.mergeSha === '0'.repeat(40)) continue;
       expect(() => resolveStageAWriterMergeSha(eventPr, stale)).toThrow();
     }
-    expect(() =>
-      resolveStageAWriterMergeSha(
-        {
-          ...eventPr,
-          merge_commit_sha: '0'.repeat(40)
-        },
-        pinned
-      )
-    ).toThrow();
   });
 
   it('preserves honest operator-reviewed provenance without treating it as publisher proof', () => {
