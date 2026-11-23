@@ -12,6 +12,11 @@ import { verifyStageANpmProvenance } from '../dist/src/core/stage-a-npm-provenan
 import { parseNpmProvenancePolicy } from '../dist/src/providers/npm/provenance.js';
 import { parseDocument } from '../vendor/stage-a-yaml-parser.mjs';
 import { canonicalJsonSha256 } from './stage-a-canonical-json.mjs';
+import {
+  parseStageAReviewedDependencyPolicy,
+  verifyStageAOperatorReviewedRegistryGraph
+} from './stage-a-reviewed-baseline.mjs';
+import { createHash } from 'node:crypto';
 
 const MAX_SCAN_BYTES = 64 * 1024 * 1024;
 const MAX_POLICY_BYTES = 1024 * 1024;
@@ -27,12 +32,13 @@ async function main() {
   const outputPath = path.join(runnerTemp ?? '', 'stage-a-npm-provenance.json');
   if (!runnerTemp || !dependencyRoot || !process.env.GITHUB_OUTPUT)
     fail('inputs-unavailable');
+  const hasIssuerPolicy =
+    typeof policyText === 'string' && policyText.trim().length > 0;
   if (
-    typeof policyText !== 'string' ||
-    Buffer.byteLength(policyText, 'utf8') === 0 ||
+    hasIssuerPolicy &&
     Buffer.byteLength(policyText, 'utf8') > MAX_POLICY_BYTES
   )
-    fail('operator-policy-unavailable');
+    fail('operator-policy-too-large');
 
   const scanPath = path.join(runnerTemp, 'stage-a-scan.json');
   const scanStat = await lstat(scanPath);
@@ -50,19 +56,22 @@ async function main() {
   )
     fail('trusted-scan-result-invalid');
 
-  const policyDocument = parseDocument(policyText, {
-    uniqueKeys: true,
-    prettyErrors: false
-  });
-  if (policyDocument.errors.length) fail('operator-policy-invalid');
-  let policyValue;
-  try {
-    policyValue = JSON.parse(policyText);
-  } catch {
-    fail('operator-policy-invalid');
+  let policy;
+  let policySha256;
+  if (hasIssuerPolicy) {
+    const policyDocument = parseDocument(policyText, {
+      prettyErrors: false
+    });
+    if (policyDocument.errors.length) fail('operator-policy-invalid');
+    let policyValue;
+    try {
+      policyValue = JSON.parse(policyText);
+    } catch {
+      fail('operator-policy-invalid');
+    }
+    policy = parseNpmProvenancePolicy(policyValue);
+    policySha256 = canonicalJsonSha256(policyValue);
   }
-  const policy = parseNpmProvenancePolicy(policyValue);
-  const policySha256 = canonicalJsonSha256(policyValue);
 
   const digests = scan.verifiedArtifactSha512ByLocation;
   if (
@@ -91,6 +100,62 @@ async function main() {
     .split(',')
     .map((scope) => scope.trim())
     .filter(Boolean);
+  if (!hasIssuerPolicy) {
+    const baselineText = await readFile(
+      path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '../.toolip/stage-a-reviewed-dependencies.json'
+      ),
+      'utf8'
+    );
+    const lockText = await readFile(
+      path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '../package-lock.json'
+      ),
+      'utf8'
+    );
+    const reviewed = verifyStageAOperatorReviewedRegistryGraph({
+      parsed: parseStageAReviewedDependencyPolicy(baselineText),
+      repository: process.env.GITHUB_REPOSITORY,
+      currentLockfileSha256: createHash('sha256')
+        .update(lockText, 'utf8')
+        .digest('hex'),
+      baseLockfileSha256: createHash('sha256')
+        .update(lockText, 'utf8')
+        .digest('hex'),
+      changedArtifactCount: scan.coverage.dependencyArtifactsChanged,
+      verifiedArtifactSha512ByLocation: digests
+    });
+    if (
+      !reviewed ||
+      reviewed.artifactCount !== graph.packages.length ||
+      graph.packages.some(
+        (pkg) =>
+          typeof pkg.installPath !== 'string' ||
+          !Object.hasOwn(digests, pkg.installPath)
+      )
+    )
+      fail('reviewed-registry-graph-mismatch');
+    const result = {
+      version: 1,
+      status: 'operator-reviewed',
+      policySha256: reviewed.policySha256,
+      artifactCount: reviewed.artifactCount,
+      verifiedCount: reviewed.provenanceVerifiedCount,
+      operatorReviewedCount: reviewed.operatorReviewedCount,
+      failureCount: 0,
+      reasonCodes: []
+    };
+    await writeFile(outputPath, JSON.stringify(result) + '\n', {
+      flag: 'wx',
+      mode: 0o600
+    });
+    process.stdout.write(
+      'Exact locked npm archive graph accepted by owner risk policy; SLSA publisher provenance was not verified for the graph. Registry signature audit remains mandatory.\n'
+    );
+    return;
+  }
   const verification = await verifyStageANpmProvenance({
     identities: graph.packages,
     verifiedArtifactSha512ByLocation: digests,

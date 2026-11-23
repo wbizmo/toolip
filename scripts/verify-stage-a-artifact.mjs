@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import { appendFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import {
   cargoArtifactPolicyDigest,
   npmProvenancePolicyDigest
 } from './stage-a-canonical-json.mjs';
+import { verifyStageAReviewedDependencyEvidence } from './stage-a-reviewed-baseline.mjs';
 
 function complexityEvidence(body) {
   const text = typeof body === 'string' ? body.toLowerCase() : '';
@@ -178,7 +180,13 @@ export function verifyStageAArtifact(
       record.coverage.dependencyArtifactCount ||
     record.coverage.dependencyArtifactsChecked !==
       record.coverage.dependencyArtifactCount ||
-    record.coverage.dependencyArtifactBinaryFiles !== 0 ||
+    !verifyStageAReviewedDependencyEvidence({
+      reviewedReasons: record.reviewedDependencyReasons,
+      reviewedBinaryFiles: record.reviewedDependencyBinaryFiles,
+      baselineSha256: record.reviewedDependencyBaselineSha256,
+      coverage: record.coverage,
+      verifiedArtifactSha512ByLocation: record.verifiedArtifactSha512ByLocation
+    }) ||
     record.coverage.nonNpmDependencyArtifactsChecked !==
       record.coverage.nonNpmDependencyArtifactCount ||
     record.coverage.cargoDependencyArtifactCount +
@@ -189,17 +197,26 @@ export function verifyStageAArtifact(
       (record.coverage.dependencyArtifactCount > 0
         ? 'verified'
         : 'not-applicable') ||
-    record.npmProvenanceStatus !==
-      (record.coverage.dependencyArtifactCount > 0
-        ? 'verified'
-        : 'not-applicable') ||
+    !(record.coverage.dependencyArtifactCount > 0
+      ? ['verified', 'operator-reviewed'].includes(record.npmProvenanceStatus)
+      : record.npmProvenanceStatus === 'not-applicable') ||
     !(record.coverage.dependencyArtifactCount > 0
       ? /^[0-9a-f]{64}$/iu.test(record.npmProvenancePolicySha256 ?? '')
       : record.npmProvenancePolicySha256 === null) ||
     record.npmProvenanceArtifactCount !==
       record.coverage.dependencyArtifactCount ||
-    record.npmProvenanceVerifiedCount !==
-      record.coverage.dependencyArtifactCount ||
+    (record.npmProvenanceStatus === 'verified'
+      ? record.npmProvenanceVerifiedCount !==
+          record.coverage.dependencyArtifactCount ||
+        (record.npmOperatorReviewedCount ?? 0) !== 0
+      : record.npmProvenanceStatus === 'operator-reviewed'
+        ? record.npmProvenanceVerifiedCount !== 0 ||
+          record.npmOperatorReviewedCount !==
+            record.coverage.dependencyArtifactCount ||
+          record.npmProvenancePolicySha256 !==
+            record.reviewedDependencyBaselineSha256
+        : record.npmProvenanceVerifiedCount !== 0 ||
+          (record.npmOperatorReviewedCount ?? 0) !== 0) ||
     (record.coverage.dependencyArtifactCount > 0 &&
       (typeof expectedNpmProvenancePolicySha256 !== 'string' ||
         record.npmProvenancePolicySha256 !==
@@ -298,12 +315,31 @@ async function main() {
   const event = JSON.parse(
     await readFile(process.env.GITHUB_EVENT_PATH, 'utf8')
   );
-  const expectedNpmProvenancePolicySha256 =
-    record?.coverage?.dependencyArtifactCount > 0
-      ? npmProvenancePolicyDigest(
-          process.env.TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY
-        )
-      : undefined;
+  const configuredIssuerPolicy =
+    process.env.TOOLIP_STAGE_A_NPM_PROVENANCE_POLICY;
+  let expectedNpmProvenancePolicySha256;
+  if (record?.coverage?.dependencyArtifactCount > 0) {
+    if (record.npmProvenanceStatus === 'operator-reviewed') {
+      if (configuredIssuerPolicy?.trim())
+        throw new Error(
+          'Operator review cannot override configured issuer/source policy'
+        );
+      const policyText = await readFile(
+        new URL(
+          '../.toolip/stage-a-reviewed-dependencies.json',
+          import.meta.url
+        ),
+        'utf8'
+      );
+      expectedNpmProvenancePolicySha256 = createHash('sha256')
+        .update(policyText, 'utf8')
+        .digest('hex');
+    } else {
+      expectedNpmProvenancePolicySha256 = npmProvenancePolicyDigest(
+        configuredIssuerPolicy
+      );
+    }
+  }
   const expectedCargoArtifactPolicySha256 =
     record?.coverage?.cargoDependencyArtifactCount > 0
       ? cargoArtifactPolicyDigest(

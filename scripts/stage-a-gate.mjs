@@ -25,6 +25,10 @@ import {
 } from './stage-a-canonical-json.mjs';
 import { parseDocument } from '../vendor/stage-a-yaml-parser.mjs';
 import { trustedScannerDigest } from './stage-a-scanner-digest.mjs';
+import {
+  parseStageAReviewedDependencyPolicy,
+  applyStageAReviewedDependencyPolicy
+} from './stage-a-reviewed-baseline.mjs';
 
 const MAX_FILES = 100_000;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -144,6 +148,11 @@ const TRUSTED_WORKFLOW_PATHS = new Set([
   '.github/workflows/pr-quality.yml',
   '.github/workflows/codeql.yml',
   'scripts/stage-a-gate.mjs',
+  'scripts/stage-a-npm-provenance.mjs',
+  'scripts/stage-a-reviewed-baseline.mjs',
+  'scripts/stage-a-scanner-digest.mjs',
+  '.toolip/stage-a-reviewed-dependencies.json',
+
   'scripts/stage-a-yaml-entry.mjs',
   'scripts/STAGE-A-YAML-NOTICE.md',
   'vendor/stage-a-yaml-parser.mjs',
@@ -1741,10 +1750,12 @@ export async function inspectNpmArtifacts(
       reasons: Object.freeze(['artifact-count-budget-exceeded']),
       findings: Object.freeze([]),
       coverage: Object.freeze(coverage),
-      verifiedArtifactSha512ByLocation: Object.freeze({})
+      verifiedArtifactSha512ByLocation: Object.freeze({}),
+      verifiedBinaryFilesByLocation: Object.freeze({})
     });
   const startedAt = Date.now();
   const verifiedArtifactSha512ByLocation = new Map();
+  const verifiedBinaryFilesByLocation = new Map();
   for (
     let start = 0;
     start < artifacts.length;
@@ -1842,6 +1853,11 @@ export async function inspectNpmArtifacts(
         coverage.files += result.files;
         coverage.bytes += result.bytes ?? 0;
         coverage.binaryFiles += result.binaryFiles ?? 0;
+        if (result.location && result.artifactSha512)
+          verifiedBinaryFilesByLocation.set(
+            result.location,
+            result.binaryFiles ?? 0
+          );
         coverage.networkBytes += result.networkBytes ?? 0;
         if (coverage.bytes > MAX_ARTIFACT_TOTAL_BYTES)
           reasons.push('artifact-total-content-budget-exceeded');
@@ -1866,6 +1882,13 @@ export async function inspectNpmArtifacts(
       Object.fromEntries(
         [...verifiedArtifactSha512ByLocation.entries()].sort(
           ([left], [right]) => left.localeCompare(right)
+        )
+      )
+    ),
+    verifiedBinaryFilesByLocation: Object.freeze(
+      Object.fromEntries(
+        [...verifiedBinaryFilesByLocation.entries()].sort(([left], [right]) =>
+          left.localeCompare(right)
         )
       )
     )
@@ -5466,6 +5489,38 @@ export async function scanGithubPullRequest({
       !dependencyIncompleteReasons.includes('dependency-artifact-uninspected')
     )
       dependencyIncompleteReasons.push('dependency-artifact-uninspected');
+    let reviewedPolicyText;
+    let reviewedPolicyReadError = false;
+    try {
+      reviewedPolicyText = readCommitBlob(
+        bare,
+        baseSha,
+        '.toolip/stage-a-reviewed-dependencies.json'
+      );
+    } catch {
+      reviewedPolicyReadError = true;
+    }
+    const reviewedPolicy = parseStageAReviewedDependencyPolicy(
+      reviewedPolicyReadError ? '{' : reviewedPolicyText
+    );
+    const baseLock = readCommitBlob(bare, baseSha, 'package-lock.json');
+    const headLock = readCommitBlob(bare, headSha, 'package-lock.json');
+    const sha256 = (content) =>
+      typeof content === 'string'
+        ? createHash('sha256').update(content, 'utf8').digest('hex')
+        : null;
+    const reviewedDependencies = applyStageAReviewedDependencyPolicy({
+      parsed: reviewedPolicy,
+      repository,
+      currentLockfileSha256: sha256(headLock),
+      baseLockfileSha256: sha256(baseLock),
+      changedArtifactCount: dependency.changedArtifacts,
+      reasons: dependencyArtifacts.reasons,
+      verifiedArtifactSha512ByLocation:
+        dependencyArtifacts.verifiedArtifactSha512ByLocation,
+      verifiedBinaryFilesByLocation:
+        dependencyArtifacts.verifiedBinaryFilesByLocation
+    });
     const suppressedExceptionReasonCodes = new Set(
       appliedExceptions
         .filter((entry) => !entry.exactReason)
@@ -5496,7 +5551,7 @@ export async function scanGithubPullRequest({
         )
           ? ['scoped-registry-signature-audit-withheld']
           : []),
-        ...dependencyArtifacts.reasons,
+        ...reviewedDependencies.remainingReasons,
         ...exceptionReviewReasons.filter(
           (reason) =>
             reason.startsWith('stage-a-exception-') &&
@@ -5554,6 +5609,9 @@ export async function scanGithubPullRequest({
       reviewSignals: authorship.signals,
       exceptionPolicySha256,
       appliedExceptions: Object.freeze(appliedExceptions),
+      reviewedDependencyReasons: reviewedDependencies.reviewedReasons,
+      reviewedDependencyBinaryFiles: reviewedDependencies.reviewedBinaryFiles,
+      reviewedDependencyBaselineSha256: reviewedDependencies.baselineSha256,
       verifiedArtifactSha512ByLocation:
         dependencyArtifacts.verifiedArtifactSha512ByLocation,
       verifiedArtifactSha256ByLocation: Object.freeze({
@@ -5573,6 +5631,7 @@ export async function scanGithubPullRequest({
         dependencyArtifactNetworkBytes:
           dependencyArtifacts.coverage.networkBytes,
         dependencyArtifactBinaryFiles: dependencyArtifacts.coverage.binaryFiles,
+        reviewedDependencyBinaryFiles: reviewedDependencies.reviewedBinaryFiles,
         nonNpmDependencyArtifactsChecked:
           cargoArtifacts.coverage.checked + goArtifacts.coverage.checked,
         nonNpmDependencyArtifactCount:

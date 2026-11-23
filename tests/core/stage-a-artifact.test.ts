@@ -53,6 +53,7 @@ const record = {
     dependencyArtifactBytes: 1000,
     dependencyArtifactNetworkBytes: 500,
     dependencyArtifactBinaryFiles: 0,
+    reviewedDependencyBinaryFiles: 0,
     nonNpmDependencyArtifactsChecked: 0,
     nonNpmDependencyArtifactCount: 0,
     cargoDependencyArtifactCount: 0,
@@ -65,6 +66,10 @@ const record = {
   },
   exceptionPolicySha256: null,
   appliedExceptions: [],
+  reviewedDependencyReasons: [],
+  reviewedDependencyBinaryFiles: 0,
+  reviewedDependencyBaselineSha256: null,
+  npmOperatorReviewedCount: 0,
   registrySignatureAudit: 'verified',
   npmProvenanceStatus: 'verified',
   npmProvenancePolicySha256: npmPolicySha256,
@@ -102,6 +107,104 @@ const event = {
 };
 
 describe('Stage A artifact identity verification', () => {
+  it('preserves honest operator-reviewed provenance without treating it as publisher proof', () => {
+    const loc = 'node_modules/package-0';
+    const digest = record.verifiedArtifactSha512ByLocation[loc];
+    const reviewSha = 'a'.repeat(64);
+    const operatorRecord = {
+      ...record,
+      npmProvenanceStatus: 'operator-reviewed',
+      npmProvenancePolicySha256: reviewSha,
+      npmProvenanceVerifiedCount: 0,
+      npmOperatorReviewedCount: 5,
+      coverage: {
+        ...record.coverage,
+        dependencyArtifactBinaryFiles: 1,
+        reviewedDependencyBinaryFiles: 1
+      },
+      reviewedDependencyReasons: [
+        {
+          reason: 'artifact-binary-content-uninspected:' + loc,
+          location: loc,
+          sha512: digest,
+          binaryFiles: 1
+        }
+      ],
+      reviewedDependencyBinaryFiles: 1,
+      reviewedDependencyBaselineSha256: reviewSha
+    };
+    expect(
+      verifyStageAArtifact(operatorRecord, event, repository, {
+        expectedNpmProvenancePolicySha256: reviewSha
+      }).npmProvenanceStatus
+    ).toBe('operator-reviewed');
+    for (const broken of [
+      { ...operatorRecord, npmOperatorReviewedCount: 4 },
+      { ...operatorRecord, npmProvenanceVerifiedCount: 5 },
+      { ...operatorRecord, npmProvenancePolicySha256: 'b'.repeat(64) },
+      { ...operatorRecord, registrySignatureAudit: 'not-applicable' }
+    ])
+      expect(() =>
+        verifyStageAArtifact(broken, event, repository, {
+          expectedNpmProvenancePolicySha256: reviewSha
+        })
+      ).toThrow();
+  });
+
+  it('accepts reviewed archive binaries only with exact approval evidence', () => {
+    const location = 'node_modules/package-0';
+    const reviewedEntry = {
+      reason: 'artifact-binary-content-uninspected:' + location,
+      location,
+      sha512: record.verifiedArtifactSha512ByLocation[location],
+      binaryFiles: 2
+    };
+    const approved = {
+      ...record,
+      coverage: {
+        ...record.coverage,
+        dependencyArtifactBinaryFiles: 2,
+        reviewedDependencyBinaryFiles: 2
+      },
+      reviewedDependencyReasons: [reviewedEntry],
+      reviewedDependencyBinaryFiles: 2,
+      reviewedDependencyBaselineSha256: 'e'.repeat(64)
+    };
+    expect(
+      verifyStageAArtifact(approved, event, repository, {
+        expectedNpmProvenancePolicySha256: npmPolicySha256
+      }).repository
+    ).toBe(repository);
+    for (const corrupted of [
+      {
+        ...approved,
+        coverage: { ...approved.coverage, dependencyArtifactBinaryFiles: 3 }
+      },
+      {
+        ...approved,
+        reviewedDependencyReasons: [
+          { ...reviewedEntry, sha512: '0'.repeat(128) }
+        ]
+      },
+      {
+        ...approved,
+        reviewedDependencyReasons: [
+          {
+            ...reviewedEntry,
+            reason: 'artifact-integrity-mismatch:' + location
+          }
+        ]
+      },
+      { ...approved, reviewedDependencyBaselineSha256: null },
+      { ...approved, reviewedDependencyBinaryFiles: 0 }
+    ])
+      expect(() =>
+        verifyStageAArtifact(corrupted, event, repository, {
+          expectedNpmProvenancePolicySha256: npmPolicySha256
+        })
+      ).toThrow();
+  });
+
   it('validates exact digest-bound owner attestations in an immutable approval', () => {
     const start = new Date(Date.now() - 60_000).toISOString();
     const end = new Date(Date.now() + 60 * 60 * 1000).toISOString();
