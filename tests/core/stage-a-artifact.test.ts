@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   validOwnerAttestationEntry,
   verifyCurrentPullRequestIdentity,
@@ -9,6 +9,7 @@ import {
   cargoArtifactPolicyDigest,
   npmProvenancePolicyDigest
 } from '../../scripts/stage-a-canonical-json.mjs';
+import { resolveCurrentPullRequestMergeIdentity } from '../../scripts/stage-a-current-pr.mjs';
 
 const repository = 'wbizmo/toolip';
 const baseSha = 'a'.repeat(40);
@@ -588,5 +589,87 @@ describe('Stage A artifact identity verification', () => {
     expect(() =>
       verifyCurrentPullRequestIdentity(record, repository, undefined)
     ).toThrow('stale');
+  });
+});
+
+describe('Stage A current pull request merge identity', () => {
+  it('waits until the API merge commit has the triggering base and head', async () => {
+    const staleMergeSha = 'c'.repeat(40);
+    const currentMergeSha = 'd'.repeat(40);
+    const commitParents = [
+      [{ sha: baseSha }, { sha: 'e'.repeat(40) }],
+      [{ sha: baseSha }, { sha: headSha }]
+    ];
+    let pullRequests = 0;
+    let commits = 0;
+    const delays: number[] = [];
+    const identity = await resolveCurrentPullRequestMergeIdentity({
+      expectedBaseSha: baseSha,
+      expectedHeadSha: headSha,
+      getPullRequest: async () => ({
+        data: {
+          base: { sha: baseSha },
+          head: { sha: headSha },
+          merge_commit_sha:
+            pullRequests++ === 0 ? staleMergeSha : currentMergeSha
+        }
+      }),
+      getCommit: async () => ({ data: { parents: commitParents[commits++] } }),
+      wait: async (milliseconds) => {
+        delays.push(milliseconds);
+      }
+    });
+
+    expect(identity).toEqual({
+      baseSha,
+      headSha,
+      mergeSha: currentMergeSha
+    });
+    expect(delays).toEqual([1_000]);
+  });
+
+  it('rejects a changed event base or head without retrying', async () => {
+    const getCommit = vi.fn();
+    const wait = vi.fn();
+    await expect(
+      resolveCurrentPullRequestMergeIdentity({
+        expectedBaseSha: baseSha,
+        expectedHeadSha: headSha,
+        getPullRequest: async () => ({
+          data: {
+            base: { sha: 'e'.repeat(40) },
+            head: { sha: headSha },
+            merge_commit_sha: 'f'.repeat(40)
+          }
+        }),
+        getCommit,
+        wait
+      })
+    ).rejects.toThrow('base/head no longer match');
+    expect(getCommit).not.toHaveBeenCalled();
+    expect(wait).not.toHaveBeenCalled();
+  });
+
+  it('fails closed after a bounded wait if GitHub never refreshes the merge', async () => {
+    const wait = vi.fn(async () => {});
+    await expect(
+      resolveCurrentPullRequestMergeIdentity({
+        expectedBaseSha: baseSha,
+        expectedHeadSha: headSha,
+        attempts: 3,
+        getPullRequest: async () => ({
+          data: {
+            base: { sha: baseSha },
+            head: { sha: headSha },
+            merge_commit_sha: 'f'.repeat(40)
+          }
+        }),
+        getCommit: async () => ({
+          data: { parents: [{ sha: baseSha }, { sha: 'e'.repeat(40) }] }
+        }),
+        wait
+      })
+    ).rejects.toThrow('merge commit is not ready');
+    expect(wait).toHaveBeenCalledTimes(2);
   });
 });
