@@ -8,6 +8,16 @@ export default defineConfig({
     // process/thread budget. Bound file workers so process-level stress tests
     // and compiler workers can still run without EAGAIN or thread aborts.
     maxWorkers: 1,
+
+    // Win32 v22 coverage instruments eight real Git fixture repositories
+    // in one pre-existing test. Keep the default timeout everywhere else;
+    // do not skip checks or alter the security scanner.
+    testTimeout:
+      process.platform === 'win32' &&
+      process.versions.node.startsWith('22.') &&
+      process.argv.includes('--coverage')
+        ? 15_000
+        : 5_000,
     coverage: {
       provider: 'v8',
       include: [
