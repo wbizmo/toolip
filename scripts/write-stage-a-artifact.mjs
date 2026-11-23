@@ -2,7 +2,10 @@
 import { writeFile } from 'node:fs/promises';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { validOwnerAttestationEntry } from './verify-stage-a-artifact.mjs';
+import {
+  validOwnerAttestationEntry,
+  resolveStageAWriterMergeSha
+} from './verify-stage-a-artifact.mjs';
 import { verifyStageAReviewedDependencyEvidence } from './stage-a-reviewed-baseline.mjs';
 
 const event = JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH, 'utf8'));
@@ -19,9 +22,11 @@ if (
   !/^[0-9a-f]{64}$/iu.test(scannerSha ?? '')
 )
   throw new Error('Stage A event metadata is incomplete');
-for (const sha of [pr.base?.sha, pr.head?.sha, pr.merge_commit_sha])
-  if (!/^[0-9a-f]{40}$/iu.test(sha ?? ''))
-    throw new Error('Stage A event commit identity is unavailable');
+const identityPath = path.join(runnerTemp, 'toolip-stage-a-current-pr.json');
+const identityText = await readFile(identityPath, 'utf8');
+if (Buffer.byteLength(identityText, 'utf8') > 4096)
+  throw new Error('Stage A API merge identity exceeds its budget');
+const mergeSha = resolveStageAWriterMergeSha(pr, JSON.parse(identityText));
 const scan = JSON.parse(
   await readFile(path.join(runnerTemp, 'stage-a-scan.json'), 'utf8')
 );
@@ -30,7 +35,7 @@ if (
   scan.scannerSha256 !== scannerSha.toLowerCase() ||
   scan.baseCommit !== pr.base.sha ||
   scan.headCommit !== pr.head.sha ||
-  scan.mergeCommit !== pr.merge_commit_sha ||
+  scan.mergeCommit !== mergeSha ||
   scan.reasonCodes?.length !== 0 ||
   scan.findings?.length !== 0 ||
   !/^[0-9a-f]{64}$/iu.test(scan.inputSha256 ?? '') ||
@@ -219,7 +224,7 @@ const record = {
   baseSha: pr.base.sha,
   baseRef: pr.base.ref,
   headSha: pr.head.sha,
-  mergeSha: pr.merge_commit_sha,
+  mergeSha: mergeSha,
   scannerSha256: scan.scannerSha256,
   inputSha256: scan.inputSha256,
   headInputSha256: scan.headInputSha256,

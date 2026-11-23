@@ -73,6 +73,37 @@ export function validOwnerAttestationEntry(entry, record, now = Date.now()) {
   );
 }
 
+/**
+ * pull_request_target payloads may omit merge_commit_sha when a PR is new.
+ * The Stage A job separately fetches the current immutable merge identity via
+ * GitHub API before scanning. Reuse the exact API snapshot at artifact writing.
+ * Reject stale base/head, malformed identity and conflicting event merge SHA.
+ */
+export function resolveStageAWriterMergeSha(pr, apiIdentity) {
+  const validSha = (value) => /^[a-f0-9]{40}$/u.test(value ?? '');
+  if (
+    !pr ||
+    !apiIdentity ||
+    typeof apiIdentity !== 'object' ||
+    Array.isArray(apiIdentity) ||
+    Object.keys(apiIdentity).sort().join(',') !== 'baseSha,headSha,mergeSha' ||
+    !validSha(pr.base?.sha) ||
+    !validSha(pr.head?.sha) ||
+    !validSha(apiIdentity.baseSha) ||
+    !validSha(apiIdentity.headSha) ||
+    !validSha(apiIdentity.mergeSha) ||
+    apiIdentity.baseSha !== pr.base.sha ||
+    apiIdentity.headSha !== pr.head.sha ||
+    (pr.merge_commit_sha != null &&
+      (!validSha(pr.merge_commit_sha) ||
+        apiIdentity.mergeSha !== pr.merge_commit_sha))
+  )
+    throw new Error(
+      'Stage A current pull request merge identity is invalid or stale'
+    );
+  return apiIdentity.mergeSha;
+}
+
 export function verifyStageAArtifact(
   record,
   event,

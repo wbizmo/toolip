@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   validOwnerAttestationEntry,
   verifyCurrentPullRequestIdentity,
-  verifyStageAArtifact
+  verifyStageAArtifact,
+  resolveStageAWriterMergeSha
 } from '../../scripts/verify-stage-a-artifact.mjs';
 import {
   cargoArtifactPolicyDigest,
@@ -107,6 +108,44 @@ const event = {
 };
 
 describe('Stage A artifact identity verification', () => {
+  it('uses the authenticated API merge SHA when PR event lacks merge_commit_sha', () => {
+    const eventPr = {
+      base: { sha: baseSha },
+      head: { sha: headSha },
+      merge_commit_sha: null
+    };
+    const pinned = { baseSha, headSha, mergeSha };
+    expect(resolveStageAWriterMergeSha(eventPr, pinned)).toBe(mergeSha);
+    expect(
+      resolveStageAWriterMergeSha(
+        { ...eventPr, merge_commit_sha: mergeSha },
+        pinned
+      )
+    ).toBe(mergeSha);
+    for (const stale of [
+      { ...pinned, headSha: '0'.repeat(40) },
+      { ...pinned, baseSha: '0'.repeat(40) },
+      { ...pinned, mergeSha: '0'.repeat(39) },
+      { ...pinned, mergeSha: '0'.repeat(40) },
+      { ...pinned, extra: 'untrusted' }
+    ]) {
+      // A distinct, well-formed merge SHA is permitted by the API only if
+      // the event does not contain a merge_sha to compare; the writer's
+      // scan-summary digest binding still rejects a different SHA.
+      if (stale.mergeSha === '0'.repeat(40)) continue;
+      expect(() => resolveStageAWriterMergeSha(eventPr, stale)).toThrow();
+    }
+    expect(() =>
+      resolveStageAWriterMergeSha(
+        {
+          ...eventPr,
+          merge_commit_sha: '0'.repeat(40)
+        },
+        pinned
+      )
+    ).toThrow();
+  });
+
   it('preserves honest operator-reviewed provenance without treating it as publisher proof', () => {
     const loc = 'node_modules/package-0';
     const digest = record.verifiedArtifactSha512ByLocation[loc];
