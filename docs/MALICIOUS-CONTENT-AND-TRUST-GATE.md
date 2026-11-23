@@ -125,7 +125,7 @@ verifies a SHA-256 pin over the Stage A scanner, provenance gate, verification
 tools, Toolip TypeScript sources, package manifest and lockfile. It installs
 and builds only protected-base scanner dependencies with lifecycle scripts
 disabled and verifies their registry signatures. No PR dependency install or
-build occurs before the exact PR trees and artifacts have been scanned. The scanner runs on
+build occurs before the exact PR trees and artifacts have been scanned. The artifact writer uses the separately resolved, exact GitHub API base/head/merge identity because the pull_request_target event may omit merge_commit_sha before merging, and rejects mismatching snapshots. The scanner runs on
 exact Node.js `24.22.1` (the runtime pin is checked against the supported engine
 range) and resolves the current PR merge commit through GitHub's API before
 fetching it into a temporary **bare Git object database**. It checks that the
