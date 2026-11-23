@@ -22,7 +22,7 @@ const isExactReview = ({ reason, location, sha512 } = {}) =>
   reason.length <= 768 &&
   ALLOWED_REASONS.has(reason.split(':', 1)[0]) &&
   validLocation(location) &&
-  reason.endsWith(':' + location) &&
+  reason.endsWith(`:${location}`) &&
   /^[a-f0-9]{128}$/u.test(sha512 ?? '');
 const keysWithin = (obj, allowed) =>
   obj &&

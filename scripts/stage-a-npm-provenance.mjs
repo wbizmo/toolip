@@ -147,7 +147,7 @@ async function main() {
       failureCount: 0,
       reasonCodes: []
     };
-    await writeFile(outputPath, JSON.stringify(result) + '\n', {
+    await writeFile(outputPath, `${JSON.stringify(result)}\n`, {
       flag: 'wx',
       mode: 0o600
     });

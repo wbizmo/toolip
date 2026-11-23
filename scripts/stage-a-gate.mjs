@@ -1472,7 +1472,7 @@ export function parseStageAExceptionPolicy(text, now = Date.now()) {
         !hasReasonCode ||
         !OWNER_ATTESTABLE_ARTIFACT_REASONS.has(entry.reasonCode) ||
         typeof entry.exactReason !== 'string' ||
-        !entry.exactReason.startsWith(entry.reasonCode + ':') ||
+        !entry.exactReason.startsWith(`${entry.reasonCode}:`) ||
         entry.exactReason.length > 768 ||
         !ownerAttestation ||
         typeof ownerAttestation !== 'object' ||
@@ -1496,7 +1496,7 @@ export function parseStageAExceptionPolicy(text, now = Date.now()) {
           location
         ) ||
         location.split('/').some((part) => part === '.' || part === '..') ||
-        !entry.exactReason.endsWith(':' + location) ||
+        !entry.exactReason.endsWith(`:${location}`) ||
         typeof ownerAttestation.attestedAt !== 'string' ||
         !Number.isFinite(attestedAt) ||
         new Date(attestedAt).toISOString() !== ownerAttestation.attestedAt ||
@@ -5472,10 +5472,10 @@ export async function scanGithubPullRequest({
           if (suppressedReasons.size > 0 || suppressedExactReasons.size > 0)
             exceptionReviewReasons.push(
               ...[...suppressedReasons].map(
-                (reason) => 'stage-a-exception-applied:' + reason
+                (reason) => `stage-a-exception-applied:${reason}`
               ),
               ...[...suppressedExactReasons].map(
-                (reason) => 'stage-a-exception-applied:' + reason
+                (reason) => `stage-a-exception-applied:${reason}`
               )
             );
         }

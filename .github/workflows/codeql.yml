@@ -8,10 +8,11 @@ name: CodeQL
 on:
   push:
     branches: [main]
+  # Stage A runs on PR-head refs; source/target trust is verified via the
+  # immutable Stage A artifact rather than workflow_run.branches.
   workflow_run:
     workflows: [Stage A Trusted Pre-execution Gate]
     types: [completed]
-    branches: [main]
   schedule:
     - cron: '17 4 * * 1'
 
