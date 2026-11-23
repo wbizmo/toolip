@@ -5,10 +5,11 @@ name: CI
 on:
   push:
     branches: [main]
+  # workflow_run branch filters match the Stage A PR HEAD, not target main;
+  # the protected Stage A approval artifact binds repository, base and SHAs.
   workflow_run:
     workflows: [Stage A Trusted Pre-execution Gate]
     types: [completed]
-    branches: [main]
 
 permissions:
   actions: read

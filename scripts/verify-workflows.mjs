@@ -265,10 +265,18 @@ for (const file of files) {
     const sources = doc.on?.workflow_run?.workflows ?? [];
     if (!sources.includes('Stage A Trusted Pre-execution Gate'))
       fail(file, 'Stage B must run only after the trusted Stage A workflow');
-    if (!(doc.on?.workflow_run?.branches ?? []).includes('main'))
+    // GitHub's workflow_run.branches filters the triggering Stage A run's
+    // head branch, not pull_request_target's protected base. All PR heads
+    // would be discarded by branches: [main]. Stage B instead checks the
+    // completed upstream run and the exact approved base/head/merge identities
+    // through the protected-base verifier, before any PR checkout.
+    if (
+      Object.hasOwn(doc.on?.workflow_run ?? {}, 'branches') ||
+      Object.hasOwn(doc.on?.workflow_run ?? {}, 'branches-ignore')
+    )
       fail(
         file,
-        'Stage B must accept gate runs only for the protected main target'
+        'Stage B must not filter workflow_run by PR head branch; use the protected Stage A artifact to validate the main target'
       );
     const verifier = doc.jobs?.['stage-a-result'];
     const failClosedStep = (verifier?.steps ?? []).find(

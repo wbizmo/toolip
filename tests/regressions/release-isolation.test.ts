@@ -59,6 +59,31 @@ describe('release isolation policy (regression for Batch 00)', () => {
     });
   });
 
+  it('routes completed Stage A PR-head runs to Stage B without filtering on main', () => {
+    for (const file of ['ci.yml', 'pr-quality.yml', 'codeql.yml']) {
+      const stageB = parse(
+        readFileSync(path.join('.github/workflows', file), 'utf8')
+      );
+      expect(stageB.on.workflow_run).toMatchObject({
+        workflows: ['Stage A Trusted Pre-execution Gate'],
+        types: ['completed']
+      });
+      // GitHub workflow_run.branches filters the triggering run's HEAD branch,
+      // which is the PR head, not the protected target main. A filter on main
+      // prevents Stage B from running on successful Stage A PR scans.
+      expect(stageB.on.workflow_run).not.toHaveProperty('branches');
+      expect(stageB.on.workflow_run).not.toHaveProperty('branches-ignore');
+      expect(stageB.jobs['stage-a-result'].if).toContain(
+        "github.event_name == 'workflow_run'"
+      );
+      expect(
+        stageB.jobs['stage-a-result'].steps.some((step) =>
+          String(step.run ?? '').includes('verify-stage-a-artifact.mjs')
+        )
+      ).toBe(true);
+    }
+  });
+
   it('gates pull request installation and execution behind exact-tree Stage A approval', () => {
     const stageA = parse(readFileSync('.github/workflows/stage-a.yml', 'utf8'));
     const stageASteps = stageA.jobs.scan.steps;
@@ -79,9 +104,10 @@ describe('release isolation policy (regression for Batch 00)', () => {
     const protectedBuildIndex = stageASteps.findIndex(
       (step) => String(step.run ?? '').trim() === 'npm run build'
     );
-    const currentPrSnapshotIndex = stageASteps.findIndex((step) =>
-      String(step.uses ?? '').startsWith('actions/github-script@') &&
-      String(step.with?.script ?? '').includes('github.rest.pulls.get')
+    const currentPrSnapshotIndex = stageASteps.findIndex(
+      (step) =>
+        String(step.uses ?? '').startsWith('actions/github-script@') &&
+        String(step.with?.script ?? '').includes('github.rest.pulls.get')
     );
     const provenanceIndex = stageASteps.findIndex((step) =>
       String(step.run ?? '').includes('scripts/stage-a-npm-provenance.mjs')
@@ -114,9 +140,7 @@ describe('release isolation policy (regression for Batch 00)', () => {
     expect(stageASteps[currentPrSnapshotIndex]?.with?.script).toContain(
       'expectedHead'
     );
-    expect(
-      stageASteps[scannerIndex]?.env?.STAGE_A_MERGE_SHA_FILE
-    ).toBe(
+    expect(stageASteps[scannerIndex]?.env?.STAGE_A_MERGE_SHA_FILE).toBe(
       ['${{ runner.temp ', '}}/toolip-stage-a-current-pr.json'].join('')
     );
     expect(stageASteps[scannerIndex]?.env).not.toHaveProperty(
@@ -149,8 +173,10 @@ describe('release isolation policy (regression for Batch 00)', () => {
       );
       expect(stageB.on.workflow_run).toMatchObject({
         workflows: ['Stage A Trusted Pre-execution Gate'],
-        branches: ['main']
+        types: ['completed']
       });
+      expect(stageB.on.workflow_run).not.toHaveProperty('branches');
+      expect(stageB.on.workflow_run).not.toHaveProperty('branches-ignore');
       expect(
         stageB.jobs['stage-a-result'].steps.some((step) =>
           String(step.run ?? '').includes('verify-stage-a-artifact.mjs')
@@ -312,9 +338,10 @@ describe('release isolation policy (regression for Batch 00)', () => {
     ]);
     expect(doc.on.workflow_run).toMatchObject({
       workflows: ['Stage A Trusted Pre-execution Gate'],
-      types: ['completed'],
-      branches: ['main']
+      types: ['completed']
     });
+    expect(doc.on.workflow_run).not.toHaveProperty('branches');
+    expect(doc.on.workflow_run).not.toHaveProperty('branches-ignore');
     expect(Object.keys(doc.jobs)).toEqual(['stage-a-result', 'analyze']);
     expect(doc.jobs.analyze.needs).toBe('stage-a-result');
     expect(doc.jobs.analyze.steps[0].with.ref).toContain(

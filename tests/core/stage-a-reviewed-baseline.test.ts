@@ -9,7 +9,7 @@ import {
 const repository = 'wbizmo/toolip';
 const sha512 = 'a'.repeat(128);
 const location = 'node_modules/@biomejs/cli-linux-x64';
-const reason = 'artifact-binary-content-uninspected:' + location;
+const reason = `artifact-binary-content-uninspected:${location}`;
 const now = Date.parse('2026-11-23T02:00:00.000Z');
 const issuedAt = '2026-11-23T00:00:00.000Z';
 const expiresAt = '2026-11-29T00:00:00.000Z';
@@ -73,7 +73,7 @@ describe('protected-base dependency review', () => {
       {
         ...policy,
         entries: [
-          { ...entry, reason: 'artifact-integrity-mismatch:' + location }
+          { ...entry, reason: `artifact-integrity-mismatch:${location}` }
         ]
       },
       { ...policy, entries: [{ ...entry, sha512: '0'.repeat(128) }] },

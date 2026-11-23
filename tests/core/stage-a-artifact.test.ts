@@ -163,7 +163,7 @@ describe('Stage A artifact identity verification', () => {
       },
       reviewedDependencyReasons: [
         {
-          reason: 'artifact-binary-content-uninspected:' + loc,
+          reason: `artifact-binary-content-uninspected:${loc}`,
           location: loc,
           sha512: digest,
           binaryFiles: 1
@@ -193,7 +193,7 @@ describe('Stage A artifact identity verification', () => {
   it('accepts reviewed archive binaries only with exact approval evidence', () => {
     const location = 'node_modules/package-0';
     const reviewedEntry = {
-      reason: 'artifact-binary-content-uninspected:' + location,
+      reason: `artifact-binary-content-uninspected:${location}`,
       location,
       sha512: record.verifiedArtifactSha512ByLocation[location],
       binaryFiles: 2
@@ -230,7 +230,7 @@ describe('Stage A artifact identity verification', () => {
         reviewedDependencyReasons: [
           {
             ...reviewedEntry,
-            reason: 'artifact-integrity-mismatch:' + location
+            reason: `artifact-integrity-mismatch:${location}`
           }
         ]
       },

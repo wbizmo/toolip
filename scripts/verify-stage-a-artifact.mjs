@@ -47,7 +47,7 @@ export function validOwnerAttestationEntry(entry, record, now = Date.now()) {
     attestation.owner.toLowerCase() === owner[0].toLowerCase() &&
     OWNER_ATTESTABLE_ARTIFACT_REASONS.has(entry.reasonCode) &&
     typeof entry.exactReason === 'string' &&
-    entry.exactReason.startsWith(entry.reasonCode + ':') &&
+    entry.exactReason.startsWith(`${entry.reasonCode}:`) &&
     entry.exactReason.length <= 768 &&
     typeof location === 'string' &&
     location.length <= 256 &&
@@ -55,7 +55,7 @@ export function validOwnerAttestationEntry(entry, record, now = Date.now()) {
     !location
       .split('/')
       .some((segment) => segment === '.' || segment === '..') &&
-    entry.exactReason.endsWith(':' + location) &&
+    entry.exactReason.endsWith(`:${location}`) &&
     /^[a-f0-9]{128}$/u.test(attestation.artifactSha512 ?? '') &&
     record?.verifiedArtifactSha512ByLocation?.[location] ===
       attestation.artifactSha512 &&

@@ -1,10 +1,11 @@
 name: PR Quality and Security
 
 on:
+  # Accept completed PR-head Stage A runs; validate protected main and exact
+  # immutable PR identities with the trusted approval artifact below.
   workflow_run:
     workflows: [Stage A Trusted Pre-execution Gate]
     types: [completed]
-    branches: [main]
 
 permissions:
   actions: read
